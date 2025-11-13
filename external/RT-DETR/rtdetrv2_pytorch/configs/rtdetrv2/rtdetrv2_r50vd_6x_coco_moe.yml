@@ -1,0 +1,164 @@
+task: detection
+model: MOERTDETR
+criterion: MOERTDETRCriterion
+postprocessor: RTDETRPostProcessor
+
+# MOE配置
+moe_config:
+  config_name: "A"  # A: 6个专家, B: 3个专家按复杂度, C: 3个专家按尺寸
+  num_experts: 6
+  top_k: 2
+
+# 模型配置
+MOERTDETR:
+  backbone: PResNet
+  encoder: HybridEncoder
+  decoder: RTDETRTransformerv2
+  num_experts: 6
+  top_k: 2
+  config_name: "A"
+
+# Backbone配置
+PResNet:
+  depth: 50
+  variant: d
+  return_idx: [2, 3, 4]
+  freeze_at: -1
+  freeze_norm: False
+  norm_type: bn
+  data_format: NCHW
+
+# Encoder配置
+HybridEncoder:
+  in_channels: [512, 1024, 2048]
+  feat_strides: [8, 16, 32]
+  hidden_dim: 256
+  use_encoder_idx: [2]
+  num_encoder_layers: 1
+  expansion: 0.5
+  num_heads: 8
+  dropout: 0.0
+  act: relu
+  eval_spatial_size: [640, 640]
+
+# Decoder配置
+RTDETRTransformerv2:
+  hidden_dim: 256
+  num_queries: 300
+  num_decoder_layers: 6
+  num_heads: 8
+  dim_feedforward: 1024
+  dropout: 0.0
+  activation: relu
+  num_feature_levels: 4
+  nms_iou_threshold: -1
+  dec_pred_bbox_embed_share: True
+  dec_pred_class_embed_share: True
+
+# 损失函数配置
+MOERTDETRCriterion:
+  matcher:
+    type: HungarianMatcher
+    weight_dict: {cost_class: 2, cost_bbox: 5, cost_giou: 2}
+    alpha: 0.25
+    gamma: 2.0
+  weight_dict: {loss_vfl: 1, loss_bbox: 5, loss_giou: 2, router_loss: 0.1, expert_balance_loss: 0.1}
+  losses: ['vfl', 'boxes']
+  alpha: 0.75
+  gamma: 2.0
+  num_classes: 6  # DAIR-V2X类别数
+  num_experts: 6
+
+# 后处理器配置
+RTDETRPostProcessor:
+  num_top_queries: 300
+  use_focal_loss: True
+  alpha: 0.25
+  gamma: 2.0
+  score_threshold: 0.0
+  nms_threshold: 0.7
+  nms_topk: 1000
+  detections_per_img: 100
+
+# 数据配置
+data:
+  train:
+    dataset:
+      name: DAIRV2XDataset
+      data_dir: datasets/DAIR-V2X
+      anno_path: metadata/data_info.json
+      data_fields: ['image', 'gt_bbox', 'gt_class']
+      is_crowd: False
+    transforms:
+      - Decode: {}
+      - RandomFlip: {prob: 0.5}
+      - RandomSelect:
+          transforms1:
+            - RandomShortSideResize:
+                short_side_sizes: [480, 512, 544, 576, 608, 640, 672, 704, 736, 768, 800]
+                max_size: 1333
+          transforms2:
+            - RandomShortSideResize:
+                short_side_sizes: [400, 500, 600]
+                max_size: 1333
+            - RandomSizeCrop:
+                min_size: 384
+                max_size: 600
+            - RandomShortSideResize:
+                short_side_sizes: [480, 512, 544, 576, 608, 640, 672, 704, 736, 768, 800]
+                max_size: 1333
+      - NormalizeImage: {is_scale: True, mean: [0.485, 0.456, 0.406], std: [0.229, 0.224, 0.225]}
+      - Permute: {}
+      - PadGT: {}
+    sampler:
+      name: DistributedBatchSampler
+      batch_size: 16
+      drop_last: False
+      shuffle: True
+    loader:
+      num_workers: 4
+      use_shared_memory: True
+
+  eval:
+    dataset:
+      name: DAIRV2XDataset
+      data_dir: datasets/DAIR-V2X
+      anno_path: metadata/data_info.json
+      data_fields: ['image', 'gt_bbox', 'gt_class']
+      is_crowd: False
+    transforms:
+      - Decode: {}
+      - Resize: {target_size: [640, 640], keep_ratio: False}
+      - NormalizeImage: {is_scale: True, mean: [0.485, 0.456, 0.406], std: [0.229, 0.224, 0.225]}
+      - Permute: {}
+    sampler:
+      name: DistributedBatchSampler
+      batch_size: 1
+      drop_last: False
+      shuffle: False
+    loader:
+      num_workers: 4
+      use_shared_memory: True
+
+# 训练配置
+train:
+  epochs: 100
+  lr_scheduler:
+    name: MultiStepDecay
+    milestones: [80, 90]
+    gamma: 0.1
+  optimizer:
+    name: AdamW
+    weight_decay: 0.0001
+    lr: 0.0001
+  save_interval: 10
+  log_interval: 20
+  eval_interval: 10
+  pretrain_weights: https://paddle-imagenet-models-name.bj.bcebos.com/dygraph/ResNet50_vd_pretrained.pdparams
+
+# 验证配置
+eval:
+  save_key: mAP
+  metric: COCOMetric
+  num_classes: 6
+  classwise: True

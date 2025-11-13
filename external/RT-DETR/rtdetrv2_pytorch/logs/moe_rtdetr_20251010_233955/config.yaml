@@ -1,0 +1,13 @@
+data:
+  data_root: datasets/DAIR-V2X
+model:
+  config_name: A
+  hidden_dim: 256
+  num_queries: 300
+  top_k: 2
+pretrained_weights: torch_hub
+training:
+  batch_size: 2
+  epochs: 1
+  new_lr: 0.0002
+  pretrained_lr: 1.0e-05
