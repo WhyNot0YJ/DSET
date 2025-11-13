@@ -1,0 +1,29 @@
+# RT-DETR Training Requirements
+
+# Note: Using stable PyTorch 2.2.2 with CUDA 12.1 support
+torch==2.2.2+cu121
+torchvision==0.17.2+cu121
+torchaudio==2.2.2
+
+# Computer Vision and Object Detection
+faster-coco-eval>=1.6.6
+pycocotools
+
+# Configuration and Logging
+PyYAML
+tensorboard
+
+# Scientific Computing
+scipy
+numpy
+
+# Model Export and Optimization
+onnx
+onnxruntime-gpu
+
+# Image Processing
+opencv-python
+Pillow
+
+# Visualization
+matplotlib
