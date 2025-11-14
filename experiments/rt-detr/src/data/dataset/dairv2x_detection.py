@@ -41,8 +41,8 @@ class DAIRV2XDetection(DetDataset):
         self.use_mosaic = use_mosaic and split == "train"
         self.target_size = target_size
         
-        # DAIR-V2X类别定义
-        self.class_names = ["car", "truck", "bus", "person", "bicycle", "motorcycle"]
+        # DAIR-V2X类别定义（直接使用数据集中的类别名称，7类）
+        self.class_names = ["Car", "Truck", "Bus", "Van", "Pedestrian", "Cyclist", "Motorcyclist"]
         self.class_to_id = {name: i for i, name in enumerate(self.class_names)}
         
         # 加载数据信息
@@ -165,12 +165,12 @@ class DAIRV2XDetection(DetDataset):
         
         processed_annotations = []
         for ann in annotations:
-            # 获取类别
-            class_name = ann["type"].lower()
+            # 获取类别（直接使用数据集中的类别名称，不转小写）
+            class_name = ann["type"]  # 保持原始大小写：Car, Pedestrian, etc.
             if class_name in self.class_to_id:
                 class_id = self.class_to_id[class_name]
             else:
-                continue  # 跳过未知类别
+                continue  # 跳过未知类别（如 Trafficcone, Barrowlist）
             
             # 获取2D边界框
             bbox_2d = ann["2d_box"]

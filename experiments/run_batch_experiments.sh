@@ -21,11 +21,7 @@
 #   ./run_batch_experiments.sh --test --dset                   # 测试模式只运行DSET
 #   ./run_batch_experiments.sh --r18                           # 只运行ResNet-18实验
 #   ./run_batch_experiments.sh --r34                           # 只运行ResNet-34实验
-#   ./run_batch_experiments.sh --r50                           # 只运行ResNet-50实验
 #   ./run_batch_experiments.sh --r18 --r34                     # 运行R18和R34实验
-#   ./run_batch_experiments.sh --r18 --r50                     # 运行R18和R50实验
-#   ./run_batch_experiments.sh --r34 --r50                     # 运行R34和R50实验
-#   ./run_batch_experiments.sh --r18 --r34 --r50               # 运行所有backbone实验
 #   ./run_batch_experiments.sh --custom cfg1.yaml cfg2.yaml    # 自定义配置列表
 #   ./run_batch_experiments.sh --keys rt-detr-r18 moe6-r34     # 使用内置键名选择
 #   ./run_batch_experiments.sh --select                        # 交互式选择待运行配置
@@ -76,7 +72,6 @@ log_warning() {
 declare -A RT_DETR_CONFIGS=(
     ["rt-detr-r18"]="rt-detr/configs/rtdetr_presnet18.yaml"
     ["rt-detr-r34"]="rt-detr/configs/rtdetr_presnet34.yaml"
-    ["rt-detr-r50"]="rt-detr/configs/rtdetr_presnet50.yaml"
 )
 
 declare -A MOE_RTDETR_CONFIGS=(
@@ -84,22 +79,17 @@ declare -A MOE_RTDETR_CONFIGS=(
     ["moe2-r34"]="moe-rtdetr/configs/moe2_presnet34.yaml"
     ["moe3-r18"]="moe-rtdetr/configs/moe3_presnet18.yaml"
     ["moe3-r34"]="moe-rtdetr/configs/moe3_presnet34.yaml"
-    ["moe3-r50"]="moe-rtdetr/configs/moe3_presnet50.yaml"
     ["moe6-r18"]="moe-rtdetr/configs/moe6_presnet18.yaml"
     ["moe6-r34"]="moe-rtdetr/configs/moe6_presnet34.yaml"
-    ["moe6-r50"]="moe-rtdetr/configs/moe6_presnet50.yaml"
 )
 
 declare -A DSET_CONFIGS=(
     ["dset2-r18"]="dset/configs/dset2_presnet18.yaml"
     ["dset2-r34"]="dset/configs/dset2_presnet34.yaml"
-    ["dset2-r50"]="dset/configs/dset2_presnet50.yaml"
     ["dset3-r18"]="dset/configs/dset3_presnet18.yaml"
     ["dset3-r34"]="dset/configs/dset3_presnet34.yaml"
-    ["dset3-r50"]="dset/configs/dset3_presnet50.yaml"
     ["dset6-r18"]="dset/configs/dset6_presnet18.yaml"
     ["dset6-r34"]="dset/configs/dset6_presnet34.yaml"
-    ["dset6-r50"]="dset/configs/dset6_presnet50.yaml"
 )
 
 # 构建全部配置列表与名称映射
@@ -394,11 +384,7 @@ parse_arguments() {
         echo "  ./run_batch_experiments.sh --test --dset                   # 测试模式只运行DSET"
         echo "  ./run_batch_experiments.sh --r18                           # 只运行R18"
         echo "  ./run_batch_experiments.sh --r34                           # 只运行R34"
-        echo "  ./run_batch_experiments.sh --r50                           # 只运行R50"
         echo "  ./run_batch_experiments.sh --r18 --r34                     # 运行R18+R34"
-        echo "  ./run_batch_experiments.sh --r18 --r50                     # 运行R18+R50"
-        echo "  ./run_batch_experiments.sh --r34 --r50                     # 运行R34+R50"
-        echo "  ./run_batch_experiments.sh --r18 --r34 --r50               # 运行所有backbone"
         echo "  ./run_batch_experiments.sh --custom cfg1.yaml cfg2.yaml    # 指定配置文件路径"
         echo "  ./run_batch_experiments.sh --keys rt-detr-r18 moe6-r34     # 通过键名选择"
         echo "  ./run_batch_experiments.sh --select                        # 交互式选择"

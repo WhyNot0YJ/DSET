@@ -157,7 +157,7 @@ class AdaptiveExpertRTDETR(nn.Module):
     """
     
     def __init__(self, config_name: str = "A", hidden_dim: int = 256, 
-                 num_queries: int = 300, top_k: int = 2, backbone_type: str = "presnet50",
+                 num_queries: int = 300, top_k: int = 2, backbone_type: str = "presnet34",
                  num_decoder_layers: int = 3, encoder_in_channels: list = None, 
                  encoder_expansion: float = 1.0, num_experts: int = None,
                  moe_balance_weight: float = None):
@@ -208,7 +208,7 @@ class AdaptiveExpertRTDETR(nn.Module):
         # 使用传入的decoder层数参数
         
         self.decoder = RTDETRTransformerv2(
-            num_classes=6,
+            num_classes=7,
             hidden_dim=hidden_dim,
             num_queries=num_queries,
             num_layers=num_decoder_layers,
@@ -298,7 +298,7 @@ class AdaptiveExpertRTDETR(nn.Module):
             losses=['vfl', 'boxes'],
             alpha=0.75,
             gamma=2.0,
-            num_classes=6,
+            num_classes=7,
             boxes_weight_format=None,
             share_matched_indices=False
         )
@@ -400,7 +400,10 @@ class AdaptiveExpertTrainer:
         self.best_loss = float('inf')
         self.best_map = 0.0  # 记录最佳mAP
         self.global_step = 0
+        # 从配置中读取 resume_from_checkpoint（支持两种格式）
         self.resume_from_checkpoint = self.config.get('resume_from_checkpoint', None)
+        if self.resume_from_checkpoint is None and 'checkpoint' in self.config:
+            self.resume_from_checkpoint = self.config['checkpoint'].get('resume_from_checkpoint', None)
         
         # 梯度裁剪参数（从配置读取）
         self.clip_max_norm = self.config.get('training', {}).get('clip_max_norm', 10.0)
@@ -591,7 +594,7 @@ class AdaptiveExpertTrainer:
             
             # 报告跳过的类别参数
             if skipped_class_params > 0:
-                self.logger.info(f"  - 跳过类别相关参数: {skipped_class_params} 个（COCO 80类 → DAIR-V2X 6类）")
+                self.logger.info(f"  - 跳过类别相关参数: {skipped_class_params} 个（COCO 80类 → DAIR-V2X 7类）")
             
             # 统计各部分的参数
             backbone_loaded = sum(1 for k in filtered_state_dict.keys() if k not in missing_keys and 'backbone' in k)
@@ -954,8 +957,9 @@ class AdaptiveExpertTrainer:
         batch_size = pred_logits.shape[0]
         
         for i in range(batch_size):
-            pred_scores = torch.softmax(pred_logits[i], dim=-1)  # [Q, C]
-            max_scores, pred_classes = torch.max(pred_scores, dim=-1)  # [Q]
+            # VFL损失使用sigmoid，所以推理时也应该使用sigmoid
+            pred_scores_sigmoid = torch.sigmoid(pred_logits[i])  # [Q, C]
+            max_scores, pred_classes = torch.max(pred_scores_sigmoid, dim=-1)  # [Q]
             
             # 过滤无效框（padding框），保留所有有效预测框
             valid_boxes_mask = ~torch.all(pred_boxes[i] == 1.0, dim=1)
@@ -1036,12 +1040,13 @@ class AdaptiveExpertTrainer:
                 categories = self.val_dataset.get_categories()
             else:
                 categories = [
-                    {'id': 1, 'name': 'car'},
-                    {'id': 2, 'name': 'truck'},
-                    {'id': 3, 'name': 'bus'},
-                    {'id': 4, 'name': 'person'},
-                    {'id': 5, 'name': 'bicycle'},
-                    {'id': 6, 'name': 'motorcycle'}
+                    {'id': 1, 'name': 'Car'},
+                    {'id': 2, 'name': 'Truck'},
+                    {'id': 3, 'name': 'Bus'},
+                    {'id': 4, 'name': 'Van'},
+                    {'id': 5, 'name': 'Pedestrian'},
+                    {'id': 6, 'name': 'Cyclist'},
+                    {'id': 7, 'name': 'Motorcyclist'}
                 ]
             
             # 创建COCO格式数据
@@ -1282,7 +1287,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description='自适应专家RT-DETR训练')
     parser.add_argument('--config', type=str, default='A', 
                        help='专家配置 (A: 6专家, B: 3专家) 或YAML配置文件路径')
-    parser.add_argument('--backbone', type=str, default='presnet50', 
+    parser.add_argument('--backbone', type=str, default='presnet34', 
                        choices=['presnet18', 'presnet34', 'presnet50', 'presnet101',
                                'hgnetv2_l', 'hgnetv2_x', 'hgnetv2_h',
                                'cspresnet_s', 'cspresnet_m', 'cspresnet_l', 'cspresnet_x',
@@ -1331,7 +1336,7 @@ def main() -> None:
                 config['training']['eta_min'] = float(config['training']['eta_min'])
         
         # 只允许显式传递的命令行参数覆盖配置文件（不等于默认值的才覆盖）
-        if args.backbone != 'presnet50':
+        if args.backbone != 'presnet34':
             config['model']['backbone'] = args.backbone
         if args.epochs != 100:
             config['training']['epochs'] = args.epochs
@@ -1347,6 +1352,12 @@ def main() -> None:
             config['data']['data_root'] = args.data_root
         if args.pretrained_weights:
             config['model']['pretrained_weights'] = args.pretrained_weights
+        
+        # 命令行参数覆盖配置文件中的 resume_from_checkpoint
+        if args.resume_from_checkpoint:
+            if 'checkpoint' not in config:
+                config['checkpoint'] = {}
+            config['checkpoint']['resume_from_checkpoint'] = args.resume_from_checkpoint
     else:
         # 创建默认配置
         config = {

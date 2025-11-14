@@ -177,7 +177,10 @@ class RTDETRTrainer:
         else:
             device_str = self.config.get('misc', {}).get('device', 'cuda')
         self.device = torch.device(device_str)
-        self.setup_logging()
+        # 延迟日志设置，在 start_training 中设置（此时可以正确处理恢复训练）
+        self.log_dir = None
+        self.logger = None
+        self.experiment_name = None
         self._create_directories()
         
         # 初始化组件
@@ -219,10 +222,8 @@ class RTDETRTrainer:
         resume_checkpoint = getattr(self, '_resume_checkpoint_path', None)
         
         if resume_checkpoint and Path(resume_checkpoint).exists():
-            # 恢复训练：使用检查点所在目录
+            # 恢复训练：使用检查点所在目录（不创建新目录）
             self.log_dir = Path(resume_checkpoint).parent
-            self.logger = logging.getLogger(__name__)
-            self.logger.info(f"📦 恢复训练，使用现有日志目录: {self.log_dir}")
             # 从目录名中提取实验名称（去掉时间戳部分）
             dir_name = self.log_dir.name
             # 假设格式为 rtdetr_r50_20240101_120000，提取 rtdetr_r50
@@ -258,6 +259,10 @@ class RTDETRTrainer:
         )
         
         self.logger = logging.getLogger(__name__)
+        
+        # 如果是恢复训练，记录日志
+        if resume_checkpoint and Path(resume_checkpoint).exists():
+            self.logger.info(f"📦 恢复训练，使用现有日志目录: {self.log_dir}")
         
         # 保存配置文件（仅新训练时）
         if not resume_checkpoint:
@@ -313,7 +318,7 @@ class RTDETRTrainer:
         # 创建decoder（添加denoising训练）
         from src.zoo.rtdetr.rtdetrv2_decoder import RTDETRTransformerv2
         decoder = RTDETRTransformerv2(
-            num_classes=6,
+            num_classes=7,
             hidden_dim=hidden_dim,
             num_queries=num_queries,
             num_layers=num_decoder_layers, 
@@ -477,7 +482,7 @@ class RTDETRTrainer:
             losses=['vfl', 'boxes'],
             alpha=0.75,
             gamma=2.0,
-            num_classes=6,
+            num_classes=7,
             boxes_weight_format=None,
             share_matched_indices=False
         )
@@ -1176,12 +1181,13 @@ class RTDETRTrainer:
                 categories = self.val_dataloader.dataset.get_categories()
             else:
                 categories = [
-                    {'id': 1, 'name': 'car'},
-                    {'id': 2, 'name': 'truck'},
-                    {'id': 3, 'name': 'bus'},
-                    {'id': 4, 'name': 'person'},
-                    {'id': 5, 'name': 'bicycle'},
-                    {'id': 6, 'name': 'motorcycle'}
+                    {'id': 1, 'name': 'Car'},
+                    {'id': 2, 'name': 'Truck'},
+                    {'id': 3, 'name': 'Bus'},
+                    {'id': 4, 'name': 'Van'},
+                    {'id': 5, 'name': 'Pedestrian'},
+                    {'id': 6, 'name': 'Cyclist'},
+                    {'id': 7, 'name': 'Motorcyclist'}
                 ]
             
             # 创建COCO格式数据

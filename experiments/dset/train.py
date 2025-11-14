@@ -163,7 +163,7 @@ class DSETRTDETR(nn.Module):
     """
     
     def __init__(self, config_name: str = "A", hidden_dim: int = 256, 
-                 num_queries: int = 300, top_k: int = 2, backbone_type: str = "presnet50",
+                 num_queries: int = 300, top_k: int = 2, backbone_type: str = "presnet34",
                  num_decoder_layers: int = 3, encoder_in_channels: list = None, 
                  encoder_expansion: float = 1.0, num_experts: int = None,
                  num_encoder_layers: int = 1,  # ✅ 新增：Encoder Transformer层数
@@ -249,7 +249,7 @@ class DSETRTDETR(nn.Module):
         # 使用传入的decoder层数参数
         
         self.decoder = RTDETRTransformerv2(
-            num_classes=6,
+            num_classes=7,
             hidden_dim=hidden_dim,
             num_queries=num_queries,
             num_layers=num_decoder_layers,
@@ -348,7 +348,7 @@ class DSETRTDETR(nn.Module):
             losses=['vfl', 'boxes'],
             alpha=0.75,
             gamma=2.0,
-            num_classes=6,
+            num_classes=7,
             boxes_weight_format=None,
             share_matched_indices=False
         )
@@ -538,7 +538,10 @@ class DSETTrainer:
         self.best_loss = float('inf')
         self.best_map = 0.0  # 记录最佳mAP
         self.global_step = 0
+        # 从配置中读取 resume_from_checkpoint（支持两种格式）
         self.resume_from_checkpoint = self.config.get('resume_from_checkpoint', None)
+        if self.resume_from_checkpoint is None and 'checkpoint' in self.config:
+            self.resume_from_checkpoint = self.config['checkpoint'].get('resume_from_checkpoint', None)
         
         # 梯度裁剪参数（从配置读取）
         self.clip_max_norm = self.config.get('training', {}).get('clip_max_norm', 10.0)
@@ -1275,12 +1278,13 @@ class DSETTrainer:
                 categories = self.val_dataset.get_categories()
             else:
                 categories = [
-                    {'id': 1, 'name': 'car'},
-                    {'id': 2, 'name': 'truck'},
-                    {'id': 3, 'name': 'bus'},
-                    {'id': 4, 'name': 'person'},
-                    {'id': 5, 'name': 'bicycle'},
-                    {'id': 6, 'name': 'motorcycle'}
+                    {'id': 1, 'name': 'Car'},
+                    {'id': 2, 'name': 'Truck'},
+                    {'id': 3, 'name': 'Bus'},
+                    {'id': 4, 'name': 'Van'},
+                    {'id': 5, 'name': 'Pedestrian'},
+                    {'id': 6, 'name': 'Cyclist'},
+                    {'id': 7, 'name': 'Motorcyclist'}
                 ]
             
             # 创建COCO格式数据
@@ -1533,7 +1537,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description='自适应专家RT-DETR训练')
     parser.add_argument('--config', type=str, default='A', 
                        help='专家配置 (A: 6专家, B: 3专家) 或YAML配置文件路径')
-    parser.add_argument('--backbone', type=str, default='presnet50', 
+    parser.add_argument('--backbone', type=str, default='presnet34', 
                        choices=['presnet18', 'presnet34', 'presnet50', 'presnet101',
                                'hgnetv2_l', 'hgnetv2_x', 'hgnetv2_h',
                                'cspresnet_s', 'cspresnet_m', 'cspresnet_l', 'cspresnet_x',
@@ -1582,7 +1586,7 @@ def main() -> None:
                 config['training']['eta_min'] = float(config['training']['eta_min'])
         
         # 只允许显式传递的命令行参数覆盖配置文件（不等于默认值的才覆盖）
-        if args.backbone != 'presnet50':
+        if args.backbone != 'presnet34':
             config['model']['backbone'] = args.backbone
         if args.epochs != 100:
             config['training']['epochs'] = args.epochs
@@ -1598,6 +1602,12 @@ def main() -> None:
             config['data']['data_root'] = args.data_root
         if args.pretrained_weights:
             config['model']['pretrained_weights'] = args.pretrained_weights
+        
+        # 命令行参数覆盖配置文件中的 resume_from_checkpoint
+        if args.resume_from_checkpoint:
+            if 'checkpoint' not in config:
+                config['checkpoint'] = {}
+            config['checkpoint']['resume_from_checkpoint'] = args.resume_from_checkpoint
     else:
         # 创建默认配置
         config = {

@@ -265,24 +265,13 @@ class TransformerDecoder(nn.Module):
             output = layer(output, ref_points_input, memory, memory_spatial_shapes, attn_mask, memory_mask, query_pos_embed)
 
             inter_ref_bbox = F.sigmoid(bbox_head[i](output) + inverse_sigmoid(ref_points_detach))
-            # 防御性修复：确保bbox的w和h有最小值，避免数值精度问题导致无效边界框
-            # 当w或h非常接近0时，即使经过sigmoid，由于浮点精度问题可能会变成0或负数
-            # 这会导致box_cxcywh_to_xyxy转换时产生x2 < x1的无效边界框
-            inter_ref_bbox = inter_ref_bbox.clone()
-            inter_ref_bbox[:, 2] = inter_ref_bbox[:, 2].clamp(min=1e-7)  # w
-            inter_ref_bbox[:, 3] = inter_ref_bbox[:, 3].clamp(min=1e-7)  # h
 
             if self.training:
                 dec_out_logits.append(score_head[i](output))
                 if i == 0:
                     dec_out_bboxes.append(inter_ref_bbox)
                 else:
-                    refined_bbox = F.sigmoid(bbox_head[i](output) + inverse_sigmoid(ref_points))
-                    # 同样保护refined_bbox
-                    refined_bbox = refined_bbox.clone()
-                    refined_bbox[:, 2] = refined_bbox[:, 2].clamp(min=1e-7)  # w
-                    refined_bbox[:, 3] = refined_bbox[:, 3].clamp(min=1e-7)  # h
-                    dec_out_bboxes.append(refined_bbox)
+                    dec_out_bboxes.append(F.sigmoid(bbox_head[i](output) + inverse_sigmoid(ref_points)))
 
             elif i == self.eval_idx:
                 dec_out_logits.append(score_head[i](output))
@@ -518,10 +507,6 @@ class RTDETRTransformerv2(nn.Module):
             
         if self.training:
             enc_topk_bboxes = F.sigmoid(enc_topk_bbox_unact)
-            # 防御性修复：确保encoder输出的bbox的w和h有最小值
-            enc_topk_bboxes = enc_topk_bboxes.clone()
-            enc_topk_bboxes[:, 2] = enc_topk_bboxes[:, 2].clamp(min=1e-7)  # w
-            enc_topk_bboxes[:, 3] = enc_topk_bboxes[:, 3].clamp(min=1e-7)  # h
             enc_topk_bboxes_list.append(enc_topk_bboxes)
             enc_topk_logits_list.append(enc_topk_logits)
 
