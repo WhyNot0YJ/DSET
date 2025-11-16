@@ -761,10 +761,6 @@ class RTDETRTrainer:
             torch.save(checkpoint, best_path)
             self.logger.info(f"💾 保存最佳模型: {best_path}")
             
-            # 保存best_model时运行推理（使用验证数据，反映最佳模型的效果）
-            # 确保使用best_model的EMA参数进行推理
-            self._run_inference_on_best_model(best_ema_state)
-            
             # 在best_model时重新计算并打印详细的每类mAP（8类）
             self._print_best_model_per_category_map()
             
@@ -1040,9 +1036,26 @@ class RTDETRTrainer:
             self.logger.info(f"✓ 所有输出已保存到: {self.log_dir}")
         except Exception as e:
             self.logger.warning(f"绘制最终训练曲线失败: {e}")
+        
+        # 训练结束时使用best_model输出5张推理图像
+        self.logger.info("=" * 60)
+        self.logger.info("使用best_model生成推理结果（5张图像）...")
+        try:
+            best_model_path = self.log_dir / 'best_model.pth'
+            if best_model_path.exists():
+                # 加载best_model的checkpoint
+                checkpoint = torch.load(best_model_path, map_location=self.device)
+                best_ema_state = checkpoint.get('ema_state_dict', None)
+                
+                # 使用best_model进行推理
+                self._run_inference_on_best_model(best_ema_state)
+            else:
+                self.logger.warning("未找到best_model.pth，跳过推理")
+        except Exception as e:
+            self.logger.warning(f"训练结束时推理失败（不影响训练结果）: {e}")
     
     def _run_inference_on_best_model(self, best_ema_state=None):
-        """在保存best_model时运行推理，打印前5张验证图像的推理结果
+        """使用best_model运行推理，输出5张验证图像的推理结果
         
         Args:
             best_ema_state: best_model的EMA模型state_dict，如果提供则使用它进行推理
