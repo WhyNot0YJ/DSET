@@ -198,7 +198,7 @@ class RTDETRTrainer:
         self.visualizer = None
         self.postprocessor = None  # 用于推理的后处理器
         
-        # 类别名称和颜色（用于推理可视化）- 11类正式检测类别
+        # 类别名称和颜色（用于推理可视化）- 10类正式检测类别
         self.class_names = [
             "Car", "Truck", "Van", "Bus", "Pedestrian", 
             "Cyclist", "Tricyclist", "Motorcyclist", "Barrowlist", "TrafficCone"
@@ -428,7 +428,7 @@ class RTDETRTrainer:
             
             # 报告跳过的类别参数
             if skipped_class_params > 0:
-                self.logger.info(f"  - 跳过类别相关参数: {skipped_class_params} 个（COCO 80类 → DAIR-V2X 11类）")
+                self.logger.info(f"  - 跳过类别相关参数: {skipped_class_params} 个（COCO 80类 → DAIR-V2X 10类）")
             
             # 统计各部分的参数
             backbone_loaded = sum(1 for k in filtered_state_dict.keys() if k not in missing_keys and 'backbone' in k)
@@ -767,7 +767,7 @@ class RTDETRTrainer:
             # 确保使用best_model的EMA参数进行推理
             self._run_inference_on_best_model(best_ema_state)
             
-            # 在best_model时重新计算并打印详细的每类mAP（11类）
+            # 在best_model时重新计算并打印详细的每类mAP（10类）
             self._print_best_model_per_category_map()
             
         except Exception as e:
@@ -1378,7 +1378,7 @@ class RTDETRTrainer:
                         all_targets.append(ann_dict)
     
     def _print_best_model_per_category_map(self):
-        """在best_model时打印详细的每类mAP（11类）"""
+        """在best_model时打印详细的每类mAP（10类）"""
         try:
             self.ema.module.eval()
             all_predictions = []
@@ -1519,7 +1519,7 @@ class RTDETRTrainer:
             # 只在best_model时打印每个类别的详细mAP
             if print_per_category:
                 self.logger.info("  每个类别的 mAP@0.5:0.95:")
-                # 确保按11类顺序输出
+                # 确保按10类顺序输出
                 category_order = ['Car', 'Truck', 'Van', 'Bus', 'Pedestrian', 
                                 'Cyclist', 'Tricyclist', 'Motorcyclist', 'Barrowlist', 'TrafficCone']
                 for cat_name in category_order:

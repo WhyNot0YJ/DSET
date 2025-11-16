@@ -27,7 +27,7 @@ except ImportError:
 from src.nn.postprocessor.detr_postprocessor import DetDETRPostProcessor
 from src.nn.postprocessor.box_revert import box_revert, BoxProcessFormat
 
-# 类别名称（与数据集 dairv2x_detection.py 保持一致，11类）
+# 类别名称（与数据集 dairv2x_detection.py 保持一致，10类）
 CLASS_NAMES = [
     "Car", "Truck", "Van", "Bus", "Pedestrian", 
     "Cyclist", "Tricyclist", "Motorcyclist", "Barrowlist", "TrafficCone"

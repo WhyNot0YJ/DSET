@@ -41,7 +41,7 @@ class DAIRV2XDetection(DetDataset):
         self.use_mosaic = use_mosaic and split == "train"
         self.target_size = target_size
         
-        # DAIR-V2X类别定义（正式检测类别，11类）
+        # DAIR-V2X类别定义（正式检测类别，10类）
         # 前9类是交通参与者，TrafficCone是道路设施
         self.class_names = [
             "Car", "Truck", "Van", "Bus", "Pedestrian", 
