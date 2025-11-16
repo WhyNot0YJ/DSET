@@ -783,7 +783,7 @@ class DSETTrainer:
             
             # 报告跳过的类别参数
             if skipped_class_params > 0:
-                self.logger.info(f"  - 跳过类别相关参数: {skipped_class_params} 个（COCO 80类 → DAIR-V2X 6类）")
+                self.logger.info(f"  - 跳过类别相关参数: {skipped_class_params} 个（COCO 80类 → DAIR-V2X 7类）")
             
             # 统计各部分的参数
             backbone_loaded = sum(1 for k in filtered_state_dict.keys() if k not in missing_keys and 'backbone' in k)
