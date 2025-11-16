@@ -27,7 +27,7 @@ from src.misc.training_visualizer import TrainingVisualizer
 from src.misc.early_stopping import EarlyStopping
 from src.data import DataLoader
 from src.optim.ema import ModelEMA
-from src.optim.amp import GradScaler
+# from src.optim.amp import GradScaler  # 使用 torch.amp.GradScaler 替代
 from src.optim.warmup import WarmupLR
 from src.data.dataset.dairv2x_detection import DAIRV2XDetection
 from src.nn.postprocessor.detr_postprocessor import DetDETRPostProcessor
@@ -821,7 +821,7 @@ class RTDETRTrainer:
         # 4. 创建EMA和梯度缩放器
         ema_decay = self.config['training'].get('ema_decay', 0.9999)
         self.ema = ModelEMA(self.model, decay=ema_decay)
-        self.scaler = GradScaler()
+        self.scaler = torch.amp.GradScaler('cuda')
         self.logger.info(f"✓ EMA decay={ema_decay}, 混合精度训练已启用")
         
         # 5. 创建可视化器（使用log_dir）
@@ -1191,7 +1191,7 @@ class RTDETRTrainer:
             # 前向传播
             self.optimizer.zero_grad()
             
-            with torch.cuda.amp.autocast():
+            with torch.amp.autocast('cuda'):
                 outputs = self.model(images, targets)
                 # 使用criterion计算损失
                 loss_dict = self.criterion(outputs, targets)

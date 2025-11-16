@@ -948,9 +948,9 @@ class DSETTrainer:
         ema_decay = self.config.get('training', {}).get('ema_decay', 0.9999)
         return ModelEMA(self.model, decay=ema_decay)
     
-    def _create_scaler(self) -> GradScaler:
+    def _create_scaler(self):
         """创建混合精度训练器。"""
-        return GradScaler()
+        return torch.amp.GradScaler('cuda')
     
     def _create_early_stopping(self) -> Optional[EarlyStopping]:
         """创建Early Stopping。"""
@@ -1216,7 +1216,7 @@ class DSETTrainer:
             # 前向传播
             self.optimizer.zero_grad()
             
-            with torch.cuda.amp.autocast():
+            with torch.amp.autocast('cuda'):
                 outputs = self.model(images, targets)
                 loss = outputs.get('total_loss', torch.tensor(0.0, device=self.device))
             

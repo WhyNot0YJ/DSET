@@ -113,7 +113,9 @@ class DAIRV2XDetection(DetDataset):
         # 创建RT-DETR期望的目标格式
         if len(processed_annotations) > 0:
             boxes = torch.stack([torch.tensor(ann['bbox']) for ann in processed_annotations])
-            labels = torch.stack([torch.tensor(ann['category_id']) for ann in processed_annotations])
+            # ⚠️ 重要：labels 应该是 class_id (0-6)，不是 category_id (1-7)
+            # category_id 只在 COCO 评估时使用，训练时使用 class_id
+            labels = torch.stack([torch.tensor(ann['category_id'] - 1) for ann in processed_annotations])  # category_id (1-7) -> class_id (0-6)
             areas = torch.stack([torch.tensor(ann['area']) for ann in processed_annotations])
             iscrowd = torch.stack([torch.tensor(ann['iscrowd']) for ann in processed_annotations])
         else:
