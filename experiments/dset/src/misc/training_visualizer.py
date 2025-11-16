@@ -582,7 +582,7 @@ class TrainingVisualizer:
                        linewidth=2, marker='s', markersize=3)
             else:
                 # 如果没有数据（warmup期间），显示说明
-                ax.text(0.5, 0.5, 'Token Pruning Loss = 0\n(Warmup期间，将在Epoch 10后启用)', 
+                ax.text(0.5, 0.5, 'Token Pruning Loss = 0\n(Will be enabled after Epoch 10 during warmup)', 
                        ha='center', va='center', fontsize=11, color='gray',
                        transform=ax.transAxes)
             # 无论是否有数据，都设置标签和标题

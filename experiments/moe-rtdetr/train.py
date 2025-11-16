@@ -1300,6 +1300,17 @@ class AdaptiveExpertTrainer:
                         coco_eval_cat.params.catIds = [cat_id]  # 只评估当前类别
                         coco_eval_cat.evaluate()
                         coco_eval_cat.accumulate()
+                        # 需要调用 summarize() 才能计算 stats
+                        # 使用 StringIO 捕获输出，避免打印到控制台
+                        from io import StringIO
+                        import sys
+                        old_stdout = sys.stdout
+                        sys.stdout = StringIO()
+                        try:
+                            coco_eval_cat.summarize()
+                        finally:
+                            sys.stdout = old_stdout
+                        
                         # 检查 stats 是否存在且有足够的元素
                         # stats[0] = AP@0.5:0.95, 需要确保至少有1个元素
                         if hasattr(coco_eval_cat, 'stats') and len(coco_eval_cat.stats) > 0:
