@@ -1348,6 +1348,9 @@ class DSETTrainer:
         all_targets = []
         total_raw_predictions = 0  # 原始query总数
         
+        # 前30个epoch只计算loss，不进行cocoEval评估
+        skip_coco_eval = self.current_epoch < 30
+        
         with torch.no_grad():
             for batch_idx, (images, targets) in enumerate(self.val_loader):
                 images = images.to(self.device)
@@ -1364,18 +1367,30 @@ class DSETTrainer:
                     if 'class_scores' in outputs:
                         total_raw_predictions += outputs['class_scores'].shape[0] * outputs['class_scores'].shape[1]
                     
-                    # 收集预测结果
-                    if 'class_scores' in outputs and 'bboxes' in outputs:
+                    # 收集预测结果（只在需要计算mAP时收集，前30个epoch跳过）
+                    if not skip_coco_eval and 'class_scores' in outputs and 'bboxes' in outputs:
                         self._collect_predictions(outputs, targets, batch_idx, all_predictions, all_targets)
         
         # 保存预测结果用于后续打印每个类别mAP（避免重复计算）
         self._last_val_predictions = all_predictions
         self._last_val_targets = all_targets
         
+        avg_loss = total_loss / len(self.val_loader)
+        
+        # 前30个epoch只返回loss，不计算mAP
+        if skip_coco_eval:
+            return {
+                'total_loss': avg_loss,
+                'mAP_0.5': 0.0,
+                'mAP_0.75': 0.0,
+                'mAP_0.5_0.95': 0.0,
+                'num_predictions': 0,
+                'num_raw_predictions': 0,
+                'num_targets': 0
+            }
+        
         # 计算mAP（不计算每个类别的mAP，只在best_model时计算）
         mAP_metrics = self._compute_map_metrics(all_predictions, all_targets, print_per_category=False)
-        
-        avg_loss = total_loss / len(self.val_loader)
         
         return {
             'total_loss': avg_loss,
@@ -1471,10 +1486,15 @@ class DSETTrainer:
                         all_targets.append(ann_dict)
     
     def _print_best_model_per_category_map(self):
-        """使用best_model时打印详细的每类mAP（8类），重新计算以输出COCO详细评估表格"""
+        """使用best_model时打印详细的每类mAP（8类），重新计算以输出COCO详细评估表格
+        注意：只有在epoch >= 30时才会触发best_model（基于mAP），此时才会计算每类的mAP
+        """
         try:
-            # 使用已保存的预测结果重新计算，以便输出COCO详细评估表格
+            # 检查是否有保存的预测结果（只有从第30个epoch开始才会有）
             if hasattr(self, '_last_val_predictions') and hasattr(self, '_last_val_targets'):
+                if len(self._last_val_predictions) == 0 or len(self._last_val_targets) == 0:
+                    self.logger.warning("预测结果为空，跳过每类mAP计算")
+                    return
                 # 重新计算mAP，print_per_category=True会输出COCO详细评估表格
                 mAP_metrics = self._compute_map_metrics(self._last_val_predictions, self._last_val_targets, print_per_category=True)
                 per_category_map = mAP_metrics.get('per_category_map', {})
@@ -1783,8 +1803,11 @@ class DSETTrainer:
             # 输出日志
             self.logger.info(f"Epoch {epoch}:")
             self.logger.info(f"  训练损失: {train_metrics.get('total_loss', 0.0):.2f} | 验证损失: {val_metrics.get('total_loss', 0.0):.2f}")
-            # mAP只在best_model时输出，不在这里输出
-            self.logger.info(f"  预测/目标: {val_metrics['num_predictions']}/{val_metrics['num_targets']}")
+            # 前30个epoch不进行cocoEval评估，跳过预测/目标统计
+            if epoch >= 30:
+                self.logger.info(f"  预测/目标: {val_metrics['num_predictions']}/{val_metrics['num_targets']}")
+            else:
+                self.logger.info(f"  (前30个epoch仅计算loss，跳过mAP评估)")
             
             # 显示详细损失（前20个epoch每次显示，之后每5个epoch显示）
             should_show_details = (epoch < 20) or (epoch % 5 == 0)
@@ -1834,24 +1857,30 @@ class DSETTrainer:
                 self.logger.info(f"  🎉 新的最佳mAP: {self.best_map:.4f}")
                 self.save_checkpoint(epoch, is_best=True)
             
-            # Early Stopping检查
+            # Early Stopping检查（前30个epoch不检查mAP相关的指标）
             if self.early_stopping:
                 # 获取要监控的指标值
                 metric_name = self.early_stopping.metric_name
-                if 'mAP_0.5_0.95' in metric_name or 'mAP_0.5:0.95' in metric_name:
-                    metric_value = val_metrics.get('mAP_0.5_0.95', 0.0)
-                elif 'mAP_0.5' in metric_name:
-                    metric_value = val_metrics.get('mAP_0.5', 0.0)
-                elif 'mAP_0.75' in metric_name:
-                    metric_value = val_metrics.get('mAP_0.75', 0.0)
-                elif 'loss' in metric_name.lower():
-                    metric_value = val_metrics.get('total_loss', float('inf'))
+                # 如果监控的是mAP相关指标且epoch < 30，跳过Early Stopping检查
+                is_map_metric = any(x in metric_name for x in ['mAP', 'AP'])
+                if is_map_metric and epoch < 30:
+                    # 前30个epoch不进行mAP评估，跳过Early Stopping检查
+                    pass
                 else:
-                    metric_value = val_metrics.get('mAP_0.5_0.95', 0.0)  # 默认
-                
-                if self.early_stopping(metric_value, epoch):
-                    self.logger.info(f"Early Stopping在epoch {epoch}触发，停止训练")
-                    break
+                    if 'mAP_0.5_0.95' in metric_name or 'mAP_0.5:0.95' in metric_name:
+                        metric_value = val_metrics.get('mAP_0.5_0.95', 0.0)
+                    elif 'mAP_0.5' in metric_name:
+                        metric_value = val_metrics.get('mAP_0.5', 0.0)
+                    elif 'mAP_0.75' in metric_name:
+                        metric_value = val_metrics.get('mAP_0.75', 0.0)
+                    elif 'loss' in metric_name.lower():
+                        metric_value = val_metrics.get('total_loss', float('inf'))
+                    else:
+                        metric_value = val_metrics.get('mAP_0.5_0.95', 0.0)  # 默认
+                    
+                    if self.early_stopping(metric_value, epoch):
+                        self.logger.info(f"Early Stopping在epoch {epoch}触发，停止训练")
+                        break
             
             # 每个epoch都保存latest用于断点续训（不会堆积文件）
             self.save_latest_checkpoint(epoch)
