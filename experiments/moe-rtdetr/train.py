@@ -22,6 +22,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import re
+from torch.utils.data import DataLoader
 from pathlib import Path
 import logging
 from datetime import datetime
@@ -60,7 +61,6 @@ from src.optim.amp import GradScaler
 from src.optim.warmup import WarmupLR
 
 # 导入DAIR-V2X数据集
-from src.data import DataLoader
 from src.data.dataset.dairv2x_detection import DAIRV2XDetection
 from src.nn.postprocessor.detr_postprocessor import DetDETRPostProcessor
 from src.nn.postprocessor.box_revert import BoxProcessFormat
