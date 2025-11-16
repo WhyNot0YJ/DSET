@@ -1292,10 +1292,8 @@ class RTDETRTrainer:
         self._last_val_predictions = all_predictions
         self._last_val_targets = all_targets
         
-        # 计算mAP（同时计算每个类别的mAP并保存，避免在保存best_model时重复计算）
+        # 计算mAP（不计算每个类别的mAP，只在best_model时计算）
         mAP_metrics = self._compute_map_metrics(all_predictions, all_targets, print_per_category=False)
-        # 保存每个类别的mAP，避免在_print_best_model_per_category_map中重复计算
-        self._last_per_category_map = mAP_metrics.get('per_category_map', {})
         
         avg_loss = total_loss / len(self.val_dataloader)
         
@@ -1523,46 +1521,48 @@ class RTDETRTrainer:
                 finally:
                     sys.stdout = old_stdout
             
-            # 提取每个类别的 mAP@0.5:0.95
-            category_map = {cat['id']: cat['name'] for cat in categories}
+            # 只在需要时（print_per_category=True）才计算每个类别的 mAP，避免每个epoch都计算8次
             per_category_map = {}
-            
-            # 方法：为每个类别单独计算 AP
-            # 通过设置 catIds 参数，只评估特定类别
-            cat_ids = coco_eval.params.catIds
-            
-            for cat_id, cat_name in category_map.items():
-                if cat_id in cat_ids:
-                    try:
-                        # 为当前类别创建单独的 COCOeval 对象
-                        coco_eval_cat = COCOeval(coco_gt_obj, coco_dt, 'bbox')
-                        coco_eval_cat.params.catIds = [cat_id]  # 只评估当前类别
-                        # 抑制所有输出（evaluate、accumulate、summarize都会产生输出）
-                        sys.stdout = StringIO()
+            if print_per_category:
+                # 提取每个类别的 mAP@0.5:0.95
+                category_map = {cat['id']: cat['name'] for cat in categories}
+                
+                # 方法：为每个类别单独计算 AP
+                # 通过设置 catIds 参数，只评估特定类别
+                cat_ids = coco_eval.params.catIds
+                
+                for cat_id, cat_name in category_map.items():
+                    if cat_id in cat_ids:
                         try:
-                            coco_eval_cat.evaluate()
-                            coco_eval_cat.accumulate()
-                            coco_eval_cat.summarize()
-                        finally:
-                            sys.stdout = old_stdout
-                        
-                        # 检查 stats 是否存在且有足够的元素
-                        # stats[0] = AP@0.5:0.95, 需要确保至少有1个元素
-                        if hasattr(coco_eval_cat, 'stats') and len(coco_eval_cat.stats) > 0:
-                            per_category_map[cat_name] = float(coco_eval_cat.stats[0])
-                        else:
-                            # 如果没有检测结果，stats 可能为空，设为0
+                            # 为当前类别创建单独的 COCOeval 对象
+                            coco_eval_cat = COCOeval(coco_gt_obj, coco_dt, 'bbox')
+                            coco_eval_cat.params.catIds = [cat_id]  # 只评估当前类别
+                            # 抑制所有输出（evaluate、accumulate、summarize都会产生输出）
+                            sys.stdout = StringIO()
+                            try:
+                                coco_eval_cat.evaluate()
+                                coco_eval_cat.accumulate()
+                                coco_eval_cat.summarize()
+                            finally:
+                                sys.stdout = old_stdout
+                            
+                            # 检查 stats 是否存在且有足够的元素
+                            # stats[0] = AP@0.5:0.95, 需要确保至少有1个元素
+                            if hasattr(coco_eval_cat, 'stats') and len(coco_eval_cat.stats) > 0:
+                                per_category_map[cat_name] = float(coco_eval_cat.stats[0])
+                            else:
+                                # 如果没有检测结果，stats 可能为空，设为0
+                                per_category_map[cat_name] = 0.0
+                        except (IndexError, AttributeError, ValueError) as e:
+                            # 捕获可能的索引错误、属性错误或值错误
+                            # 如果该类别没有检测结果，这些错误是正常的
                             per_category_map[cat_name] = 0.0
-                    except (IndexError, AttributeError, ValueError) as e:
-                        # 捕获可能的索引错误、属性错误或值错误
-                        # 如果该类别没有检测结果，这些错误是正常的
+                        except Exception as e:
+                            # 其他异常也捕获，确保不会中断整个评估过程
+                            self.logger.debug(f"类别 {cat_name} AP计算失败: {e}")
+                            per_category_map[cat_name] = 0.0
+                    else:
                         per_category_map[cat_name] = 0.0
-                    except Exception as e:
-                        # 其他异常也捕获，确保不会中断整个评估过程
-                        self.logger.debug(f"类别 {cat_name} AP计算失败: {e}")
-                        per_category_map[cat_name] = 0.0
-                else:
-                    per_category_map[cat_name] = 0.0
             
             # 只在best_model时打印每个类别的详细mAP
             if print_per_category:
