@@ -1,9 +1,13 @@
 # RT-DETR Training Requirements
 
-# Note: Using stable PyTorch 2.2.2 with CUDA 12.1 support
-torch==2.2.2+cu121
-torchvision==0.17.2+cu121
-torchaudio==2.2.2
+# Note: Updated for RTX 5090 (Blackwell architecture) with CUDA 12.8 support
+# Install PyTorch with CUDA 12.8 support using:
+# pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu128
+# Or use stable version with CUDA 12.4 (backward compatible):
+# pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+torch>=2.5.0
+torchvision>=0.20.0
+torchaudio>=2.5.0
 
 # Computer Vision and Object Detection
 faster-coco-eval>=1.6.6

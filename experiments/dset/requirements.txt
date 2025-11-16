@@ -1,5 +1,11 @@
-torch>=2.0.1
-torchvision>=0.15.2
+# Updated for RTX 5090 (Blackwell architecture) with CUDA 12.8 support
+# Install PyTorch with CUDA 12.8 support using:
+# pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu128
+# Or use stable version with CUDA 12.4 (backward compatible):
+# pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+torch>=2.5.0
+torchvision>=0.20.0
+torchaudio>=2.5.0
 faster-coco-eval>=1.6.6
 PyYAML
 tensorboard
