@@ -32,15 +32,23 @@ except ImportError:
     def tqdm(iterable, desc=""):
         return SimpleProgress(iterable, desc) if not HAS_TQDM else iterable
 
-# 添加项目路径
-project_root = Path(__file__).parent.resolve()
-sys.path.insert(0, str(project_root))
-sys.path.insert(0, str(project_root.parent))
+# 添加项目路径（仅在直接运行时执行，导入时不执行）
+def _setup_paths():
+    """设置项目路径（延迟导入，避免循环导入）"""
+    project_root = Path(__file__).parent.resolve()
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
+    if str(project_root.parent) not in sys.path:
+        sys.path.insert(0, str(project_root.parent))
 
-# 导入模型构建函数
-from train import RTDETRTrainer, create_backbone
-from src.nn.postprocessor.detr_postprocessor import DetDETRPostProcessor
-from src.nn.postprocessor.box_revert import box_revert, BoxProcessFormat
+# 延迟导入，避免在导入时就执行路径设置
+def _import_modules():
+    """延迟导入模块"""
+    _setup_paths()
+    from train import RTDETRTrainer, create_backbone
+    from src.nn.postprocessor.detr_postprocessor import DetDETRPostProcessor
+    from src.nn.postprocessor.box_revert import box_revert, BoxProcessFormat
+    return RTDETRTrainer, create_backbone, DetDETRPostProcessor, BoxProcessFormat
 
 # 类别名称
 CLASS_NAMES = ["Car", "Truck", "Bus", "Van", "Pedestrian", "Cyclist", "Motorcyclist"]
@@ -57,6 +65,8 @@ COLORS = [
 
 def load_model(config_path: str, checkpoint_path: str, device: str = "cuda"):
     """加载模型和权重"""
+    RTDETRTrainer, _, DetDETRPostProcessor, BoxProcessFormat = _import_modules()
+    
     # 加载配置
     with open(config_path, 'r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
@@ -156,8 +166,21 @@ def preprocess_image(image_path: str, target_size: int = 640):
     return img_tensor, image_bgr, meta
 
 
-def postprocess_outputs(outputs, postprocessor, meta, conf_threshold=0.3, target_size=640, device='cuda'):
-    """后处理模型输出"""
+def postprocess_outputs(outputs, postprocessor, meta, conf_threshold=0.3, target_size=640, device='cuda', verbose=False):
+    """后处理模型输出
+    
+    Args:
+        outputs: 模型输出
+        postprocessor: 后处理器
+        meta: 包含原始尺寸、padding等信息的字典
+        conf_threshold: 置信度阈值
+        target_size: 目标尺寸（默认640）
+        device: 设备
+        verbose: 是否打印调试信息（默认False，避免训练时输出过多）
+    
+    Returns:
+        labels, boxes, scores: 检测结果
+    """
     # 获取模型输出的设备
     if isinstance(outputs, dict) and 'pred_logits' in outputs:
         output_device = outputs['pred_logits'].device
@@ -211,8 +234,8 @@ def postprocess_outputs(outputs, postprocessor, meta, conf_threshold=0.3, target
     boxes = result['boxes'].cpu().numpy()
     scores = result['scores'].cpu().numpy()
     
-    # 调试信息：检查坐标范围和置信度
-    if len(boxes) > 0:
+    # 调试信息：检查坐标范围和置信度（仅在verbose模式下打印）
+    if verbose and len(boxes) > 0:
         print(f"  检测到 {len(boxes)} 个候选框，坐标范围: x=[{boxes[:, 0].min():.1f}, {boxes[:, 2].max():.1f}], y=[{boxes[:, 1].min():.1f}, {boxes[:, 3].max():.1f}], 原始图像尺寸: {orig_w}x{orig_h}")
         print(f"  置信度范围: [{scores.min():.4f}, {scores.max():.4f}], 阈值: {conf_threshold:.4f}, 最大10个置信度: {np.sort(scores)[-10:][::-1]}")
     
@@ -222,18 +245,36 @@ def postprocess_outputs(outputs, postprocessor, meta, conf_threshold=0.3, target
     boxes = boxes[mask]
     scores = scores[mask]
     
-    if len(labels) > 0:
-        print(f"  置信度过滤后: {len(labels)} 个目标，坐标范围: x=[{boxes[:, 0].min():.1f}, {boxes[:, 2].max():.1f}], y=[{boxes[:, 1].min():.1f}, {boxes[:, 3].max():.1f}]")
-    elif len(boxes) > 0:
-        print(f"  警告: 所有 {len(boxes)} 个候选框都被置信度阈值 {conf_threshold:.4f} 过滤掉了")
+    if verbose:
+        if len(labels) > 0:
+            print(f"  置信度过滤后: {len(labels)} 个目标，坐标范围: x=[{boxes[:, 0].min():.1f}, {boxes[:, 2].max():.1f}], y=[{boxes[:, 1].min():.1f}, {boxes[:, 3].max():.1f}]")
+        elif len(boxes) > 0:
+            print(f"  警告: 所有 {len(boxes)} 个候选框都被置信度阈值 {conf_threshold:.4f} 过滤掉了")
     
     return labels, boxes, scores
 
 
-def draw_boxes(image, labels, boxes, scores):
-    """在图像上绘制预测框"""
+def draw_boxes(image, labels, boxes, scores, class_names=None, colors=None):
+    """在图像上绘制预测框
+    
+    Args:
+        image: BGR格式的图像（numpy数组）
+        labels: 类别标签数组
+        boxes: 边界框数组 [N, 4] (x1, y1, x2, y2)
+        scores: 置信度数组
+        class_names: 类别名称列表（默认使用全局CLASS_NAMES）
+        colors: 颜色列表（默认使用全局COLORS）
+    
+    Returns:
+        绘制了检测框的图像
+    """
     if len(labels) == 0:
         return image
+    
+    if class_names is None:
+        class_names = CLASS_NAMES
+    if colors is None:
+        colors = COLORS
     
     for label, box, score in zip(labels, boxes, scores):
         x1, y1, x2, y2 = box.astype(int)
@@ -245,11 +286,11 @@ def draw_boxes(image, labels, boxes, scores):
         y2 = max(0, min(y2, image.shape[0] - 1))
         
         # 绘制边界框
-        color = COLORS[label]
+        color = colors[label]
         cv2.rectangle(image, (x1, y1), (x2, y2), color, 2)
         
         # 绘制标签和置信度
-        class_name = CLASS_NAMES[label]
+        class_name = class_names[label]
         label_text = f"{class_name}: {score:.2f}"
         
         # 计算文本位置
@@ -260,6 +301,70 @@ def draw_boxes(image, labels, boxes, scores):
                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
     
     return image
+
+
+def inference_from_preprocessed_image(image_tensor, model, postprocessor, orig_image_path, 
+                                     conf_threshold=0.3, target_size=640, device='cuda', 
+                                     class_names=None, colors=None, verbose=False):
+    """从已预处理的图像tensor进行推理（用于训练时）
+    
+    Args:
+        image_tensor: 已预处理的图像tensor [1, 3, H, W]
+        model: 模型
+        postprocessor: 后处理器
+        orig_image_path: 原始图像路径（用于读取原始图像和构建meta）
+        conf_threshold: 置信度阈值
+        target_size: 目标尺寸
+        device: 设备
+        class_names: 类别名称列表
+        colors: 颜色列表
+        verbose: 是否打印调试信息
+    
+    Returns:
+        result_image: 绘制了检测框的图像（BGR格式），如果没有检测结果则返回None
+    """
+    # 读取原始图像
+    orig_image_bgr = cv2.imread(str(orig_image_path))
+    if orig_image_bgr is None:
+        return None
+    
+    orig_h, orig_w = orig_image_bgr.shape[:2]
+    
+    # 构建meta字典（与preprocess_image返回格式一致）
+    scale = min(target_size / orig_h, target_size / orig_w)
+    new_h = int(orig_h * scale)
+    new_w = int(orig_w * scale)
+    new_h = ((new_h + 31) // 32) * 32
+    new_w = ((new_w + 31) // 32) * 32
+    new_h = min(new_h, target_size)
+    new_w = min(new_w, target_size)
+    pad_h = (target_size - new_h) // 2
+    pad_w = (target_size - new_w) // 2
+    
+    meta = {
+        'orig_size': torch.tensor([[orig_h, orig_w]]),  # [1, 2] format: [h, w]
+        'pad_h': pad_h,
+        'pad_w': pad_w,
+        'scale': scale,
+        'new_h': new_h,
+        'new_w': new_w
+    }
+    
+    # 推理
+    with torch.no_grad():
+        outputs = model(image_tensor)
+    
+    # 后处理
+    labels, boxes, scores = postprocess_outputs(
+        outputs, postprocessor, meta, conf_threshold, target_size, device, verbose=verbose
+    )
+    
+    if len(labels) == 0:
+        return None
+    
+    # 绘制结果
+    result_image = draw_boxes(orig_image_bgr.copy(), labels, boxes, scores, class_names, colors)
+    return result_image
 
 
 def process_single_image(image_path: Path, model, postprocessor, output_dir: Path, 
@@ -274,9 +379,9 @@ def process_single_image(image_path: Path, model, postprocessor, output_dir: Pat
         with torch.no_grad():
             outputs = model(img_tensor)
         
-        # 后处理
+        # 后处理（verbose=True 用于批量推理时显示信息）
         labels, boxes, scores = postprocess_outputs(
-            outputs, postprocessor, meta, conf_threshold, target_size, device
+            outputs, postprocessor, meta, conf_threshold, target_size, device, verbose=True
         )
         
         # 绘制结果

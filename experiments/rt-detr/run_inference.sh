@@ -66,7 +66,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 echo "🚀 开始批量推理 RT-DETR"
-echo "="*60
+echo "============================================================"
 echo "配置文件: $CONFIG_FILE"
 echo "模型检查点: $CHECKPOINT_FILE"
 echo "输入图像目录: $IMAGE_DIR"
@@ -74,7 +74,7 @@ echo "输出目录: $OUTPUT_DIR"
 echo "置信度阈值: $CONF_THRESHOLD"
 echo "设备: $DEVICE"
 echo "最大处理图像数: $MAX_IMAGES"
-echo "="*60
+echo "============================================================"
 
 # 检查配置文件是否存在
 if [ ! -f "$CONFIG_FILE" ]; then

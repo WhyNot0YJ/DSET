@@ -30,6 +30,16 @@ from src.optim.ema import ModelEMA
 from src.optim.amp import GradScaler
 from src.optim.warmup import WarmupLR
 from src.data.dataset.dairv2x_detection import DAIRV2XDetection
+from src.nn.postprocessor.detr_postprocessor import DetDETRPostProcessor
+from src.nn.postprocessor.box_revert import box_revert, BoxProcessFormat
+import cv2
+
+# 导入 batch_inference 中的函数（确保逻辑一致）
+try:
+    from batch_inference import postprocess_outputs, draw_boxes, inference_from_preprocessed_image
+    USE_BATCH_INFERENCE_LOGIC = True
+except ImportError:
+    USE_BATCH_INFERENCE_LOGIC = False
 
 
 def create_backbone(backbone_type: str, **kwargs):
@@ -192,6 +202,19 @@ class RTDETRTrainer:
         self.ema = None
         self.scaler = None
         self.visualizer = None
+        self.postprocessor = None  # 用于推理的后处理器
+        
+        # 类别名称和颜色（用于推理可视化）
+        self.class_names = ["Car", "Truck", "Bus", "Van", "Pedestrian", "Cyclist", "Motorcyclist"]
+        self.colors = [
+            (255, 0, 0),    # Car - 红色
+            (0, 255, 0),    # Truck - 绿色
+            (0, 0, 255),    # Bus - 蓝色
+            (255, 128, 0),  # Van - 橙色
+            (255, 255, 0),  # Pedestrian - 黄色
+            (255, 0, 255),  # Cyclist - 品红
+            (0, 255, 255),  # Motorcyclist - 青色
+        ]
     
     def _validate_config_file(self):
         """验证配置文件是否包含所有必需的配置项"""
@@ -703,6 +726,11 @@ class RTDETRTrainer:
     def _save_best_checkpoint(self, epoch):
         """保存最佳模型检查点（基于mAP）"""
         try:
+            # 保存当前EMA模型的state_dict（用于推理时确保使用best_model的参数）
+            best_ema_state = None
+            if hasattr(self, 'ema') and self.ema:
+                best_ema_state = self.ema.state_dict()
+            
             checkpoint = {
                 'epoch': epoch,
                 'model_state_dict': self.model.state_dict(),
@@ -719,7 +747,7 @@ class RTDETRTrainer:
                 checkpoint['warmup_scheduler_state_dict'] = self.warmup_scheduler.state_dict()
             
             if hasattr(self, 'ema') and self.ema:
-                checkpoint['ema_state_dict'] = self.ema.state_dict()
+                checkpoint['ema_state_dict'] = best_ema_state
             
             if hasattr(self, 'scaler') and self.scaler:
                 checkpoint['scaler_state_dict'] = self.scaler.state_dict()
@@ -734,6 +762,10 @@ class RTDETRTrainer:
             best_path = self.log_dir / 'best_model.pth'
             torch.save(checkpoint, best_path)
             self.logger.info(f"💾 保存最佳模型: {best_path}")
+            
+            # 保存best_model时运行推理（使用验证数据，反映最佳模型的效果）
+            # 确保使用best_model的EMA参数进行推理
+            self._run_inference_on_best_model(best_ema_state)
             
         except Exception as e:
             self.logger.warning(f"保存最新检查点失败: {e}")
@@ -798,6 +830,19 @@ class RTDETRTrainer:
             model_type='standard',
             experiment_name=self.experiment_name
         )
+        
+        # 5.5 创建推理后处理器
+        self.postprocessor = DetDETRPostProcessor(
+            num_classes=7,
+            use_focal_loss=True,
+            num_top_queries=300,
+            box_process_format=BoxProcessFormat.RESIZE
+        )
+        
+        # 创建推理输出目录
+        self.inference_output_dir = self.log_dir / 'inference_samples'
+        self.inference_output_dir.mkdir(exist_ok=True)
+        self.logger.info(f"✓ 推理样本输出目录: {self.inference_output_dir}")
         
         # 6. 设置训练属性
         self.last_epoch = -1
@@ -985,6 +1030,152 @@ class RTDETRTrainer:
             self.logger.info(f"✓ 所有输出已保存到: {self.log_dir}")
         except Exception as e:
             self.logger.warning(f"绘制最终训练曲线失败: {e}")
+    
+    def _run_inference_on_best_model(self, best_ema_state=None):
+        """在保存best_model时运行推理（使用验证数据，反映最佳模型的效果）
+        
+        Args:
+            best_ema_state: best_model的EMA模型state_dict，如果提供则使用它进行推理
+        """
+        try:
+            # 保存当前EMA模型状态（推理后恢复）
+            original_ema_state = None
+            if best_ema_state is not None and hasattr(self, 'ema') and self.ema:
+                original_ema_state = self.ema.state_dict()
+                # 加载best_model的EMA参数
+                self.ema.load_state_dict(best_ema_state)
+                self.logger.debug("已加载best_model的EMA参数进行推理")
+            
+            # 从验证数据加载器中获取一个batch用于推理
+            inference_images, inference_targets = next(iter(self.val_dataloader))
+            inference_images = inference_images.to(self.device)
+            inference_targets = [{k: v.to(self.device) if isinstance(v, torch.Tensor) else v 
+                                 for k, v in t.items()} for t in inference_targets]
+            
+            batch_size = len(inference_targets)
+            num_inference_images = min(5, batch_size)
+            for img_idx in range(num_inference_images):
+                self._inference_single_image_from_batch(
+                    inference_images, inference_targets, 0, image_idx=img_idx, 
+                    suffix=f"best_model_epoch_{self.last_epoch}"
+                )
+            
+            # 恢复原始EMA模型状态
+            if original_ema_state is not None and hasattr(self, 'ema') and self.ema:
+                self.ema.load_state_dict(original_ema_state)
+                self.logger.debug("已恢复原始EMA模型状态")
+                
+        except Exception as e:
+            # 如果推理失败，不影响训练，但尝试恢复EMA状态
+            if hasattr(self, 'logger'):
+                self.logger.debug(f"保存best_model时推理失败（不影响训练）: {e}")
+            if original_ema_state is not None and hasattr(self, 'ema') and self.ema:
+                try:
+                    self.ema.load_state_dict(original_ema_state)
+                except:
+                    pass
+    
+    def _inference_single_image_from_batch(self, images, targets, batch_idx, image_idx=0, suffix=None):
+        """从batch中选择一张图片进行推理并保存结果（直接复用batch_inference.py的逻辑）
+        
+        Args:
+            images: 图像tensor
+            targets: 目标列表
+            batch_idx: batch索引
+            image_idx: 图像在batch中的索引
+            suffix: 文件名后缀（默认使用epoch，如"epoch_0"或"best_model"）
+        """
+        try:
+            # 使用EMA模型进行推理
+            self.ema.module.eval()
+            
+            # 选择batch中的第一张图片（或指定索引）
+            single_image = images[image_idx:image_idx+1]  # [1, 3, H, W]
+            single_target = targets[image_idx] if image_idx < len(targets) else None
+            
+            if single_target is None:
+                return
+            
+            # 获取image_id用于命名和查找原始图像
+            image_id = single_target['image_id'].item() if 'image_id' in single_target else batch_idx
+            
+            # 获取原始图像路径
+            data_root = Path(self.config['data']['data_root'])
+            orig_image_path = data_root / "image" / f"{image_id:06d}.jpg"
+            
+            if not orig_image_path.exists():
+                return
+            
+            # 使用batch_inference.py中的函数进行推理（完全复用逻辑）
+            if USE_BATCH_INFERENCE_LOGIC:
+                result_image = inference_from_preprocessed_image(
+                    single_image,
+                    self.ema.module,
+                    self.postprocessor,
+                    orig_image_path,
+                    conf_threshold=0.3,
+                    target_size=640,
+                    device=str(self.device),
+                    class_names=self.class_names,
+                    colors=self.colors,
+                    verbose=False  # 训练时不打印调试信息
+                )
+                
+                if result_image is None:
+                    self.ema.module.train()
+                    return
+                
+                # 保存结果：图片名_suffix.jpg
+                image_name = orig_image_path.stem
+                if suffix is None:
+                    suffix = f"epoch_{self.last_epoch}"
+                output_filename = f"{image_name}_{suffix}.jpg"
+                output_path = self.inference_output_dir / output_filename
+                cv2.imwrite(str(output_path), result_image)
+            else:
+                # 备用逻辑（如果无法导入batch_inference，使用简化版本）
+                with torch.no_grad():
+                    outputs = self.ema.module(single_image)
+                
+                # 简化的后处理和绘制（不推荐，但作为备用）
+                eval_sizes = torch.tensor([[640, 640]], device=self.device)
+                results = self.postprocessor(outputs, eval_sizes=eval_sizes)
+                
+                if len(results) > 0:
+                    result = results[0]
+                    labels = result['labels'].cpu().numpy()
+                    boxes = result['boxes'].cpu().numpy()
+                    scores = result['scores'].cpu().numpy()
+                    
+                    mask = scores >= 0.3
+                    labels = labels[mask]
+                    boxes = boxes[mask]
+                    scores = scores[mask]
+                    
+                    if len(labels) > 0:
+                        orig_image = cv2.imread(str(orig_image_path))
+                        if orig_image is not None:
+                            result_image = draw_boxes(
+                                orig_image.copy(), labels, boxes, scores,
+                                class_names=self.class_names,
+                                colors=self.colors
+                            )
+                            image_name = orig_image_path.stem
+                            if suffix is None:
+                                suffix = f"epoch_{self.last_epoch}"
+                            output_filename = f"{image_name}_{suffix}.jpg"
+                            output_path = self.inference_output_dir / output_filename
+                            cv2.imwrite(str(output_path), result_image)
+            
+            # 恢复训练模式
+            self.ema.module.train()
+            
+        except Exception as e:
+            # 如果推理失败，不影响训练
+            if hasattr(self, 'logger'):
+                self.logger.debug(f"推理失败（不影响训练）: {e}")
+            if hasattr(self, 'ema') and hasattr(self.ema, 'module'):
+                self.ema.module.train()
     
     def _train_epoch(self):
         """训练一个epoch"""

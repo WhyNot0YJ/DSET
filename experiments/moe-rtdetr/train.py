@@ -62,6 +62,16 @@ from src.optim.warmup import WarmupLR
 
 # 导入DAIR-V2X数据集
 from src.data.dataset.dairv2x_detection import DAIRV2XDetection
+from src.nn.postprocessor.detr_postprocessor import DetDETRPostProcessor
+from src.nn.postprocessor.box_revert import BoxProcessFormat
+import cv2
+
+# 导入 batch_inference 中的函数（确保逻辑一致）
+try:
+    from batch_inference import postprocess_outputs, draw_boxes, inference_from_preprocessed_image
+    USE_BATCH_INFERENCE_LOGIC = True
+except ImportError:
+    USE_BATCH_INFERENCE_LOGIC = False
 
 
 def create_backbone(backbone_type: str, **kwargs) -> nn.Module:
@@ -419,6 +429,9 @@ class AdaptiveExpertTrainer:
         self.scaler = self._create_scaler()
         self.visualizer = TrainingVisualizer(log_dir=self.log_dir, model_type='moe', experiment_name=self.experiment_name)
         self.early_stopping = self._create_early_stopping()
+        
+        # 初始化推理相关组件
+        self._setup_inference_components()
         
         # 恢复检查点
         if self.resume_from_checkpoint:
@@ -784,6 +797,180 @@ class AdaptiveExpertTrainer:
             metric_name=metric_name,
             logger=self.logger
         )
+    
+    def _setup_inference_components(self) -> None:
+        """初始化推理相关组件"""
+        # 创建后处理器
+        self.postprocessor = DetDETRPostProcessor(
+            num_classes=7,
+            use_focal_loss=True,
+            num_top_queries=300,
+            box_process_format=BoxProcessFormat.RESIZE
+        )
+        
+        # 创建推理输出目录
+        self.inference_output_dir = self.log_dir / "inference_samples"
+        self.inference_output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # 类别名称和颜色（与batch_inference.py保持一致）
+        self.class_names = ["Car", "Truck", "Bus", "Van", "Pedestrian", "Cyclist", "Motorcyclist"]
+        self.colors = [
+            (255, 0, 0),    # Car - 红色
+            (0, 255, 0),    # Truck - 绿色
+            (0, 0, 255),    # Bus - 蓝色
+            (255, 128, 0),  # Van - 橙色
+            (255, 255, 0),  # Pedestrian - 黄色
+            (255, 0, 255),  # Cyclist - 品红
+            (0, 255, 255),  # Motorcyclist - 青色
+        ]
+        
+        self.logger.info(f"推理输出目录: {self.inference_output_dir}")
+    
+    def _inference_single_image_from_batch(self, images, targets, batch_idx, image_idx=0, suffix=None):
+        """从batch中选择一张图片进行推理并保存结果（直接复用batch_inference.py的逻辑）
+        
+        Args:
+            images: 图像tensor
+            targets: 目标列表
+            batch_idx: batch索引
+            image_idx: 图像在batch中的索引
+            suffix: 文件名后缀（默认使用epoch，如"epoch_0"或"best_model"）
+        """
+        try:
+            # 使用EMA模型进行推理
+            self.ema.module.eval()
+            
+            # 选择batch中的指定图片
+            single_image = images[image_idx:image_idx+1]  # [1, 3, H, W]
+            single_target = targets[image_idx] if image_idx < len(targets) else None
+            
+            if single_target is None:
+                return
+            
+            # 获取image_id用于命名和查找原始图像
+            image_id = single_target['image_id'].item() if 'image_id' in single_target else batch_idx
+            
+            # 获取原始图像路径
+            data_root = Path(self.config['data']['data_root'])
+            orig_image_path = data_root / "image" / f"{image_id:06d}.jpg"
+            
+            if not orig_image_path.exists():
+                return
+            
+            # 使用batch_inference.py中的函数进行推理（完全复用逻辑）
+            if USE_BATCH_INFERENCE_LOGIC:
+                result_image = inference_from_preprocessed_image(
+                    single_image,
+                    self.ema.module,
+                    self.postprocessor,
+                    orig_image_path,
+                    conf_threshold=0.3,
+                    target_size=640,
+                    device=str(self.device),
+                    class_names=self.class_names,
+                    colors=self.colors,
+                    verbose=False  # 训练时不打印调试信息
+                )
+                
+                if result_image is None:
+                    self.ema.module.train()
+                    return
+                
+                # 保存结果：图片名_suffix.jpg
+                image_name = orig_image_path.stem
+                if suffix is None:
+                    suffix = f"epoch_{self.current_epoch}"
+                output_filename = f"{image_name}_{suffix}.jpg"
+                output_path = self.inference_output_dir / output_filename
+                cv2.imwrite(str(output_path), result_image)
+            else:
+                # 备用逻辑（如果无法导入batch_inference，使用简化版本）
+                with torch.no_grad():
+                    outputs = self.ema.module(single_image)
+                
+                # 简化的后处理和绘制（不推荐，但作为备用）
+                eval_sizes = torch.tensor([[640, 640]], device=self.device)
+                results = self.postprocessor(outputs, eval_sizes=eval_sizes)
+                
+                if len(results) > 0:
+                    result = results[0]
+                    labels = result['labels'].cpu().numpy()
+                    boxes = result['boxes'].cpu().numpy()
+                    scores = result['scores'].cpu().numpy()
+                    
+                    mask = scores >= 0.3
+                    labels = labels[mask]
+                    boxes = boxes[mask]
+                    scores = scores[mask]
+                    
+                    if len(labels) > 0:
+                        orig_image = cv2.imread(str(orig_image_path))
+                        if orig_image is not None:
+                            result_image = draw_boxes(
+                                orig_image.copy(), labels, boxes, scores,
+                                class_names=self.class_names,
+                                colors=self.colors
+                            )
+                            image_name = orig_image_path.stem
+                            if suffix is None:
+                                suffix = f"epoch_{self.current_epoch}"
+                            output_filename = f"{image_name}_{suffix}.jpg"
+                            output_path = self.inference_output_dir / output_filename
+                            cv2.imwrite(str(output_path), result_image)
+            
+            # 恢复训练模式
+            self.ema.module.train()
+            
+        except Exception as e:
+            # 如果推理失败，不影响训练
+            if hasattr(self, 'logger'):
+                self.logger.debug(f"推理失败（不影响训练）: {e}")
+            if hasattr(self, 'ema') and hasattr(self.ema, 'module'):
+                self.ema.module.train()
+    
+    def _run_inference_on_best_model(self, best_ema_state=None):
+        """在保存best_model时运行推理（使用验证数据，反映最佳模型的效果）
+        
+        Args:
+            best_ema_state: best_model的EMA模型state_dict，如果提供则使用它进行推理
+        """
+        try:
+            # 保存当前EMA模型状态（推理后恢复）
+            original_ema_state = None
+            if best_ema_state is not None and hasattr(self, 'ema') and self.ema:
+                original_ema_state = self.ema.state_dict()
+                # 加载best_model的EMA参数
+                self.ema.load_state_dict(best_ema_state)
+                self.logger.debug("已加载best_model的EMA参数进行推理")
+            
+            # 从验证数据加载器中获取一个batch用于推理
+            inference_images, inference_targets = next(iter(self.val_loader))
+            inference_images = inference_images.to(self.device)
+            inference_targets = [{k: v.to(self.device) if isinstance(v, torch.Tensor) else v 
+                                 for k, v in t.items()} for t in inference_targets]
+            
+            batch_size = len(inference_targets)
+            num_inference_images = min(5, batch_size)
+            for img_idx in range(num_inference_images):
+                self._inference_single_image_from_batch(
+                    inference_images, inference_targets, 0, image_idx=img_idx,
+                    suffix=f"best_model_epoch_{self.current_epoch}"
+                )
+            
+            # 恢复原始EMA模型状态
+            if original_ema_state is not None and hasattr(self, 'ema') and self.ema:
+                self.ema.load_state_dict(original_ema_state)
+                self.logger.debug("已恢复原始EMA模型状态")
+                
+        except Exception as e:
+            # 如果推理失败，不影响训练，但尝试恢复EMA状态
+            if hasattr(self, 'logger'):
+                self.logger.debug(f"保存best_model时推理失败（不影响训练）: {e}")
+            if original_ema_state is not None and hasattr(self, 'ema') and self.ema:
+                try:
+                    self.ema.load_state_dict(original_ema_state)
+                except:
+                    pass
     
     def _resume_from_checkpoint(self) -> None:
         """从检查点恢复训练。"""
@@ -1152,8 +1339,17 @@ class AdaptiveExpertTrainer:
             checkpoint['early_stopping_state'] = self.early_stopping.state_dict()
         
         if is_best:
+            # 保存当前EMA模型的state_dict（用于推理时确保使用best_model的参数）
+            best_ema_state = None
+            if hasattr(self, 'ema') and self.ema:
+                best_ema_state = self.ema.state_dict()
+            
             best_path = self.log_dir / 'best_model.pth'
             self._safe_save(checkpoint, best_path, "最佳模型")
+            
+            # 保存best_model时运行推理（使用验证数据，反映最佳模型的效果）
+            # 确保使用best_model的EMA参数进行推理
+            self._run_inference_on_best_model(best_ema_state)
     
     def save_latest_checkpoint(self, epoch: int) -> None:
         """保存最新检查点用于断点续训（带重试机制）"""
