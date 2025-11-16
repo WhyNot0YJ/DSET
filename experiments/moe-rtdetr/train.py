@@ -44,7 +44,6 @@ sys.path.insert(0, str(project_root.parent))  # 添加experiments目录
 from seed_utils import set_seed, seed_worker
 
 # 导入自定义模块（与rt-detr保持完全相同的导入顺序）
-# 注意：必须严格按照rt-detr的顺序导入，否则会导致循环导入
 from src.misc.training_visualizer import TrainingVisualizer
 from src.misc.early_stopping import EarlyStopping
 from src.data import DataLoader as _  # 使用别名避免与torch.utils.data.DataLoader冲突
