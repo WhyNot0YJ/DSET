@@ -59,7 +59,8 @@ logs/
 
 # Datasets
 datasets/
-data/
+/data/
+# 注意：不忽略 src/data/ 目录（这是源代码模块）
 
 # Checkpoints
 checkpoints/
