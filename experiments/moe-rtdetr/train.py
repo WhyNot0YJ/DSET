@@ -43,15 +43,11 @@ sys.path.insert(0, str(project_root.parent))  # 添加experiments目录
 # 导入随机种子工具
 from seed_utils import set_seed, seed_worker
 
-# 导入自定义模块
-# 注意：moe-rtdetr 使用 torch.utils.data.DataLoader，不需要导入 src.data.DataLoader
-# 这样可以避免循环导入问题（与 dset 保持一致）
+# 导入自定义模块（与 dset 保持完全相同的导入顺序）
 from src.misc.training_visualizer import TrainingVisualizer
 from src.misc.early_stopping import EarlyStopping
-from src.optim.ema import ModelEMA
-from src.optim.warmup import WarmupLR
-from src.data.dataset.dairv2x_detection import DAIRV2XDetection
 
+# 先导入其他模块，最后导入 data 相关模块（避免循环导入）
 # 导入RT-DETR组件
 from src.zoo.rtdetr import HybridEncoder, RTDETRTransformerv2, RTDETRCriterionv2, HungarianMatcher
 from src.nn.backbone.presnet import PResNet
@@ -60,7 +56,13 @@ from src.nn.backbone.csp_resnet import CSPResNet
 from src.nn.backbone.csp_darknet import CSPDarkNet
 from src.nn.backbone.test_resnet import MResNet
 
+# 导入优化器增强模块
+from src.optim.ema import ModelEMA
 from src.optim.amp import GradScaler
+from src.optim.warmup import WarmupLR
+
+# 最后导入 data 相关模块（此时 src 包已完全初始化）
+from src.data.dataset.dairv2x_detection import DAIRV2XDetection
 from src.nn.postprocessor.detr_postprocessor import DetDETRPostProcessor
 from src.nn.postprocessor.box_revert import BoxProcessFormat
 import cv2
