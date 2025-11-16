@@ -1,0 +1,6 @@
+# External dependencies
+external/
+
+# Datasets directory
+experiments/datasets/
+
