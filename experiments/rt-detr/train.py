@@ -198,10 +198,10 @@ class RTDETRTrainer:
         self.visualizer = None
         self.postprocessor = None  # 用于推理的后处理器
         
-        # 类别名称和颜色（用于推理可视化）- 10类正式检测类别
+        # 类别名称和颜色（用于推理可视化）- 8类
         self.class_names = [
             "Car", "Truck", "Van", "Bus", "Pedestrian", 
-            "Cyclist", "Tricyclist", "Motorcyclist", "Barrowlist", "TrafficCone"
+            "Cyclist", "Motorcyclist", "Trafficcone"
         ]
         self.colors = [
             (255, 0, 0),      # Car - 红色
@@ -210,10 +210,8 @@ class RTDETRTrainer:
             (0, 0, 255),      # Bus - 蓝色
             (255, 255, 0),    # Pedestrian - 黄色
             (255, 0, 255),    # Cyclist - 品红
-            (128, 0, 255),    # Tricyclist - 紫色
             (0, 255, 255),    # Motorcyclist - 青色
-            (255, 192, 203),  # Barrowlist - 粉色
-            (128, 128, 128),  # TrafficCone - 灰色
+            (128, 128, 128),  # Trafficcone - 灰色
         ]
     
     def _validate_config_file(self):
@@ -341,7 +339,7 @@ class RTDETRTrainer:
         # 创建decoder（添加denoising训练）
         from src.zoo.rtdetr.rtdetrv2_decoder import RTDETRTransformerv2
         decoder = RTDETRTransformerv2(
-            num_classes=11,
+            num_classes=8,  # 8类：Car, Truck, Van, Bus, Pedestrian, Cyclist, Motorcyclist, Trafficcone
             hidden_dim=hidden_dim,
             num_queries=num_queries,
             num_layers=num_decoder_layers, 
@@ -505,7 +503,7 @@ class RTDETRTrainer:
             losses=['vfl', 'boxes'],
             alpha=0.75,
             gamma=2.0,
-            num_classes=11,
+            num_classes=8,  # 8类：Car, Truck, Van, Bus, Pedestrian, Cyclist, Motorcyclist, Trafficcone
             boxes_weight_format=None,
             share_matched_indices=False
         )
@@ -845,7 +843,7 @@ class RTDETRTrainer:
         
         # 5.5 创建推理后处理器
         self.postprocessor = DetDETRPostProcessor(
-            num_classes=11,
+            num_classes=8,  # 8类：Car, Truck, Van, Bus, Pedestrian, Cyclist, Motorcyclist, Trafficcone
             use_focal_loss=True,
             num_top_queries=300,
             box_process_format=BoxProcessFormat.RESIZE
@@ -1427,10 +1425,8 @@ class RTDETRTrainer:
                     {'id': 4, 'name': 'Bus'},
                     {'id': 5, 'name': 'Pedestrian'},
                     {'id': 6, 'name': 'Cyclist'},
-                    {'id': 7, 'name': 'Tricyclist'},
-                    {'id': 8, 'name': 'Motorcyclist'},
-                    {'id': 9, 'name': 'Barrowlist'},
-                    {'id': 10, 'name': 'TrafficCone'}
+                    {'id': 7, 'name': 'Motorcyclist'},
+                    {'id': 8, 'name': 'Trafficcone'}
                 ]
             
             # 创建COCO格式数据
@@ -1519,9 +1515,8 @@ class RTDETRTrainer:
             # 只在best_model时打印每个类别的详细mAP
             if print_per_category:
                 self.logger.info("  每个类别的 mAP@0.5:0.95:")
-                # 确保按10类顺序输出
                 category_order = ['Car', 'Truck', 'Van', 'Bus', 'Pedestrian', 
-                                'Cyclist', 'Tricyclist', 'Motorcyclist', 'Barrowlist', 'TrafficCone']
+                                'Cyclist', 'Motorcyclist', 'Trafficcone']
                 for cat_name in category_order:
                     map_val = per_category_map.get(cat_name, 0.0)
                     self.logger.info(f"    {cat_name:12s}: {map_val:.4f}")

@@ -41,13 +41,18 @@ class DAIRV2XDetection(DetDataset):
         self.use_mosaic = use_mosaic and split == "train"
         self.target_size = target_size
         
-        # DAIR-V2X类别定义（正式检测类别，10类）
-        # 前9类是交通参与者，TrafficCone是道路设施
+        # DAIR-V2X类别定义（8类：前7类是交通参与者，Trafficcone是道路设施）
+        # 注意：Tricyclist 数据集中不存在，Barrowlist 样本过少已合并到 Cyclist
         self.class_names = [
             "Car", "Truck", "Van", "Bus", "Pedestrian", 
-            "Cyclist", "Tricyclist", "Motorcyclist", "Barrowlist", "TrafficCone"
+            "Cyclist", "Motorcyclist", "Trafficcone"
         ]
         self.class_to_id = {name: i for i, name in enumerate(self.class_names)}
+        
+        # 类别合并映射：Barrowlist -> Cyclist (ID=5)
+        self.class_merge_map = {
+            "Barrowlist": 5,
+        }
         
         # Ignore类别列表（训练时应过滤，不参与AP计算）
         self.ignore_classes = [
@@ -213,12 +218,22 @@ class DAIRV2XDetection(DetDataset):
                     'area': area,
                     'iscrowd': 1
                 })
+            # 处理类别合并：Barrowlist 合并到 Cyclist
+            elif class_name in self.class_merge_map:
+                class_id = self.class_merge_map[class_name]
+                processed_annotations.append({
+                    'id': len(processed_annotations) + 1,
+                    'class_id': class_id,  # 映射到 Cyclist (ID=5)
+                    'bbox': [x1, y1, width, height],  # COCO格式
+                    'area': area,
+                    'iscrowd': 0  # 正常检测目标
+                })
             # 处理正式检测类别
             elif class_name in self.class_to_id:
                 class_id = self.class_to_id[class_name]
                 processed_annotations.append({
                     'id': len(processed_annotations) + 1,
-                    'class_id': class_id,  # 直接存储 class_id (0-10)，训练时使用
+                    'class_id': class_id,  # 直接存储 class_id (0-7)，训练时使用
                     'bbox': [x1, y1, width, height],  # COCO格式
                     'area': area,
                     'iscrowd': 0  # 正常检测目标

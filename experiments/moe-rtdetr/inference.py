@@ -30,7 +30,7 @@ from src.nn.postprocessor.box_revert import box_revert, BoxProcessFormat
 # 类别名称（与数据集 dairv2x_detection.py 保持一致，10类）
 CLASS_NAMES = [
     "Car", "Truck", "Van", "Bus", "Pedestrian", 
-    "Cyclist", "Tricyclist", "Motorcyclist", "Barrowlist", "TrafficCone"
+    "Cyclist", "Tricyclist", "Motorcyclist", "Barrowlist", "Trafficcone"
 ]
 COLORS = [
     (255, 0, 0),      # Car - 红色
@@ -42,7 +42,7 @@ COLORS = [
     (128, 0, 255),    # Tricyclist - 紫色
     (0, 255, 255),    # Motorcyclist - 青色
     (255, 192, 203),  # Barrowlist - 粉色
-    (128, 128, 128),  # TrafficCone - 灰色
+    (128, 128, 128),  # Trafficcone - 灰色
 ]
 
 

@@ -219,7 +219,7 @@ class AdaptiveExpertRTDETR(nn.Module):
         # 使用传入的decoder层数参数
         
         self.decoder = RTDETRTransformerv2(
-            num_classes=11,
+            num_classes=8,  # 8类：Car, Truck, Van, Bus, Pedestrian, Cyclist, Motorcyclist, Trafficcone
             hidden_dim=hidden_dim,
             num_queries=num_queries,
             num_layers=num_decoder_layers,
@@ -308,7 +308,7 @@ class AdaptiveExpertRTDETR(nn.Module):
             losses=['vfl', 'boxes'],
             alpha=0.75,
             gamma=2.0,
-            num_classes=11,
+            num_classes=8,  # 8类：Car, Truck, Van, Bus, Pedestrian, Cyclist, Motorcyclist, Trafficcone
             boxes_weight_format=None,
             share_matched_indices=False
         )
@@ -812,7 +812,7 @@ class AdaptiveExpertTrainer:
         """初始化推理相关组件"""
         # 创建后处理器
         self.postprocessor = DetDETRPostProcessor(
-            num_classes=11,
+            num_classes=8,  # 8类：Car, Truck, Van, Bus, Pedestrian, Cyclist, Motorcyclist, Trafficcone
             use_focal_loss=True,
             num_top_queries=300,
             box_process_format=BoxProcessFormat.RESIZE
@@ -825,7 +825,7 @@ class AdaptiveExpertTrainer:
         # 类别名称和颜色（用于推理可视化）- 10类正式检测类别
         self.class_names = [
             "Car", "Truck", "Van", "Bus", "Pedestrian", 
-            "Cyclist", "Tricyclist", "Motorcyclist", "Barrowlist", "TrafficCone"
+            "Cyclist", "Tricyclist", "Motorcyclist", "Barrowlist", "Trafficcone"
         ]
         self.colors = [
             (255, 0, 0),      # Car - 红色
@@ -837,7 +837,7 @@ class AdaptiveExpertTrainer:
             (128, 0, 255),    # Tricyclist - 紫色
             (0, 255, 255),    # Motorcyclist - 青色
             (255, 192, 203),  # Barrowlist - 粉色
-            (128, 128, 128),  # TrafficCone - 灰色
+            (128, 128, 128),  # Trafficcone - 灰色
         ]
         
         self.logger.info(f"推理输出目录: {self.inference_output_dir}")
@@ -1288,10 +1288,8 @@ class AdaptiveExpertTrainer:
                     {'id': 4, 'name': 'Bus'},
                     {'id': 5, 'name': 'Pedestrian'},
                     {'id': 6, 'name': 'Cyclist'},
-                    {'id': 7, 'name': 'Tricyclist'},
-                    {'id': 8, 'name': 'Motorcyclist'},
-                    {'id': 9, 'name': 'Barrowlist'},
-                    {'id': 10, 'name': 'TrafficCone'}
+                    {'id': 7, 'name': 'Motorcyclist'},
+                    {'id': 8, 'name': 'Trafficcone'}
                 ]
             
             # 创建COCO格式数据
@@ -1380,9 +1378,8 @@ class AdaptiveExpertTrainer:
             # 只在best_model时打印每个类别的详细mAP
             if print_per_category:
                 self.logger.info("  每个类别的 mAP@0.5:0.95:")
-                # 确保按10类顺序输出
                 category_order = ['Car', 'Truck', 'Van', 'Bus', 'Pedestrian', 
-                                'Cyclist', 'Tricyclist', 'Motorcyclist', 'Barrowlist', 'TrafficCone']
+                                'Cyclist', 'Motorcyclist', 'Trafficcone']
                 for cat_name in category_order:
                     map_val = per_category_map.get(cat_name, 0.0)
                     self.logger.info(f"    {cat_name:12s}: {map_val:.4f}")

@@ -53,7 +53,7 @@ def _import_modules():
 # 类别名称
 CLASS_NAMES = [
     "Car", "Truck", "Van", "Bus", "Pedestrian", 
-    "Cyclist", "Tricyclist", "Motorcyclist", "Barrowlist", "TrafficCone"
+    "Cyclist", "Tricyclist", "Motorcyclist", "Barrowlist", "Trafficcone"
 ]
 COLORS = [
     (255, 0, 0),      # Car - 红色
@@ -65,7 +65,7 @@ COLORS = [
     (128, 0, 255),    # Tricyclist - 紫色
     (0, 255, 255),    # Motorcyclist - 青色
     (255, 192, 203),  # Barrowlist - 粉色
-    (128, 128, 128),  # TrafficCone - 灰色
+    (128, 128, 128),  # Trafficcone - 灰色
 ]
 
 
