@@ -43,13 +43,16 @@ sys.path.insert(0, str(project_root.parent))  # 添加experiments目录
 # 导入随机种子工具
 from seed_utils import set_seed, seed_worker
 
-# 导入自定义模块（与rt-detr保持完全相同的导入顺序）
+# 导入自定义模块
+# 注意：先导入 data 模块，避免在导入 misc 时触发循环导入
+from src.data import DataLoader as _  # 使用别名避免与torch.utils.data.DataLoader冲突
+from src.data.dataset.dairv2x_detection import DAIRV2XDetection
+# 然后导入 misc 模块
 from src.misc.training_visualizer import TrainingVisualizer
 from src.misc.early_stopping import EarlyStopping
-from src.data import DataLoader as _  # 使用别名避免与torch.utils.data.DataLoader冲突
+# 最后导入 optim 模块
 from src.optim.ema import ModelEMA
 from src.optim.warmup import WarmupLR
-from src.data.dataset.dairv2x_detection import DAIRV2XDetection
 
 # 导入RT-DETR组件
 from src.zoo.rtdetr import HybridEncoder, RTDETRTransformerv2, RTDETRCriterionv2, HungarianMatcher
