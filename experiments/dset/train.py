@@ -785,7 +785,7 @@ class DSETTrainer:
             
             # 报告跳过的类别参数
             if skipped_class_params > 0:
-                self.logger.info(f"  - 跳过类别相关参数: {skipped_class_params} 个（COCO 80类 → DAIR-V2X 10类）")
+                self.logger.info(f"  - 跳过类别相关参数: {skipped_class_params} 个（COCO 80类 → DAIR-V2X 8类）")
             
             # 统计各部分的参数
             backbone_loaded = sum(1 for k in filtered_state_dict.keys() if k not in missing_keys and 'backbone' in k)
@@ -990,10 +990,10 @@ class DSETTrainer:
         self.inference_output_dir = self.log_dir / "inference_samples"
         self.inference_output_dir.mkdir(parents=True, exist_ok=True)
         
-        # 类别名称和颜色（用于推理可视化）- 10类正式检测类别
+        # 类别名称和颜色（用于推理可视化）- 8类正式检测类别
         self.class_names = [
             "Car", "Truck", "Van", "Bus", "Pedestrian", 
-            "Cyclist", "Tricyclist", "Motorcyclist", "Barrowlist", "Trafficcone"
+            "Cyclist", "Motorcyclist", "Trafficcone"
         ]
         self.colors = [
             (255, 0, 0),      # Car - 红色
@@ -1002,9 +1002,7 @@ class DSETTrainer:
             (0, 0, 255),      # Bus - 蓝色
             (255, 255, 0),    # Pedestrian - 黄色
             (255, 0, 255),    # Cyclist - 品红
-            (128, 0, 255),    # Tricyclist - 紫色
             (0, 255, 255),    # Motorcyclist - 青色
-            (255, 192, 203),  # Barrowlist - 粉色
             (128, 128, 128),  # Trafficcone - 灰色
         ]
         
@@ -1469,7 +1467,7 @@ class DSETTrainer:
                         all_targets.append(ann_dict)
     
     def _print_best_model_per_category_map(self):
-        """在best_model时打印详细的每类mAP（10类）"""
+        """在best_model时打印详细的每类mAP（8类）"""
         try:
             self.ema.module.eval()
             all_predictions = []
@@ -1697,7 +1695,7 @@ class DSETTrainer:
             # 确保使用best_model的EMA参数进行推理
             self._run_inference_on_best_model(best_ema_state)
             
-            # 在best_model时重新计算并打印详细的每类mAP（10类）
+            # 在best_model时重新计算并打印详细的每类mAP（8类）
             self._print_best_model_per_category_map()
     
     def save_latest_checkpoint(self, epoch: int) -> None:
