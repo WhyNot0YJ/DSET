@@ -1444,15 +1444,19 @@ class RTDETRTrainer:
                         coco_eval_cat.params.catIds = [cat_id]  # 只评估当前类别
                         coco_eval_cat.evaluate()
                         coco_eval_cat.accumulate()
-                        # 不调用 summarize()，直接使用 stats
-                        # stats[0] = AP@0.5:0.95
-                        # 检查 stats 是否有值
-                        if len(coco_eval_cat.stats) > 0:
+                        # 检查 stats 是否存在且有足够的元素
+                        # stats[0] = AP@0.5:0.95, 需要确保至少有1个元素
+                        if hasattr(coco_eval_cat, 'stats') and len(coco_eval_cat.stats) > 0:
                             per_category_map[cat_name] = float(coco_eval_cat.stats[0])
                         else:
+                            # 如果没有检测结果，stats 可能为空，设为0
                             per_category_map[cat_name] = 0.0
+                    except (IndexError, AttributeError, ValueError) as e:
+                        # 捕获可能的索引错误、属性错误或值错误
+                        # 如果该类别没有检测结果，这些错误是正常的
+                        per_category_map[cat_name] = 0.0
                     except Exception as e:
-                        # 如果计算失败（例如该类别没有检测结果），设为0
+                        # 其他异常也捕获，确保不会中断整个评估过程
                         self.logger.debug(f"类别 {cat_name} AP计算失败: {e}")
                         per_category_map[cat_name] = 0.0
                 else:
