@@ -43,9 +43,8 @@ sys.path.insert(0, str(project_root.parent))  # 添加experiments目录
 # 导入随机种子工具
 from seed_utils import set_seed, seed_worker
 
-# 先导入 src.data 模块，初始化它，避免循环导入
-# 必须在导入 src.misc 之前导入，因为 src.misc 可能依赖 src.data
-from src.data import DataLoader
+# 直接从子模块导入，避免触发 src/__init__.py 的循环导入
+from src.data.dataloader import DataLoader
 from src.data.dataset.dairv2x_detection import DAIRV2XDetection
 
 # 导入自定义模块
