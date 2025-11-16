@@ -43,6 +43,10 @@ sys.path.insert(0, str(project_root.parent))  # 添加experiments目录
 # 导入随机种子工具
 from seed_utils import set_seed, seed_worker
 
+# 先导入data模块，确保在src/__init__.py执行时data模块已准备好（避免循环导入）
+import src.data  # 触发data模块初始化，避免循环导入
+from src.data.dataset.dairv2x_detection import DAIRV2XDetection
+
 # 导入自定义模块
 from src.misc.training_visualizer import TrainingVisualizer
 from src.misc.early_stopping import EarlyStopping
@@ -59,9 +63,6 @@ from src.nn.backbone.test_resnet import MResNet
 from src.optim.ema import ModelEMA
 from src.optim.amp import GradScaler
 from src.optim.warmup import WarmupLR
-
-# 导入DAIR-V2X数据集（最后导入，避免循环导入）
-from src.data.dataset.dairv2x_detection import DAIRV2XDetection
 from src.nn.postprocessor.detr_postprocessor import DetDETRPostProcessor
 from src.nn.postprocessor.box_revert import BoxProcessFormat
 import cv2
