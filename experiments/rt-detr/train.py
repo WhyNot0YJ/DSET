@@ -1432,45 +1432,21 @@ class RTDETRTrainer:
             category_map = {cat['id']: cat['name'] for cat in categories}
             per_category_map = {}
             
-            # 使用 COCOeval 的 precision 数组计算每个类别的 AP
-            # precision 形状: [T x R x K x A x M]
-            # T=10 (IoU阈值: 0.5:0.05:0.95), R=101 (recall阈值), K=类别数, A=4 (area), M=3 (max_det)
-            if hasattr(coco_eval, 'precision') and coco_eval.precision is not None:
-                precision = coco_eval.precision  # [T x R x K x A x M]
-                cat_ids = coco_eval.params.catIds
-                cat_id_to_idx = {cat_id: idx for idx, cat_id in enumerate(cat_ids)}
-                
-                # area=all (索引0), max_det=100 (索引2)
-                area_idx = 0
-                max_det_idx = 2
-                
-                for cat_id, cat_name in category_map.items():
-                    if cat_id in cat_id_to_idx:
-                        cat_idx = cat_id_to_idx[cat_id]
-                        # 获取该类别在所有IoU阈值下的precision [T x R]
-                        prec = precision[:, :, cat_idx, area_idx, max_det_idx]
-                        
-                        # 计算 AP@0.5:0.95: 对每个IoU阈值计算PR曲线下面积，然后平均
-                        # 对于每个IoU阈值，计算precision在recall维度上的平均值（即AP）
-                        ap_per_iou = []
-                        for t in range(precision.shape[0]):  # 遍历所有IoU阈值
-                            prec_t = prec[t, :]  # 该IoU阈值下的precision曲线
-                            # 只考虑有效的precision值（> -1）
-                            valid_prec = prec_t[prec_t > -1]
-                            if len(valid_prec) > 0:
-                                # AP = precision在recall维度上的平均值
-                                ap_per_iou.append(np.mean(valid_prec))
-                        
-                        # mAP@0.5:0.95 = 所有IoU阈值下AP的平均值
-                        if len(ap_per_iou) > 0:
-                            per_category_map[cat_name] = float(np.mean(ap_per_iou))
-                        else:
-                            per_category_map[cat_name] = 0.0
-                    else:
-                        per_category_map[cat_name] = 0.0
-            else:
-                # 如果 precision 不可用，设为0
-                for cat_name in category_map.values():
+            # 方法：为每个类别单独计算 AP
+            # 通过设置 catIds 参数，只评估特定类别
+            cat_ids = coco_eval.params.catIds
+            
+            for cat_id, cat_name in category_map.items():
+                if cat_id in cat_ids:
+                    # 为当前类别创建单独的 COCOeval 对象
+                    coco_eval_cat = COCOeval(coco_gt_obj, coco_dt, 'bbox')
+                    coco_eval_cat.params.catIds = [cat_id]  # 只评估当前类别
+                    coco_eval_cat.evaluate()
+                    coco_eval_cat.accumulate()
+                    # 不调用 summarize()，直接使用 stats
+                    # stats[0] = AP@0.5:0.95
+                    per_category_map[cat_name] = float(coco_eval_cat.stats[0])
+                else:
                     per_category_map[cat_name] = 0.0
             
             # 打印每个类别的 mAP@0.5:0.95
