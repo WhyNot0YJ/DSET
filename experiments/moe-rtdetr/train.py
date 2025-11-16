@@ -1294,14 +1294,23 @@ class AdaptiveExpertTrainer:
             
             for cat_id, cat_name in category_map.items():
                 if cat_id in cat_ids:
-                    # 为当前类别创建单独的 COCOeval 对象
-                    coco_eval_cat = COCOeval(coco_gt_obj, coco_dt, 'bbox')
-                    coco_eval_cat.params.catIds = [cat_id]  # 只评估当前类别
-                    coco_eval_cat.evaluate()
-                    coco_eval_cat.accumulate()
-                    # 不调用 summarize()，直接使用 stats
-                    # stats[0] = AP@0.5:0.95
-                    per_category_map[cat_name] = float(coco_eval_cat.stats[0])
+                    try:
+                        # 为当前类别创建单独的 COCOeval 对象
+                        coco_eval_cat = COCOeval(coco_gt_obj, coco_dt, 'bbox')
+                        coco_eval_cat.params.catIds = [cat_id]  # 只评估当前类别
+                        coco_eval_cat.evaluate()
+                        coco_eval_cat.accumulate()
+                        # 不调用 summarize()，直接使用 stats
+                        # stats[0] = AP@0.5:0.95
+                        # 检查 stats 是否有值
+                        if len(coco_eval_cat.stats) > 0:
+                            per_category_map[cat_name] = float(coco_eval_cat.stats[0])
+                        else:
+                            per_category_map[cat_name] = 0.0
+                    except Exception as e:
+                        # 如果计算失败（例如该类别没有检测结果），设为0
+                        self.logger.debug(f"类别 {cat_name} AP计算失败: {e}")
+                        per_category_map[cat_name] = 0.0
                 else:
                     per_category_map[cat_name] = 0.0
             
