@@ -4,3 +4,8 @@ external/
 # Datasets directory
 experiments/datasets/
 
+# Training logs and model weights
+logs/
+*.pt
+*.pth
+
