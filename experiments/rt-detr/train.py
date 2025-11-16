@@ -767,6 +767,9 @@ class RTDETRTrainer:
             # 确保使用best_model的EMA参数进行推理
             self._run_inference_on_best_model(best_ema_state)
             
+            # 在best_model时重新计算并打印详细的每类mAP（11类）
+            self._print_best_model_per_category_map()
+            
         except Exception as e:
             self.logger.warning(f"保存最新检查点失败: {e}")
     
@@ -1041,7 +1044,7 @@ class RTDETRTrainer:
             self.logger.warning(f"绘制最终训练曲线失败: {e}")
     
     def _run_inference_on_best_model(self, best_ema_state=None):
-        """在保存best_model时运行推理（使用验证数据，反映最佳模型的效果）
+        """在保存best_model时运行推理，打印前5张验证图像的推理结果
         
         Args:
             best_ema_state: best_model的EMA模型state_dict，如果提供则使用它进行推理
@@ -1053,7 +1056,6 @@ class RTDETRTrainer:
                 original_ema_state = self.ema.state_dict()
                 # 加载best_model的EMA参数
                 self.ema.load_state_dict(best_ema_state)
-                self.logger.debug("已加载best_model的EMA参数进行推理")
             
             # 从验证数据加载器中获取一个batch用于推理
             inference_images, inference_targets = next(iter(self.val_dataloader))
@@ -1061,23 +1063,27 @@ class RTDETRTrainer:
             inference_targets = [{k: v.to(self.device) if isinstance(v, torch.Tensor) else v 
                                  for k, v in t.items()} for t in inference_targets]
             
+            # 打印前5张推理结果
             batch_size = len(inference_targets)
             num_inference_images = min(5, batch_size)
+            self.logger.info(f"  生成best_model推理结果（前{num_inference_images}张）...")
+            
             for img_idx in range(num_inference_images):
                 self._inference_single_image_from_batch(
                     inference_images, inference_targets, 0, image_idx=img_idx, 
                     suffix=f"best_model_epoch_{self.last_epoch}"
                 )
             
+            self.logger.info(f"  ✓ 推理结果已保存到: {self.inference_output_dir}")
+            
             # 恢复原始EMA模型状态
             if original_ema_state is not None and hasattr(self, 'ema') and self.ema:
                 self.ema.load_state_dict(original_ema_state)
-                self.logger.debug("已恢复原始EMA模型状态")
                 
         except Exception as e:
             # 如果推理失败，不影响训练，但尝试恢复EMA状态
             if hasattr(self, 'logger'):
-                self.logger.debug(f"保存best_model时推理失败（不影响训练）: {e}")
+                self.logger.warning(f"best_model推理失败（不影响训练）: {e}")
             if original_ema_state is not None and hasattr(self, 'ema') and self.ema:
                 try:
                     self.ema.load_state_dict(original_ema_state)
@@ -1273,8 +1279,8 @@ class RTDETRTrainer:
                 if 'pred_logits' in outputs and 'pred_boxes' in outputs:
                     self._collect_predictions(outputs, targets, batch_idx, all_predictions, all_targets)
         
-        # 计算mAP
-        mAP_metrics = self._compute_map_metrics(all_predictions, all_targets)
+        # 计算mAP（默认不打印详细类别mAP）
+        mAP_metrics = self._compute_map_metrics(all_predictions, all_targets, print_per_category=False)
         
         avg_loss = total_loss / len(self.val_dataloader)
         
@@ -1371,8 +1377,37 @@ class RTDETRTrainer:
                             ann_dict['iscrowd'] = int(iscrowd_values[j].item())
                         all_targets.append(ann_dict)
     
-    def _compute_map_metrics(self, predictions: List[Dict], targets: List[Dict]) -> Dict[str, float]:
-        """计算mAP指标。"""
+    def _print_best_model_per_category_map(self):
+        """在best_model时打印详细的每类mAP（11类）"""
+        try:
+            self.ema.module.eval()
+            all_predictions = []
+            all_targets = []
+            
+            with torch.no_grad():
+                for batch_idx, (images, targets) in enumerate(self.val_dataloader):
+                    images = images.to(self.device)
+                    targets = [{k: v.to(self.device) if isinstance(v, torch.Tensor) else v 
+                               for k, v in t.items()} for t in targets]
+                    
+                    outputs = self.ema.module(images, targets)
+                    
+                    if 'pred_logits' in outputs and 'pred_boxes' in outputs:
+                        self._collect_predictions(outputs, targets, batch_idx, all_predictions, all_targets)
+            
+            # 计算并打印详细的每类mAP
+            self._compute_map_metrics(all_predictions, all_targets, print_per_category=True)
+        except Exception as e:
+            self.logger.warning(f"打印best_model每类mAP失败: {e}")
+    
+    def _compute_map_metrics(self, predictions: List[Dict], targets: List[Dict], print_per_category: bool = False) -> Dict[str, float]:
+        """计算mAP指标。
+        
+        Args:
+            predictions: 预测结果列表
+            targets: 真实标签列表
+            print_per_category: 是否打印每个类别的详细mAP（默认False，只在best_model时打印）
+        """
         try:
             if len(predictions) == 0:
                 return {
@@ -1481,11 +1516,15 @@ class RTDETRTrainer:
                 else:
                     per_category_map[cat_name] = 0.0
             
-            # 打印每个类别的 mAP@0.5:0.95
-            self.logger.info("  每个类别的 mAP@0.5:0.95:")
-            for cat_name in sorted(per_category_map.keys()):
-                map_val = per_category_map[cat_name]
-                self.logger.info(f"    {cat_name:12s}: {map_val:.4f}")
+            # 只在best_model时打印每个类别的详细mAP
+            if print_per_category:
+                self.logger.info("  每个类别的 mAP@0.5:0.95:")
+                # 确保按11类顺序输出
+                category_order = ['Car', 'Truck', 'Van', 'Bus', 'Pedestrian', 
+                                'Cyclist', 'Tricyclist', 'Motorcyclist', 'Barrowlist', 'TrafficCone']
+                for cat_name in category_order:
+                    map_val = per_category_map.get(cat_name, 0.0)
+                    self.logger.info(f"    {cat_name:12s}: {map_val:.4f}")
             
             result = {
                 'mAP_0.5': coco_eval.stats[1],
