@@ -833,18 +833,6 @@ class RTDETRTrainer:
         self.scaler = torch.amp.GradScaler('cuda')
         self.logger.info(f"✓ EMA decay={ema_decay}, 混合精度训练已启用")
         
-        # 4.5 使用torch.compile加速模型（在EMA创建之后）
-        if torch.cuda.is_available():
-            try:
-                # 检查PyTorch版本是否支持compile
-                if hasattr(torch, 'compile'):
-                    self.model = torch.compile(self.model, mode='reduce-overhead')
-                    self.logger.info("✓ 已启用torch.compile优化")
-                else:
-                    self.logger.warning("PyTorch版本不支持torch.compile，跳过此优化")
-            except Exception as e:
-                self.logger.warning(f"torch.compile启用失败: {e}，继续使用未编译版本")
-        
         # 5. 创建可视化器（使用log_dir）
         self.visualizer = TrainingVisualizer(
             log_dir=self.log_dir,

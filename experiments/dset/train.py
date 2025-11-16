@@ -566,18 +566,6 @@ class DSETTrainer:
         self.ema = self._create_ema()
         self.scaler = self._create_scaler()
         
-        # 使用torch.compile加速模型（在EMA创建之后）
-        if torch.cuda.is_available():
-            try:
-                # 检查PyTorch版本是否支持compile
-                if hasattr(torch, 'compile'):
-                    self.model = torch.compile(self.model, mode='reduce-overhead')
-                    self.logger.info("✓ 已启用torch.compile优化")
-                else:
-                    self.logger.warning("PyTorch版本不支持torch.compile，跳过此优化")
-            except Exception as e:
-                self.logger.warning(f"torch.compile启用失败: {e}，继续使用未编译版本")
-        
         self.visualizer = TrainingVisualizer(log_dir=self.log_dir, model_type='dset', experiment_name=self.experiment_name)
         self.early_stopping = self._create_early_stopping()
         
