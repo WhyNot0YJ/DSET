@@ -1290,6 +1290,10 @@ class RTDETRTrainer:
                 if 'pred_logits' in outputs and 'pred_boxes' in outputs:
                     self._collect_predictions(outputs, targets, batch_idx, all_predictions, all_targets)
         
+        # 保存预测结果用于后续打印每个类别mAP（避免重复计算）
+        self._last_val_predictions = all_predictions
+        self._last_val_targets = all_targets
+        
         # 计算mAP（默认不打印详细类别mAP）
         mAP_metrics = self._compute_map_metrics(all_predictions, all_targets, print_per_category=False)
         
@@ -1389,22 +1393,29 @@ class RTDETRTrainer:
                         all_targets.append(ann_dict)
     
     def _print_best_model_per_category_map(self):
-        """在best_model时打印详细的每类mAP（8类）"""
+        """使用best_model时打印详细的每类mAP（8类），复用最近一次验证的预测结果避免重复计算"""
         try:
-            self.ema.module.eval()
-            all_predictions = []
-            all_targets = []
-            
-            with torch.no_grad():
-                for batch_idx, (images, targets) in enumerate(self.val_dataloader):
-                    images = images.to(self.device)
-                    targets = [{k: v.to(self.device) if isinstance(v, torch.Tensor) else v 
-                               for k, v in t.items()} for t in targets]
-                    
-                    outputs = self.ema.module(images, targets)
-                    
-                    if 'pred_logits' in outputs and 'pred_boxes' in outputs:
-                        self._collect_predictions(outputs, targets, batch_idx, all_predictions, all_targets)
+            # 复用最近一次验证的预测结果，避免重新遍历验证集
+            if hasattr(self, '_last_val_predictions') and hasattr(self, '_last_val_targets'):
+                all_predictions = self._last_val_predictions
+                all_targets = self._last_val_targets
+            else:
+                # 如果没有保存的结果，则重新计算（兼容性处理）
+                self.logger.warning("未找到保存的验证结果，重新计算每个类别mAP...")
+                self.ema.module.eval()
+                all_predictions = []
+                all_targets = []
+                
+                with torch.no_grad():
+                    for batch_idx, (images, targets) in enumerate(self.val_dataloader):
+                        images = images.to(self.device)
+                        targets = [{k: v.to(self.device) if isinstance(v, torch.Tensor) else v 
+                                   for k, v in t.items()} for t in targets]
+                        
+                        outputs = self.ema.module(images, targets)
+                        
+                        if 'pred_logits' in outputs and 'pred_boxes' in outputs:
+                            self._collect_predictions(outputs, targets, batch_idx, all_predictions, all_targets)
             
             # 计算并打印详细的每类mAP
             self._compute_map_metrics(all_predictions, all_targets, print_per_category=True)
