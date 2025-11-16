@@ -43,11 +43,11 @@ sys.path.insert(0, str(project_root.parent))  # 添加experiments目录
 # 导入随机种子工具
 from seed_utils import set_seed, seed_worker
 
-# 导入自定义模块（与rt-detr保持完全相同的导入顺序）
-# 关键：先导入 misc，再导入 data，避免循环导入
+# 导入自定义模块
+# 注意：moe-rtdetr 使用 torch.utils.data.DataLoader，不需要导入 src.data.DataLoader
+# 这样可以避免循环导入问题（与 dset 保持一致）
 from src.misc.training_visualizer import TrainingVisualizer
 from src.misc.early_stopping import EarlyStopping
-from src.data import DataLoader as _  # 使用别名避免与torch.utils.data.DataLoader冲突
 from src.optim.ema import ModelEMA
 from src.optim.warmup import WarmupLR
 from src.data.dataset.dairv2x_detection import DAIRV2XDetection
