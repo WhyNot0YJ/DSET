@@ -197,7 +197,7 @@ class TransformerEncoderLayer(nn.Module):
 class TransformerEncoder(nn.Module):
     def __init__(self, encoder_layer, num_layers, norm=None):
         super(TransformerEncoder, self).__init__()
-        # ✅ 共享MoE设计：所有层共享同一个encoder_layer（包括MoE专家参数）
+        # 共享MoE设计：所有层共享同一个encoder_layer
         # 这样可以大幅减少参数量，提升推理速度
         self.layers = nn.ModuleList([encoder_layer for _ in range(num_layers)])
         self.num_layers = num_layers
@@ -301,7 +301,7 @@ class HybridEncoder(nn.Module):
         ])
         
         # encoder transformer（支持Patch-MoE，必然启用）
-        # ✅ 共享MoE设计：所有encoder层共享同一个layer（包括MoE专家）
+        # 共享MoE设计：所有encoder层共享同一个layer
         encoder_layer = TransformerEncoderLayer(
             hidden_dim, 
             nhead=nhead,
@@ -411,7 +411,7 @@ class HybridEncoder(nn.Module):
         # 用于收集Patch-MoE和Token Pruning的统计信息
         encoder_info = {
             'token_pruning_ratios': [],
-            'importance_scores_list': [],  # ✅ 新增：保存importance_scores用于计算loss
+            'importance_scores_list': [],
             'moe_router_logits': [],
             'moe_expert_indices': []
         }

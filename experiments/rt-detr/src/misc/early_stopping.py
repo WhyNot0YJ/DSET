@@ -85,7 +85,7 @@ class EarlyStopping:
             self.counter = 0
             if self.logger:
                 self.logger.info(
-                    f"  🎯 {self.metric_name} 提升到 {current_value:.4f} "
+                    f"  {self.metric_name} 提升到 {current_value:.4f} "
                     f"(最佳epoch: {epoch})"
                 )
         else:

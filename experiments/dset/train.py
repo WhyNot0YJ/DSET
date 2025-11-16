@@ -176,7 +176,7 @@ class DSETRTDETR(nn.Module):
                  num_queries: int = 300, top_k: int = 2, backbone_type: str = "presnet34",
                  num_decoder_layers: int = 3, encoder_in_channels: list = None, 
                  encoder_expansion: float = 1.0, num_experts: int = None,
-                 num_encoder_layers: int = 1,  # ✅ 新增：Encoder Transformer层数
+                 num_encoder_layers: int = 1,
                  token_keep_ratio: float = 0.7,
                  token_pruning_warmup_epochs: int = 10,
                  patch_moe_num_experts: int = 4,
@@ -226,7 +226,7 @@ class DSETRTDETR(nn.Module):
         # Encoder配置
         self.encoder_in_channels = encoder_in_channels or [512, 1024, 2048]
         self.encoder_expansion = encoder_expansion
-        self.num_encoder_layers = num_encoder_layers  # ✅ 保存encoder层数
+        self.num_encoder_layers = num_encoder_layers
         
         # DSET双稀疏配置（Patch-MoE 必然启用，无需存储）
         self.token_keep_ratio = token_keep_ratio
@@ -236,7 +236,7 @@ class DSETRTDETR(nn.Module):
         self.patch_moe_patch_size = patch_moe_patch_size
         self.use_token_pruning_loss = use_token_pruning_loss
         
-        # ✅ MoE和Token Pruning权重配置：只在非None时保存（使用时通过hasattr检查并应用默认值）
+        # MoE和Token Pruning权重配置
         if decoder_moe_balance_weight is not None:
             self.decoder_moe_balance_weight = decoder_moe_balance_weight
         if encoder_moe_balance_weight is not None:
@@ -259,7 +259,7 @@ class DSETRTDETR(nn.Module):
         # 使用传入的decoder层数参数
         
         self.decoder = RTDETRTransformerv2(
-            num_classes=7,
+            num_classes=11,
             hidden_dim=hidden_dim,
             num_queries=num_queries,
             num_layers=num_decoder_layers,
@@ -289,7 +289,6 @@ class DSETRTDETR(nn.Module):
         """构建encoder - 支持DSET双稀疏机制。"""
         input_size = [self.image_size, self.image_size]
         
-        # ✅ 使用实例变量num_encoder_layers（从__init__参数传入）
         # 支持共享MoE：当num_encoder_layers>1时，所有层共享同一组专家参数
         
         return HybridEncoder(
@@ -342,7 +341,6 @@ class DSETRTDETR(nn.Module):
         
         # Denoising辅助损失（如果启用num_denoising>0）
         # RT-DETR默认num_denoising=100，我们也需要添加这些损失的权重
-        # ✅ 修复：使用动态读取的层数
         num_denoising_layers = num_decoder_layers  # 和decoder层数一致
         for i in range(num_denoising_layers):
             aux_weight_dict[f'loss_vfl_dn_{i}'] = 1.0
@@ -358,7 +356,7 @@ class DSETRTDETR(nn.Module):
             losses=['vfl', 'boxes'],
             alpha=0.75,
             gamma=2.0,
-            num_classes=7,
+            num_classes=11,
             boxes_weight_format=None,
             share_matched_indices=False
         )
@@ -382,7 +380,6 @@ class DSETRTDETR(nn.Module):
         
         # DSET Encoder（双稀疏：Patch-level Pruning + Patch-MoE）
         # ⚠️ Patch-MoE 和 Patch-level Pruning 必然启用（DSET核心特性）
-        # ✅ 验证时也使用Pruning，保持训练/推理一致性
         encoder_features, encoder_info = self.encoder(backbone_features, return_encoder_info=True)
         
         # MoE Decoder前向（内部自动处理路由和专家融合）
@@ -416,7 +413,6 @@ class DSETRTDETR(nn.Module):
                 encoder_moe_loss_dict = self.encoder.get_encoder_moe_loss(encoder_info)
                 encoder_moe_balance_loss = encoder_moe_loss_dict['balance_loss']
                 encoder_moe_entropy_loss = encoder_moe_loss_dict['entropy_loss']
-                # ✅ 确保损失在正确的device上
                 if encoder_moe_balance_loss.device != images.device:
                     encoder_moe_balance_loss = encoder_moe_balance_loss.to(images.device)
                 if encoder_moe_entropy_loss.device != images.device:
@@ -428,7 +424,6 @@ class DSETRTDETR(nn.Module):
             # 3. Patch-level Pruning损失（可选，鼓励学习有效的剪枝策略）
             # ⚠️ Patch-level Pruning 必然启用（与 Patch-MoE 配套），但损失计算是可选的
             if self.use_token_pruning_loss and self.training and encoder_info:
-                # ✅ 修复：从encoder_info中获取importance_scores_list
                 importance_scores_list = encoder_info.get('importance_scores_list', [])
                 if importance_scores_list and hasattr(self.encoder, 'token_pruners') and self.encoder.token_pruners:
                     # 对所有encoder层的importance_scores计算损失并求平均
@@ -440,7 +435,6 @@ class DSETRTDETR(nn.Module):
                             # Patch-level Pruning: 使用 patch_importance_scores
                             token_info = {'patch_importance_scores': scores}
                             layer_loss = pruner.compute_pruning_loss(token_info)
-                            # ✅ 确保layer_loss在正确的device上
                             if layer_loss.device != images.device:
                                 layer_loss = layer_loss.to(images.device)
                             token_pruning_loss = token_pruning_loss + layer_loss
@@ -452,7 +446,6 @@ class DSETRTDETR(nn.Module):
             else:
                 token_pruning_loss = torch.tensor(0.0, device=images.device)
             
-            # ✅ 改进：区分Decoder和Encoder的MoE权重
             # Decoder MoE权重
             if hasattr(self, 'decoder_moe_balance_weight'):
                 decoder_moe_weight = self.decoder_moe_balance_weight
@@ -500,7 +493,6 @@ class DSETRTDETR(nn.Module):
             output['total_loss'] = total_loss
             output['loss_dict'] = detection_loss_dict
             
-            # ✅ 添加权重信息到输出（用于监控）
             output['decoder_moe_weight'] = decoder_moe_weight
             output['encoder_moe_balance_weight'] = encoder_moe_balance_weight  # λ1
             output['encoder_moe_entropy_weight'] = encoder_moe_entropy_weight  # λ2
@@ -673,11 +665,11 @@ class DSETTrainer:
         use_token_pruning_loss = dset_config.get('use_token_pruning_loss', False)
         token_pruning_loss_weight = dset_config.get('token_pruning_loss_weight', 0.001)
         
-        # ✅ 从配置文件读取MoE权重（如果有）
+        # 从配置文件读取MoE权重
         decoder_moe_balance_weight = self.config.get('training', {}).get('decoder_moe_balance_weight', None)
         encoder_moe_balance_weight = self.config.get('training', {}).get('encoder_moe_balance_weight', None)
         
-        # ✅ 从配置文件读取num_encoder_layers，默认为1（RT-DETR标准配置）
+        # 从配置文件读取num_encoder_layers，默认为1
         num_encoder_layers = self.config.get('model', {}).get('encoder', {}).get('num_encoder_layers', 1)
         
         model = DSETRTDETR(
@@ -690,7 +682,7 @@ class DSETTrainer:
             encoder_in_channels=encoder_in_channels,
             encoder_expansion=encoder_expansion,
             num_experts=num_experts,
-            num_encoder_layers=num_encoder_layers,  # ✅ 传递encoder层数
+            num_encoder_layers=num_encoder_layers,
             # DSET双稀疏参数（Patch-MoE 必然启用，无需传递）
             token_keep_ratio=token_keep_ratio,
             token_pruning_warmup_epochs=token_pruning_warmup_epochs,
@@ -728,7 +720,7 @@ class DSETTrainer:
         self.logger.info(f"  配置: {model.config_name}")
         self.logger.info(f"  Backbone: {model.backbone_type}")
         self.logger.info(f"  Encoder: in_channels={encoder_in_channels}, expansion={encoder_expansion}, num_layers={num_encoder_layers}")
-        self.logger.info(f"  ✅ Encoder MoE设计: 层间共享（所有层共享同一组专家）")
+        self.logger.info(f"  Encoder MoE设计: 层间共享")
         self.logger.info(f"  双稀疏配置（DSET核心特性，必然启用）:")
         self.logger.info(f"    - Patch-MoE: 启用 (experts={patch_moe_num_experts}, top_k={patch_moe_top_k}, patch_size={patch_moe_patch_size})")
         self.logger.info(f"    - Patch-level Pruning: 启用（与 Patch-MoE 兼容）")
@@ -793,7 +785,7 @@ class DSETTrainer:
             
             # 报告跳过的类别参数
             if skipped_class_params > 0:
-                self.logger.info(f"  - 跳过类别相关参数: {skipped_class_params} 个（COCO 80类 → DAIR-V2X 7类）")
+                self.logger.info(f"  - 跳过类别相关参数: {skipped_class_params} 个（COCO 80类 → DAIR-V2X 11类）")
             
             # 统计各部分的参数
             backbone_loaded = sum(1 for k in filtered_state_dict.keys() if k not in missing_keys and 'backbone' in k)
@@ -988,7 +980,7 @@ class DSETTrainer:
         """初始化推理相关组件"""
         # 创建后处理器
         self.postprocessor = DetDETRPostProcessor(
-            num_classes=7,
+            num_classes=11,
             use_focal_loss=True,
             num_top_queries=300,
             box_process_format=BoxProcessFormat.RESIZE
@@ -998,16 +990,22 @@ class DSETTrainer:
         self.inference_output_dir = self.log_dir / "inference_samples"
         self.inference_output_dir.mkdir(parents=True, exist_ok=True)
         
-        # 类别名称和颜色（与batch_inference.py保持一致）
-        self.class_names = ["Car", "Truck", "Bus", "Van", "Pedestrian", "Cyclist", "Motorcyclist"]
+        # 类别名称和颜色（用于推理可视化）- 11类正式检测类别
+        self.class_names = [
+            "Car", "Truck", "Van", "Bus", "Pedestrian", 
+            "Cyclist", "Tricyclist", "Motorcyclist", "Barrowlist", "TrafficCone"
+        ]
         self.colors = [
-            (255, 0, 0),    # Car - 红色
-            (0, 255, 0),    # Truck - 绿色
-            (0, 0, 255),    # Bus - 蓝色
-            (255, 128, 0),  # Van - 橙色
-            (255, 255, 0),  # Pedestrian - 黄色
-            (255, 0, 255),  # Cyclist - 品红
-            (0, 255, 255),  # Motorcyclist - 青色
+            (255, 0, 0),      # Car - 红色
+            (0, 255, 0),      # Truck - 绿色
+            (255, 128, 0),    # Van - 橙色
+            (0, 0, 255),      # Bus - 蓝色
+            (255, 255, 0),    # Pedestrian - 黄色
+            (255, 0, 255),    # Cyclist - 品红
+            (128, 0, 255),    # Tricyclist - 紫色
+            (0, 255, 255),    # Motorcyclist - 青色
+            (255, 192, 203),  # Barrowlist - 粉色
+            (128, 128, 128),  # TrafficCone - 灰色
         ]
         
         self.logger.info(f"推理输出目录: {self.inference_output_dir}")
@@ -1334,11 +1332,11 @@ class DSETTrainer:
             'encoder_moe_entropy_loss': avg_encoder_moe_entropy_loss,  # Patch-MoE entropy loss (λ2)
             'encoder_moe_loss': avg_encoder_moe_lb_loss,  # 总Encoder MoE损失（向后兼容）
             'token_pruning_loss': avg_token_pruning_loss,
-            'token_pruning_ratio': avg_token_pruning_ratio,  # ✅ 新增
+            'token_pruning_ratio': avg_token_pruning_ratio,
             'moe_load_balance_loss': avg_decoder_moe_lb_loss + avg_encoder_moe_balance_loss,  # 总MoE损失（向后兼容）
             'expert_usage': expert_usage_count,
             'expert_usage_rate': expert_usage_rate,
-            'encoder_expert_usage_rate': encoder_expert_usage_rate  # ✅ 新增
+            'encoder_expert_usage_rate': encoder_expert_usage_rate
         }
     
     def validate(self) -> Dict[str, float]:
@@ -1422,7 +1420,7 @@ class DSETTrainer:
                     boxes_coco[:, 2] = torch.clamp(boxes_coco[:, 2], 1, self.model.image_size)
                     boxes_coco[:, 3] = torch.clamp(boxes_coco[:, 3], 1, self.model.image_size)
                     
-                    for j in range(filtered_boxes.shape[0]):
+                    for j in range(boxes_coco.shape[0]):
                         all_predictions.append({
                             'image_id': batch_idx * self.config['training']['batch_size'] + i,
                             'category_id': int(filtered_classes[j].item()) + 1,
@@ -1430,7 +1428,7 @@ class DSETTrainer:
                             'score': float(filtered_scores[j].item())
                         })
             
-            # 处理真实标签
+            # 处理真实标签（评估时包含iscrowd字段，COCOeval会自动处理）
             if i < len(targets) and 'labels' in targets[i] and 'boxes' in targets[i]:
                 true_labels = targets[i]['labels']
                 true_boxes = targets[i]['boxes']
@@ -1451,14 +1449,21 @@ class DSETTrainer:
                     true_boxes_coco[:, 2] = torch.clamp(true_boxes_coco[:, 2], 1, img_size)
                     true_boxes_coco[:, 3] = torch.clamp(true_boxes_coco[:, 3], 1, img_size)
                     
+                    # 获取iscrowd字段（评估时存在）
+                    has_iscrowd = 'iscrowd' in targets[i]
+                    iscrowd_values = targets[i]['iscrowd'] if has_iscrowd else torch.zeros(len(true_labels), dtype=torch.int64)
+                    
                     for j in range(len(true_labels)):
-                        all_targets.append({
+                        ann_dict = {
                             'image_id': batch_idx * self.config['training']['batch_size'] + i,
                             'category_id': int(true_labels[j].item()) + 1,
                             'bbox': true_boxes_coco[j].cpu().numpy().tolist(),
-                            'area': float((true_boxes_coco[j, 2] * true_boxes_coco[j, 3]).item()),
-                            'iscrowd': 0
-                        })
+                            'area': float((true_boxes_coco[j, 2] * true_boxes_coco[j, 3]).item())
+                        }
+                        # 评估时添加iscrowd字段，让COCOeval自动处理
+                        if has_iscrowd:
+                            ann_dict['iscrowd'] = int(iscrowd_values[j].item())
+                        all_targets.append(ann_dict)
     
     def _compute_map_metrics(self, predictions: List[Dict], targets: List[Dict]) -> Dict[str, float]:
         """计算mAP指标。"""
@@ -1477,11 +1482,14 @@ class DSETTrainer:
                 categories = [
                     {'id': 1, 'name': 'Car'},
                     {'id': 2, 'name': 'Truck'},
-                    {'id': 3, 'name': 'Bus'},
-                    {'id': 4, 'name': 'Van'},
+                    {'id': 3, 'name': 'Van'},
+                    {'id': 4, 'name': 'Bus'},
                     {'id': 5, 'name': 'Pedestrian'},
                     {'id': 6, 'name': 'Cyclist'},
-                    {'id': 7, 'name': 'Motorcyclist'}
+                    {'id': 7, 'name': 'Tricyclist'},
+                    {'id': 8, 'name': 'Motorcyclist'},
+                    {'id': 9, 'name': 'Barrowlist'},
+                    {'id': 10, 'name': 'TrafficCone'}
                 ]
             
             # 创建COCO格式数据
@@ -1884,7 +1892,7 @@ def main() -> None:
                 'encoder': {
                     'in_channels': [512, 1024, 2048],
                     'expansion': 1.0,
-                    'num_encoder_layers': 1  # ✅ 默认1层
+                    'num_encoder_layers': 1
                 }
             },
             'data': {

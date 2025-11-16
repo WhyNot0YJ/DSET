@@ -13,28 +13,22 @@ from pycocotools.coco import COCO
 
 # 添加项目路径
 project_root = Path(__file__).parent.resolve()
-# 确保当前工作目录在路径中（重要：当从不同目录运行时）
 if str(os.getcwd()) not in sys.path:
     sys.path.insert(0, os.getcwd())
 sys.path.insert(0, str(project_root))
-sys.path.insert(0, str(project_root.parent))  # 添加experiments目录
+sys.path.insert(0, str(project_root.parent))
 
-# 导入随机种子工具
 from seed_utils import set_seed, seed_worker
-
-# 导入现有工具
 from src.misc.training_visualizer import TrainingVisualizer
 from src.misc.early_stopping import EarlyStopping
 from src.data import DataLoader
 from src.optim.ema import ModelEMA
-# from src.optim.amp import GradScaler  # 使用 torch.amp.GradScaler 替代
 from src.optim.warmup import WarmupLR
 from src.data.dataset.dairv2x_detection import DAIRV2XDetection
 from src.nn.postprocessor.detr_postprocessor import DetDETRPostProcessor
 from src.nn.postprocessor.box_revert import box_revert, BoxProcessFormat
 import cv2
 
-# 导入 batch_inference 中的函数（确保逻辑一致）
 try:
     from batch_inference import postprocess_outputs, draw_boxes, inference_from_preprocessed_image
     USE_BATCH_INFERENCE_LOGIC = True
@@ -204,16 +198,22 @@ class RTDETRTrainer:
         self.visualizer = None
         self.postprocessor = None  # 用于推理的后处理器
         
-        # 类别名称和颜色（用于推理可视化）
-        self.class_names = ["Car", "Truck", "Bus", "Van", "Pedestrian", "Cyclist", "Motorcyclist"]
+        # 类别名称和颜色（用于推理可视化）- 11类正式检测类别
+        self.class_names = [
+            "Car", "Truck", "Van", "Bus", "Pedestrian", 
+            "Cyclist", "Tricyclist", "Motorcyclist", "Barrowlist", "TrafficCone"
+        ]
         self.colors = [
-            (255, 0, 0),    # Car - 红色
-            (0, 255, 0),    # Truck - 绿色
-            (0, 0, 255),    # Bus - 蓝色
-            (255, 128, 0),  # Van - 橙色
-            (255, 255, 0),  # Pedestrian - 黄色
-            (255, 0, 255),  # Cyclist - 品红
-            (0, 255, 255),  # Motorcyclist - 青色
+            (255, 0, 0),      # Car - 红色
+            (0, 255, 0),      # Truck - 绿色
+            (255, 128, 0),    # Van - 橙色
+            (0, 0, 255),      # Bus - 蓝色
+            (255, 255, 0),    # Pedestrian - 黄色
+            (255, 0, 255),    # Cyclist - 品红
+            (128, 0, 255),    # Tricyclist - 紫色
+            (0, 255, 255),    # Motorcyclist - 青色
+            (255, 192, 203),  # Barrowlist - 粉色
+            (128, 128, 128),  # TrafficCone - 灰色
         ]
     
     def _validate_config_file(self):
@@ -341,7 +341,7 @@ class RTDETRTrainer:
         # 创建decoder（添加denoising训练）
         from src.zoo.rtdetr.rtdetrv2_decoder import RTDETRTransformerv2
         decoder = RTDETRTransformerv2(
-            num_classes=7,
+            num_classes=11,
             hidden_dim=hidden_dim,
             num_queries=num_queries,
             num_layers=num_decoder_layers, 
@@ -428,7 +428,7 @@ class RTDETRTrainer:
             
             # 报告跳过的类别参数
             if skipped_class_params > 0:
-                self.logger.info(f"  - 跳过类别相关参数: {skipped_class_params} 个（COCO 80类 → DAIR-V2X 7类）")
+                self.logger.info(f"  - 跳过类别相关参数: {skipped_class_params} 个（COCO 80类 → DAIR-V2X 11类）")
             
             # 统计各部分的参数
             backbone_loaded = sum(1 for k in filtered_state_dict.keys() if k not in missing_keys and 'backbone' in k)
@@ -505,7 +505,7 @@ class RTDETRTrainer:
             losses=['vfl', 'boxes'],
             alpha=0.75,
             gamma=2.0,
-            num_classes=7,
+            num_classes=11,
             boxes_weight_format=None,
             share_matched_indices=False
         )
@@ -842,7 +842,7 @@ class RTDETRTrainer:
         
         # 5.5 创建推理后处理器
         self.postprocessor = DetDETRPostProcessor(
-            num_classes=7,
+            num_classes=11,
             use_focal_loss=True,
             num_top_queries=300,
             box_process_format=BoxProcessFormat.RESIZE
@@ -1115,7 +1115,7 @@ class RTDETRTrainer:
             if not orig_image_path.exists():
                 return
             
-            # 使用batch_inference.py中的函数进行推理（完全复用逻辑）
+            # 使用batch_inference.py中的函数进行推理
             if USE_BATCH_INFERENCE_LOGIC:
                 result_image = inference_from_preprocessed_image(
                     single_image,
@@ -1127,7 +1127,7 @@ class RTDETRTrainer:
                     device=str(self.device),
                     class_names=self.class_names,
                     colors=self.colors,
-                    verbose=False  # 训练时不打印调试信息
+                    verbose=False
                 )
                 
                 if result_image is None:
@@ -1142,11 +1142,9 @@ class RTDETRTrainer:
                 output_path = self.inference_output_dir / output_filename
                 cv2.imwrite(str(output_path), result_image)
             else:
-                # 备用逻辑（如果无法导入batch_inference，使用简化版本）
+                # 备用逻辑
                 with torch.no_grad():
                     outputs = self.ema.module(single_image)
-                
-                # 简化的后处理和绘制（不推荐，但作为备用）
                 eval_sizes = torch.tensor([[640, 640]], device=self.device)
                 results = self.postprocessor(outputs, eval_sizes=eval_sizes)
                 
@@ -1328,7 +1326,7 @@ class RTDETRTrainer:
                     boxes_coco[:, 2] = torch.clamp(boxes_coco[:, 2], 1, 640)
                     boxes_coco[:, 3] = torch.clamp(boxes_coco[:, 3], 1, 640)
                     
-                    for j in range(filtered_boxes.shape[0]):
+                    for j in range(boxes_coco.shape[0]):
                         all_predictions.append({
                             'image_id': batch_idx * self.config['training']['batch_size'] + i,
                             'category_id': int(filtered_classes[j].item()) + 1,
@@ -1336,7 +1334,7 @@ class RTDETRTrainer:
                             'score': float(filtered_scores[j].item())
                         })
             
-            # 处理真实标签
+            # 处理真实标签（评估时包含iscrowd字段，COCOeval会自动处理）
             if i < len(targets) and 'labels' in targets[i] and 'boxes' in targets[i]:
                 true_labels = targets[i]['labels']
                 true_boxes = targets[i]['boxes']
@@ -1357,14 +1355,21 @@ class RTDETRTrainer:
                     true_boxes_coco[:, 2] = torch.clamp(true_boxes_coco[:, 2], 1, img_size)
                     true_boxes_coco[:, 3] = torch.clamp(true_boxes_coco[:, 3], 1, img_size)
                     
+                    # 获取iscrowd字段（评估时存在）
+                    has_iscrowd = 'iscrowd' in targets[i]
+                    iscrowd_values = targets[i]['iscrowd'] if has_iscrowd else torch.zeros(len(true_labels), dtype=torch.int64)
+                    
                     for j in range(len(true_labels)):
-                        all_targets.append({
+                        ann_dict = {
                             'image_id': batch_idx * self.config['training']['batch_size'] + i,
                             'category_id': int(true_labels[j].item()) + 1,
                             'bbox': true_boxes_coco[j].cpu().numpy().tolist(),
-                            'area': float((true_boxes_coco[j, 2] * true_boxes_coco[j, 3]).item()),
-                            'iscrowd': 0
-                        })
+                            'area': float((true_boxes_coco[j, 2] * true_boxes_coco[j, 3]).item())
+                        }
+                        # 评估时添加iscrowd字段，让COCOeval自动处理
+                        if has_iscrowd:
+                            ann_dict['iscrowd'] = int(iscrowd_values[j].item())
+                        all_targets.append(ann_dict)
     
     def _compute_map_metrics(self, predictions: List[Dict], targets: List[Dict]) -> Dict[str, float]:
         """计算mAP指标。"""
@@ -1383,11 +1388,14 @@ class RTDETRTrainer:
                 categories = [
                     {'id': 1, 'name': 'Car'},
                     {'id': 2, 'name': 'Truck'},
-                    {'id': 3, 'name': 'Bus'},
-                    {'id': 4, 'name': 'Van'},
+                    {'id': 3, 'name': 'Van'},
+                    {'id': 4, 'name': 'Bus'},
                     {'id': 5, 'name': 'Pedestrian'},
                     {'id': 6, 'name': 'Cyclist'},
-                    {'id': 7, 'name': 'Motorcyclist'}
+                    {'id': 7, 'name': 'Tricyclist'},
+                    {'id': 8, 'name': 'Motorcyclist'},
+                    {'id': 9, 'name': 'Barrowlist'},
+                    {'id': 10, 'name': 'TrafficCone'}
                 ]
             
             # 创建COCO格式数据

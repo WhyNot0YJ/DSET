@@ -61,15 +61,21 @@ def _import_modules():
     return AdaptiveExpertRTDETR, DetDETRPostProcessor, BoxProcessFormat
 
 # 类别名称
-CLASS_NAMES = ["Car", "Truck", "Bus", "Van", "Pedestrian", "Cyclist", "Motorcyclist"]
+CLASS_NAMES = [
+    "Car", "Truck", "Van", "Bus", "Pedestrian", 
+    "Cyclist", "Tricyclist", "Motorcyclist", "Barrowlist", "TrafficCone"
+]
 COLORS = [
-    (255, 0, 0),    # Car - 红色
-    (0, 255, 0),    # Truck - 绿色
-    (0, 0, 255),    # Bus - 蓝色
-    (255, 128, 0),  # Van - 橙色
-    (255, 255, 0),  # Pedestrian - 黄色
-    (255, 0, 255),  # Cyclist - 品红
-    (0, 255, 255),  # Motorcyclist - 青色
+    (255, 0, 0),      # Car - 红色
+    (0, 255, 0),      # Truck - 绿色
+    (255, 128, 0),    # Van - 橙色
+    (0, 0, 255),      # Bus - 蓝色
+    (255, 255, 0),    # Pedestrian - 黄色
+    (255, 0, 255),    # Cyclist - 品红
+    (128, 0, 255),    # Tricyclist - 紫色
+    (0, 255, 255),    # Motorcyclist - 青色
+    (255, 192, 203),  # Barrowlist - 粉色
+    (128, 128, 128),  # TrafficCone - 灰色
 ]
 
 
@@ -123,7 +129,7 @@ def load_model(config_path: str, checkpoint_path: str, device: str = "cuda"):
     
     # 创建后处理器（使用RESIZE模式，然后手动处理padding和缩放）
     postprocessor = DetDETRPostProcessor(
-        num_classes=7,
+        num_classes=11,
         use_focal_loss=True,
         num_top_queries=300,
         box_process_format=BoxProcessFormat.RESIZE

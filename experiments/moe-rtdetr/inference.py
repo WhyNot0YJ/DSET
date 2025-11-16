@@ -27,16 +27,22 @@ except ImportError:
 from src.nn.postprocessor.detr_postprocessor import DetDETRPostProcessor
 from src.nn.postprocessor.box_revert import box_revert, BoxProcessFormat
 
-# 类别名称（与数据集 dairv2x_detection.py 保持一致，7类）
-CLASS_NAMES = ["Car", "Truck", "Bus", "Van", "Pedestrian", "Cyclist", "Motorcyclist"]
+# 类别名称（与数据集 dairv2x_detection.py 保持一致，11类）
+CLASS_NAMES = [
+    "Car", "Truck", "Van", "Bus", "Pedestrian", 
+    "Cyclist", "Tricyclist", "Motorcyclist", "Barrowlist", "TrafficCone"
+]
 COLORS = [
-    (255, 0, 0),    # Car - 红色
-    (0, 255, 0),    # Truck - 绿色
-    (0, 0, 255),    # Bus - 蓝色
-    (255, 128, 0),  # Van - 橙色
-    (255, 255, 0),  # Pedestrian - 黄色
-    (255, 0, 255),  # Cyclist - 品红
-    (0, 255, 255),  # Motorcyclist - 青色
+    (255, 0, 0),      # Car - 红色
+    (0, 255, 0),      # Truck - 绿色
+    (255, 128, 0),    # Van - 橙色
+    (0, 0, 255),      # Bus - 蓝色
+    (255, 255, 0),    # Pedestrian - 黄色
+    (255, 0, 255),    # Cyclist - 品红
+    (128, 0, 255),    # Tricyclist - 紫色
+    (0, 255, 255),    # Motorcyclist - 青色
+    (255, 192, 203),  # Barrowlist - 粉色
+    (128, 128, 128),  # TrafficCone - 灰色
 ]
 
 

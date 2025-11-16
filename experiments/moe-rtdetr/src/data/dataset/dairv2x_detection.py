@@ -41,9 +41,19 @@ class DAIRV2XDetection(DetDataset):
         self.use_mosaic = use_mosaic and split == "train"
         self.target_size = target_size
         
-        # DAIR-V2X类别定义（直接使用数据集中的类别名称，7类）
-        self.class_names = ["Car", "Truck", "Bus", "Van", "Pedestrian", "Cyclist", "Motorcyclist"]
+        # DAIR-V2X类别定义（正式检测类别，11类）
+        # 前9类是交通参与者，TrafficCone是道路设施
+        self.class_names = [
+            "Car", "Truck", "Van", "Bus", "Pedestrian", 
+            "Cyclist", "Tricyclist", "Motorcyclist", "Barrowlist", "TrafficCone"
+        ]
         self.class_to_id = {name: i for i, name in enumerate(self.class_names)}
+        
+        # Ignore类别列表（训练时应过滤，不参与AP计算）
+        self.ignore_classes = [
+            "PedestrianIgnore", "CarIgnore", "OtherIgnore", 
+            "Unknown_movable", "Unknown_unmovable"
+        ]
         
         # 加载数据信息
         self.data_info = self._load_data_info()
@@ -53,7 +63,7 @@ class DAIRV2XDetection(DetDataset):
         if self.use_mosaic:
             from ..transforms.mosaic import Mosaic
             self.mosaic_transform = Mosaic(size=target_size, max_size=target_size)
-            print(f"✅ 启用Mosaic数据增强 for {split} split")
+            print(f"启用Mosaic数据增强 for {split} split")
         else:
             self.mosaic_transform = None
     
@@ -110,13 +120,19 @@ class DAIRV2XDetection(DetDataset):
         processed_image, scale, pad_h, pad_w = self._preprocess_image(image)
         processed_annotations = self._adjust_annotations(annotations, scale, pad_h, pad_w)
         
-        # 创建RT-DETR期望的目标格式
-        if len(processed_annotations) > 0:
-            boxes = torch.stack([torch.tensor(ann['bbox']) for ann in processed_annotations])
-            # 直接使用 class_id (0-6)，训练时使用
-            labels = torch.stack([torch.tensor(ann['class_id']) for ann in processed_annotations])
-            areas = torch.stack([torch.tensor(ann['area']) for ann in processed_annotations])
-            iscrowd = torch.stack([torch.tensor(ann['iscrowd']) for ann in processed_annotations])
+        # 方案B：训练时过滤ignore框，评估时保留（标记为iscrowd=1）
+        if self.split == 'train':
+            # 训练时：完全丢弃ignore框，不传给模型
+            valid_annotations = [ann for ann in processed_annotations if ann.get('iscrowd', 0) == 0]
+        else:
+            # 评估时：保留所有框（包括ignore），让COCOeval自动处理
+            valid_annotations = processed_annotations
+        
+        if len(valid_annotations) > 0:
+            boxes = torch.stack([torch.tensor(ann['bbox']) for ann in valid_annotations])
+            labels = torch.stack([torch.tensor(ann['class_id']) for ann in valid_annotations])
+            areas = torch.stack([torch.tensor(ann['area']) for ann in valid_annotations])
+            iscrowd = torch.stack([torch.tensor(ann.get('iscrowd', 0)) for ann in valid_annotations])
         else:
             boxes = torch.zeros((0, 4), dtype=torch.float32)
             labels = torch.zeros((0,), dtype=torch.int64)
@@ -128,10 +144,13 @@ class DAIRV2XDetection(DetDataset):
             'boxes': boxes,
             'labels': labels,
             'area': areas,
-            'iscrowd': iscrowd,
             'orig_size': torch.tensor([image.shape[0], image.shape[1]]),
             'size': torch.tensor([self.target_size, self.target_size])
         }
+        
+        # 评估时保留iscrowd字段，让COCOeval自动处理
+        if self.split != 'train':
+            target['iscrowd'] = iscrowd
         
         # 返回预处理后的图像（processed_image），而不是原始图
         output_image = processed_image
@@ -157,7 +176,7 @@ class DAIRV2XDetection(DetDataset):
         return image
     
     def _load_annotations(self, annotation_path: Path) -> List[Dict]:
-        """加载标注文件"""
+        """加载标注文件，Ignore框标记为iscrowd=1"""
         if not annotation_path.exists():
             return []
         
@@ -168,10 +187,6 @@ class DAIRV2XDetection(DetDataset):
         for ann in annotations:
             # 获取类别（直接使用数据集中的类别名称，不转小写）
             class_name = ann["type"]  # 保持原始大小写：Car, Pedestrian, etc.
-            if class_name in self.class_to_id:
-                class_id = self.class_to_id[class_name]
-            else:
-                continue  # 跳过未知类别（如 Trafficcone, Barrowlist）
             
             # 获取2D边界框
             bbox_2d = ann["2d_box"]
@@ -181,19 +196,36 @@ class DAIRV2XDetection(DetDataset):
             y2 = float(bbox_2d["ymax"])
             
             # 检查边界框是否有效
-            if x2 > x1 and y2 > y1:
-                # 转换为COCO格式 [x, y, w, h]
-                width = x2 - x1
-                height = y2 - y1
-                area = width * height
-                
+            if x2 <= x1 or y2 <= y1:
+                continue
+            
+            # 转换为COCO格式 [x, y, w, h]
+            width = x2 - x1
+            height = y2 - y1
+            area = width * height
+            
+            # 处理Ignore类别：标记为iscrowd=1
+            if class_name in self.ignore_classes:
                 processed_annotations.append({
                     'id': len(processed_annotations) + 1,
-                    'class_id': class_id,  # 直接存储 class_id (0-6)，训练时使用
+                    'class_id': 0,
+                    'bbox': [x1, y1, width, height],
+                    'area': area,
+                    'iscrowd': 1
+                })
+            # 处理正式检测类别
+            elif class_name in self.class_to_id:
+                class_id = self.class_to_id[class_name]
+                processed_annotations.append({
+                    'id': len(processed_annotations) + 1,
+                    'class_id': class_id,  # 直接存储 class_id (0-10)，训练时使用
                     'bbox': [x1, y1, width, height],  # COCO格式
                     'area': area,
-                    'iscrowd': 0
+                    'iscrowd': 0  # 正常检测目标
                 })
+            # 跳过未知类别
+            else:
+                continue
         
         return processed_annotations
     
@@ -266,7 +298,7 @@ class DAIRV2XDetection(DetDataset):
             w = max(1, min(self.target_size - x, w))
             h = max(1, min(self.target_size - y, h))
             
-            # ⭐ 转换为RT-DETR格式：[cx, cy, w, h] 并归一化
+            # 转换为RT-DETR格式：[cx, cy, w, h]并归一化
             cx = (x + w / 2) / self.target_size  # 中心x，归一化到[0,1]
             cy = (y + h / 2) / self.target_size  # 中心y，归一化到[0,1]
             w_norm = w / self.target_size        # 宽度，归一化到[0,1]

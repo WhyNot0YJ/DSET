@@ -145,14 +145,13 @@ class RTDETRCriterionv2(nn.Module):
         """
         outputs_without_aux = {k: v for k, v in outputs.items() if 'aux' not in k}
 
-        # Compute the average number of target boxes accross all nodes, for normalization purposes
+        # We flatten to compute the cost matrices in a batch
         num_boxes = sum(len(t["labels"]) for t in targets)
         num_boxes = torch.as_tensor([num_boxes], dtype=torch.float, device=next(iter(outputs.values())).device)
         if is_dist_available_and_initialized():
             torch.distributed.all_reduce(num_boxes)
         num_boxes = torch.clamp(num_boxes / get_world_size(), min=1).item()
         
-        # Retrieve the matching between the outputs of the last layer and the targets
         matched = self.matcher(outputs_without_aux, targets)
         indices = matched['indices']
 
