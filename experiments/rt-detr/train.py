@@ -555,7 +555,7 @@ class RTDETRTrainer:
         collate_fn = CustomCollateFunction()
         
         # num_workers在misc配置中
-        num_workers = self.config.get('misc', {}).get('num_workers', 4)
+        num_workers = self.config.get('misc', {}).get('num_workers', 16)
         
         train_loader = DataLoader(
             train_dataset,
@@ -811,6 +811,15 @@ class RTDETRTrainer:
         # 将模型移到设备
         self.model = self.model.to(self.device)
         
+        # 启用GPU优化设置
+        if torch.cuda.is_available():
+            # 启用cudnn benchmark以加速卷积操作（输入尺寸固定时）
+            torch.backends.cudnn.benchmark = True
+            # 启用TensorFloat-32（RTX 5090支持，可加速某些操作）
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+            self.logger.info("✓ 已启用GPU优化: cudnn.benchmark=True, TF32=True")
+        
         # 3. 创建其他组件
         self.criterion = self.create_criterion()
         self.train_dataloader, self.val_dataloader = self.create_datasets()
@@ -823,6 +832,18 @@ class RTDETRTrainer:
         self.ema = ModelEMA(self.model, decay=ema_decay)
         self.scaler = torch.amp.GradScaler('cuda')
         self.logger.info(f"✓ EMA decay={ema_decay}, 混合精度训练已启用")
+        
+        # 4.5 使用torch.compile加速模型（在EMA创建之后）
+        if torch.cuda.is_available():
+            try:
+                # 检查PyTorch版本是否支持compile
+                if hasattr(torch, 'compile'):
+                    self.model = torch.compile(self.model, mode='reduce-overhead')
+                    self.logger.info("✓ 已启用torch.compile优化")
+                else:
+                    self.logger.warning("PyTorch版本不支持torch.compile，跳过此优化")
+            except Exception as e:
+                self.logger.warning(f"torch.compile启用失败: {e}，继续使用未编译版本")
         
         # 5. 创建可视化器（使用log_dir）
         self.visualizer = TrainingVisualizer(
@@ -1419,11 +1440,68 @@ class RTDETRTrainer:
             coco_eval.accumulate()
             coco_eval.summarize()
             
-            return {
+            # 提取每个类别的 mAP@0.5:0.95
+            category_map = {cat['id']: cat['name'] for cat in categories}
+            per_category_map = {}
+            
+            # 使用 COCOeval 的 precision 数组计算每个类别的 AP
+            # precision 形状: [T x R x K x A x M]
+            # T=10 (IoU阈值: 0.5:0.05:0.95), R=101 (recall阈值), K=类别数, A=4 (area), M=3 (max_det)
+            if hasattr(coco_eval, 'precision') and coco_eval.precision is not None:
+                precision = coco_eval.precision  # [T x R x K x A x M]
+                cat_ids = coco_eval.params.catIds
+                cat_id_to_idx = {cat_id: idx for idx, cat_id in enumerate(cat_ids)}
+                
+                # area=all (索引0), max_det=100 (索引2)
+                area_idx = 0
+                max_det_idx = 2
+                
+                for cat_id, cat_name in category_map.items():
+                    if cat_id in cat_id_to_idx:
+                        cat_idx = cat_id_to_idx[cat_id]
+                        # 获取该类别在所有IoU阈值下的precision [T x R]
+                        prec = precision[:, :, cat_idx, area_idx, max_det_idx]
+                        
+                        # 计算 AP@0.5:0.95: 对每个IoU阈值计算PR曲线下面积，然后平均
+                        # 对于每个IoU阈值，计算precision在recall维度上的平均值（即AP）
+                        ap_per_iou = []
+                        for t in range(precision.shape[0]):  # 遍历所有IoU阈值
+                            prec_t = prec[t, :]  # 该IoU阈值下的precision曲线
+                            # 只考虑有效的precision值（> -1）
+                            valid_prec = prec_t[prec_t > -1]
+                            if len(valid_prec) > 0:
+                                # AP = precision在recall维度上的平均值
+                                ap_per_iou.append(np.mean(valid_prec))
+                        
+                        # mAP@0.5:0.95 = 所有IoU阈值下AP的平均值
+                        if len(ap_per_iou) > 0:
+                            per_category_map[cat_name] = float(np.mean(ap_per_iou))
+                        else:
+                            per_category_map[cat_name] = 0.0
+                    else:
+                        per_category_map[cat_name] = 0.0
+            else:
+                # 如果 precision 不可用，设为0
+                for cat_name in category_map.values():
+                    per_category_map[cat_name] = 0.0
+            
+            # 打印每个类别的 mAP@0.5:0.95
+            self.logger.info("  每个类别的 mAP@0.5:0.95:")
+            for cat_name in sorted(per_category_map.keys()):
+                map_val = per_category_map[cat_name]
+                self.logger.info(f"    {cat_name:12s}: {map_val:.4f}")
+            
+            result = {
                 'mAP_0.5': coco_eval.stats[1],
                 'mAP_0.75': coco_eval.stats[2],
                 'mAP_0.5_0.95': coco_eval.stats[0]
             }
+            
+            # 添加每个类别的指标
+            for cat_name in per_category_map.keys():
+                result[f'mAP_{cat_name}'] = per_category_map[cat_name]
+            
+            return result
             
         except Exception as e:
             self.logger.warning(f"mAP计算失败: {e}")
@@ -1522,14 +1600,14 @@ def main():
             'dataset': 'DAIRV2XDetection',
             'batch_size': args.batch_size,
             'shuffle': True,
-            'num_workers': 4,
+            'num_workers': 16,
             'collate_fn': None
         },
         'val_dataloader': {
             'dataset': 'DAIRV2XDetection',
             'batch_size': args.batch_size,
             'shuffle': False,
-            'num_workers': 4,
+            'num_workers': 16,
             'collate_fn': None
         },
         'training': {
@@ -1539,7 +1617,7 @@ def main():
             'new_lr': args.new_lr,
             'pretrained_lr': args.pretrained_lr,
             'weight_decay': 0.0001,
-            'num_workers': 4,
+            'num_workers': 16,
             'save_interval': 10,
             'print_freq': 50,
             'log_dir': 'logs',
@@ -1559,6 +1637,10 @@ def main():
             'mixup': {'enabled': False, 'alpha': 0.2},
             'cutmix': {'enabled': False, 'alpha': 1.0},
             'mosaic': {'enabled': True, 'prob': 0.5}
+        },
+        'misc': {
+            'device': 'cuda',
+            'num_workers': 16  # 数据加载器worker数量
         }
     }
     
