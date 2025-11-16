@@ -1141,8 +1141,10 @@ class AdaptiveExpertTrainer:
         self._last_val_predictions = all_predictions
         self._last_val_targets = all_targets
         
-        # 计算mAP（默认不打印详细类别mAP）
+        # 计算mAP（同时计算每个类别的mAP并保存，避免在保存best_model时重复计算）
         mAP_metrics = self._compute_map_metrics(all_predictions, all_targets, print_per_category=False)
+        # 保存每个类别的mAP，避免在_print_best_model_per_category_map中重复计算
+        self._last_per_category_map = mAP_metrics.get('per_category_map', {})
         
         avg_loss = total_loss / len(self.val_loader)
         
@@ -1241,12 +1243,13 @@ class AdaptiveExpertTrainer:
                         all_targets.append(ann_dict)
     
     def _print_best_model_per_category_map(self):
-        """使用best_model时打印详细的每类mAP（8类），复用最近一次验证的预测结果避免重复计算"""
+        """使用best_model时打印详细的每类mAP（8类），重新计算以输出COCO详细评估表格"""
         try:
-            # 复用最近一次验证的预测结果，避免重新遍历验证集
+            # 使用已保存的预测结果重新计算，以便输出COCO详细评估表格
             if hasattr(self, '_last_val_predictions') and hasattr(self, '_last_val_targets'):
-                all_predictions = self._last_val_predictions
-                all_targets = self._last_val_targets
+                # 重新计算mAP，print_per_category=True会输出COCO详细评估表格
+                mAP_metrics = self._compute_map_metrics(self._last_val_predictions, self._last_val_targets, print_per_category=True)
+                per_category_map = mAP_metrics.get('per_category_map', {})
             else:
                 # 如果没有保存的结果，则重新计算（兼容性处理）
                 self.logger.warning("未找到保存的验证结果，重新计算每个类别mAP...")
@@ -1264,9 +1267,9 @@ class AdaptiveExpertTrainer:
                         
                         if 'class_scores' in outputs and 'bboxes' in outputs:
                             self._collect_predictions(outputs, targets, batch_idx, all_predictions, all_targets)
-            
-            # 计算并打印详细的每类mAP
-            self._compute_map_metrics(all_predictions, all_targets, print_per_category=True)
+                
+                mAP_metrics = self._compute_map_metrics(all_predictions, all_targets, print_per_category=True)
+                per_category_map = mAP_metrics.get('per_category_map', {})
         except Exception as e:
             self.logger.warning(f"打印best_model每类mAP失败: {e}")
     
@@ -1327,17 +1330,48 @@ class AdaptiveExpertTrainer:
                 target['id'] = i + 1
                 coco_gt['annotations'].append(target)
             
-            # 使用pycocotools评估
+            # 使用pycocotools评估（抑制所有输出以节省时间）
+            from io import StringIO
+            import sys
+            
             coco_gt_obj = COCO()
             coco_gt_obj.dataset = coco_gt
-            coco_gt_obj.createIndex()
+            # 抑制createIndex的输出
+            old_stdout = sys.stdout
+            sys.stdout = StringIO()
+            try:
+                coco_gt_obj.createIndex()
+            finally:
+                sys.stdout = old_stdout
             
-            coco_dt = coco_gt_obj.loadRes(predictions)
+            # 抑制loadRes的输出
+            sys.stdout = StringIO()
+            try:
+                coco_dt = coco_gt_obj.loadRes(predictions)
+            finally:
+                sys.stdout = old_stdout
             
             coco_eval = COCOeval(coco_gt_obj, coco_dt, 'bbox')
-            coco_eval.evaluate()
-            coco_eval.accumulate()
-            coco_eval.summarize()
+            # 如果print_per_category=True（保存best_model时），输出COCO详细评估表格；否则抑制输出
+            if print_per_category:
+                # 只抑制中间过程输出，保留summary表格
+                sys.stdout = StringIO()
+                try:
+                    coco_eval.evaluate()
+                    coco_eval.accumulate()
+                finally:
+                    sys.stdout = old_stdout
+                # 输出summary表格
+                coco_eval.summarize()
+            else:
+                # 完全抑制输出
+                sys.stdout = StringIO()
+                try:
+                    coco_eval.evaluate()
+                    coco_eval.accumulate()
+                    coco_eval.summarize()
+                finally:
+                    sys.stdout = old_stdout
             
             # 提取每个类别的 mAP@0.5:0.95
             category_map = {cat['id']: cat['name'] for cat in categories}
@@ -1353,15 +1387,11 @@ class AdaptiveExpertTrainer:
                         # 为当前类别创建单独的 COCOeval 对象
                         coco_eval_cat = COCOeval(coco_gt_obj, coco_dt, 'bbox')
                         coco_eval_cat.params.catIds = [cat_id]  # 只评估当前类别
-                        coco_eval_cat.evaluate()
-                        coco_eval_cat.accumulate()
-                        # 需要调用 summarize() 才能计算 stats
-                        # 使用 StringIO 捕获输出，避免打印到控制台
-                        from io import StringIO
-                        import sys
-                        old_stdout = sys.stdout
+                        # 抑制所有输出（evaluate、accumulate、summarize都会产生输出）
                         sys.stdout = StringIO()
                         try:
+                            coco_eval_cat.evaluate()
+                            coco_eval_cat.accumulate()
                             coco_eval_cat.summarize()
                         finally:
                             sys.stdout = old_stdout
@@ -1396,7 +1426,8 @@ class AdaptiveExpertTrainer:
             result = {
                 'mAP_0.5': coco_eval.stats[1],
                 'mAP_0.75': coco_eval.stats[2],
-                'mAP_0.5_0.95': coco_eval.stats[0]
+                'mAP_0.5_0.95': coco_eval.stats[0],
+                'per_category_map': per_category_map  # 保存每个类别的mAP
             }
             
             # 添加每个类别的指标
@@ -1522,8 +1553,7 @@ class AdaptiveExpertTrainer:
             # 输出日志
             self.logger.info(f"Epoch {epoch}:")
             self.logger.info(f"  训练损失: {train_metrics.get('total_loss', 0.0):.2f} | 验证损失: {val_metrics.get('total_loss', 0.0):.2f}")
-            self.logger.info(f"  mAP@0.5: {val_metrics.get('mAP_0.5', 0.0):.4f} | mAP@0.75: {val_metrics.get('mAP_0.75', 0.0):.4f} | "
-                           f"mAP@[0.5:0.95]: {val_metrics.get('mAP_0.5_0.95', 0.0):.4f}")
+            # mAP只在best_model时输出，不在这里输出
             self.logger.info(f"  预测/目标: {val_metrics['num_predictions']}/{val_metrics['num_targets']}")
             
             # 显示详细损失（前20个epoch每次显示，之后每5个epoch显示）
