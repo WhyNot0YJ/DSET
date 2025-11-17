@@ -95,8 +95,9 @@ declare -A DSET_CONFIGS=(
 )
 
 declare -A YOLOV8_CONFIGS=(
-    ["yolov8n"]="yolov8/configs/yolov8n_dairv2x.yaml"
     ["yolov8s"]="yolov8/configs/yolov8s_dairv2x.yaml"
+    ["yolov8m"]="yolov8/configs/yolov8m_dairv2x.yaml"
+    ["yolov8l"]="yolov8/configs/yolov8l_dairv2x.yaml"
 )
 
 # 构建全部配置列表与名称映射
@@ -294,7 +295,7 @@ parse_arguments() {
                 CONFIGS_TO_RUN+=("$p")
             fi
         done
-        # YOLOv8实验（按字典序：yolov8n→yolov8s）
+        # YOLOv8实验（按字典序：yolov8l→yolov8m→yolov8s）
         for key in $(printf '%s\n' "${!YOLOV8_CONFIGS[@]}" | sort); do
             local p="${YOLOV8_CONFIGS[$key]}"
             # YOLOv8不使用backbone过滤（它有自己的模型大小）
@@ -338,9 +339,9 @@ parse_arguments() {
         done
     elif [ "$1" == "--yolov8" ]; then
         if [ "$has_test" = true ]; then
-            log_info "测试模式：只运行YOLOv8实验（按字典序排序：yolov8n→yolov8s）"
+            log_info "测试模式：只运行YOLOv8实验（按字典序排序：yolov8l→yolov8m→yolov8s）"
         else
-            log_info "只运行YOLOv8实验（按字典序排序：yolov8n→yolov8s）"
+            log_info "只运行YOLOv8实验（按字典序排序：yolov8l→yolov8m→yolov8s）"
         fi
         for key in $(printf '%s\n' "${!YOLOV8_CONFIGS[@]}" | sort); do
             local p="${YOLOV8_CONFIGS[$key]}"
