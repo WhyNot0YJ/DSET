@@ -104,7 +104,9 @@ class YOLOv8Trainer:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             model_name = self.config.get('model', {}).get('model_name', 'yolov8n')
             self.experiment_name = f"yolo_{model_name.replace('yolov8', 'v8').replace('yolo11', 'v11')}"
-            log_base = self.checkpoint_config.get('log_dir', 'logs')
+            # 直接从config获取，因为checkpoint_config还未初始化
+            checkpoint_config = self.config.get('checkpoint', {})
+            log_base = checkpoint_config.get('log_dir', 'logs')
             self.log_dir = Path(f"{log_base}/{self.experiment_name}_{timestamp}")
             self.log_dir.mkdir(parents=True, exist_ok=True)
         
