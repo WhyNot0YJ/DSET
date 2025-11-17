@@ -15,7 +15,7 @@ import numpy as np
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, Dict
-
+import polars as pl
 # 添加项目路径
 project_root = Path(__file__).parent.resolve()
 if str(project_root) not in sys.path:
@@ -103,6 +103,9 @@ class YOLOv8Trainer:
             # 新训练：创建带时间戳的目录
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             model_name = self.config.get('model', {}).get('model_name', 'yolov8n')
+            # 去掉.pt后缀（如果存在）
+            if model_name.endswith('.pt'):
+                model_name = model_name[:-3]
             self.experiment_name = f"yolo_{model_name.replace('yolov8', 'v8').replace('yolo11', 'v11')}"
             # 直接从config获取，因为checkpoint_config还未初始化
             checkpoint_config = self.config.get('checkpoint', {})
@@ -190,6 +193,8 @@ class YOLOv8Trainer:
             raise FileNotFoundError(f"数据配置文件不存在: {data_yaml}")
         
         # 训练参数
+        # 注意：ultralytics会在project/name目录下创建训练结果
+        # 我们设置project为log_dir的父目录，name为log_dir的名称，这样ultralytics的结果会保存在我们的log_dir下
         train_kwargs = {
             'data': str(data_yaml),
             'epochs': epochs,
@@ -197,13 +202,14 @@ class YOLOv8Trainer:
             'imgsz': imgsz,
             'device': device,
             'workers': workers,
-            'project': str(self.log_dir.parent),
-            'name': self.experiment_name,
+            'project': str(self.log_dir.parent),  # 例如: "logs"
+            'name': self.log_dir.name,  # 例如: "yolo_v8l_20251117_120940" (使用完整目录名，而不是experiment_name)
             'exist_ok': True,
             'plots': True,
             'save': True,
             'save_period': self.training_config.get('save_period', 10),
             'val': True,
+            'verbose': True,  # 启用详细输出，显示训练过程
         }
         
         # 优化器配置（与RT-DETR对齐）
