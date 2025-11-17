@@ -16,9 +16,11 @@
 #   ./run_batch_experiments.sh --rt-detr                       # 只运行RT-DETR实验
 #   ./run_batch_experiments.sh --moe-rtdetr                    # 只运行MOE-RTDETR实验
 #   ./run_batch_experiments.sh --dset                          # 只运行DSET实验
+#   ./run_batch_experiments.sh --yolov8                        # 只运行YOLOv8实验
 #   ./run_batch_experiments.sh --test --rt-detr                # 测试模式只运行RT-DETR
 #   ./run_batch_experiments.sh --test --moe-rtdetr             # 测试模式只运行MOE-RTDETR
 #   ./run_batch_experiments.sh --test --dset                   # 测试模式只运行DSET
+#   ./run_batch_experiments.sh --test --yolov8                 # 测试模式只运行YOLOv8
 #   ./run_batch_experiments.sh --r18                           # 只运行ResNet-18实验
 #   ./run_batch_experiments.sh --r34                           # 只运行ResNet-34实验
 #   ./run_batch_experiments.sh --r18 --r34                     # 运行R18和R34实验
@@ -92,6 +94,11 @@ declare -A DSET_CONFIGS=(
     ["dset6-r34"]="dset/configs/dset6_presnet34.yaml"
 )
 
+declare -A YOLOV8_CONFIGS=(
+    ["yolov8n"]="yolov8/configs/yolov8n_dairv2x.yaml"
+    ["yolov8s"]="yolov8/configs/yolov8s_dairv2x.yaml"
+)
+
 # 构建全部配置列表与名称映射
 all_configs_paths=()
 declare -A NAME_TO_PATH
@@ -117,6 +124,14 @@ build_all_configs() {
     done
     for key in "${!DSET_CONFIGS[@]}"; do
         local p="${DSET_CONFIGS[$key]}"
+        all_configs_paths+=("$p")
+        local b
+        b=$(basename "$p" .yaml)
+        NAME_TO_PATH["$key"]="$p"
+        NAME_TO_PATH["$b"]="$p"
+    done
+    for key in "${!YOLOV8_CONFIGS[@]}"; do
+        local p="${YOLOV8_CONFIGS[$key]}"
         all_configs_paths+=("$p")
         local b
         b=$(basename "$p" .yaml)
@@ -279,6 +294,12 @@ parse_arguments() {
                 CONFIGS_TO_RUN+=("$p")
             fi
         done
+        # YOLOv8实验（按字典序：yolov8n→yolov8s）
+        for key in $(printf '%s\n' "${!YOLOV8_CONFIGS[@]}" | sort); do
+            local p="${YOLOV8_CONFIGS[$key]}"
+            # YOLOv8不使用backbone过滤（它有自己的模型大小）
+            CONFIGS_TO_RUN+=("$p")
+        done
     elif [ "$1" == "--rt-detr" ]; then
         if [ "$has_test" = true ]; then
             log_info "测试模式：只运行RT-DETR实验（按字典序排序）"
@@ -314,6 +335,17 @@ parse_arguments() {
             if filter_by_backbone "$p"; then
                 CONFIGS_TO_RUN+=("$p")
             fi
+        done
+    elif [ "$1" == "--yolov8" ]; then
+        if [ "$has_test" = true ]; then
+            log_info "测试模式：只运行YOLOv8实验（按字典序排序：yolov8n→yolov8s）"
+        else
+            log_info "只运行YOLOv8实验（按字典序排序：yolov8n→yolov8s）"
+        fi
+        for key in $(printf '%s\n' "${!YOLOV8_CONFIGS[@]}" | sort); do
+            local p="${YOLOV8_CONFIGS[$key]}"
+            # YOLOv8不使用backbone过滤（它有自己的模型大小）
+            CONFIGS_TO_RUN+=("$p")
         done
     elif [ "$1" == "--custom" ]; then
         log_info "使用自定义配置列表"
@@ -379,9 +411,11 @@ parse_arguments() {
         echo "  ./run_batch_experiments.sh --rt-detr                       # 只运行RT-DETR"
         echo "  ./run_batch_experiments.sh --moe-rtdetr                    # 只运行MOE-RTDETR"
         echo "  ./run_batch_experiments.sh --dset                          # 只运行DSET"
+        echo "  ./run_batch_experiments.sh --yolov8                        # 只运行YOLOv8"
         echo "  ./run_batch_experiments.sh --test --rt-detr                # 测试模式只运行RT-DETR"
         echo "  ./run_batch_experiments.sh --test --moe-rtdetr             # 测试模式只运行MOE-RTDETR"
         echo "  ./run_batch_experiments.sh --test --dset                   # 测试模式只运行DSET"
+        echo "  ./run_batch_experiments.sh --test --yolov8                 # 测试模式只运行YOLOv8"
         echo "  ./run_batch_experiments.sh --r18                           # 只运行R18"
         echo "  ./run_batch_experiments.sh --r34                           # 只运行R34"
         echo "  ./run_batch_experiments.sh --r18 --r34                     # 运行R18+R34"
@@ -415,7 +449,10 @@ run_single_experiment() {
     fi
     
     # 确定训练脚本路径
-    if [[ "$exp_dir" == *"dset"* ]]; then
+    if [[ "$exp_dir" == *"yolov8"* ]]; then
+        TRAIN_SCRIPT="yolov8/train.py"
+        WORK_DIR="yolov8"
+    elif [[ "$exp_dir" == *"dset"* ]]; then
         TRAIN_SCRIPT="dset/train.py"
         WORK_DIR="dset"
     elif [[ "$exp_dir" == *"rt-detr"* ]] && [[ "$exp_dir" != *"moe"* ]]; then
@@ -440,8 +477,16 @@ run_single_experiment() {
     set +e  # 临时允许错误
     
     # 如果是测试模式，传递--epochs 2参数
+    # 注意：yolov8的train.py从配置文件读取epochs，不支持命令行参数覆盖
     if [ "$TEST_MODE" = true ]; then
-        python train.py --config "../$config_path" --epochs 2
+        if [[ "$WORK_DIR" == "yolov8" ]]; then
+            # YOLOv8的epochs在配置文件中，测试模式下仍然使用配置文件中的设置
+            # 如果需要测试模式，可以手动修改配置文件中的epochs为2
+            log_warning "YOLOv8测试模式：将使用配置文件中的epochs设置（如需2个epoch，请手动修改配置文件）"
+            python train.py --config "../$config_path"
+        else
+            python train.py --config "../$config_path" --epochs 2
+        fi
     else
         python train.py --config "../$config_path"
     fi
@@ -529,6 +574,7 @@ generate_report() {
     echo -e "${BLUE}      - RT-DETR日志: rt-detr/logs/${NC}"
     echo -e "${BLUE}      - MOE-RTDETR日志: moe-rtdetr/logs/${NC}"
     echo -e "${BLUE}      - DSET日志: dset/logs/${NC}"
+    echo -e "${BLUE}      - YOLOv8日志: yolov8/logs/${NC}"
     echo ""
     echo -e "${BLUE}完整报告: $report_file${NC}"
     echo -e "${BLUE}CSV结果: $BATCH_LOG_DIR/results.csv${NC}"

@@ -11,10 +11,10 @@ import cv2
 import numpy as np
 
 
-# DAIR-V2X类别定义（10类）
+# DAIR-V2X类别定义（8类）
 CLASS_NAMES = [
     "Car", "Truck", "Van", "Bus", "Pedestrian", 
-    "Cyclist", "Tricyclist", "Motorcyclist", "Barrowlist", "Trafficcone"
+    "Cyclist", "Motorcyclist", "Trafficcone"
 ]
 CLASS_TO_ID = {name: i for i, name in enumerate(CLASS_NAMES)}
 

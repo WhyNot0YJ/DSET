@@ -9,6 +9,9 @@ import argparse
 import yaml
 import torch
 import logging
+import pandas as pd
+import matplotlib.pyplot as plt
+import numpy as np
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, Dict
@@ -23,10 +26,10 @@ if str(project_root.parent) not in sys.path:
 # 导入ultralytics（本地副本）
 from ultralytics import YOLO
 
-# DAIR-V2X类别定义（10类）
+# DAIR-V2X类别定义（8类）
 CLASS_NAMES = [
     "Car", "Truck", "Van", "Bus", "Pedestrian", 
-    "Cyclist", "Tricyclist", "Motorcyclist", "Barrowlist", "Trafficcone"
+    "Cyclist", "Motorcyclist", "Trafficcone"
 ]
 
 
@@ -154,9 +157,9 @@ class YOLOv8Trainer:
         # 设置日志（需要在设置resume_checkpoint之后）
         self.setup_logging()
         
-        self.logger.info("="*60)
+        self.logger.info("=" * 80)
         self.logger.info("🚀 开始YOLOv8训练")
-        self.logger.info("="*60)
+        self.logger.info("=" * 80)
         
         # 创建模型
         model = self.create_model()
@@ -190,6 +193,10 @@ class YOLOv8Trainer:
             'val': True,
         }
         
+        # 优化器配置（与RT-DETR对齐）
+        if 'optimizer' in self.training_config:
+            train_kwargs['optimizer'] = self.training_config['optimizer']
+        
         # 学习率配置
         if 'lr0' in self.training_config:
             train_kwargs['lr0'] = self.training_config['lr0']
@@ -205,6 +212,20 @@ class YOLOv8Trainer:
             train_kwargs['warmup_momentum'] = self.training_config['warmup_momentum']
         if 'warmup_bias_lr' in self.training_config:
             train_kwargs['warmup_bias_lr'] = self.training_config['warmup_bias_lr']
+        
+        # 学习率调度器配置（与RT-DETR对齐）
+        if 'cos_lr' in self.training_config:
+            train_kwargs['cos_lr'] = self.training_config['cos_lr']
+        
+        # 随机种子和确定性（与RT-DETR对齐）
+        if 'seed' in self.training_config:
+            train_kwargs['seed'] = self.training_config['seed']
+        if 'deterministic' in self.training_config:
+            train_kwargs['deterministic'] = self.training_config['deterministic']
+        
+        # Early Stopping配置（与RT-DETR对齐）
+        if 'patience' in self.training_config:
+            train_kwargs['patience'] = self.training_config['patience']
         
         # 数据增强配置
         if 'hsv_h' in self.training_config:
@@ -236,31 +257,237 @@ class YOLOv8Trainer:
             if Path(resume_checkpoint).is_file():
                 train_kwargs['resume'] = str(resume_checkpoint)
         
-        self.logger.info(f"训练参数:")
-        self.logger.info(f"  数据配置: {data_yaml}")
+        # 显示关键配置信息（与RT-DETR对齐的格式）
+        self.logger.info("📝 训练配置:")
+        self.logger.info(f"  数据集路径: {data_yaml}")
         self.logger.info(f"  训练轮数: {epochs}")
         self.logger.info(f"  批次大小: {batch_size}")
-        self.logger.info(f"  图像尺寸: {imgsz}")
-        self.logger.info(f"  设备: {device}")
-        self.logger.info(f"  工作进程: {workers}")
-        self.logger.info(f"  日志目录: {self.log_dir}")
+        self.logger.info(f"  优化器: {self.training_config.get('optimizer', 'auto')}")
+        self.logger.info(f"  初始学习率: {self.training_config.get('lr0', 0.01)}")
+        self.logger.info(f"  Weight decay: {self.training_config.get('weight_decay', 0.0001)}")
+        self.logger.info(f"  输出目录: {self.log_dir}")
+        pretrained_weights_display = self.model_config.get('pretrained_weights', None)
+        if pretrained_weights_display:
+            self.logger.info(f"  预训练权重: {pretrained_weights_display}")
+        if resume_checkpoint:
+            self.logger.info(f"  恢复检查点: {resume_checkpoint}")
+        self.logger.info("=" * 80)
+        
+        # 训练配置摘要（与RT-DETR对齐）
+        self.logger.info("训练配置摘要:")
+        self.logger.info(f"  - 训练轮数: {epochs}")
+        self.logger.info(f"  - 批次大小: {batch_size}")
+        self.logger.info(f"  - 优化器: {self.training_config.get('optimizer', 'auto')}")
+        self.logger.info(f"  - 初始学习率: {self.training_config.get('lr0', 0.01)}")
+        self.logger.info(f"  - Weight decay: {self.training_config.get('weight_decay', 0.0001)}")
+        self.logger.info(f"  - Warmup轮数: {self.training_config.get('warmup_epochs', 3.0)}")
+        self.logger.info(f"  - 设备: {device}")
+        self.logger.info("=" * 80)
         
         # 开始训练
+        self.logger.info(f"开始训练 {epochs} epochs")
         try:
             results = model.train(**train_kwargs)
-            self.logger.info("="*60)
+            
+            # 训练完成后，解析结果并按照RT-DETR格式输出
+            self.logger.info("=" * 80)
             self.logger.info("✅ 训练完成！")
-            self.logger.info("="*60)
+            self.logger.info("=" * 80)
+            
+            # 解析并打印训练结果（从results.csv读取）
+            self._parse_and_print_training_results()
+            
+            # 生成与RT-DETR一致的训练曲线图
+            self._plot_training_curves()
             
             # 打印最佳模型路径
             best_model_path = self.log_dir / "weights" / "best.pt"
             if best_model_path.exists():
-                self.logger.info(f"最佳模型: {best_model_path}")
+                self.logger.info(f"✓ 最佳模型: {best_model_path}")
+            
+            # 尝试从results中提取最佳指标（如果ultralytics返回了这些信息）
+            if hasattr(results, 'results_dict'):
+                results_dict = results.results_dict
+                if 'metrics/mAP50-95(B)' in results_dict:
+                    best_map = results_dict['metrics/mAP50-95(B)']
+                    self.logger.info(f"✓ 最佳mAP@0.5:0.95: {best_map:.4f}")
+                if 'metrics/mAP50(B)' in results_dict:
+                    best_map50 = results_dict['metrics/mAP50(B)']
+                    self.logger.info(f"✓ 最佳mAP@0.5: {best_map50:.4f}")
+            
+            self.logger.info(f"✓ 所有输出已保存到: {self.log_dir}")
+            self.logger.info("=" * 80)
             
             return results
         except Exception as e:
             self.logger.error(f"训练失败: {e}")
             raise
+    
+    def _parse_and_print_training_results(self):
+        """解析ultralytics的results.csv并按照RT-DETR格式重新打印"""
+        try:
+            # ultralytics会在project/name目录下生成results.csv
+            # 根据train_kwargs的设置，应该是self.log_dir/results.csv
+            results_csv = self.log_dir / "results.csv"
+            if not results_csv.exists():
+                self.logger.warning(f"未找到results.csv文件: {results_csv}")
+                return
+            
+            # 读取CSV文件
+            df = pd.read_csv(results_csv)
+            
+            # 提取关键列（ultralytics的列名）
+            # 计算总损失：train/box_loss + train/cls_loss + train/dfl_loss
+            train_loss_cols = []
+            val_loss_cols = []
+            map50_col = None
+            map50_95_col = None
+            
+            for col in df.columns:
+                col_lower = col.lower()
+                if 'train/box_loss' in col_lower or 'train/cls_loss' in col_lower or 'train/dfl_loss' in col_lower:
+                    train_loss_cols.append(col)
+                elif 'val/box_loss' in col_lower or 'val/cls_loss' in col_lower or 'val/dfl_loss' in col_lower:
+                    val_loss_cols.append(col)
+                elif 'metrics/map50(b)' in col_lower and map50_col is None:
+                    map50_col = col
+                elif 'metrics/map50-95(b)' in col_lower and map50_95_col is None:
+                    map50_95_col = col
+            
+            # 计算总损失
+            if train_loss_cols:
+                df['train_loss'] = df[train_loss_cols].sum(axis=1)
+            else:
+                df['train_loss'] = 0.0
+                
+            if val_loss_cols:
+                df['val_loss'] = df[val_loss_cols].sum(axis=1)
+            else:
+                df['val_loss'] = 0.0
+            
+            # 按照RT-DETR格式打印每个epoch的结果
+            self.logger.info("=" * 80)
+            self.logger.info("训练过程摘要（按RT-DETR格式）:")
+            self.logger.info("=" * 80)
+            
+            for idx, row in df.iterrows():
+                epoch = int(row.get('epoch', idx + 1))
+                train_loss = row.get('train_loss', 0.0)
+                val_loss = row.get('val_loss', 0.0)
+                
+                # 按照RT-DETR格式打印
+                self.logger.info(f"Epoch {epoch}:")
+                self.logger.info(f"  训练损失: {train_loss:.2f} | 验证损失: {val_loss:.2f}")
+                
+                # 如果有mAP信息，也打印
+                if map50_col and not pd.isna(row.get(map50_col)):
+                    map50 = row.get(map50_col, 0.0)
+                    self.logger.info(f"  mAP@0.5: {map50:.4f}")
+                if map50_95_col and not pd.isna(row.get(map50_95_col)):
+                    map50_95 = row.get(map50_95_col, 0.0)
+                    self.logger.info(f"  mAP@0.5:0.95: {map50_95:.4f}")
+            
+            self.logger.info("=" * 80)
+            
+        except Exception as e:
+            self.logger.warning(f"解析训练结果失败: {e}")
+    
+    def _plot_training_curves(self):
+        """生成与RT-DETR一致的训练曲线图"""
+        try:
+            results_csv = self.log_dir / "results.csv"
+            if not results_csv.exists():
+                self.logger.warning(f"未找到results.csv文件: {results_csv}")
+                return
+            
+            # 读取CSV文件
+            df = pd.read_csv(results_csv)
+            
+            # 提取数据
+            epochs = df.get('epoch', range(1, len(df) + 1)).values
+            
+            # 计算总损失
+            train_loss_cols = []
+            val_loss_cols = []
+            for col in df.columns:
+                col_lower = col.lower()
+                if 'train/box_loss' in col_lower or 'train/cls_loss' in col_lower or 'train/dfl_loss' in col_lower:
+                    train_loss_cols.append(col)
+                elif 'val/box_loss' in col_lower or 'val/cls_loss' in col_lower or 'val/dfl_loss' in col_lower:
+                    val_loss_cols.append(col)
+            
+            train_loss = df[train_loss_cols].sum(axis=1).values if train_loss_cols else None
+            val_loss = df[val_loss_cols].sum(axis=1).values if val_loss_cols else None
+            
+            # 提取mAP指标
+            map50 = None
+            map50_95 = None
+            for col in df.columns:
+                col_lower = col.lower()
+                if 'metrics/map50(b)' in col_lower and map50 is None:
+                    map50 = df[col].values
+                elif 'metrics/map50-95(b)' in col_lower and map50_95 is None:
+                    map50_95 = df[col].values
+            
+            # 提取学习率
+            lr = None
+            for col in df.columns:
+                if 'lr' in col.lower() or 'learning_rate' in col.lower():
+                    lr = df[col].values
+                    break
+            
+            # 创建与RT-DETR一致的训练曲线图
+            fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+            title = 'YOLOv8 Training Curves'
+            fig.suptitle(title, fontsize=16, fontweight='bold')
+            
+            # 1. 损失曲线
+            ax = axes[0]
+            if train_loss is not None:
+                ax.plot(epochs, train_loss, 'b-o', 
+                        label='Train Loss', linewidth=2, markersize=4)
+            if val_loss is not None:
+                ax.plot(epochs, val_loss, 'r-s', 
+                        label='Val Loss', linewidth=2, markersize=4)
+            ax.set_xlabel('Epoch', fontsize=12)
+            ax.set_ylabel('Loss', fontsize=12)
+            ax.set_title('Loss Curves', fontsize=14, fontweight='bold')
+            ax.legend(fontsize=10)
+            ax.grid(True, alpha=0.3)
+            
+            # 2. mAP曲线
+            ax = axes[1]
+            if map50 is not None:
+                ax.plot(epochs, map50, 'g-^', 
+                        label='mAP@0.5', linewidth=2, markersize=4)
+            if map50_95 is not None:
+                ax.plot(epochs, map50_95, 'm-d', 
+                        label='mAP@[0.5:0.95]', linewidth=2, markersize=4)
+            ax.set_xlabel('Epoch', fontsize=12)
+            ax.set_ylabel('mAP', fontsize=12)
+            ax.set_title('mAP Metrics', fontsize=14, fontweight='bold')
+            ax.legend(fontsize=10)
+            ax.grid(True, alpha=0.3)
+            
+            # 3. 学习率曲线
+            ax = axes[2]
+            if lr is not None:
+                ax.plot(epochs, lr, 'orange', linewidth=2)
+                ax.set_yscale('log')
+            ax.set_xlabel('Epoch', fontsize=12)
+            ax.set_ylabel('Learning Rate', fontsize=12)
+            ax.set_title('Learning Rate Schedule', fontsize=14, fontweight='bold')
+            ax.grid(True, alpha=0.3)
+            
+            plt.tight_layout()
+            save_path = self.log_dir / 'training_curves.png'
+            plt.savefig(save_path, dpi=150, bbox_inches='tight')
+            plt.close()
+            
+            self.logger.info(f"✓ 训练曲线已保存到: {save_path}")
+            
+        except Exception as e:
+            self.logger.warning(f"绘制训练曲线失败: {e}")
 
 
 def main():

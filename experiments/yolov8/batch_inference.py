@@ -41,10 +41,10 @@ if str(project_root.parent) not in sys.path:
 
 from ultralytics import YOLO
 
-# 类别名称和颜色（用于可视化）
+# 类别名称和颜色（用于可视化）- 8类
 CLASS_NAMES = [
     "Car", "Truck", "Van", "Bus", "Pedestrian", 
-    "Cyclist", "Tricyclist", "Motorcyclist", "Barrowlist", "Trafficcone"
+    "Cyclist", "Motorcyclist", "Trafficcone"
 ]
 COLORS = [
     (255, 0, 0),      # Car - 红色
@@ -53,9 +53,7 @@ COLORS = [
     (0, 0, 255),      # Bus - 蓝色
     (255, 255, 0),    # Pedestrian - 黄色
     (255, 0, 255),    # Cyclist - 品红
-    (128, 0, 255),    # Tricyclist - 紫色
     (0, 255, 255),    # Motorcyclist - 青色
-    (255, 192, 203),  # Barrowlist - 粉色
     (128, 128, 128),  # Trafficcone - 灰色
 ]
 

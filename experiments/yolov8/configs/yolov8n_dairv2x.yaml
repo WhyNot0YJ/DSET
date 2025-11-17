@@ -8,38 +8,44 @@ training:
   epochs: 200
   batch_size: 64
   imgsz: 640
-  lr0: 0.01  # 初始学习率
+  optimizer: "AdamW"  # 与RT-DETR对齐（RT-DETR使用AdamW）
+  lr0: 0.01  # 初始学习率（注意：YOLOv8使用单一学习率，RT-DETR使用分组学习率pretrained_lr=1e-5, new_lr=1e-4）
   lrf: 0.01  # 最终学习率（相对于lr0）
   momentum: 0.937
-  weight_decay: 0.0005
+  weight_decay: 0.0001  # 与RT-DETR对齐（RT-DETR: 0.0001）
   warmup_epochs: 3.0
   warmup_momentum: 0.8
   warmup_bias_lr: 0.1
   save_period: 10  # 每N个epoch保存一次检查点
+  cos_lr: true  # 使用Cosine学习率调度器（与RT-DETR的CosineAnnealingLR对齐）
+  seed: 42  # 与RT-DETR对齐
+  deterministic: false  # 与RT-DETR对齐
+  patience: 35  # Early Stopping patience（与RT-DETR对齐：patience=35）
   
-  # 数据增强参数
-  hsv_h: 0.015  # 色调增强
-  hsv_s: 0.7    # 饱和度增强
-  hsv_v: 0.4    # 明度增强
-  degrees: 0.0   # 旋转角度
-  translate: 0.1  # 平移
-  scale: 0.5     # 缩放
-  flipud: 0.0    # 上下翻转概率
-  fliplr: 0.5    # 左右翻转概率
-  mosaic: 1.0    # Mosaic增强概率
-  mixup: 0.0     # Mixup增强概率
+  # 数据增强参数（与RT-DETR对齐，仅使用Mosaic）
+  # 注意：为了公平对比RT-DETR，关闭了其他数据增强
+  # RT-DETR只使用Mosaic增强（use_mosaic: true）
+  hsv_h: 0.0     # 色调增强（关闭，与RT-DETR对齐）
+  hsv_s: 0.0     # 饱和度增强（关闭，与RT-DETR对齐）
+  hsv_v: 0.0     # 明度增强（关闭，与RT-DETR对齐）
+  degrees: 0.0   # 旋转角度（关闭，与RT-DETR对齐）
+  translate: 0.0  # 平移（关闭，与RT-DETR对齐）
+  scale: 1.0     # 缩放（关闭，与RT-DETR对齐）
+  flipud: 0.0    # 上下翻转概率（关闭，与RT-DETR对齐）
+  fliplr: 0.0    # 左右翻转概率（关闭，与RT-DETR对齐）
+  mosaic: 1.0    # Mosaic增强概率（启用，与RT-DETR一致）
+  mixup: 0.0     # Mixup增强概率（关闭，与RT-DETR对齐）
 
 data:
-  # YOLO格式数据集配置文件路径
+  # YOLO格式数据集配置文件路径（使用绝对路径，与RT-DETR对齐）
   # 需要先运行 dairv2x_to_yolo.py 转换数据集
-  data_yaml: "datasets/dairv2x_yolo/dairv2x.yaml"
+  # 注意：YOLO格式数据集需要从原始DAIR-V2X数据集转换
+  data_yaml: "/root/autodl-fs/datasets/DAIR-V2X_YOLO/dairv2x.yaml"
 
 checkpoint:
-  resume_mode: "auto"  # auto: 自动查找最新检查点, manual: 手动指定
-  log_dir: "logs"
+  log_dir: "logs"  # 日志保存目录
 
 misc:
-  device: "cuda"
-  num_workers: 16
-  pin_memory: true
+  device: "cuda"      # 训练设备
+  num_workers: 16     # 数据加载工作进程数
 
