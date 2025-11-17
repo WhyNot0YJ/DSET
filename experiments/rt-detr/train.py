@@ -387,7 +387,7 @@ class RTDETRTrainer:
                 return
             
             self.logger.info(f"正在从本地文件加载预训练权重: {pretrained_path}")
-            checkpoint = torch.load(pretrained_file, map_location='cpu')
+            checkpoint = torch.load(pretrained_file, map_location='cpu', weights_only=False)
             
             # 处理不同的checkpoint格式
             if isinstance(checkpoint, dict):
@@ -865,7 +865,7 @@ class RTDETRTrainer:
         # 8. 恢复训练（如果提供checkpoint）
         if resume_checkpoint:
             self.logger.info(f"📦 从检查点恢复训练: {resume_checkpoint}")
-            checkpoint = torch.load(resume_checkpoint, map_location=self.device)
+            checkpoint = torch.load(resume_checkpoint, map_location=self.device, weights_only=False)
             
             # 恢复模型和优化器状态
             self.model.load_state_dict(checkpoint['model_state_dict'])
@@ -1052,7 +1052,7 @@ class RTDETRTrainer:
             best_model_path = self.log_dir / 'best_model.pth'
             if best_model_path.exists():
                 # 加载best_model的checkpoint
-                checkpoint = torch.load(best_model_path, map_location=self.device)
+                checkpoint = torch.load(best_model_path, map_location=self.device, weights_only=False)
                 best_ema_state = checkpoint.get('ema_state_dict', None)
                 
                 # 使用best_model进行推理
