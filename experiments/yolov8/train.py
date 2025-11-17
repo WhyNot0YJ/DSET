@@ -300,10 +300,18 @@ class YOLOv8Trainer:
             # 生成与RT-DETR一致的训练曲线图
             self._plot_training_curves()
             
-            # 打印最佳模型路径
-            best_model_path = self.log_dir / "weights" / "best.pt"
+            # 统一文件命名格式（与RT-DETR对齐）
+            self._align_file_naming()
+            
+            # 打印最佳模型路径（统一格式）
+            best_model_path = self.log_dir / "best_model.pth"
             if best_model_path.exists():
                 self.logger.info(f"✓ 最佳模型: {best_model_path}")
+            else:
+                # 如果统一后的文件不存在，检查原始位置
+                original_best = self.log_dir / "weights" / "best.pt"
+                if original_best.exists():
+                    self.logger.info(f"✓ 最佳模型（原始位置）: {original_best}")
             
             # 尝试从results中提取最佳指标（如果ultralytics返回了这些信息）
             if hasattr(results, 'results_dict'):
@@ -488,6 +496,35 @@ class YOLOv8Trainer:
             
         except Exception as e:
             self.logger.warning(f"绘制训练曲线失败: {e}")
+    
+    def _align_file_naming(self):
+        """统一文件命名格式，与RT-DETR对齐"""
+        try:
+            import shutil
+            
+            # 1. 将best.pt复制为best_model.pth（统一最佳模型命名）
+            original_best = self.log_dir / "weights" / "best.pt"
+            aligned_best = self.log_dir / "best_model.pth"
+            if original_best.exists() and not aligned_best.exists():
+                shutil.copy2(original_best, aligned_best)
+                self.logger.info(f"✓ 已创建统一命名的最佳模型: {aligned_best}")
+            
+            # 2. 将last.pt复制为latest_checkpoint.pth（统一检查点命名）
+            original_last = self.log_dir / "weights" / "last.pt"
+            aligned_last = self.log_dir / "latest_checkpoint.pth"
+            if original_last.exists() and not aligned_last.exists():
+                shutil.copy2(original_last, aligned_last)
+                self.logger.info(f"✓ 已创建统一命名的最新检查点: {aligned_last}")
+            
+            # 3. 将results.csv复制为training_history.csv（统一训练历史命名）
+            original_results = self.log_dir / "results.csv"
+            aligned_history = self.log_dir / "training_history.csv"
+            if original_results.exists() and not aligned_history.exists():
+                shutil.copy2(original_results, aligned_history)
+                self.logger.info(f"✓ 已创建统一命名的训练历史: {aligned_history}")
+            
+        except Exception as e:
+            self.logger.warning(f"统一文件命名失败: {e}")
 
 
 def main():
