@@ -55,9 +55,9 @@ def download_model(model_name: str, download_dir: Path = None, verbose: bool = T
             print("=" * 80)
             return str(target_path)
         
-        # 临时设置权重目录为pretrained目录
+        # 临时设置权重目录为pretrained目录（必须转换为字符串）
         original_weights_dir = SETTINGS.get('weights_dir')
-        SETTINGS['weights_dir'] = download_dir
+        SETTINGS['weights_dir'] = str(download_dir)
         
         try:
             # 加载模型（如果不存在会自动下载到SETTINGS['weights_dir']）
@@ -87,9 +87,12 @@ def download_model(model_name: str, download_dir: Path = None, verbose: bool = T
                     print("=" * 80)
                     return str(target_path)
         finally:
-            # 恢复原始权重目录
+            # 恢复原始权重目录（确保是字符串类型）
             if original_weights_dir:
-                SETTINGS['weights_dir'] = original_weights_dir
+                SETTINGS['weights_dir'] = str(original_weights_dir) if isinstance(original_weights_dir, Path) else original_weights_dir
+            else:
+                # 如果没有原始值，设置为默认值（字符串）
+                SETTINGS['weights_dir'] = str(Path.home() / '.ultralytics' / 'weights')
         
         print(f"⚠️  警告: 模型文件未找到")
         print(f"   预期路径: {target_path}")
