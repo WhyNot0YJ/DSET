@@ -100,8 +100,8 @@ def create_backbone(backbone_type: str, **kwargs) -> nn.Module:
             'depth': depth,
             'variant': 'd',
             'return_idx': [1, 2, 3],
-            'freeze_at': -1,  # moe-rtdetr不使用冻结
-            'freeze_norm': False,
+            'freeze_at': 0,  # 冻结第一个stage（与rt-detr保持一致）
+            'freeze_norm': True,  # 冻结BN层（与rt-detr保持一致）
             'pretrained': False
         }
         default_params.update(kwargs)
@@ -116,8 +116,8 @@ def create_backbone(backbone_type: str, **kwargs) -> nn.Module:
         default_params = {
             'name': name_map[backbone_type],
             'return_idx': [1, 2, 3],
-            'freeze_at': -1,
-            'freeze_norm': False,
+            'freeze_at': 0,  # 冻结第一个stage
+            'freeze_norm': True,  # 冻结BN层
             'pretrained': False
         }
         default_params.update(kwargs)
@@ -676,8 +676,8 @@ class AdaptiveExpertTrainer:
             num_workers=num_workers,
             collate_fn=self._collate_fn,
             pin_memory=pin_memory,
-            persistent_workers=True,
-            prefetch_factor=2
+            persistent_workers=True if num_workers > 0 else False,
+            prefetch_factor=2 if num_workers > 0 else None
         )
         
         val_loader = DataLoader(
@@ -687,8 +687,8 @@ class AdaptiveExpertTrainer:
             num_workers=num_workers,
             collate_fn=self._collate_fn,
             pin_memory=pin_memory,
-            persistent_workers=True,
-            prefetch_factor=2
+            persistent_workers=True if num_workers > 0 else False,
+            prefetch_factor=2 if num_workers > 0 else None
         )
         
         self.val_dataset = val_dataset
@@ -712,27 +712,85 @@ class AdaptiveExpertTrainer:
         
         return images, list(targets)
     
-    def _create_optimizer(self) -> optim.Adam:
-        """创建优化器。"""
-        # 预训练参数：backbone + encoder
-        pretrained_params = list(self.model.backbone.parameters()) + \
-                           list(self.model.encoder.parameters())
-        
-        # 新参数：Decoder（包含内部的自适应专家层）
-        decoder_params = list(self.model.decoder.parameters())
-        
-        # 确保学习率是浮点数类型
-        pretrained_lr = float(self.config['training']['pretrained_lr'])
+    def _create_optimizer(self) -> optim.AdamW:
+        """创建优化器（使用分组学习率，与rt-detr保持一致）。"""
+        # 获取配置中的学习率，确保是浮点数类型
         new_lr = float(self.config['training']['new_lr'])
+        pretrained_lr = float(self.config['training']['pretrained_lr'])
         weight_decay = float(self.config['training'].get('weight_decay', 0.0001))
         
-        optimizer = optim.Adam([
-            {'params': pretrained_params, 'lr': pretrained_lr},
-            {'params': decoder_params, 'lr': new_lr}
-        ], weight_decay=weight_decay)
+        # 分组参数（与rt-detr保持一致的分组策略）
+        param_groups = []
         
-        self.logger.info(f"✓ 创建优化器 (pretrained_lr={pretrained_lr}, new_lr={new_lr}, weight_decay={weight_decay})")
-        self.logger.info(f"  预训练参数: {len(pretrained_params)} | Decoder参数: {len(decoder_params)}")
+        # 定义新增结构的关键词（MoE、DSET等）
+        # 基于实际代码中的模块命名：
+        # - decoder.layers.X.adaptive_expert_layer.* (MoE-RTDETR的decoder MoE)
+        new_structure_keywords = [
+            'adaptive_expert_layer'   # decoder中的MoE层
+        ]
+        
+        # 1. 预训练参数组（backbone、encoder、decoder的标准层，排除norm层和新增结构）
+        pretrained_params = []
+        pretrained_names = []
+        for name, param in self.model.named_parameters():
+            if param.requires_grad:
+                # 判断是否为预训练部分（backbone、encoder、decoder）
+                is_pretrained = any(part in name for part in ['backbone', 'encoder', 'decoder'])
+                # 排除norm层
+                is_norm = any(norm in name for norm in ['norm', 'bn', 'gn', 'ln'])
+                # 排除新增结构（即使它们在encoder/decoder中）
+                is_new_structure = any(keyword in name.lower() for keyword in new_structure_keywords)
+                
+                if is_pretrained and not is_norm and not is_new_structure:
+                    pretrained_params.append(param)
+                    pretrained_names.append(name)
+        
+        if pretrained_params:
+            param_groups.append({
+                'params': pretrained_params,
+                'lr': pretrained_lr,
+                'weight_decay': weight_decay
+            })
+            self.logger.info(f"✓ 预训练参数组: {len(pretrained_params)} 个参数, lr={pretrained_lr}")
+        
+        # 2. Norm层参数（无weight decay）
+        norm_params = []
+        norm_names = []
+        for name, param in self.model.named_parameters():
+            if param.requires_grad and any(norm in name for norm in ['norm', 'bn', 'gn', 'ln']):
+                norm_params.append(param)
+                norm_names.append(name)
+        
+        if norm_params:
+            param_groups.append({
+                'params': norm_params,
+                'lr': new_lr,
+                'weight_decay': 0.0  # Norm层不使用weight decay
+            })
+            self.logger.info(f"✓ Norm层参数组: {len(norm_params)} 个参数, lr={new_lr}, wd=0")
+        
+        # 3. 新参数组（MoE层、DSET层等新增结构，即使它们在encoder/decoder中）
+        new_params = []
+        new_names = []
+        processed_params = set(id(p) for p in pretrained_params + norm_params)
+        
+        for name, param in self.model.named_parameters():
+            if param.requires_grad and id(param) not in processed_params:
+                new_params.append(param)
+                new_names.append(name)
+        
+        if new_params:
+            param_groups.append({
+                'params': new_params,
+                'lr': new_lr,
+                'weight_decay': weight_decay
+            })
+            self.logger.info(f"✓ 新参数组: {len(new_params)} 个参数, lr={new_lr}")
+        
+        optimizer = optim.AdamW(
+            param_groups,
+            betas=(0.9, 0.999)
+        )
         
         return optimizer
     

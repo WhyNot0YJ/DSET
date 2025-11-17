@@ -537,7 +537,6 @@ class RTDETRTrainer:
         train_dataset = DAIRV2XDetection(
             data_root=data_root,
             split='train',
-            transforms=None,
             use_mosaic=use_mosaic,
             target_size=target_size
         )
@@ -545,7 +544,6 @@ class RTDETRTrainer:
         val_dataset = DAIRV2XDetection(
             data_root=data_root,
             split='val',
-            transforms=None,
             use_mosaic=False,  # 验证时不使用Mosaic
             target_size=target_size
         )
@@ -554,20 +552,27 @@ class RTDETRTrainer:
         
         # num_workers在misc配置中
         num_workers = self.config.get('misc', {}).get('num_workers', 16)
+        pin_memory = self.config.get('misc', {}).get('pin_memory', True)
         
         train_loader = DataLoader(
             train_dataset,
             batch_size=self.config['training']['batch_size'],
             shuffle=True,
             num_workers=num_workers,
-            collate_fn=collate_fn
+            collate_fn=collate_fn,
+            pin_memory=pin_memory,
+            persistent_workers=True if num_workers > 0 else False,
+            prefetch_factor=2 if num_workers > 0 else None
         )
         val_loader = DataLoader(
             val_dataset,
             batch_size=self.config['training']['batch_size'],
             shuffle=False,
             num_workers=num_workers,
-            collate_fn=collate_fn
+            collate_fn=collate_fn,
+            pin_memory=pin_memory,
+            persistent_workers=True if num_workers > 0 else False,
+            prefetch_factor=2 if num_workers > 0 else None
         )
         
         return train_loader, val_loader
@@ -582,23 +587,32 @@ class RTDETRTrainer:
         # 分组参数
         param_groups = []
         
-        # 1. Backbone参数（使用较小学习率，排除norm层）
-        backbone_params = []
-        backbone_names = []
-        for name, param in self.model.named_parameters():
-            if 'backbone' in name and param.requires_grad:
-                # 排除norm层
-                if not any(norm in name for norm in ['norm', 'bn', 'gn', 'ln']):
-                    backbone_params.append(param)
-                    backbone_names.append(name)
+        # 定义新增结构的关键词（rt-detr没有MoE/DSET结构，所以为空）
+        new_structure_keywords = []
         
-        if backbone_params:
+        # 1. 预训练参数组（backbone、encoder、decoder的标准层，排除norm层和新增结构）
+        pretrained_params = []
+        pretrained_names = []
+        for name, param in self.model.named_parameters():
+            if param.requires_grad:
+                # 判断是否为预训练部分（backbone、encoder、decoder）
+                is_pretrained = any(part in name for part in ['backbone', 'encoder', 'decoder'])
+                # 排除norm层
+                is_norm = any(norm in name for norm in ['norm', 'bn', 'gn', 'ln'])
+                # 排除新增结构（即使它们在encoder/decoder中）
+                is_new_structure = any(keyword in name.lower() for keyword in new_structure_keywords)
+                
+                if is_pretrained and not is_norm and not is_new_structure:
+                    pretrained_params.append(param)
+                    pretrained_names.append(name)
+        
+        if pretrained_params:
             param_groups.append({
-                'params': backbone_params,
+                'params': pretrained_params,
                 'lr': pretrained_lr,
                 'weight_decay': weight_decay
             })
-            self.logger.info(f"✓ Backbone参数组: {len(backbone_params)} 个参数, lr={pretrained_lr}")
+            self.logger.info(f"✓ 预训练参数组: {len(pretrained_params)} 个参数, lr={pretrained_lr}")
         
         # 2. Norm层参数（无weight decay）
         norm_params = []
@@ -616,23 +630,23 @@ class RTDETRTrainer:
             })
             self.logger.info(f"✓ Norm层参数组: {len(norm_params)} 个参数, lr={new_lr}, wd=0")
         
-        # 3. 其他参数（encoder、decoder等）
-        other_params = []
-        other_names = []
-        processed_params = set(id(p) for p in backbone_params + norm_params)
+        # 3. 新参数组（MoE层、DSET层等新增结构，即使它们在encoder/decoder中）
+        new_params = []
+        new_names = []
+        processed_params = set(id(p) for p in pretrained_params + norm_params)
         
         for name, param in self.model.named_parameters():
             if param.requires_grad and id(param) not in processed_params:
-                other_params.append(param)
-                other_names.append(name)
+                new_params.append(param)
+                new_names.append(name)
         
-        if other_params:
+        if new_params:
             param_groups.append({
-                'params': other_params,
+                'params': new_params,
                 'lr': new_lr,
                 'weight_decay': weight_decay
             })
-            self.logger.info(f"✓ 其他参数组: {len(other_params)} 个参数, lr={new_lr}")
+            self.logger.info(f"✓ 新参数组: {len(new_params)} 个参数, lr={new_lr}")
         
         optimizer = torch.optim.AdamW(
             param_groups,
@@ -694,7 +708,7 @@ class RTDETRTrainer:
                 'best_loss': self.best_loss,
                 'best_map': self.best_map,
                 'best_metric': getattr(self, 'best_metric', 0.0),
-                'global_step': getattr(self, 'global_step', 0)
+                'global_step': self.global_step
             }
             
             # 添加可选组件状态
@@ -737,7 +751,7 @@ class RTDETRTrainer:
                 'config': self.config,
                 'best_loss': self.best_loss,
                 'best_map': self.best_map,
-                'global_step': getattr(self, 'global_step', 0)
+                'global_step': self.global_step
             }
             
             # 添加可选组件状态
@@ -854,6 +868,7 @@ class RTDETRTrainer:
         self.last_epoch = -1
         self.best_loss = float('inf')
         self.best_map = 0.0  # 记录最佳mAP
+        self.global_step = 0  # 全局步数（与moe-rtdetr/dset保持一致）
         
         # 6.5 初始化Early Stopping
         self.early_stopping = self._create_early_stopping()
@@ -894,6 +909,7 @@ class RTDETRTrainer:
             self.last_epoch = checkpoint.get('epoch', -1)
             self.best_loss = checkpoint.get('best_loss', float('inf'))
             self.best_map = checkpoint.get('best_map', 0.0)
+            self.global_step = checkpoint.get('global_step', 0)
             self.logger.info(f'✓ 从epoch {self.last_epoch + 1}恢复训练')
             
             # 显示恢复的训练信息
@@ -959,8 +975,8 @@ class RTDETRTrainer:
             # 验证
             val_metrics = self._validate_epoch()
             
-            # 学习率调度
-            if hasattr(self, 'warmup_scheduler') and self.warmup_scheduler and not self.warmup_scheduler.finished():
+            # 学习率调度（与moe-rtdetr/dset保持一致）
+            if self.last_epoch < self.warmup_scheduler.warmup_epochs:
                 self.warmup_scheduler.step()
             else:
                 self.scheduler.step()
@@ -1258,6 +1274,8 @@ class RTDETRTrainer:
             if batch_idx % 50 == 0:
                 self.logger.info(f'Epoch {self.last_epoch} | Batch {batch_idx} | '
                                f'Loss: {loss.item():.2f} (Det: {det_loss_val:.2f})')
+            
+            self.global_step += 1
         
         # 计算平均值
         num_batches = len(self.train_dataloader)
@@ -1288,17 +1306,30 @@ class RTDETRTrainer:
                 
                 outputs = self.ema.module(images, targets)
                 
-                # 使用criterion计算损失
-                loss_dict = self.criterion(outputs, targets)
-                loss = sum(loss_dict.values())
-                total_loss += loss.item()
+                # 计算损失（兼容两种方式：模型内部计算或外部计算）
+                if isinstance(outputs, dict) and 'total_loss' in outputs:
+                    # 模型内部已计算损失（与moe-rtdetr/dset保持一致）
+                    loss = outputs['total_loss']
+                    total_loss += loss.item()
+                else:
+                    # 使用criterion计算损失（rt-detr标准方式）
+                    loss_dict = self.criterion(outputs, targets)
+                    loss = sum(loss_dict.values())
+                    total_loss += loss.item()
                 
-                # 统计原始预测数（所有queries）
+                # 统计原始预测数（所有queries，兼容两种键名）
                 if 'pred_logits' in outputs:
                     total_raw_predictions += outputs['pred_logits'].shape[0] * outputs['pred_logits'].shape[1]
+                elif 'class_scores' in outputs:
+                    total_raw_predictions += outputs['class_scores'].shape[0] * outputs['class_scores'].shape[1]
                 
                 # 收集预测结果（只在需要计算mAP时收集，前30个epoch跳过）
-                if not skip_coco_eval and 'pred_logits' in outputs and 'pred_boxes' in outputs:
+                # 兼容两种输出格式：pred_logits/pred_boxes 或 class_scores/bboxes
+                has_predictions = (
+                    ('pred_logits' in outputs and 'pred_boxes' in outputs) or
+                    ('class_scores' in outputs and 'bboxes' in outputs)
+                )
+                if not skip_coco_eval and has_predictions:
                     self._collect_predictions(outputs, targets, batch_idx, all_predictions, all_targets)
         
         # 保存预测结果用于后续打印每个类别mAP（避免重复计算）
@@ -1328,21 +1359,28 @@ class RTDETRTrainer:
             'mAP_0.75': mAP_metrics.get('mAP_0.75', 0.0),
             'mAP_0.5_0.95': mAP_metrics.get('mAP_0.5_0.95', 0.0),
             'num_predictions': len(all_predictions),
-            'num_raw_predictions': len(all_predictions),  # 修复：使用实际预测数
+            'num_raw_predictions': total_raw_predictions,  # 所有原始queries数量（与moe-rtdetr保持一致）
             'num_targets': len(all_targets)
         }
     
     def _collect_predictions(self, outputs: Dict, targets: List[Dict], batch_idx: int,
                             all_predictions: List, all_targets: List) -> None:
         """收集预测结果用于mAP计算。保留所有有效预测框，不做top-k限制。"""
-        pred_logits = outputs['pred_logits']  # [B, Q, C]
-        pred_boxes = outputs['pred_boxes']    # [B, Q, 4]
+        # 兼容两种输出格式：pred_logits/pred_boxes 或 class_scores/bboxes
+        if 'pred_logits' in outputs:
+            pred_logits = outputs['pred_logits']  # [B, Q, C]
+            pred_boxes = outputs['pred_boxes']    # [B, Q, 4]
+        elif 'class_scores' in outputs:
+            pred_logits = outputs['class_scores']  # [B, Q, C]
+            pred_boxes = outputs['bboxes']        # [B, Q, 4]
+        else:
+            return  # 没有有效的预测输出
         
         batch_size = pred_logits.shape[0]
         
         for i in range(batch_size):
-            pred_scores = torch.softmax(pred_logits[i], dim=-1)  # [Q, C]
-            max_scores, pred_classes = torch.max(pred_scores, dim=-1)  # [Q]
+            pred_scores_sigmoid = torch.sigmoid(pred_logits[i])  # [Q, C]
+            max_scores, pred_classes = torch.max(pred_scores_sigmoid, dim=-1)  # [Q]
             
             # 过滤无效框（padding框），保留所有有效预测框
             valid_boxes_mask = ~torch.all(pred_boxes[i] == 1.0, dim=1)
@@ -1443,7 +1481,12 @@ class RTDETRTrainer:
                         
                         outputs = self.ema.module(images, targets)
                         
-                        if 'pred_logits' in outputs and 'pred_boxes' in outputs:
+                        # 兼容两种输出格式：pred_logits/pred_boxes 或 class_scores/bboxes
+                        has_predictions = (
+                            ('pred_logits' in outputs and 'pred_boxes' in outputs) or
+                            ('class_scores' in outputs and 'bboxes' in outputs)
+                        )
+                        if has_predictions:
                             self._collect_predictions(outputs, targets, batch_idx, all_predictions, all_targets)
                 
                 mAP_metrics = self._compute_map_metrics(all_predictions, all_targets, print_per_category=True)
