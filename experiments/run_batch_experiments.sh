@@ -478,16 +478,8 @@ run_single_experiment() {
     set +e  # 临时允许错误
     
     # 如果是测试模式，传递--epochs 2参数
-    # 注意：yolov8的train.py从配置文件读取epochs，不支持命令行参数覆盖
     if [ "$TEST_MODE" = true ]; then
-        if [[ "$WORK_DIR" == "yolov8" ]]; then
-            # YOLOv8的epochs在配置文件中，测试模式下仍然使用配置文件中的设置
-            # 如果需要测试模式，可以手动修改配置文件中的epochs为2
-            log_warning "YOLOv8测试模式：将使用配置文件中的epochs设置（如需2个epoch，请手动修改配置文件）"
-            python train.py --config "../$config_path"
-        else
-            python train.py --config "../$config_path" --epochs 2
-        fi
+        python train.py --config "../$config_path" --epochs 2
     else
         python train.py --config "../$config_path"
     fi

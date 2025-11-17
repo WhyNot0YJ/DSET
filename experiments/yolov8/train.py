@@ -152,8 +152,13 @@ class YOLOv8Trainer:
         
         return model
     
-    def start_training(self, resume_checkpoint: Optional[str] = None):
-        """开始训练"""
+    def start_training(self, resume_checkpoint: Optional[str] = None, epochs_override: Optional[int] = None):
+        """开始训练
+        
+        Args:
+            resume_checkpoint: 恢复训练的检查点路径
+            epochs_override: 覆盖配置文件中的epochs（用于测试模式）
+        """
         self._resume_checkpoint_path = resume_checkpoint
         
         # 设置日志（需要在设置resume_checkpoint之后）
@@ -166,8 +171,14 @@ class YOLOv8Trainer:
         # 创建模型
         model = self.create_model()
         
-        # 获取训练参数
-        epochs = self.training_config.get('epochs', 100)
+        # 获取训练参数（如果提供了epochs_override，则使用它）
+        config_epochs = self.training_config.get('epochs', 100)
+        epochs = epochs_override if epochs_override is not None else config_epochs
+        
+        # 如果使用了epochs覆盖，显示提示
+        if epochs_override is not None:
+            self.logger.info(f"⚠️  测试模式：使用命令行参数覆盖epochs ({config_epochs} → {epochs_override})")
+        
         batch_size = self.training_config.get('batch_size', 16)
         imgsz = self.training_config.get('imgsz', 640)
         device = self.misc_config.get('device', 'cuda')
@@ -538,6 +549,8 @@ def main():
                        help='从检查点恢复训练（检查点文件路径）')
     parser.add_argument('--resume', action='store_true',
                        help='自动从最新检查点恢复训练')
+    parser.add_argument('--epochs', type=int, default=None,
+                       help='覆盖配置文件中的epochs（用于测试模式）')
     
     args = parser.parse_args()
     
@@ -564,8 +577,8 @@ def main():
     # 创建训练器
     trainer = YOLOv8Trainer(config, config_path=args.config)
     
-    # 开始训练
-    trainer.start_training(resume_checkpoint=args.resume_from_checkpoint)
+    # 开始训练（如果提供了--epochs参数，则覆盖配置文件中的值）
+    trainer.start_training(resume_checkpoint=args.resume_from_checkpoint, epochs_override=args.epochs)
 
 
 if __name__ == '__main__':
