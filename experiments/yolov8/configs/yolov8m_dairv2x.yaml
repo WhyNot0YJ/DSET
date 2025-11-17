@@ -1,12 +1,12 @@
-# YOLOv8 DAIR-V2X 训练配置文件
+# YOLOv8m DAIR-V2X 训练配置文件
 
 model:
-  model_name: "yolov8n.pt"  # 或 yolov8s.pt, yolov8m.pt, yolov8l.pt, yolov8x.pt
-  pretrained_weights: null  # 可选：预训练权重路径，如 "pretrained/yolov8n.pt"
+  model_name: "yolov8m.pt"
+  pretrained_weights: null
 
 training:
   epochs: 200
-  batch_size: 64
+  batch_size: 40  # 中等模型，batch_size略小于s
   imgsz: 640
   optimizer: "AdamW"  # 与RT-DETR对齐（RT-DETR使用AdamW）
   lr0: 0.01  # 初始学习率（注意：YOLOv8使用单一学习率，RT-DETR使用分组学习率pretrained_lr=1e-5, new_lr=1e-4）
@@ -16,7 +16,7 @@ training:
   warmup_epochs: 3.0
   warmup_momentum: 0.8
   warmup_bias_lr: 0.1
-  save_period: 10  # 每N个epoch保存一次检查点
+  save_period: 10
   cos_lr: true  # 使用Cosine学习率调度器（与RT-DETR的CosineAnnealingLR对齐）
   seed: 42  # 与RT-DETR对齐
   deterministic: false  # 与RT-DETR对齐
