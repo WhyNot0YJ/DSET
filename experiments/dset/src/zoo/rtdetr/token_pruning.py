@@ -117,9 +117,23 @@ class TokenPruner(nn.Module):
                 num_tokens, device=tokens.device).unsqueeze(0).expand(batch_size, -1)
             return tokens, kept_indices, info
         
+        # 当tokens数量太少时，跳过剪枝（避免不必要的计算，且剪枝收益很小）
+        # 如果tokens总数小于等于min_tokens，直接跳过剪枝，返回所有tokens
+        if num_tokens <= self.min_tokens:
+            info = {
+                'pruning_ratio': 0.0,
+                'num_kept': num_tokens,
+                'num_pruned': 0
+            }
+            kept_indices = None if not return_indices else torch.arange(
+                num_tokens, device=tokens.device).unsqueeze(0).expand(batch_size, -1)
+            return tokens, kept_indices, info
+        
         importance_scores = self.importance_predictor(tokens)
         current_keep_ratio = self.get_current_keep_ratio()
         num_keep = max(self.min_tokens, int(num_tokens * current_keep_ratio))
+        # 确保 num_keep 不超过 num_tokens，避免 torch.topk 报错
+        num_keep = min(num_keep, num_tokens)
         
         if self.adaptive:
             importance_probs = F.softmax(importance_scores, dim=-1)
@@ -235,6 +249,18 @@ class SpatialTokenPruner(TokenPruner):
                 num_tokens, device=tokens.device).unsqueeze(0).expand(batch_size, -1)
             return tokens, kept_indices, info
         
+        # 当tokens数量太少时，跳过剪枝（避免不必要的计算，且剪枝收益很小）
+        # 如果tokens总数小于等于min_tokens，直接跳过剪枝，返回所有tokens
+        if num_tokens <= self.min_tokens:
+            info = {
+                'pruning_ratio': 0.0,
+                'num_kept': num_tokens,
+                'num_pruned': 0
+            }
+            kept_indices = None if not return_indices else torch.arange(
+                num_tokens, device=tokens.device).unsqueeze(0).expand(batch_size, -1)
+            return tokens, kept_indices, info
+        
         importance_scores = self.importance_predictor(tokens)
         
         if self.spatial_prior != 'none':
@@ -243,6 +269,8 @@ class SpatialTokenPruner(TokenPruner):
         
         current_keep_ratio = self.get_current_keep_ratio()
         num_keep = max(self.min_tokens, int(num_tokens * current_keep_ratio))
+        # 确保 num_keep 不超过 num_tokens，避免 torch.topk 报错
+        num_keep = min(num_keep, num_tokens)
         
         _, top_indices = torch.topk(importance_scores, num_keep, dim=-1)
         top_indices_sorted, _ = torch.sort(top_indices, dim=-1)

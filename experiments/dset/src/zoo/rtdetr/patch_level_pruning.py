@@ -110,6 +110,28 @@ class PatchLevelPruner(nn.Module):
             tokens_2d_padded = tokens_2d
             H_padded, W_padded = H, W
         
+        # 当patches数量太少时，直接跳过剪枝（避免不必要的计算）
+        if num_patches <= self.min_patches:
+            info = {
+                'pruning_ratio': 0.0,
+                'num_kept_tokens': num_tokens,
+                'num_pruned_tokens': 0,
+                'num_patches': num_patches,
+                'num_kept_patches': num_patches,
+                'new_spatial_shape': (H, W),
+                'original_spatial_shape': (H, W)
+            }
+            kept_indices = None if not return_indices else torch.arange(
+                num_tokens, device=tokens.device).unsqueeze(0).expand(batch_size, -1)
+            return tokens, kept_indices, info
+        
+        # 计算保留的patches数量
+        current_keep_ratio = self.get_current_keep_ratio()
+        num_keep_patches_by_ratio = int(num_patches * current_keep_ratio)
+        num_keep_patches = max(self.min_patches, num_keep_patches_by_ratio)
+        # 确保 num_keep_patches 不超过 num_patches，避免 torch.topk 报错
+        num_keep_patches = min(num_keep_patches, num_patches)
+        
         tokens_2d_conv = tokens_2d_padded.permute(0, 3, 1, 2)
         patches = tokens_2d_conv.unfold(2, patch_h, patch_h).unfold(3, patch_w, patch_w)
         patches = patches.contiguous().view(batch_size, channels, num_patches, patch_h, patch_w)
@@ -125,9 +147,6 @@ class PatchLevelPruner(nn.Module):
             patch_importance_list.append(patch_importance)
         
         patch_importance_scores = torch.stack(patch_importance_list, dim=1)
-        
-        current_keep_ratio = self.get_current_keep_ratio()
-        num_keep_patches = max(self.min_patches, int(num_patches * current_keep_ratio))
         
         _, top_patch_indices = torch.topk(patch_importance_scores, num_keep_patches, dim=-1)
         top_patch_indices_sorted, _ = torch.sort(top_patch_indices, dim=-1)
