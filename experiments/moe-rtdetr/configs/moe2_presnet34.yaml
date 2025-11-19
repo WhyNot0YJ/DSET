@@ -7,7 +7,7 @@ model:
     in_channels: [128, 256, 512]
     expansion: 0.5
   pretrained_weights: "pretrained/rtdetrv2_r34vd_120e_coco_ema.pth"
-  num_decoder_layers: 6
+  num_decoder_layers: 4
   hidden_dim: 256
   num_queries: 100
 
