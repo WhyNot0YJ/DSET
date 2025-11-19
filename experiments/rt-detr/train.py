@@ -11,7 +11,6 @@ from typing import Optional, Dict, Union, List
 from pycocotools.cocoeval import COCOeval
 from pycocotools.coco import COCO
 
-# 添加项目路径
 project_root = Path(__file__).parent.resolve()
 if str(os.getcwd()) not in sys.path:
     sys.path.insert(0, os.getcwd())
@@ -37,24 +36,12 @@ except ImportError:
 
 
 def create_backbone(backbone_type: str, **kwargs):
-    """创建backbone的工厂函数。
-    
-    Args:
-        backbone_type: backbone类型（presnet18/34/50/101, hgnetv2_l等）
-        **kwargs: backbone特定参数（会覆盖默认配置）
-    
-    Returns:
-        nn.Module: backbone模型实例
-        
-    Raises:
-        ValueError: 不支持的backbone类型
-    """
+    """创建backbone的工厂函数"""
     from src.nn.backbone.presnet import PResNet
     from src.nn.backbone.hgnetv2 import HGNetv2
     from src.nn.backbone.csp_resnet import CSPResNet
     from src.nn.backbone.csp_darknet import CSPDarkNet
     
-    # PResNet配置（通过正则表达式解析depth）
     if backbone_type.startswith('presnet'):
         depth_match = re.search(r'(\d+)', backbone_type)
         if depth_match:
@@ -66,14 +53,13 @@ def create_backbone(backbone_type: str, **kwargs):
             'depth': depth,
             'variant': 'd',
             'return_idx': [1, 2, 3],
-            'freeze_at': 0,  # 冻结第一个stage
-            'freeze_norm': True,  # 冻结BN层
+            'freeze_at': 0,
+            'freeze_norm': True,
             'pretrained': False
         }
         default_params.update(kwargs)
         return PResNet(**default_params)
     
-    # HGNetv2配置
     elif backbone_type.startswith('hgnetv2'):
         name_map = {'hgnetv2_l': 'L', 'hgnetv2_x': 'X', 'hgnetv2_h': 'H'}
         if backbone_type not in name_map:
@@ -89,7 +75,6 @@ def create_backbone(backbone_type: str, **kwargs):
         default_params.update(kwargs)
         return HGNetv2(**default_params)
     
-    # CSPResNet配置
     elif backbone_type.startswith('cspresnet'):
         name_map = {'cspresnet_s': 's', 'cspresnet_m': 'm', 'cspresnet_l': 'l', 'cspresnet_x': 'x'}
         if backbone_type not in name_map:
@@ -103,7 +88,6 @@ def create_backbone(backbone_type: str, **kwargs):
         default_params.update(kwargs)
         return CSPResNet(**default_params)
     
-    # CSPDarkNet配置
     elif backbone_type == 'cspdarknet':
         default_params = {'return_idx': [2, 3, -1]}
         default_params.update(kwargs)
@@ -146,10 +130,7 @@ class RTDETRTrainer:
         if using_config_file:
             self._validate_config_file()
         
-        # 确保学习率相关值是浮点数（YAML中的科学计数法可能被解析为字符串）
-        # 直接使用配置文件中的字段名：pretrained_lr, new_lr
         if 'training' in self.config:
-            # 类型转换确保是浮点数
             if 'pretrained_lr' in self.config['training']:
                 self.config['training']['pretrained_lr'] = float(self.config['training']['pretrained_lr'])
             if 'new_lr' in self.config['training']:
@@ -159,7 +140,6 @@ class RTDETRTrainer:
             if 'weight_decay' in self.config['training']:
                 self.config['training']['weight_decay'] = float(self.config['training']['weight_decay'])
         
-        # 命令行参数覆盖配置文件（只有在显式传递时才覆盖）
         if data_root is not None:
             self.config['data']['data_root'] = data_root
         
@@ -172,22 +152,18 @@ class RTDETRTrainer:
         if warmup_epochs is not None:
             self.config['training']['warmup_epochs'] = warmup_epochs
         
-        # 设置基本属性（device在misc配置中）
         if using_config_file:
-            # 如果使用配置文件，device必须存在，否则报错
             if 'misc' not in self.config or 'device' not in self.config['misc']:
                 raise ValueError(f"配置文件 {self.config_path} 缺少必需的配置项: misc.device")
             device_str = self.config['misc']['device']
         else:
             device_str = self.config.get('misc', {}).get('device', 'cuda')
         self.device = torch.device(device_str)
-        # 延迟日志设置，在 start_training 中设置（此时可以正确处理恢复训练）
         self.log_dir = None
         self.logger = None
         self.experiment_name = None
         self._create_directories()
         
-        # 初始化组件
         self.model = None
         self.criterion = None
         self.optimizer = None
@@ -196,9 +172,8 @@ class RTDETRTrainer:
         self.ema = None
         self.scaler = None
         self.visualizer = None
-        self.postprocessor = None  # 用于推理的后处理器
+        self.postprocessor = None
         
-        # 类别名称和颜色（用于推理可视化）- 8类
         self.class_names = [
             "Car", "Truck", "Van", "Bus", "Pedestrian", 
             "Cyclist", "Motorcyclist", "Trafficcone"

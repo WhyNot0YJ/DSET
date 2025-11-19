@@ -1,8 +1,4 @@
-"""Copyright(c) 2023 lyuwenyu. All Rights Reserved.
-
-DSET (Dual-Sparse Expert Transformer) HybridEncoder
-集成Token Pruning和Patch-MoE
-"""
+"""DSET HybridEncoder - 集成Token Pruning和Patch-MoE"""
 
 import copy
 from collections import OrderedDict
@@ -240,18 +236,13 @@ class HybridEncoder(nn.Module):
                  patch_moe_num_experts=4,
                  patch_moe_top_k=2,
                  patch_moe_patch_size=8):
-        """初始化HybridEncoder（支持DSET双稀疏）
-        
-        新增参数：
-            token_keep_ratio: Patch保留比例（0.5-0.7，用于Patch-level Pruning）
-            token_pruning_warmup_epochs: Token Pruning warmup epochs
+        """
+        Args:
+            token_keep_ratio: Patch保留比例（0.5-0.7）
+            token_pruning_warmup_epochs: Pruning warmup epochs
             patch_moe_num_experts: Patch-MoE专家数量
             patch_moe_top_k: Patch-MoE top-k
-            patch_moe_patch_size: Patch-MoE patch大小（默认8x8，必须与Patch-level Pruning一致）
-        
-        注意：
-            - Patch-MoE 和 Patch-level Pruning 必然启用（DSET核心特性）
-            - 无需配置 use_patch_moe 和 use_token_pruning
+            patch_moe_patch_size: Patch大小（需与Pruning一致）
         """
         super().__init__()
         self.in_channels = in_channels
@@ -264,13 +255,10 @@ class HybridEncoder(nn.Module):
         self.out_channels = [hidden_dim for _ in range(len(in_channels))]
         self.out_strides = feat_strides
         
-        # DSET 双稀疏配置
-        # ⚠️ 重要：Patch-MoE 和 Patch-level Pruning 必然启用（DSET核心特性）
-        self.use_patch_moe = True  # 固定启用
-        self.use_token_pruning = True  # 自动启用（使用 Patch-level Pruning）
-        self.use_patch_level_pruning = True  # 使用 Patch-level Pruning（与 Patch-MoE 兼容）
+        self.use_patch_moe = True
+        self.use_token_pruning = True
+        self.use_patch_level_pruning = True
         
-        # channel projection
         self.input_proj = nn.ModuleList()
         for in_channel in in_channels:
             if version == 'v1':
@@ -287,11 +275,10 @@ class HybridEncoder(nn.Module):
                 
             self.input_proj.append(proj)
 
-        # Token/Patch Pruning（Patch-level Pruning 必然启用，与 Patch-MoE 兼容）
         self.token_pruners = nn.ModuleList([
             PatchLevelPruner(
                 input_dim=hidden_dim,
-                patch_size=patch_moe_patch_size,  # 必须与 Patch-MoE 的 patch_size 一致
+                patch_size=patch_moe_patch_size,
                 keep_ratio=token_keep_ratio,
                 adaptive=True,
                 min_patches=10,
@@ -300,15 +287,13 @@ class HybridEncoder(nn.Module):
             ) for _ in range(len(use_encoder_idx))
         ])
         
-        # encoder transformer（支持Patch-MoE，必然启用）
-        # 共享MoE设计：所有encoder层共享同一个layer
         encoder_layer = TransformerEncoderLayer(
             hidden_dim, 
             nhead=nhead,
             dim_feedforward=dim_feedforward, 
             dropout=dropout,
             activation=enc_act,
-            use_moe=True,  # Patch-MoE 必然启用
+            use_moe=True,
             num_experts=patch_moe_num_experts,
             moe_top_k=patch_moe_top_k,
             patch_size=patch_moe_patch_size)
@@ -368,7 +353,7 @@ class HybridEncoder(nn.Module):
         return torch.concat([out_w.sin(), out_w.cos(), out_h.sin(), out_h.cos()], dim=1)[None, :, :]
     
     def set_epoch(self, epoch: int):
-        """设置当前epoch（用于Token Pruning的渐进式启用）"""
+        """设置当前epoch"""
         if self.token_pruners is not None:
             for pruner in self.token_pruners:
                 pruner.set_epoch(epoch)
@@ -388,17 +373,13 @@ class HybridEncoder(nn.Module):
         expert_indices_list = encoder_info.get('moe_expert_indices', [])
         
         if len(router_logits_list) == 0:
-            # 尝试从其他信息推断device
             device = None
             if 'moe_expert_indices' in encoder_info and len(encoder_info['moe_expert_indices']) > 0:
                 device = encoder_info['moe_expert_indices'][0].device
             zero_tensor = torch.tensor(0.0, device=device) if device is not None else torch.tensor(0.0)
             return {'balance_loss': zero_tensor, 'entropy_loss': zero_tensor}
         
-        # 假设所有Patch-MoE层使用相同数量的专家
         num_experts = router_logits_list[0].shape[-1] if len(router_logits_list) > 0 else 4
-        
-        # 计算Patch-MoE专用损失
         balance_loss = compute_patch_moe_balance_loss(router_logits_list, num_experts, expert_indices_list)
         entropy_loss = compute_patch_moe_entropy_loss(router_logits_list)
         
@@ -408,7 +389,6 @@ class HybridEncoder(nn.Module):
         assert len(feats) == len(self.in_channels)
         proj_feats = [self.input_proj[i](feat) for i, feat in enumerate(feats)]
         
-        # 用于收集Patch-MoE和Token Pruning的统计信息
         encoder_info = {
             'token_pruning_ratios': [],
             'importance_scores_list': [],
@@ -416,14 +396,11 @@ class HybridEncoder(nn.Module):
             'moe_expert_indices': []
         }
         
-        # encoder
         if self.num_encoder_layers > 0:
             for i, enc_ind in enumerate(self.use_encoder_idx):
                 h, w = proj_feats[enc_ind].shape[2:]
-                # flatten [B, C, H, W] to [B, HxW, C]
                 src_flatten = proj_feats[enc_ind].flatten(2).permute(0, 2, 1)
                 
-                # Patch-level Pruning（必然启用，与 Patch-MoE 兼容）
                 src_flatten, kept_indices, prune_info = self.token_pruners[i](
                     src_flatten, 
                     spatial_shape=(h, w),
@@ -431,28 +408,23 @@ class HybridEncoder(nn.Module):
                 )
                 encoder_info['token_pruning_ratios'].append(prune_info.get('pruning_ratio', 0.0))
                 
-                # 保存重要性分数用于计算损失（Patch-level Pruning）
                 if 'patch_importance_scores' in prune_info:
                     encoder_info['importance_scores_list'].append(prune_info['patch_importance_scores'])
                 
-                # 更新h, w（Patch-level Pruning 保持规则2D结构）
                 new_spatial_shape = prune_info.get('new_spatial_shape', (h, w))
-                h, w = new_spatial_shape
-                kept_indices = None  # Patch-level Pruning 保持规则结构，不需要kept_indices
+                h_pruned, w_pruned = new_spatial_shape
+                original_spatial_shape = prune_info.get('original_spatial_shape', (h, w))
+                h_original, w_original = original_spatial_shape
+                kept_indices = None
                 
-                # Position embedding
                 if self.training or self.eval_spatial_size is None:
                     pos_embed = self.build_2d_sincos_position_embedding(
-                        w, h, self.hidden_dim, self.pe_temperature).to(src_flatten.device)
+                        w_pruned, h_pruned, self.hidden_dim, self.pe_temperature).to(src_flatten.device)
                 else:
                     pos_embed = getattr(self, f'pos_embed{enc_ind}', None).to(src_flatten.device)
-                
-                # Patch-level Pruning 保持规则结构，pos_embed不需要选择
 
-                # Encoder forward（支持Patch-MoE）
-                memory :torch.Tensor = self.encoder[i](src_flatten, pos_embed=pos_embed, spatial_shape=(h, w))
+                memory :torch.Tensor = self.encoder[i](src_flatten, pos_embed=pos_embed, spatial_shape=(h_pruned, w_pruned))
                 
-                # 收集Patch-MoE的路由信息（必然启用）
                 for layer in self.encoder[i].layers:
                     if hasattr(layer, 'patch_moe_layer'):
                         moe_layer = layer.patch_moe_layer
@@ -461,8 +433,10 @@ class HybridEncoder(nn.Module):
                         if hasattr(moe_layer, 'expert_indices_cache') and moe_layer.expert_indices_cache is not None:
                             encoder_info['moe_expert_indices'].append(moe_layer.expert_indices_cache)
                 
-                # 恢复特征图（Patch-level Pruning 保持规则2D结构，直接reshape）
-                proj_feats[enc_ind] = memory.permute(0, 2, 1).reshape(-1, self.hidden_dim, h, w).contiguous()
+                memory_2d = memory.permute(0, 2, 1).reshape(-1, self.hidden_dim, h_pruned, w_pruned).contiguous()
+                if h_pruned != h_original or w_pruned != w_original:
+                    memory_2d = F.interpolate(memory_2d, size=(h_original, w_original), mode='bilinear', align_corners=False)
+                proj_feats[enc_ind] = memory_2d
 
         # broadcasting and fusion
         inner_outs = [proj_feats[-1]]

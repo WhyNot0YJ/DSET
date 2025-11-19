@@ -1,21 +1,5 @@
 #!/usr/bin/env python3
-"""DSET (Dual-Sparse Expert Transformer) 训练脚本 - DAIR-V2X数据集
-
-双稀疏专家架构：
-1. Token Pruning：在Encoder输入前剪枝冗余tokens（可学习的重要性预测器）
-2. Patch-MoE：Encoder中的Patch-level MoE（空间特征建模）
-3. Decoder MoE：Decoder FFN层的自适应专家混合
-
-主要特性：
-- 双稀疏机制：Token Pruning + Patch-MoE
-- 渐进式训练：Token Pruning warmup策略
-- 支持多种backbone架构
-- 混合精度训练
-- EMA模型
-- 学习率预热
-- COCO格式评估
-- 检查点恢复
-"""
+"""DSET训练脚本 - 双稀疏专家架构（Token Pruning + Patch-MoE + Decoder MoE）"""
 
 import os
 import sys
@@ -36,41 +20,29 @@ from typing import Dict, List, Tuple, Optional
 from pycocotools.cocoeval import COCOeval
 from pycocotools.coco import COCO
 
-# 添加项目路径
 project_root = Path(__file__).parent.resolve()
-# 确保当前工作目录在路径中（重要：当从不同目录运行时）
 if str(os.getcwd()) not in sys.path:
     sys.path.insert(0, os.getcwd())
 sys.path.insert(0, str(project_root))
-sys.path.insert(0, str(project_root.parent))  # 添加experiments目录
+sys.path.insert(0, str(project_root.parent))
 
-# 导入随机种子工具
 from seed_utils import set_seed, seed_worker
-
-# 导入自定义模块
 from src.misc.training_visualizer import TrainingVisualizer
 from src.misc.early_stopping import EarlyStopping
-
-# 导入RT-DETR组件
 from src.zoo.rtdetr import HybridEncoder, RTDETRTransformerv2, RTDETRCriterionv2, HungarianMatcher
 from src.nn.backbone.presnet import PResNet
 from src.nn.backbone.hgnetv2 import HGNetv2
 from src.nn.backbone.csp_resnet import CSPResNet
 from src.nn.backbone.csp_darknet import CSPDarkNet
 from src.nn.backbone.test_resnet import MResNet
-
-# 导入优化器增强模块
 from src.optim.ema import ModelEMA
 from src.optim.amp import GradScaler
 from src.optim.warmup import WarmupLR
-
-# 导入DAIR-V2X数据集
 from src.data.dataset.dairv2x_detection import DAIRV2XDetection
 from src.nn.postprocessor.detr_postprocessor import DetDETRPostProcessor
 from src.nn.postprocessor.box_revert import BoxProcessFormat
 import cv2
 
-# 导入 batch_inference 中的函数（确保逻辑一致）
 try:
     from batch_inference import postprocess_outputs, draw_boxes, inference_from_preprocessed_image
     USE_BATCH_INFERENCE_LOGIC = True
@@ -79,19 +51,7 @@ except ImportError:
 
 
 def create_backbone(backbone_type: str, **kwargs) -> nn.Module:
-    """创建backbone的工厂函数。
-    
-    Args:
-        backbone_type: backbone类型（presnet18/34/50/101, hgnetv2_l等）
-        **kwargs: backbone特定参数（会覆盖默认配置）
-    
-    Returns:
-        nn.Module: backbone模型实例
-        
-    Raises:
-        ValueError: 不支持的backbone类型
-    """
-    # PResNet配置（通过正则表达式解析depth）
+    """创建backbone的工厂函数"""
     if backbone_type.startswith('presnet'):
         depth_match = re.search(r'(\d+)', backbone_type)
         if depth_match:
@@ -103,14 +63,13 @@ def create_backbone(backbone_type: str, **kwargs) -> nn.Module:
             'depth': depth,
             'variant': 'd',
             'return_idx': [1, 2, 3],
-            'freeze_at': 0,  # 冻结第一个stage（与rt-detr保持一致）
-            'freeze_norm': True,  # 冻结BN层（与rt-detr保持一致）
+            'freeze_at': 0,
+            'freeze_norm': True,
             'pretrained': False
         }
         default_params.update(kwargs)
         return PResNet(**default_params)
     
-    # HGNetv2配置
     elif backbone_type.startswith('hgnetv2'):
         name_map = {'hgnetv2_l': 'L', 'hgnetv2_x': 'X', 'hgnetv2_h': 'H'}
         if backbone_type not in name_map:
@@ -119,8 +78,8 @@ def create_backbone(backbone_type: str, **kwargs) -> nn.Module:
         default_params = {
             'name': name_map[backbone_type],
             'return_idx': [1, 2, 3],
-            'freeze_at': 0,  # 冻结第一个stage（与rt-detr保持一致）
-            'freeze_norm': True,  # 冻结BN层（与rt-detr保持一致）
+            'freeze_at': 0,
+            'freeze_norm': True,
             'pretrained': False
         }
         default_params.update(kwargs)
@@ -1292,6 +1251,10 @@ class DSETTrainer:
             with torch.amp.autocast('cuda'):
                 outputs = self.model(images, targets)
                 loss = outputs.get('total_loss', torch.tensor(0.0, device=self.device))
+                if not isinstance(loss, torch.Tensor):
+                    loss = torch.tensor(loss, device=self.device)
+                if loss.dim() > 0:
+                    loss = loss.sum()
             
             # 反向传播（添加梯度裁剪）
             self.scaler.scale(loss).backward()
@@ -1305,18 +1268,23 @@ class DSETTrainer:
             self.ema.update(self.model)
             
             # 统计损失
-            total_loss += loss.item()
+            total_loss += loss.item() if isinstance(loss, torch.Tensor) else float(loss)
             if isinstance(outputs, dict):
                 if 'detection_loss' in outputs:
-                    detection_loss += outputs['detection_loss'].item()
+                    det_loss_val = outputs['detection_loss']
+                    detection_loss += det_loss_val.item() if isinstance(det_loss_val, torch.Tensor) else float(det_loss_val)
                 if 'decoder_moe_loss' in outputs:
-                    moe_lb_loss += outputs['decoder_moe_loss'].item()
+                    moe_loss_val = outputs['decoder_moe_loss']
+                    moe_lb_loss += moe_loss_val.item() if isinstance(moe_loss_val, torch.Tensor) else float(moe_loss_val)
                 if 'encoder_moe_balance_loss' in outputs:
-                    encoder_moe_balance_loss_sum += outputs['encoder_moe_balance_loss'].item()
+                    enc_bal_loss_val = outputs['encoder_moe_balance_loss']
+                    encoder_moe_balance_loss_sum += enc_bal_loss_val.item() if isinstance(enc_bal_loss_val, torch.Tensor) else float(enc_bal_loss_val)
                 if 'encoder_moe_entropy_loss' in outputs:
-                    encoder_moe_entropy_loss_sum += outputs['encoder_moe_entropy_loss'].item()
+                    enc_ent_loss_val = outputs['encoder_moe_entropy_loss']
+                    encoder_moe_entropy_loss_sum += enc_ent_loss_val.item() if isinstance(enc_ent_loss_val, torch.Tensor) else float(enc_ent_loss_val)
                 if 'token_pruning_loss' in outputs:
-                    token_pruning_loss_sum += outputs['token_pruning_loss'].item()
+                    tp_loss_val = outputs['token_pruning_loss']
+                    token_pruning_loss_sum += tp_loss_val.item() if isinstance(tp_loss_val, torch.Tensor) else float(tp_loss_val)
             
             # 收集Token Pruning信息（从outputs中获取encoder_info）
             if isinstance(outputs, dict) and 'encoder_info' in outputs:

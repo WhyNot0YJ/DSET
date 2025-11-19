@@ -27,7 +27,7 @@ training:
   early_stopping_metric: "mAP_0.5_0.95"
   seed: 42
   deterministic: false
-  moe_balance_weight: 0.1  # MoE负载均衡损失权重 (top_k=1, 需要更强约束)
+  moe_balance_weight: 0.1
 
 data:
   data_root: "/root/autodl-fs/datasets/DAIR-V2X"

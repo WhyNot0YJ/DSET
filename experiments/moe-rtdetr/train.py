@@ -1,17 +1,5 @@
 #!/usr/bin/env python3
-"""自适应专家RT-DETR训练脚本 - DAIR-V2X数据集
-
-细粒度MoE架构：Decoder FFN层集成自适应专家层
-
-主要特性：
-- 细粒度MoE：每个Decoder层的FFN使用自适应专家层
-- 支持多种backbone架构
-- 混合精度训练
-- EMA模型
-- 学习率预热
-- COCO格式评估
-- 检查点恢复
-"""
+"""自适应专家RT-DETR训练脚本 - 细粒度MoE架构（Decoder FFN层集成自适应专家层）"""
 
 import os
 import sys
@@ -32,42 +20,29 @@ from typing import Dict, List, Tuple, Optional
 from pycocotools.cocoeval import COCOeval
 from pycocotools.coco import COCO
 
-# 添加项目路径
 project_root = Path(__file__).parent.resolve()
-# 确保当前工作目录在路径中（重要：当从不同目录运行时）
 if str(os.getcwd()) not in sys.path:
     sys.path.insert(0, os.getcwd())
 sys.path.insert(0, str(project_root))
-sys.path.insert(0, str(project_root.parent))  # 添加experiments目录
+sys.path.insert(0, str(project_root.parent))
 
-# 导入随机种子工具
 from seed_utils import set_seed, seed_worker
-
-# 导入自定义模块（与 dset 保持完全相同的导入顺序）
 from src.misc.training_visualizer import TrainingVisualizer
 from src.misc.early_stopping import EarlyStopping
-
-# 先导入其他模块，最后导入 data 相关模块（避免循环导入）
-# 导入RT-DETR组件
 from src.zoo.rtdetr import HybridEncoder, RTDETRTransformerv2, RTDETRCriterionv2, HungarianMatcher
 from src.nn.backbone.presnet import PResNet
 from src.nn.backbone.hgnetv2 import HGNetv2
 from src.nn.backbone.csp_resnet import CSPResNet
 from src.nn.backbone.csp_darknet import CSPDarkNet
 from src.nn.backbone.test_resnet import MResNet
-
-# 导入优化器增强模块
 from src.optim.ema import ModelEMA
 from src.optim.amp import GradScaler
 from src.optim.warmup import WarmupLR
-
-# 最后导入 data 相关模块（此时 src 包已完全初始化）
 from src.data.dataset.dairv2x_detection import DAIRV2XDetection
 from src.nn.postprocessor.detr_postprocessor import DetDETRPostProcessor
 from src.nn.postprocessor.box_revert import BoxProcessFormat
 import cv2
 
-# 导入 batch_inference 中的函数（确保逻辑一致）
 try:
     from batch_inference import postprocess_outputs, draw_boxes, inference_from_preprocessed_image
     USE_BATCH_INFERENCE_LOGIC = True
@@ -76,19 +51,7 @@ except ImportError:
 
 
 def create_backbone(backbone_type: str, **kwargs) -> nn.Module:
-    """创建backbone的工厂函数。
-    
-    Args:
-        backbone_type: backbone类型（presnet18/34/50/101, hgnetv2_l等）
-        **kwargs: backbone特定参数（会覆盖默认配置）
-    
-    Returns:
-        nn.Module: backbone模型实例
-        
-    Raises:
-        ValueError: 不支持的backbone类型
-    """
-    # PResNet配置（通过正则表达式解析depth）
+    """创建backbone的工厂函数"""
     if backbone_type.startswith('presnet'):
         depth_match = re.search(r'(\d+)', backbone_type)
         if depth_match:
@@ -100,14 +63,13 @@ def create_backbone(backbone_type: str, **kwargs) -> nn.Module:
             'depth': depth,
             'variant': 'd',
             'return_idx': [1, 2, 3],
-            'freeze_at': 0,  # 冻结第一个stage（与rt-detr保持一致）
-            'freeze_norm': True,  # 冻结BN层（与rt-detr保持一致）
+            'freeze_at': 0,
+            'freeze_norm': True,
             'pretrained': False
         }
         default_params.update(kwargs)
         return PResNet(**default_params)
     
-    # HGNetv2配置
     elif backbone_type.startswith('hgnetv2'):
         name_map = {'hgnetv2_l': 'L', 'hgnetv2_x': 'X', 'hgnetv2_h': 'H'}
         if backbone_type not in name_map:
@@ -116,14 +78,13 @@ def create_backbone(backbone_type: str, **kwargs) -> nn.Module:
         default_params = {
             'name': name_map[backbone_type],
             'return_idx': [1, 2, 3],
-            'freeze_at': 0,  # 冻结第一个stage
-            'freeze_norm': True,  # 冻结BN层
+            'freeze_at': 0,
+            'freeze_norm': True,
             'pretrained': False
         }
         default_params.update(kwargs)
         return HGNetv2(**default_params)
     
-    # CSPResNet配置
     elif backbone_type.startswith('cspresnet'):
         name_map = {'cspresnet_s': 's', 'cspresnet_m': 'm', 'cspresnet_l': 'l', 'cspresnet_x': 'x'}
         if backbone_type not in name_map:
@@ -137,7 +98,6 @@ def create_backbone(backbone_type: str, **kwargs) -> nn.Module:
         default_params.update(kwargs)
         return CSPResNet(**default_params)
     
-    # CSPDarkNet配置
     elif backbone_type == 'cspdarknet':
         default_params = {'return_idx': [2, 3, -1]}
         default_params.update(kwargs)
@@ -158,24 +118,16 @@ def create_backbone(backbone_type: str, **kwargs) -> nn.Module:
 
 
 class AdaptiveExpertRTDETR(nn.Module):
-    """自适应专家RT-DETR模型（细粒度MoE架构）。
-    
-    架构设计：
-    1. 共享Backbone：提取多尺度特征
-    2. 共享Encoder：增强特征表达
-    3. 自适应专家Decoder：FFN层使用AdaptiveExpertLayer（每层独立Router + N个专家FFN）
-    4. 统一输出：直接输出检测结果，无需额外融合
-    """
+    """自适应专家RT-DETR模型（细粒度MoE架构）"""
     
     def __init__(self, config_name: str = "A", hidden_dim: int = 256, 
                  num_queries: int = 300, top_k: int = 2, backbone_type: str = "presnet34",
                  num_decoder_layers: int = 3, encoder_in_channels: list = None, 
                  encoder_expansion: float = 1.0, num_experts: int = None,
                  moe_balance_weight: float = None):
-        """初始化自适应专家RT-DETR模型。
-        
+        """
         Args:
-            config_name: 专家配置名称（保留用于兼容性，但不再用于确定专家数量）
+            config_name: 专家配置名称
             hidden_dim: 隐藏层维度
             num_queries: 查询数量
             top_k: 路由器Top-K选择
@@ -183,8 +135,8 @@ class AdaptiveExpertRTDETR(nn.Module):
             num_decoder_layers: Decoder层数
             encoder_in_channels: Encoder输入通道数
             encoder_expansion: Encoder expansion参数
-            num_experts: 专家数量（优先使用，如果未提供则通过config_name映射）
-            moe_balance_weight: MoE负载均衡损失权重（可选，默认自动调整）
+            num_experts: 专家数量
+            moe_balance_weight: MoE负载均衡损失权重
         """
         super().__init__()
         
@@ -196,30 +148,23 @@ class AdaptiveExpertRTDETR(nn.Module):
         self.image_size = 640
         self.num_decoder_layers = num_decoder_layers
         
-        # Encoder配置
         self.encoder_in_channels = encoder_in_channels or [512, 1024, 2048]
         self.encoder_expansion = encoder_expansion
         
-        # MoE配置：支持自定义权重
         if moe_balance_weight is not None:
             self.moe_balance_weight = moe_balance_weight
         
-        # 获取专家数量：优先使用直接传入的num_experts，否则通过config_name映射（向后兼容）
         if num_experts is not None:
             self.num_experts = num_experts
         else:
             configs = {"A": 6, "B": 3, "C": 2}
             self.num_experts = configs.get(config_name, 6)
         
-        # ========== 共享组件 ==========
         self.backbone = self._build_backbone()
         self.encoder = self._build_encoder()
         
-        # ========== 细粒度MoE Decoder ==========
-        # 使用传入的decoder层数参数
-        
         self.decoder = RTDETRTransformerv2(
-            num_classes=8,  # 8类：Car, Truck, Van, Bus, Pedestrian, Cyclist, Motorcyclist, Trafficcone
+            num_classes=8,
             hidden_dim=hidden_dim,
             num_queries=num_queries,
             num_layers=num_decoder_layers,
@@ -230,23 +175,20 @@ class AdaptiveExpertRTDETR(nn.Module):
             feat_channels=[256, 256, 256],
             feat_strides=[8, 16, 32],
             num_levels=3,
-            # 细粒度MoE配置
             use_moe=True,
             num_experts=self.num_experts,
             moe_top_k=top_k
         )
         
         print(f"✓ MoE Decoder配置: {num_decoder_layers}层, {self.num_experts}个专家, top_k={top_k}")
-        
-        # RT-DETR损失函数
         self.detr_criterion = self._build_detr_criterion()
         
     def _build_backbone(self) -> nn.Module:
-        """构建backbone。"""
+        """构建backbone"""
         return create_backbone(self.backbone_type)
     
     def _build_encoder(self) -> nn.Module:
-        """构建encoder - 使用配置参数。"""
+        """构建encoder"""
         input_size = [self.image_size, self.image_size]
         
         return HybridEncoder(
@@ -271,7 +213,6 @@ class AdaptiveExpertRTDETR(nn.Module):
             gamma=2.0
         )
         
-        # 主损失权重
         main_weight_dict = {
             'loss_vfl': 1.0,
             'loss_bbox': 5.0,
@@ -280,26 +221,21 @@ class AdaptiveExpertRTDETR(nn.Module):
         
         num_decoder_layers = self.num_decoder_layers
         aux_weight_dict = {}
-        for i in range(num_decoder_layers - 1):  # 前N-1层
+        for i in range(num_decoder_layers - 1):
             aux_weight_dict[f'loss_vfl_aux_{i}'] = 1.0
             aux_weight_dict[f'loss_bbox_aux_{i}'] = 5.0
             aux_weight_dict[f'loss_giou_aux_{i}'] = 2.0
         
-        # Encoder辅助损失（通常1层）
         aux_weight_dict['loss_vfl_enc_0'] = 1.0
         aux_weight_dict['loss_bbox_enc_0'] = 5.0
         aux_weight_dict['loss_giou_enc_0'] = 2.0
         
-        # Denoising辅助损失（如果启用num_denoising>0）
-        # RT-DETR默认num_denoising=100，我们也需要添加这些损失的权重
-        # 使用动态读取的层数
-        num_denoising_layers = num_decoder_layers  # 和decoder层数一致
+        num_denoising_layers = num_decoder_layers
         for i in range(num_denoising_layers):
             aux_weight_dict[f'loss_vfl_dn_{i}'] = 1.0
             aux_weight_dict[f'loss_bbox_dn_{i}'] = 5.0
             aux_weight_dict[f'loss_giou_dn_{i}'] = 2.0
         
-        # 合并所有权重
         weight_dict = {**main_weight_dict, **aux_weight_dict}
         
         criterion = RTDETRCriterionv2(
@@ -308,7 +244,7 @@ class AdaptiveExpertRTDETR(nn.Module):
             losses=['vfl', 'boxes'],
             alpha=0.75,
             gamma=2.0,
-            num_classes=8,  # 8类：Car, Truck, Van, Bus, Pedestrian, Cyclist, Motorcyclist, Trafficcone
+            num_classes=8,
             boxes_weight_format=None,
             share_matched_indices=False
         )
@@ -318,8 +254,7 @@ class AdaptiveExpertRTDETR(nn.Module):
     
     def forward(self, images: torch.Tensor, 
                 targets: Optional[List[Dict]] = None) -> Dict[str, torch.Tensor]:
-        """前向传播。
-        
+        """
         Args:
             images: [B, C, H, W] 输入图像
             targets: 训练目标列表（可选）
@@ -327,14 +262,10 @@ class AdaptiveExpertRTDETR(nn.Module):
         Returns:
             Dict: 包含检测结果和损失的字典
         """
-        # 共享特征提取
         backbone_features = self.backbone(images)
         encoder_features = self.encoder(backbone_features)
-        
-        # MoE Decoder前向（内部自动处理路由和专家融合）
         decoder_output = self.decoder(encoder_features, targets)
         
-        # 构建输出字典
         output = {
             'pred_logits': decoder_output.get('pred_logits'),
             'pred_boxes': decoder_output.get('pred_boxes'),
@@ -343,28 +274,23 @@ class AdaptiveExpertRTDETR(nn.Module):
         }
         
         if targets is not None:
-            # 计算检测损失（训练和验证都需要）
             detection_loss_dict = self.detr_criterion(decoder_output, targets)
             detection_loss = sum(v for v in detection_loss_dict.values() 
                                if isinstance(v, torch.Tensor))
             
-            # 获取MoE负载均衡损失（仅训练时）
             if self.training:
                 moe_load_balance_loss = decoder_output.get('moe_load_balance_loss', 
                                                           torch.tensor(0.0, device=images.device))
             else:
                 moe_load_balance_loss = torch.tensor(0.0, device=images.device)
             
-            # 总损失：检测损失 + MoE负载均衡损失
-            # 支持从实例变量读取MoE权重（如果设置），否则使用默认值
             if hasattr(self, 'moe_balance_weight'):
                 balance_weight = self.moe_balance_weight
             else:
-                # 动态调整MoE损失权重（top_k=1时需要更强的约束）
                 if hasattr(self.decoder, 'moe_top_k') and self.decoder.moe_top_k == 1:
-                    balance_weight = 0.1  # top_k=1时使用更大的权重
+                    balance_weight = 0.1
                 else:
-                    balance_weight = 0.05  # top_k>1时使用较小的权重
+                    balance_weight = 0.05
             
             total_loss = detection_loss + balance_weight * moe_load_balance_loss
             
@@ -377,26 +303,20 @@ class AdaptiveExpertRTDETR(nn.Module):
 
 
 class AdaptiveExpertTrainer:
-    """自适应专家RT-DETR训练器。
-    
-    负责模型训练、验证、检查点管理等功能。
-    """
+    """自适应专家RT-DETR训练器"""
     
     def __init__(self, config: Dict, config_file_path: Optional[str] = None):
-        """初始化训练器。
-        
+        """
         Args:
             config: 训练配置字典
-            config_file_path: 配置文件路径（如果使用配置文件），用于验证
+            config_file_path: 配置文件路径
         """
         self.config = config
         self.config_file_path = config_file_path
         
-        # 如果使用配置文件，验证必需的配置项
         if config_file_path:
             self._validate_config_file()
         
-        # 如果使用配置文件，device必须存在，否则报错
         if config_file_path:
             if 'misc' not in self.config or 'device' not in self.config['misc']:
                 raise ValueError(f"配置文件 {config_file_path} 缺少必需的配置项: misc.device")
@@ -405,20 +325,16 @@ class AdaptiveExpertTrainer:
             device_str = self.config.get('misc', {}).get('device', 'cuda')
         self.device = torch.device(device_str)
         
-        # 训练状态
         self.current_epoch = 0
         self.best_loss = float('inf')
-        self.best_map = 0.0  # 记录最佳mAP
+        self.best_map = 0.0
         self.global_step = 0
-        # 从配置中读取 resume_from_checkpoint（支持两种格式）
         self.resume_from_checkpoint = self.config.get('resume_from_checkpoint', None)
         if self.resume_from_checkpoint is None and 'checkpoint' in self.config:
             self.resume_from_checkpoint = self.config['checkpoint'].get('resume_from_checkpoint', None)
         
-        # 梯度裁剪参数（从配置读取）
         self.clip_max_norm = self.config.get('training', {}).get('clip_max_norm', 10.0)
         
-        # 初始化组件
         self._setup_logging()
         self.model = self._create_model()
         self.train_loader, self.val_loader = self._create_data_loaders()
@@ -430,11 +346,8 @@ class AdaptiveExpertTrainer:
         
         self.visualizer = TrainingVisualizer(log_dir=self.log_dir, model_type='moe', experiment_name=self.experiment_name)
         self.early_stopping = self._create_early_stopping()
-        
-        # 初始化推理相关组件
         self._setup_inference_components()
         
-        # 恢复检查点
         if self.resume_from_checkpoint:
             self._resume_from_checkpoint()
     
@@ -515,16 +428,12 @@ class AdaptiveExpertTrainer:
                 yaml.dump(self.config, f, default_flow_style=False)
     
     def _create_model(self) -> AdaptiveExpertRTDETR:
-        """创建模型。"""
-        # 从配置文件读取encoder配置
+        """创建模型"""
         encoder_config = self.config['model']['encoder']
         encoder_in_channels = encoder_config['in_channels']
         encoder_expansion = encoder_config['expansion']
         
-        # 从配置文件读取专家数量，如果未配置则使用None（会通过config_name映射）
         num_experts = self.config['model'].get('num_experts', None)
-        
-        # 从配置文件读取MoE权重
         moe_balance_weight = self.config.get('training', {}).get('moe_balance_weight', None)
         
         model = AdaptiveExpertRTDETR(
@@ -540,18 +449,14 @@ class AdaptiveExpertTrainer:
             moe_balance_weight=moe_balance_weight
         )
         
-        # 加载预训练权重
         pretrained_weights = self.config['model'].get('pretrained_weights', None)
         if pretrained_weights:
             self._load_pretrained_weights(model, pretrained_weights)
         
         model = model.to(self.device)
         
-        # 启用GPU优化设置
         if torch.cuda.is_available():
-            # 启用cudnn benchmark以加速卷积操作（输入尺寸固定时）
             torch.backends.cudnn.benchmark = True
-            # 启用TensorFloat-32（RTX 5090支持，可加速某些操作）
             torch.backends.cuda.matmul.allow_tf32 = True
             torch.backends.cudnn.allow_tf32 = True
             self.logger.info("✓ 已启用GPU优化: cudnn.benchmark=True, TF32=True")
