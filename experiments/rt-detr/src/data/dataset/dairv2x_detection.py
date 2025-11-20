@@ -122,8 +122,8 @@ class DAIRV2XDetection(DetDataset):
         annotations = self._load_annotations(annotation_path)
         
         # 预处理图像和标注
-        processed_image, scale, pad_h, pad_w = self._preprocess_image(image)
-        processed_annotations = self._adjust_annotations(annotations, scale, pad_h, pad_w)
+        processed_image, (scale_h, scale_w), pad_h, pad_w, new_h, new_w = self._preprocess_image(image)
+        processed_annotations = self._adjust_annotations(annotations, scale_h, scale_w, pad_h, pad_w, new_h, new_w)
         
         # 方案B：训练时过滤ignore框，评估时保留（标记为iscrowd=1）
         if self.split == 'train':
@@ -244,7 +244,7 @@ class DAIRV2XDetection(DetDataset):
         
         return processed_annotations
     
-    def _preprocess_image(self, image: np.ndarray) -> Tuple[torch.Tensor, float, int, int]:
+    def _preprocess_image(self, image: np.ndarray) -> Tuple[torch.Tensor, Tuple[float, float], int, int, int, int]:
         """预处理图像：保持宽高比缩放到目标尺寸，确保尺寸是32的倍数"""
         H, W, C = image.shape
         
@@ -282,14 +282,28 @@ class DAIRV2XDetection(DetDataset):
         pad_w = (self.target_size - new_w) // 2
         padded_image[:, pad_h:pad_h+new_h, pad_w:pad_w+new_w] = resized_image
         
-        return padded_image, scale, pad_h, pad_w
+        # ⚠️ 关键修复：返回实际的缩放比例（考虑32倍数调整）
+        # 使用调整后的 new_h 和 new_w 计算实际缩放比例，确保坐标转换一致
+        actual_scale_h = new_h / H
+        actual_scale_w = new_w / W
+        
+        return padded_image, (actual_scale_h, actual_scale_w), pad_h, pad_w, new_h, new_w
     
-    def _adjust_annotations(self, annotations: List[Dict], scale: float, pad_h: int, pad_w: int) -> List[Dict]:
+    def _adjust_annotations(self, annotations: List[Dict], scale_h: float, scale_w: float, 
+                           pad_h: int, pad_w: int, new_h: int, new_w: int) -> List[Dict]:
         """调整标注坐标以匹配预处理后的图像
         
         转换为RT-DETR期望的格式：
         - 格式：[cx, cy, w, h] (中心点坐标)
         - 归一化：相对于target_size归一化到[0, 1]
+        
+        Args:
+            scale_h: 高度的实际缩放比例 (new_h / orig_h)
+            scale_w: 宽度的实际缩放比例 (new_w / orig_w)
+            pad_h: 高度方向的填充偏移
+            pad_w: 宽度方向的填充偏移
+            new_h: resize后的实际高度
+            new_w: resize后的实际宽度
         """
         adjusted_annotations = []
         
@@ -297,11 +311,12 @@ class DAIRV2XDetection(DetDataset):
             bbox = ann['bbox']  # [x, y, w, h] COCO格式（左上角）
             x, y, w, h = bbox
             
-            # 缩放
-            x *= scale
-            y *= scale
-            w *= scale
-            h *= scale
+            # ⚠️ 关键修复：使用实际的缩放比例（考虑32倍数调整）
+            # 分别使用 scale_w 和 scale_h，确保坐标转换准确
+            x *= scale_w
+            y *= scale_h
+            w *= scale_w
+            h *= scale_h
             
             # 添加填充偏移
             x += pad_w

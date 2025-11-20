@@ -157,11 +157,16 @@ def preprocess_image(image_path: str, target_size: int = 640):
     img_tensor = img_tensor.unsqueeze(0)  # [1, 3, H, W]
     
     # 保存原始尺寸和padding信息用于后处理
+    # ⚠️ 关键修复：计算实际缩放比例（考虑32倍数调整）
+    actual_scale_h = new_h / orig_h
+    actual_scale_w = new_w / orig_w
     meta = {
         'orig_size': torch.tensor([[orig_h, orig_w]]),  # [h, w] format
         'pad_h': pad_h,
         'pad_w': pad_w,
-        'scale': scale,
+        'scale': scale,  # 保留原始scale用于兼容性
+        'scale_h': actual_scale_h,  # 实际高度缩放比例
+        'scale_w': actual_scale_w,  # 实际宽度缩放比例
         'new_h': new_h,
         'new_w': new_w
     }
@@ -193,8 +198,17 @@ def postprocess_outputs(outputs, postprocessor, meta, conf_threshold=0.3, target
     
     # 获取原始尺寸和resize后的尺寸 [w, h] 格式
     orig_h, orig_w = meta['orig_size'][0].tolist()
-    new_w = meta.get('new_w', int(orig_w * meta['scale']))
-    new_h = meta.get('new_h', int(orig_h * meta['scale']))
+    # ⚠️ 关键修复：优先使用保存的new_h/new_w，如果没有则使用实际缩放比例计算
+    if 'new_h' in meta and 'new_w' in meta:
+        new_h = meta['new_h']
+        new_w = meta['new_w']
+    elif 'scale_h' in meta and 'scale_w' in meta:
+        new_h = int(orig_h * meta['scale_h'])
+        new_w = int(orig_w * meta['scale_w'])
+    else:
+        # Fallback: 使用原始scale（不推荐，但保持兼容性）
+        new_h = int(orig_h * meta['scale'])
+        new_w = int(orig_w * meta['scale'])
     
     # 准备后处理参数（使用RESIZE模式，只传递eval_sizes，得到640x640坐标）
     eval_sizes = torch.tensor([[target_size, target_size]], device=output_device)  # [1, 2] format: [w, h]
@@ -345,11 +359,17 @@ def inference_from_preprocessed_image(image_tensor, model, postprocessor, orig_i
     pad_h = (target_size - new_h) // 2
     pad_w = (target_size - new_w) // 2
     
+    # ⚠️ 关键修复：计算实际缩放比例（考虑32倍数调整）
+    actual_scale_h = new_h / orig_h
+    actual_scale_w = new_w / orig_w
+    
     meta = {
         'orig_size': torch.tensor([[orig_h, orig_w]]),  # [1, 2] format: [h, w]
         'pad_h': pad_h,
         'pad_w': pad_w,
-        'scale': scale,
+        'scale': scale,  # 保留原始scale用于兼容性
+        'scale_h': actual_scale_h,  # 实际高度缩放比例
+        'scale_w': actual_scale_w,  # 实际宽度缩放比例
         'new_h': new_h,
         'new_w': new_w
     }
