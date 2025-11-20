@@ -270,7 +270,80 @@ parse_arguments() {
         return 1
     }
     
-    if [ $# -eq 0 ]; then
+    # 收集所有指定的实验类型（支持多个参数叠加）
+    local has_rt_detr=false
+    local has_moe_rtdetr=false
+    local has_dset=false
+    local has_yolov8=false
+    
+    for arg in "$@"; do
+        case "$arg" in
+            --rt-detr)
+                has_rt_detr=true
+                ;;
+            --moe-rtdetr)
+                has_moe_rtdetr=true
+                ;;
+            --dset)
+                has_dset=true
+                ;;
+            --yolov8)
+                has_yolov8=true
+                ;;
+        esac
+    done
+    
+    # 如果指定了实验类型，只运行指定的类型（支持多个）
+    if [ "$has_rt_detr" = true ] || [ "$has_moe_rtdetr" = true ] || [ "$has_dset" = true ] || [ "$has_yolov8" = true ]; then
+        # 显示将要运行的类型
+        local selected_types=()
+        [ "$has_rt_detr" = true ] && selected_types+=("RT-DETR")
+        [ "$has_moe_rtdetr" = true ] && selected_types+=("MOE-RTDETR")
+        [ "$has_dset" = true ] && selected_types+=("DSET")
+        [ "$has_yolov8" = true ] && selected_types+=("YOLOv8")
+        local types_str=$(IFS='+'; echo "${selected_types[*]}")
+        if [ "$has_test" = true ]; then
+            log_info "测试模式：运行指定实验类型（按字典序排序）: $types_str"
+        else
+            log_info "运行指定实验类型（按字典序排序）: $types_str"
+        fi
+        
+        # 根据指定的类型添加配置
+        if [ "$has_rt_detr" = true ]; then
+            for key in $(printf '%s\n' "${!RT_DETR_CONFIGS[@]}" | sort); do
+                local p="${RT_DETR_CONFIGS[$key]}"
+                if filter_by_backbone "$p"; then
+                    CONFIGS_TO_RUN+=("$p")
+                fi
+            done
+        fi
+        
+        if [ "$has_moe_rtdetr" = true ]; then
+            for key in $(printf '%s\n' "${!MOE_RTDETR_CONFIGS[@]}" | sort); do
+                local p="${MOE_RTDETR_CONFIGS[$key]}"
+                if filter_by_backbone "$p"; then
+                    CONFIGS_TO_RUN+=("$p")
+                fi
+            done
+        fi
+        
+        if [ "$has_dset" = true ]; then
+            for key in $(printf '%s\n' "${!DSET_CONFIGS[@]}" | sort); do
+                local p="${DSET_CONFIGS[$key]}"
+                if filter_by_backbone "$p"; then
+                    CONFIGS_TO_RUN+=("$p")
+                fi
+            done
+        fi
+        
+        if [ "$has_yolov8" = true ]; then
+            for key in $(printf '%s\n' "${!YOLOV8_CONFIGS[@]}" | sort); do
+                local p="${YOLOV8_CONFIGS[$key]}"
+                # YOLOv8不使用backbone过滤（它有自己的模型大小）
+                CONFIGS_TO_RUN+=("$p")
+            done
+        fi
+    elif [ $# -eq 0 ]; then
         # 默认：运行所有实验（按字典序排序）
         if [ "$has_test" = true ]; then
             log_info "测试模式运行所有配置"
@@ -299,53 +372,6 @@ parse_arguments() {
             fi
         done
         # YOLOv8实验（按字典序：yolov8l→yolov8m→yolov8s）
-        for key in $(printf '%s\n' "${!YOLOV8_CONFIGS[@]}" | sort); do
-            local p="${YOLOV8_CONFIGS[$key]}"
-            # YOLOv8不使用backbone过滤（它有自己的模型大小）
-            CONFIGS_TO_RUN+=("$p")
-        done
-    elif [ "$1" == "--rt-detr" ]; then
-        if [ "$has_test" = true ]; then
-            log_info "测试模式：只运行RT-DETR实验（按字典序排序）"
-        else
-            log_info "只运行RT-DETR实验（按字典序排序）"
-        fi
-        for key in $(printf '%s\n' "${!RT_DETR_CONFIGS[@]}" | sort); do
-            local p="${RT_DETR_CONFIGS[$key]}"
-            if filter_by_backbone "$p"; then
-                CONFIGS_TO_RUN+=("$p")
-            fi
-        done
-    elif [ "$1" == "--moe-rtdetr" ]; then
-        if [ "$has_test" = true ]; then
-            log_info "测试模式：只运行MOE-RTDETR实验（按字典序排序：moe2→moe3→moe6）"
-        else
-            log_info "只运行MOE-RTDETR实验（按字典序排序：moe2→moe3→moe6）"
-        fi
-        for key in $(printf '%s\n' "${!MOE_RTDETR_CONFIGS[@]}" | sort); do
-            local p="${MOE_RTDETR_CONFIGS[$key]}"
-            if filter_by_backbone "$p"; then
-                CONFIGS_TO_RUN+=("$p")
-            fi
-        done
-    elif [ "$1" == "--dset" ]; then
-        if [ "$has_test" = true ]; then
-            log_info "测试模式：只运行DSET实验（按字典序排序：dset2→dset3→dset6）"
-        else
-            log_info "只运行DSET实验（按字典序排序：dset2→dset3→dset6）"
-        fi
-        for key in $(printf '%s\n' "${!DSET_CONFIGS[@]}" | sort); do
-            local p="${DSET_CONFIGS[$key]}"
-            if filter_by_backbone "$p"; then
-                CONFIGS_TO_RUN+=("$p")
-            fi
-        done
-    elif [ "$1" == "--yolov8" ]; then
-        if [ "$has_test" = true ]; then
-            log_info "测试模式：只运行YOLOv8实验（按字典序排序：yolov8l→yolov8m→yolov8s）"
-        else
-            log_info "只运行YOLOv8实验（按字典序排序：yolov8l→yolov8m→yolov8s）"
-        fi
         for key in $(printf '%s\n' "${!YOLOV8_CONFIGS[@]}" | sort); do
             local p="${YOLOV8_CONFIGS[$key]}"
             # YOLOv8不使用backbone过滤（它有自己的模型大小）
@@ -420,6 +446,8 @@ parse_arguments() {
         echo "  ./run_batch_experiments.sh --test --moe-rtdetr             # 测试模式只运行MOE-RTDETR"
         echo "  ./run_batch_experiments.sh --test --dset                   # 测试模式只运行DSET"
         echo "  ./run_batch_experiments.sh --test --yolov8                 # 测试模式只运行YOLOv8"
+        echo "  ./run_batch_experiments.sh --rt-detr --moe-rtdetr --dset   # 运行多个实验类型（可叠加）"
+        echo "  ./run_batch_experiments.sh --test --rt-detr --dset          # 测试模式运行多个类型"
         echo "  ./run_batch_experiments.sh --r18                           # 只运行R18"
         echo "  ./run_batch_experiments.sh --r34                           # 只运行R34"
         echo "  ./run_batch_experiments.sh --r18 --r34                     # 运行R18+R34"
