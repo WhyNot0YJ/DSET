@@ -77,7 +77,10 @@ class PatchLevelPruner(nn.Module):
         
         should_prune = self.pruning_enabled and (self.training or self.prune_in_eval)
         
-        if not should_prune:
+        # 即使不执行剪枝，也计算 importance_scores 用于 loss 计算（训练时）
+        should_compute_scores = self.training  # 训练时总是计算 scores，即使 pruning_enabled=False
+        
+        if not should_prune and not should_compute_scores:
             info = {
                 'pruning_ratio': 0.0,
                 'num_kept_tokens': num_tokens,
@@ -111,7 +114,27 @@ class PatchLevelPruner(nn.Module):
             H_padded, W_padded = H, W
         
         # 当patches数量太少时，直接跳过剪枝（避免不必要的计算）
+        # 但如果需要计算 scores（训练时），仍然计算
         if num_patches <= self.min_patches:
+            if should_compute_scores:
+                # 计算 importance_scores 用于 loss（即使不执行剪枝）
+                tokens_2d_conv = tokens_2d_padded.permute(0, 3, 1, 2)
+                patches = tokens_2d_conv.unfold(2, patch_h, patch_h).unfold(3, patch_w, patch_w)
+                patches = patches.contiguous().view(batch_size, channels, num_patches, patch_h, patch_w)
+                patches_flat = patches.permute(0, 2, 3, 4, 1).contiguous()
+                patches_flat = patches_flat.reshape(batch_size, num_patches, patch_h * patch_w, channels)
+                
+                patch_importance_list = []
+                for p_idx in range(num_patches):
+                    patch_tokens = patches_flat[:, p_idx, :, :]
+                    token_importance = self.importance_predictor(patch_tokens)
+                    patch_importance = token_importance.mean(dim=-1)
+                    patch_importance_list.append(patch_importance)
+                
+                patch_importance_scores = torch.stack(patch_importance_list, dim=1)
+            else:
+                patch_importance_scores = None
+            
             info = {
                 'pruning_ratio': 0.0,
                 'num_kept_tokens': num_tokens,
@@ -121,6 +144,8 @@ class PatchLevelPruner(nn.Module):
                 'new_spatial_shape': (H, W),
                 'original_spatial_shape': (H, W)
             }
+            if patch_importance_scores is not None:
+                info['patch_importance_scores'] = patch_importance_scores
             kept_indices = None if not return_indices else torch.arange(
                 num_tokens, device=tokens.device).unsqueeze(0).expand(batch_size, -1)
             return tokens, kept_indices, info
@@ -148,6 +173,24 @@ class PatchLevelPruner(nn.Module):
         
         patch_importance_scores = torch.stack(patch_importance_list, dim=1)
         
+        # 如果不执行剪枝，但需要计算 scores（用于 loss），直接返回原始 tokens 和 scores
+        if not should_prune:
+            info = {
+                'pruning_ratio': 0.0,
+                'num_kept_tokens': num_tokens,
+                'num_pruned_tokens': 0,
+                'num_patches': num_patches,
+                'num_kept_patches': num_patches,
+                'num_pruned_patches': 0,
+                'patch_importance_scores': patch_importance_scores,  # 添加 scores 用于 loss 计算
+                'new_spatial_shape': (H, W),
+                'original_spatial_shape': (H, W)
+            }
+            kept_indices = None if not return_indices else torch.arange(
+                num_tokens, device=tokens.device).unsqueeze(0).expand(batch_size, -1)
+            return tokens, kept_indices, info
+        
+        # 执行剪枝
         _, top_patch_indices = torch.topk(patch_importance_scores, num_keep_patches, dim=-1)
         top_patch_indices_sorted, _ = torch.sort(top_patch_indices, dim=-1)
         kept_patches_list = []
@@ -235,10 +278,8 @@ class PatchLevelPruner(nn.Module):
     
     def compute_pruning_loss(self, info: dict) -> torch.Tensor:
         """计算剪枝损失（基于重要性分数的熵）"""
-        if 'patch_importance_scores' not in info or not self.pruning_enabled:
-            if 'patch_importance_scores' in info and info['patch_importance_scores'] is not None:
-                device = info['patch_importance_scores'].device
-                return torch.tensor(0.0, device=device, requires_grad=False)
+        # 只要有 patch_importance_scores 就计算 loss（即使 pruning_enabled=False，用于 warmup 期间训练）
+        if 'patch_importance_scores' not in info or info.get('patch_importance_scores') is None:
             return torch.tensor(0.0, requires_grad=False)
         
         patch_importance_scores = info['patch_importance_scores']
