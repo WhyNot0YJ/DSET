@@ -579,7 +579,8 @@ class TrainingVisualizer:
             ax = axes[1, 1]
             if max(self.history['token_pruning_loss']) > 0:
                 ax.plot(loss_epochs, self.history['token_pruning_loss'], 'purple', 
-                       linewidth=2, marker='s', markersize=3)
+                       label='Token Pruning Loss', linewidth=2, marker='s', markersize=3)
+                ax.legend(fontsize=10)
             else:
                 # 如果没有数据（warmup期间），显示说明
                 ax.text(0.5, 0.5, 'Token Pruning Loss = 0\n(Will be enabled after Epoch 10 during warmup)', 
@@ -589,7 +590,6 @@ class TrainingVisualizer:
             ax.set_xlabel('Epoch', fontsize=12)
             ax.set_ylabel('Loss', fontsize=12)
             ax.set_title('Token Pruning Auxiliary Loss', fontsize=13, fontweight='bold')
-            ax.legend(fontsize=10) if max(self.history['token_pruning_loss']) > 0 else None
             ax.grid(True, alpha=0.3)
             
             plt.tight_layout()

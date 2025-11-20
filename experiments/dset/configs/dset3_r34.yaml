@@ -18,7 +18,7 @@ model:
     patch_moe_top_k: 2
     patch_moe_patch_size: 8
     use_token_pruning_loss: true
-    token_pruning_loss_weight: 0.002
+    token_pruning_loss_weight: 0.01
 
 training:
   epochs: 200
