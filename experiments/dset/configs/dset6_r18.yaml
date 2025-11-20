@@ -1,14 +1,24 @@
 model:
-  num_experts: 3
-  top_k: 2
+  num_experts: 6
+  top_k: 3
   backbone: "presnet18"
   encoder:
     in_channels: [128, 256, 512]
     expansion: 0.5
+    num_encoder_layers: 1
   pretrained_weights: "pretrained/rtdetrv2_r18vd_120e_coco_rerun_48.1.pth"
   num_decoder_layers: 3
   hidden_dim: 256
   num_queries: 100
+  
+  dset:
+    token_keep_ratio: 0.7
+    token_pruning_warmup_epochs: 10
+    patch_moe_num_experts: 6
+    patch_moe_top_k: 3
+    patch_moe_patch_size: 8
+    use_token_pruning_loss: true
+    token_pruning_loss_weight: 0.002
 
 training:
   epochs: 200
@@ -26,7 +36,8 @@ training:
   early_stopping_metric: "mAP_0.5_0.95"
   seed: 42
   deterministic: false
-  moe_balance_weight: 0.05
+  decoder_moe_balance_weight: 0.05
+  encoder_moe_balance_weight: 0.03
 
 data:
   data_root: "/root/autodl-fs/datasets/DAIR-V2X"
@@ -39,3 +50,4 @@ misc:
   device: "cuda"
   num_workers: 16
   pin_memory: true
+

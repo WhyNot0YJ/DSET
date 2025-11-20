@@ -226,7 +226,7 @@ class PatchLevelPruner(nn.Module):
             'num_patches': num_patches,
             'num_kept_patches': num_keep_patches,
             'num_pruned_patches': num_patches - num_keep_patches,
-            'patch_importance_scores': patch_importance_scores.detach(),
+            'patch_importance_scores': patch_importance_scores,
             'new_spatial_shape': (H_pruned, W_pruned),
             'original_spatial_shape': (H, W)
         }

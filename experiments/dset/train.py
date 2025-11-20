@@ -131,10 +131,10 @@ class DSETRTDETR(nn.Module):
     4. 统一输出：直接输出检测结果
     """
     
-    def __init__(self, config_name: str = "A", hidden_dim: int = 256, 
+    def __init__(self, hidden_dim: int = 256, 
                  num_queries: int = 300, top_k: int = 2, backbone_type: str = "presnet34",
                  num_decoder_layers: int = 3, encoder_in_channels: list = None, 
-                 encoder_expansion: float = 1.0, num_experts: int = None,
+                 encoder_expansion: float = 1.0, num_experts: int = 6,
                  num_encoder_layers: int = 1,
                  token_keep_ratio: float = 0.7,
                  token_pruning_warmup_epochs: int = 10,
@@ -149,7 +149,6 @@ class DSETRTDETR(nn.Module):
         """初始化DSET RT-DETR模型。
         
         Args:
-            config_name: 专家配置名称（保留用于兼容性，但不再用于确定专家数量）
             hidden_dim: 隐藏层维度
             num_queries: 查询数量
             top_k: 路由器Top-K选择
@@ -157,7 +156,7 @@ class DSETRTDETR(nn.Module):
             num_decoder_layers: Decoder层数
             encoder_in_channels: Encoder输入通道数
             encoder_expansion: Encoder expansion参数
-            num_experts: Decoder专家数量（优先使用，如果未提供则通过config_name映射）
+            num_experts: Decoder专家数量（必需）
             num_encoder_layers: Encoder Transformer层数（默认1，支持共享MoE）
             token_keep_ratio: Patch保留比例（用于Patch-level Pruning）
             token_pruning_warmup_epochs: Token Pruning warmup epochs
@@ -174,7 +173,6 @@ class DSETRTDETR(nn.Module):
         """
         super().__init__()
         
-        self.config_name = config_name
         self.hidden_dim = hidden_dim
         self.num_queries = num_queries
         self.top_k = top_k
@@ -203,12 +201,8 @@ class DSETRTDETR(nn.Module):
         if token_pruning_loss_weight is not None:
             self.token_pruning_loss_weight = token_pruning_loss_weight
         
-        # 获取专家数量：优先使用直接传入的num_experts，否则通过config_name映射（向后兼容）
-        if num_experts is not None:
-            self.num_experts = num_experts
-        else:
-            configs = {"A": 6, "B": 3, "C": 2}
-            self.num_experts = configs.get(config_name, 6)
+        # 设置专家数量
+        self.num_experts = num_experts
         
         # ========== 共享组件 ==========
         self.backbone = self._build_backbone()
@@ -530,7 +524,7 @@ class DSETTrainer:
     def _validate_config_file(self):
         """验证配置文件是否包含所有必需的配置项"""
         required_keys = {
-            'model': ['config_name', 'backbone', 'hidden_dim', 'num_queries', 'num_decoder_layers', 'top_k'],
+            'model': ['num_experts', 'backbone', 'hidden_dim', 'num_queries', 'num_decoder_layers', 'top_k'],
             'training': ['epochs', 'batch_size', 'pretrained_lr', 'new_lr', 'warmup_epochs'],
             'data': ['data_root'],
             'misc': ['device', 'num_workers']
@@ -569,13 +563,8 @@ class DSETTrainer:
             backbone_type = self.config.get('model', {}).get('backbone', 'unknown')
             # 移除presnet前缀，只保留数字部分（如presnet18 -> r18, presnet34 -> r34）
             backbone_short = backbone_type.replace('presnet', 'r').replace('pres', 'r') if 'presnet' in backbone_type or 'pres' in backbone_type else backbone_type
-            # 直接从配置文件读取专家数量，如果未配置则通过config_name映射（向后兼容）
-            num_experts = self.config.get('model', {}).get('num_experts', None)
-            if num_experts is None:
-                # 向后兼容：通过config_name映射
-                config_name = self.config.get('model', {}).get('config_name', 'A')
-                configs = {'A': 6, 'B': 3, 'C': 2}
-                num_experts = configs.get(config_name, 6)
+            # 直接从配置文件读取专家数量
+            num_experts = self.config.get('model', {}).get('num_experts', 6)
             expert_num = str(num_experts)
             # 生成实验名称（不带时间戳）- DSET格式
             self.experiment_name = f"dset{expert_num}_{backbone_short}"
@@ -610,8 +599,8 @@ class DSETTrainer:
         encoder_in_channels = encoder_config['in_channels']
         encoder_expansion = encoder_config['expansion']
         
-        # 从配置文件读取专家数量，如果未配置则使用None（会通过config_name映射）
-        num_experts = self.config['model'].get('num_experts', None)
+        # 从配置文件读取专家数量
+        num_experts = self.config['model'].get('num_experts', 6)
         
         # DSET双稀疏配置
         dset_config = self.config['model'].get('dset', {})
@@ -632,7 +621,6 @@ class DSETTrainer:
         num_encoder_layers = self.config.get('model', {}).get('encoder', {}).get('num_encoder_layers', 1)
         
         model = DSETRTDETR(
-            config_name=self.config['model'].get('config_name', 'A'),
             hidden_dim=self.config['model']['hidden_dim'],
             num_queries=self.config['model']['num_queries'],
             top_k=self.config['model']['top_k'],
@@ -676,7 +664,6 @@ class DSETTrainer:
         
         self.logger.info(f"✓ 创建DSET RT-DETR模型")
         self.logger.info(f"  Decoder专家数量: {model.num_experts}")
-        self.logger.info(f"  配置: {model.config_name}")
         self.logger.info(f"  Backbone: {model.backbone_type}")
         self.logger.info(f"  Encoder: in_channels={encoder_in_channels}, expansion={encoder_expansion}, num_layers={num_encoder_layers}")
         self.logger.info(f"  Encoder MoE设计: 层间共享")

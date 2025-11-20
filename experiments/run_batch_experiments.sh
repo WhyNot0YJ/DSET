@@ -86,12 +86,14 @@ declare -A MOE_RTDETR_CONFIGS=(
 )
 
 declare -A DSET_CONFIGS=(
-    ["dset2-r18"]="dset/configs/dset2_presnet18.yaml"
-    ["dset2-r34"]="dset/configs/dset2_presnet34.yaml"
-    ["dset3-r18"]="dset/configs/dset3_presnet18.yaml"
-    ["dset3-r34"]="dset/configs/dset3_presnet34.yaml"
-    ["dset6-r18"]="dset/configs/dset6_presnet18.yaml"
-    ["dset6-r34"]="dset/configs/dset6_presnet34.yaml"
+    ["dset2-r18"]="dset/configs/dset2_r18.yaml"
+    ["dset2-r34"]="dset/configs/dset2_r34.yaml"
+    ["dset3-r18"]="dset/configs/dset3_r18.yaml"
+    ["dset3-r34"]="dset/configs/dset3_r34.yaml"
+    ["dset6-r18"]="dset/configs/dset6_r18.yaml"
+    ["dset6-r34"]="dset/configs/dset6_r34.yaml"
+    ["dset8-r18"]="dset/configs/dset8_r18.yaml"
+    ["dset8-r34"]="dset/configs/dset8_r34.yaml"
 )
 
 declare -A YOLOV8_CONFIGS=(
@@ -255,13 +257,14 @@ parse_arguments() {
         if [ -z "$backbone_filter" ]; then
             return 0  # 无过滤，全部通过
         fi
-        if [ "$has_r18" = true ] && [[ "$config_path" == *"presnet18"* ]]; then
+        # 支持新格式 (r18/r34) 和旧格式 (presnet18/presnet34)
+        if [ "$has_r18" = true ] && ([[ "$config_path" == *"r18"* ]] || [[ "$config_path" == *"presnet18"* ]]); then
             return 0
         fi
-        if [ "$has_r34" = true ] && [[ "$config_path" == *"presnet34"* ]]; then
+        if [ "$has_r34" = true ] && ([[ "$config_path" == *"r34"* ]] || [[ "$config_path" == *"presnet34"* ]]); then
             return 0
         fi
-        if [ "$has_r50" = true ] && [[ "$config_path" == *"presnet50"* ]]; then
+        if [ "$has_r50" = true ] && ([[ "$config_path" == *"r50"* ]] || [[ "$config_path" == *"presnet50"* ]]); then
             return 0
         fi
         return 1

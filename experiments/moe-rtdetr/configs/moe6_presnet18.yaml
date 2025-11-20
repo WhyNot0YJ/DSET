@@ -1,5 +1,4 @@
 model:
-  config_name: "A"
   num_experts: 6
   top_k: 3
   backbone: "presnet18"

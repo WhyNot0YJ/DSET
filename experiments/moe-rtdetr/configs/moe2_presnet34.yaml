@@ -1,5 +1,4 @@
 model:
-  config_name: "C"
   num_experts: 2
   top_k: 1
   backbone: "presnet34"

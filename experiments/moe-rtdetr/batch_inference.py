@@ -88,7 +88,6 @@ def load_model(config_path: str, checkpoint_path: str, device: str = "cuda"):
     # 创建模型
     encoder_config = config['model']['encoder']
     model = AdaptiveExpertRTDETR(
-        config_name=config['model'].get('config_name', 'A'),
         hidden_dim=config['model']['hidden_dim'],
         num_queries=config['model']['num_queries'],
         top_k=config['model']['top_k'],
@@ -96,7 +95,7 @@ def load_model(config_path: str, checkpoint_path: str, device: str = "cuda"):
         num_decoder_layers=config['model']['num_decoder_layers'],
         encoder_in_channels=encoder_config['in_channels'],
         encoder_expansion=encoder_config['expansion'],
-        num_experts=config['model'].get('num_experts', None)
+        num_experts=config['model'].get('num_experts', 6)
     )
     
     # 加载checkpoint
