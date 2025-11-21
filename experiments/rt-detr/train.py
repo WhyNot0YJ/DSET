@@ -506,21 +506,36 @@ class RTDETRTrainer:
         
         # 直接使用DAIRV2XDetection类（直接使用配置文件中的data.data_root）
         data_root = self.config['data']['data_root']
-        use_mosaic = self.config.get('training', {}).get('use_mosaic', True)
         target_size = 640
+        
+        # 获取数据增强配置
+        aug_config = self.config.get('data_augmentation', {})
+        aug_brightness = aug_config.get('brightness', 0.0)
+        aug_contrast = aug_config.get('contrast', 0.0)
+        aug_saturation = aug_config.get('saturation', 0.0)
+        aug_hue = aug_config.get('hue', 0.0)
+        aug_color_jitter_prob = aug_config.get('color_jitter_prob', 0.0)
         
         train_dataset = DAIRV2XDetection(
             data_root=data_root,
             split='train',
-            use_mosaic=use_mosaic,
-            target_size=target_size
+            target_size=target_size,
+            aug_brightness=aug_brightness,
+            aug_contrast=aug_contrast,
+            aug_saturation=aug_saturation,
+            aug_hue=aug_hue,
+            aug_color_jitter_prob=aug_color_jitter_prob
         )
         
         val_dataset = DAIRV2XDetection(
             data_root=data_root,
             split='val',
-            use_mosaic=False,  # 验证时不使用Mosaic
-            target_size=target_size
+            target_size=target_size,
+            aug_brightness=0.0,
+            aug_contrast=0.0,
+            aug_saturation=0.0,
+            aug_hue=0.0,
+            aug_color_jitter_prob=0.0
         )
         
         collate_fn = CustomCollateFunction()

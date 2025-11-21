@@ -541,21 +541,34 @@ class AdaptiveExpertTrainer:
         batch_size = self.config['training']['batch_size']
         target_size = self.model.image_size
         
-        # 修改：训练时启用mosaic增强
-        use_mosaic = self.config['training'].get('use_mosaic', True)
+        # 获取数据增强配置
+        aug_config = self.config.get('data_augmentation', {})
+        aug_brightness = aug_config.get('brightness', 0.0)
+        aug_contrast = aug_config.get('contrast', 0.0)
+        aug_saturation = aug_config.get('saturation', 0.0)
+        aug_hue = aug_config.get('hue', 0.0)
+        aug_color_jitter_prob = aug_config.get('color_jitter_prob', 0.0)
         
         train_dataset = DAIRV2XDetection(
             data_root=self.config['data']['data_root'],
             split='train',
-            use_mosaic=use_mosaic,
-            target_size=target_size
+            target_size=target_size,
+            aug_brightness=aug_brightness,
+            aug_contrast=aug_contrast,
+            aug_saturation=aug_saturation,
+            aug_hue=aug_hue,
+            aug_color_jitter_prob=aug_color_jitter_prob
         )
         
         val_dataset = DAIRV2XDetection(
             data_root=self.config['data']['data_root'],
             split='val',
-            use_mosaic=False,
-            target_size=target_size
+            target_size=target_size,
+            aug_brightness=0.0,
+            aug_contrast=0.0,
+            aug_saturation=0.0,
+            aug_hue=0.0,
+            aug_color_jitter_prob=0.0
         )
         
         # 从misc配置中读取num_workers和pin_memory
@@ -1723,7 +1736,6 @@ def main() -> None:
                 'batch_size': args.batch_size,
                 'pretrained_lr': args.pretrained_lr,
                 'new_lr': args.new_lr,
-                'use_mosaic': True, 
                 'warmup_epochs': 3,
                 'ema_decay': 0.9999
             }

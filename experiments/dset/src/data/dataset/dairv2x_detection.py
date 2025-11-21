@@ -22,7 +22,12 @@ class DAIRV2XDetection(DetDataset):
     """DAIR-V2X数据集检测器 - 支持COCO格式评估"""
     
     def __init__(self, data_root: str, split: str = "train", transforms=None, 
-                 use_mosaic: bool = False, target_size: int = 640):
+                 target_size: int = 640,
+                 aug_brightness: float = 0.0,
+                 aug_contrast: float = 0.0,
+                 aug_saturation: float = 0.0,
+                 aug_hue: float = 0.0,
+                 aug_color_jitter_prob: float = 0.0):
         """
         初始化DAIR-V2X数据集
         
@@ -30,15 +35,18 @@ class DAIRV2XDetection(DetDataset):
             data_root: 数据集根目录
             split: 数据集分割 ('train' 或 'val')
             transforms: 数据变换
-            use_mosaic: 是否使用Mosaic数据增强
             target_size: 目标图像尺寸
+            aug_brightness: 亮度调整范围 (0.0 = 不增强)
+            aug_contrast: 对比度调整范围 (0.0 = 不增强)
+            aug_saturation: 饱和度调整范围 (0.0 = 不增强)
+            aug_hue: 色相调整范围 (0.0 = 不增强)
+            aug_color_jitter_prob: 应用颜色抖动的概率 (0.0 = 不应用)
         """
         super().__init__()
         
         self.data_root = Path(data_root)
         self.split = split
         self.transforms = transforms
-        self.use_mosaic = use_mosaic and split == "train"
         self.target_size = target_size
         
         # DAIR-V2X类别定义（8类：前7类是交通参与者，Trafficcone是道路设施）
@@ -64,13 +72,19 @@ class DAIRV2XDetection(DetDataset):
         self.data_info = self._load_data_info()
         self.split_indices = self._load_split_indices()
         
-        # 初始化Mosaic增强
-        if self.use_mosaic:
-            from ..transforms.mosaic import Mosaic
-            self.mosaic_transform = Mosaic(size=target_size, max_size=target_size)
-            print(f"启用Mosaic数据增强 for {split} split")
+        # 初始化路测数据增强（仅在训练时使用）
+        if split == "train" and (aug_brightness > 0 or aug_contrast > 0 or 
+                                 aug_saturation > 0 or aug_hue > 0 or aug_color_jitter_prob > 0):
+            from ..transforms.roadside_augmentation import RoadsideAugmentation
+            self.roadside_aug = RoadsideAugmentation(
+                brightness=aug_brightness,
+                contrast=aug_contrast,
+                saturation=aug_saturation,
+                hue=aug_hue,
+                color_jitter_prob=aug_color_jitter_prob
+            )
         else:
-            self.mosaic_transform = None
+            self.roadside_aug = None
     
     def _load_data_info(self):
         """加载数据信息"""
@@ -193,6 +207,12 @@ class DAIRV2XDetection(DetDataset):
         
         # 返回预处理后的图像（processed_image），而不是原始图
         output_image = processed_image
+        
+        # 应用路测数据增强（仅在训练时，且已配置）
+        # processed_image 已经是 CHW 格式的 torch.Tensor
+        if self.roadside_aug is not None:
+            output_image, target = self.roadside_aug(output_image, target)
+        
         # 应用数据变换（若有）
         if self.transforms is not None:
             output_image, target, _ = self.transforms(output_image, target, self)

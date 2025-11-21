@@ -1,15 +1,15 @@
 model:
-  num_experts: 6
-  top_k: 3
-  backbone: presnet18
+  num_experts: 3
+  top_k: 2
+  backbone: presnet34
   encoder:
     in_channels:
     - 128
     - 256
     - 512
     expansion: 0.5
-  pretrained_weights: pretrained/rtdetrv2_r18vd_120e_coco_rerun_48.1.pth
-  num_decoder_layers: 3
+  pretrained_weights: pretrained/rtdetrv2_r34vd_120e_coco_ema.pth
+  num_decoder_layers: 4
   hidden_dim: 256
   num_queries: 100
 training:
@@ -38,8 +38,8 @@ misc:
   num_workers: 16
   pin_memory: true
 data_augmentation:
-  brightness: 0.0
-  contrast: 0.0
-  saturation: 0.0
-  hue: 0.0
-  color_jitter_prob: 0.0
+  brightness: 0.15
+  contrast: 0.15
+  saturation: 0.1
+  hue: 0.05
+  color_jitter_prob: 0.6

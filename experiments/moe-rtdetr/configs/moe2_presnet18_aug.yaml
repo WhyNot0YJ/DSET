@@ -1,6 +1,6 @@
 model:
-  num_experts: 6
-  top_k: 3
+  num_experts: 2
+  top_k: 1
   backbone: presnet18
   encoder:
     in_channels:
@@ -15,7 +15,7 @@ model:
 training:
   epochs: 200
   batch_size: 64
-  warmup_epochs: 3
+  warmup_epochs: 5
   pretrained_lr: 1e-5
   new_lr: 1e-4
   eta_min: 1e-6
@@ -27,7 +27,7 @@ training:
   early_stopping_metric: mAP_0.5_0.95
   seed: 42
   deterministic: false
-  moe_balance_weight: 0.05
+  moe_balance_weight: 0.1
 data:
   data_root: /root/autodl-fs/datasets/DAIR-V2X
 checkpoint:
@@ -38,8 +38,8 @@ misc:
   num_workers: 16
   pin_memory: true
 data_augmentation:
-  brightness: 0.0
-  contrast: 0.0
-  saturation: 0.0
-  hue: 0.0
-  color_jitter_prob: 0.0
+  brightness: 0.15
+  contrast: 0.15
+  saturation: 0.1
+  hue: 0.05
+  color_jitter_prob: 0.6
