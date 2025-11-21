@@ -53,10 +53,6 @@ venv.bak/
 ehthumbs.db
 Thumbs.db
 
-# Logs
-logs/
-*.log
-
 # Datasets
 datasets/
 /data/
