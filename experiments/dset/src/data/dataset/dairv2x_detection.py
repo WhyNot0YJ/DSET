@@ -98,12 +98,46 @@ class DAIRV2XDetection(DetDataset):
                         valid_indices.append(idx_int)
                 return valid_indices
         else:
-            # 如果没有分割文件，使用前80%作为训练，后20%作为验证
-            total_samples = len(self.data_info)
-            if self.split == "train":
-                return list(range(int(total_samples * 0.8)))
-            else:
-                return list(range(int(total_samples * 0.8), total_samples))
+            # 如果没有分割文件，使用随机分割（按路口分层随机分割）
+            return self._create_random_split()
+    
+    def _create_random_split(self):
+        """创建随机分割（按路口分层随机分割）"""
+        import random
+        from collections import defaultdict
+        
+        # 按路口分组
+        intersection_groups = defaultdict(list)
+        for idx, item in enumerate(self.data_info):
+            loc = item.get('intersection_loc', 'Unknown')
+            intersection_groups[loc].append(idx)
+        
+        # 设置随机种子（使用固定的种子42，确保可复现）
+        random.seed(42)
+        
+        # 对每个路口的数据进行随机分割
+        train_indices = []
+        val_indices = []
+        
+        for loc, indices in intersection_groups.items():
+            # 打乱当前路口的数据
+            shuffled = indices.copy()
+            random.shuffle(shuffled)
+            
+            # 按比例分割（80%训练，20%验证）
+            split_point = int(len(shuffled) * 0.8)
+            train_indices.extend(shuffled[:split_point])
+            val_indices.extend(shuffled[split_point:])
+        
+        # 打乱最终结果（可选，保持随机性）
+        random.shuffle(train_indices)
+        random.shuffle(val_indices)
+        
+        # 根据 split 返回对应的索引
+        if self.split == "train":
+            return train_indices
+        else:
+            return val_indices
     
     def __len__(self):
         return len(self.split_indices)
