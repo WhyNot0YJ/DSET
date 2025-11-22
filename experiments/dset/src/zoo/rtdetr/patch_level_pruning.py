@@ -12,7 +12,7 @@ class PatchLevelPruner(nn.Module):
     
     def __init__(self, 
                  input_dim: int,
-                 patch_size: int = 8,
+                 patch_size: int = 4,
                  keep_ratio: float = 0.7,
                  adaptive: bool = True,
                  min_patches: int = 10,

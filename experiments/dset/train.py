@@ -140,7 +140,7 @@ class DSETRTDETR(nn.Module):
                  token_pruning_warmup_epochs: int = 10,
                  patch_moe_num_experts: int = 4,
                  patch_moe_top_k: int = 2,
-                 patch_moe_patch_size: int = 8,
+                 patch_moe_patch_size: int = 4,
                  # MoE权重配置
                  decoder_moe_balance_weight: float = None,
                  encoder_moe_balance_weight: float = None,
@@ -162,7 +162,7 @@ class DSETRTDETR(nn.Module):
             token_pruning_warmup_epochs: Token Pruning warmup epochs
             patch_moe_num_experts: Patch-MoE专家数量
             patch_moe_top_k: Patch-MoE top-k
-            patch_moe_patch_size: Patch-MoE patch大小（默认8x8）
+            patch_moe_patch_size: Patch-MoE patch大小（默认4x4）
             
         注意：
             - Patch-MoE 和 Patch-level Pruning 必然启用（DSET核心特性）
@@ -609,7 +609,7 @@ class DSETTrainer:
         token_pruning_warmup_epochs = dset_config.get('token_pruning_warmup_epochs', 10)
         patch_moe_num_experts = dset_config.get('patch_moe_num_experts', 4)
         patch_moe_top_k = dset_config.get('patch_moe_top_k', 2)
-        patch_moe_patch_size = dset_config.get('patch_moe_patch_size', 8)
+        patch_moe_patch_size = dset_config.get('patch_moe_patch_size', 4)
         use_token_pruning_loss = dset_config.get('use_token_pruning_loss', False)
         token_pruning_loss_weight = dset_config.get('token_pruning_loss_weight', 0.001)
         

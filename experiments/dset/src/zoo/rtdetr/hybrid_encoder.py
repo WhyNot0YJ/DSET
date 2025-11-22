@@ -127,7 +127,7 @@ class TransformerEncoderLayer(nn.Module):
                  use_moe=False,
                  num_experts=4,
                  moe_top_k=2,
-                 patch_size=8):
+                 patch_size=4):
         super().__init__()
         self.normalize_before = normalize_before
         self.use_moe = use_moe
@@ -235,7 +235,7 @@ class HybridEncoder(nn.Module):
                  token_pruning_warmup_epochs=10,
                  patch_moe_num_experts=4,
                  patch_moe_top_k=2,
-                 patch_moe_patch_size=8):
+                 patch_moe_patch_size=4):
         """
         Args:
             token_keep_ratio: Patch保留比例（0.5-0.7）
@@ -327,7 +327,7 @@ class HybridEncoder(nn.Module):
             feat_strides: 特征图 stride 列表，如 [8, 16, 32]
             image_h: 输入图像高度（如 640）
             image_w: 输入图像宽度（如 640）
-            patch_size: patch 大小（如 8）
+            patch_size: patch 大小（如 4）
         
         Returns:
             min_patches: 该层的最小保留 patch 数（确保可以剪枝）

@@ -396,14 +396,14 @@ class PatchLevelRouter(nn.Module):
     3. 更适合视觉任务的归纳偏置
     """
     
-    def __init__(self, hidden_dim: int, num_experts: int, top_k: int = 2, patch_size: int = 8):
+    def __init__(self, hidden_dim: int, num_experts: int, top_k: int = 2, patch_size: int = 4):
         """初始化Patch级别路由器。
         
         Args:
             hidden_dim: 输入特征维度
             num_experts: 专家数量
             top_k: 选择前K个专家
-            patch_size: patch大小（默认8x8，即每个patch包含64个tokens）
+            patch_size: patch大小（默认4x4，即每个patch包含16个tokens）
         """
         super().__init__()
         self.hidden_dim = hidden_dim
@@ -509,7 +509,7 @@ class PatchMoELayer(nn.Module):
                  top_k: int = 2, 
                  dropout: float = 0.1, 
                  activation: str = 'gelu',
-                 patch_size: int = 8):
+                 patch_size: int = 4):
         """初始化Patch-MoE层
         
         Args:
@@ -519,7 +519,7 @@ class PatchMoELayer(nn.Module):
             top_k: 每次激活的专家数
             dropout: Dropout比率
             activation: 激活函数
-            patch_size: patch大小（默认8x8）
+            patch_size: patch大小（默认4x4）
         """
         super().__init__()
         self.d_model = d_model
