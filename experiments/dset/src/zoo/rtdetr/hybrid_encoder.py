@@ -275,16 +275,25 @@ class HybridEncoder(nn.Module):
                 
             self.input_proj.append(proj)
 
+        # 根据模型结构自动计算每一层的 num_patches 和 min_patches
+        # 使用 eval_spatial_size 或默认 640×640
+        if eval_spatial_size is not None:
+            image_h, image_w = eval_spatial_size
+        else:
+            image_h = image_w = 640  # 默认值
+        
         self.token_pruners = nn.ModuleList([
             PatchLevelPruner(
                 input_dim=hidden_dim,
                 patch_size=patch_moe_patch_size,
                 keep_ratio=token_keep_ratio,
                 adaptive=True,
-                min_patches=10,
+                min_patches=self._calculate_min_patches_for_layer(
+                    enc_ind, feat_strides, image_h, image_w, patch_moe_patch_size
+                ),
                 warmup_epochs=token_pruning_warmup_epochs,
                 prune_in_eval=True
-            ) for _ in range(len(use_encoder_idx))
+            ) for enc_ind in use_encoder_idx
         ])
         
         encoder_layer = TransformerEncoderLayer(
@@ -301,6 +310,46 @@ class HybridEncoder(nn.Module):
         self.encoder = nn.ModuleList([
             TransformerEncoder(encoder_layer, num_encoder_layers) for _ in range(len(use_encoder_idx))
         ])
+    
+    def _calculate_min_patches_for_layer(self, enc_ind: int, feat_strides: list, 
+                                        image_h: int, image_w: int, patch_size: int) -> int:
+        """
+        根据模型结构计算该层的 num_patches 和合适的 min_patches
+        
+        计算逻辑与 PatchLevelPruner.forward 中的逻辑完全一致：
+        - 特征图尺寸 = 输入图像尺寸 / stride
+        - patch_h = min(patch_size, feat_h)
+        - num_patches_h = (feat_h + patch_h - 1) // patch_h
+        - num_patches = num_patches_h * num_patches_w
+        
+        Args:
+            enc_ind: encoder 层索引（对应 feat_strides 的索引）
+            feat_strides: 特征图 stride 列表，如 [8, 16, 32]
+            image_h: 输入图像高度（如 640）
+            image_w: 输入图像宽度（如 640）
+            patch_size: patch 大小（如 8）
+        
+        Returns:
+            min_patches: 该层的最小保留 patch 数（确保可以剪枝）
+        """
+        # 获取该层对应的 stride
+        stride = feat_strides[enc_ind] if enc_ind < len(feat_strides) else feat_strides[-1]
+        
+        # 计算特征图尺寸
+        feat_h = image_h // stride
+        feat_w = image_w // stride
+        
+        # 计算 num_patches（与 PatchLevelPruner.forward 中的逻辑完全一致）
+        patch_h = min(patch_size, feat_h)
+        patch_w = min(patch_size, feat_w)
+        num_patches_h = (feat_h + patch_h - 1) // patch_h
+        num_patches_w = (feat_w + patch_w - 1) // patch_w
+        num_patches = num_patches_h * num_patches_w
+        
+        # 至少保留 1 个，确保可以剪枝
+        min_patches = max(1, int(num_patches * 0.75))
+        
+        return min_patches
 
         # top-down fpn
         self.lateral_convs = nn.ModuleList()
