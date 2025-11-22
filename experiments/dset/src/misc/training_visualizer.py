@@ -256,13 +256,13 @@ class TrainingVisualizer:
         """绘制包含MOE专家信息的训练曲线。"""
         epochs = range(1, len(self.history['train_loss']) + 1)
         
-        # 创建2x2的子图
-        fig, axes = plt.subplots(2, 2, figsize=(15, 12))
+        # 创建1x3的子图（只显示三张图）
+        fig, axes = plt.subplots(1, 3, figsize=(18, 5))
         title = f'{self.experiment_name.upper()} Training Curves' if self.experiment_name else 'MOE RT-DETR Training Curves'
         fig.suptitle(title, fontsize=16, fontweight='bold')
         
         # 1. 损失曲线
-        ax = axes[0, 0]
+        ax = axes[0]
         ax.plot(epochs, self.history['train_loss'], 'b-o', 
                 label='Train Loss', linewidth=2, markersize=4)
         ax.plot(epochs, self.history['val_loss'], 'r-s', 
@@ -274,7 +274,7 @@ class TrainingVisualizer:
         ax.grid(True, alpha=0.3)
         
         # 2. mAP曲线
-        ax = axes[0, 1]
+        ax = axes[1]
         if max(self.history['mAP_0_5']) > 0:
             ax.plot(epochs, self.history['mAP_0_5'], 'g-^', 
                     label='mAP@0.5', linewidth=2, markersize=4)
@@ -289,38 +289,19 @@ class TrainingVisualizer:
         ax.grid(True, alpha=0.3)
         
         # 3. 学习率曲线
-        ax = axes[1, 0]
-        if max(self.history['learning_rate']) > 0:
+        ax = axes[2]
+        if len(self.history['learning_rate']) > 0 and max(self.history['learning_rate']) > 0:
             ax.plot(epochs, self.history['learning_rate'], 
-                    'orange', linewidth=2)
+                    'orange', linewidth=2, marker='o', markersize=3)
             ax.set_yscale('log')
+        else:
+            ax.text(0.5, 0.5, 'Learning Rate data not available', 
+                   ha='center', va='center', fontsize=12, color='gray',
+                   transform=ax.transAxes)
         ax.set_xlabel('Epoch', fontsize=12)
         ax.set_ylabel('Learning Rate', fontsize=12)
         ax.set_title('Learning Rate Schedule', fontsize=14, fontweight='bold')
         ax.grid(True, alpha=0.3)
-        
-        # 4. 专家使用率（最新epoch）
-        ax = axes[1, 1]
-        if self.history['expert_usage']:
-            latest_usage = self.history['expert_usage'][-1]
-            expert_ids = [f'Expert{i}' for i in range(len(latest_usage))]
-            colors = plt.cm.viridis(np.linspace(0, 1, len(latest_usage)))
-            bars = ax.bar(expert_ids, latest_usage, color=colors, 
-                         alpha=0.7, edgecolor='black')
-            
-            # 添加数值标签
-            for bar in bars:
-                height = bar.get_height()
-                ax.text(bar.get_x() + bar.get_width()/2., height,
-                       f'{height:.2%}',
-                       ha='center', va='bottom', fontsize=10, fontweight='bold')
-            
-            ax.set_xlabel('Expert ID', fontsize=12)
-            ax.set_ylabel('Usage Rate', fontsize=12)
-            ax.set_title(f'Expert Usage Distribution (Epoch {len(epochs)})', 
-                        fontsize=14, fontweight='bold')
-            ax.set_ylim(0, max(latest_usage) * 1.2)
-            ax.grid(True, alpha=0.3, axis='y')
         
         plt.tight_layout()
         save_path = self.log_dir / 'training_curves.png'
@@ -480,34 +461,49 @@ class TrainingVisualizer:
         
         # 1.3 Token Pruning Ratio
         ax = axes[1, 0]
-        if len(self.history['token_pruning_ratio']) > 0 and max(self.history['token_pruning_ratio']) > 0:
-            ax.plot(epochs[:len(self.history['token_pruning_ratio'])], 
-                   self.history['token_pruning_ratio'], 'purple', linewidth=2.5, label='Actual Pruning Ratio')
+        if len(self.history['token_pruning_ratio']) > 0:
+            # 即使数据都是0，也绘制出来（0是有效值，特别是在warmup期间）
+            pruning_epochs = epochs[:len(self.history['token_pruning_ratio'])]
+            ax.plot(pruning_epochs, self.history['token_pruning_ratio'], 'purple', 
+                   linewidth=2.5, label='Actual Pruning Ratio', marker='o', markersize=3)
             ax.set_xlabel('Epoch', fontsize=12)
             ax.set_ylabel('Pruning Ratio', fontsize=12)
             ax.set_title('Token Pruning Progress', fontsize=14, fontweight='bold')
             ax.legend(fontsize=10)
             ax.grid(True, alpha=0.3)
+            # 如果所有值都是0，添加说明文本
+            if max(self.history['token_pruning_ratio']) == 0:
+                ax.text(0.5, 0.95, 'Pruning in warmup phase (ratio = 0)', 
+                       ha='center', va='top', fontsize=10, color='gray',
+                       transform=ax.transAxes, bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
         else:
             # 如果没有token pruning数据，显示说明
-            ax.text(0.5, 0.5, 'Token Pruning data not available\n(pruning may be disabled or in warmup)', 
+            ax.text(0.5, 0.5, 'Token Pruning data not available\n(pruning may be disabled)', 
                    ha='center', va='center', fontsize=12, color='gray',
                    transform=ax.transAxes)
             ax.set_xlabel('Epoch', fontsize=12)
             ax.set_ylabel('Pruning Ratio', fontsize=12)
             ax.set_title('Token Pruning Progress', fontsize=14, fontweight='bold')
-            ax.set_xticks([])
-            ax.set_yticks([])
+            ax.grid(True, alpha=0.3)
         
         # 1.4 Learning Rate
         ax = axes[1, 1]
-        if max(self.history['learning_rate']) > 0:
-            ax.plot(epochs, self.history['learning_rate'], 'orange', linewidth=2)
+        if len(self.history['learning_rate']) > 0 and max(self.history['learning_rate']) > 0:
+            ax.plot(epochs, self.history['learning_rate'], 'orange', linewidth=2, marker='o', markersize=3)
             ax.set_yscale('log')
-        ax.set_xlabel('Epoch', fontsize=12)
-        ax.set_ylabel('Learning Rate (log)', fontsize=12)
-        ax.set_title('Learning Rate Schedule', fontsize=14, fontweight='bold')
-        ax.grid(True, alpha=0.3)
+            ax.set_xlabel('Epoch', fontsize=12)
+            ax.set_ylabel('Learning Rate (log)', fontsize=12)
+            ax.set_title('Learning Rate Schedule', fontsize=14, fontweight='bold')
+            ax.grid(True, alpha=0.3)
+        else:
+            # 如果学习率数据不可用，显示说明
+            ax.text(0.5, 0.5, 'Learning Rate data not available', 
+                   ha='center', va='center', fontsize=12, color='gray',
+                   transform=ax.transAxes)
+            ax.set_xlabel('Epoch', fontsize=12)
+            ax.set_ylabel('Learning Rate (log)', fontsize=12)
+            ax.set_title('Learning Rate Schedule', fontsize=14, fontweight='bold')
+            ax.grid(True, alpha=0.3)
         
         plt.tight_layout()
         plt.savefig(self.log_dir / 'dset_main_curves.png', dpi=150, bbox_inches='tight')
