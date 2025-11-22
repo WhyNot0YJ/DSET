@@ -310,6 +310,28 @@ class HybridEncoder(nn.Module):
         self.encoder = nn.ModuleList([
             TransformerEncoder(encoder_layer, num_encoder_layers) for _ in range(len(use_encoder_idx))
         ])
+        
+        # top-down fpn
+        self.lateral_convs = nn.ModuleList()
+        self.fpn_blocks = nn.ModuleList()
+        for _ in range(len(in_channels) - 1, 0, -1):
+            self.lateral_convs.append(ConvNormLayer(hidden_dim, hidden_dim, 1, 1, act=act))
+            self.fpn_blocks.append(
+                CSPRepLayer(hidden_dim * 2, hidden_dim, round(3 * depth_mult), act=act, expansion=expansion)
+            )
+
+        # bottom-up pan
+        self.downsample_convs = nn.ModuleList()
+        self.pan_blocks = nn.ModuleList()
+        for _ in range(len(in_channels) - 1):
+            self.downsample_convs.append(
+                ConvNormLayer(hidden_dim, hidden_dim, 3, 2, act=act)
+            )
+            self.pan_blocks.append(
+                CSPRepLayer(hidden_dim * 2, hidden_dim, round(3 * depth_mult), act=act, expansion=expansion)
+            )
+
+        self._reset_parameters()
     
     def _calculate_min_patches_for_layer(self, enc_ind: int, feat_strides: list, 
                                         image_h: int, image_w: int, patch_size: int) -> int:
@@ -350,28 +372,6 @@ class HybridEncoder(nn.Module):
         min_patches = max(1, int(num_patches * 0.75))
         
         return min_patches
-
-        # top-down fpn
-        self.lateral_convs = nn.ModuleList()
-        self.fpn_blocks = nn.ModuleList()
-        for _ in range(len(in_channels) - 1, 0, -1):
-            self.lateral_convs.append(ConvNormLayer(hidden_dim, hidden_dim, 1, 1, act=act))
-            self.fpn_blocks.append(
-                CSPRepLayer(hidden_dim * 2, hidden_dim, round(3 * depth_mult), act=act, expansion=expansion)
-            )
-
-        # bottom-up pan
-        self.downsample_convs = nn.ModuleList()
-        self.pan_blocks = nn.ModuleList()
-        for _ in range(len(in_channels) - 1):
-            self.downsample_convs.append(
-                ConvNormLayer(hidden_dim, hidden_dim, 3, 2, act=act)
-            )
-            self.pan_blocks.append(
-                CSPRepLayer(hidden_dim * 2, hidden_dim, round(3 * depth_mult), act=act, expansion=expansion)
-            )
-
-        self._reset_parameters()
 
     def _reset_parameters(self):
         if self.eval_spatial_size:
