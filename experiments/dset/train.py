@@ -1222,6 +1222,13 @@ class DSETTrainer:
         # 设置encoder的epoch（用于Token Pruning渐进式启用）
         if hasattr(self.model, 'encoder') and hasattr(self.model.encoder, 'set_epoch'):
             self.model.encoder.set_epoch(self.current_epoch)
+            # 调试：检查是否设置了epoch
+            if self.current_epoch >= 10 and self.current_epoch % 5 == 0:  # 每5个epoch打印一次
+                if hasattr(self.model.encoder, 'token_pruners') and self.model.encoder.token_pruners:
+                    pruner = self.model.encoder.token_pruners[0]
+                    self.logger.info(f"[DEBUG] Epoch {self.current_epoch}: pruner.current_epoch={pruner.current_epoch}, "
+                                   f"pruner.pruning_enabled={pruner.pruning_enabled}, "
+                                   f"pruner.warmup_epochs={pruner.warmup_epochs}")
         
         total_loss = 0.0
         detection_loss = 0.0
@@ -1375,6 +1382,11 @@ class DSETTrainer:
     def validate(self) -> Dict[str, float]:
         """验证模型并计算mAP。"""
         self.ema.module.eval()
+        
+        # 设置encoder的epoch（用于Token Pruning渐进式启用，验证时也需要）
+        if hasattr(self.model, 'encoder') and hasattr(self.model.encoder, 'set_epoch'):
+            self.model.encoder.set_epoch(self.current_epoch)
+        
         total_loss = 0.0
         all_predictions = []
         all_targets = []

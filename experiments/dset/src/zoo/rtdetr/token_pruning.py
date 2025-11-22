@@ -85,7 +85,9 @@ class TokenPruner(nn.Module):
         """获取当前保留比例（渐进式调整）"""
         if not self.pruning_enabled or self.current_epoch < self.warmup_epochs:
             return 1.0
-        progress = min(1.0, (self.current_epoch - self.warmup_epochs) / max(1, self.warmup_epochs))
+        # 当 epoch >= warmup_epochs 时开始剪枝，progress 从 1/(warmup_epochs+1) 开始
+        # 这样在 epoch = warmup_epochs 时就有一定的剪枝比例
+        progress = min(1.0, (self.current_epoch - self.warmup_epochs + 1) / max(1, self.warmup_epochs))
         return 1.0 - progress * (1.0 - self.keep_ratio)
     
     def forward(self, 

@@ -459,26 +459,65 @@ class TrainingVisualizer:
         ax.set_title('Detection Performance', fontsize=14, fontweight='bold')
         ax.grid(True, alpha=0.3)
         
-        # 1.3 Token Pruning Ratio
+        # 1.3 Token Pruning Ratio & Loss (双y轴)
         ax = axes[1, 0]
-        if len(self.history['token_pruning_ratio']) > 0:
-            # 即使数据都是0，也绘制出来（0是有效值，特别是在warmup期间）
-            pruning_epochs = epochs[:len(self.history['token_pruning_ratio'])]
-            ax.plot(pruning_epochs, self.history['token_pruning_ratio'], 'purple', 
-                   linewidth=2.5, label='Actual Pruning Ratio', marker='o', markersize=3)
+        has_ratio_data = len(self.history['token_pruning_ratio']) > 0
+        has_loss_data = len(self.history['token_pruning_loss']) > 0
+        
+        if has_ratio_data or has_loss_data:
+            pruning_epochs = epochs[:max(len(self.history['token_pruning_ratio']) if has_ratio_data else 0,
+                                         len(self.history['token_pruning_loss']) if has_loss_data else 0)]
+            
+            # 左y轴：Pruning Ratio
+            if has_ratio_data:
+                ax.plot(pruning_epochs, self.history['token_pruning_ratio'], 'purple', 
+                       linewidth=2.5, label='Actual Pruning Ratio', marker='o', markersize=3)
+                ax.set_ylabel('Pruning Ratio', fontsize=12, color='purple')
+                ax.tick_params(axis='y', labelcolor='purple')
+            else:
+                # 如果没有ratio数据，左y轴显示loss
+                loss_epochs = epochs[:len(self.history['token_pruning_loss'])]
+                ax.plot(loss_epochs, self.history['token_pruning_loss'], 'orange', 
+                       linewidth=2, label='Token Pruning Loss', marker='s', markersize=3, linestyle='--')
+                ax.set_ylabel('Pruning Loss', fontsize=12, color='orange')
+                ax.tick_params(axis='y', labelcolor='orange')
+            
+            # 右y轴：Pruning Loss（仅当同时有ratio和loss数据时）
+            if has_loss_data and has_ratio_data:
+                ax2 = ax.twinx()
+                loss_epochs = epochs[:len(self.history['token_pruning_loss'])]
+                ax2.plot(loss_epochs, self.history['token_pruning_loss'], 'orange', 
+                        linewidth=2, label='Token Pruning Loss', marker='s', markersize=3, linestyle='--')
+                ax2.set_ylabel('Pruning Loss', fontsize=12, color='orange')
+                ax2.tick_params(axis='y', labelcolor='orange')
+                
+                # 合并图例
+                lines1, labels1 = ax.get_legend_handles_labels()
+                lines2, labels2 = ax2.get_legend_handles_labels()
+                ax.legend(lines1 + lines2, labels1 + labels2, fontsize=10, loc='best')
+            elif has_ratio_data:
+                # 只有ratio数据，没有loss数据
+                ax.legend(fontsize=10)
+            else:
+                # 只有loss数据，没有ratio数据
+                ax.legend(fontsize=10)
+            
             ax.set_xlabel('Epoch', fontsize=12)
-            ax.set_ylabel('Pruning Ratio', fontsize=12)
             ax.set_title('Token Pruning Progress', fontsize=14, fontweight='bold')
-            ax.legend(fontsize=10)
             ax.grid(True, alpha=0.3)
-            # 如果所有值都是0，添加说明文本
-            if max(self.history['token_pruning_ratio']) == 0:
+            
+            # 如果ratio都是0但loss存在，添加说明文本
+            if has_ratio_data and max(self.history['token_pruning_ratio']) == 0 and has_loss_data:
+                ax.text(0.5, 0.95, 'Warmup phase: Loss training (ratio = 0)', 
+                       ha='center', va='top', fontsize=10, color='gray',
+                       transform=ax.transAxes, bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+            elif has_ratio_data and max(self.history['token_pruning_ratio']) == 0:
                 ax.text(0.5, 0.95, 'Pruning in warmup phase (ratio = 0)', 
                        ha='center', va='top', fontsize=10, color='gray',
                        transform=ax.transAxes, bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
         else:
             # 如果没有token pruning数据，显示说明
-            ax.text(0.5, 0.5, 'Token Pruning data not available\n(pruning may be disabled)', 
+            ax.text(0.5, 0.5, 'Token Pruning data not available\n(pruning may be disabled or in warmup)', 
                    ha='center', va='center', fontsize=12, color='gray',
                    transform=ax.transAxes)
             ax.set_xlabel('Epoch', fontsize=12)
