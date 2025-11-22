@@ -176,6 +176,19 @@ class PatchLevelPruner(nn.Module):
         # 确保 num_keep_patches 不超过 num_patches，避免 torch.topk 报错
         num_keep_patches = min(num_keep_patches, num_patches)
         
+        # 调试：如果应该剪枝但 ratio 会是 0，记录详细信息
+        if should_prune and self.current_epoch >= self.warmup_epochs:
+            if self.current_epoch == getattr(self, '_last_ratio_debug_epoch', -1) + 1:
+                import logging
+                logger = logging.getLogger(__name__)
+                expected_ratio = 1.0 - (num_keep_patches / num_patches) if num_patches > 0 else 0.0
+                logger.info(f"[PatchLevelPruner Ratio Debug] Epoch {self.current_epoch}: "
+                           f"should_prune={should_prune}, current_keep_ratio={current_keep_ratio:.4f}, "
+                           f"num_patches={num_patches}, num_keep_patches_by_ratio={num_keep_patches_by_ratio}, "
+                           f"min_patches={self.min_patches}, num_keep_patches={num_keep_patches}, "
+                           f"expected_ratio={expected_ratio:.4f}")
+                self._last_ratio_debug_epoch = self.current_epoch
+        
         # 调试：如果应该剪枝但 keep_ratio = 1.0，说明有问题
         if should_prune and current_keep_ratio >= 1.0 - 1e-6:
             # 即使 keep_ratio = 1.0，也应该执行剪枝逻辑（虽然实际上不剪），以便正确计算 ratio
