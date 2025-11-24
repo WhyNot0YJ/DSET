@@ -393,9 +393,12 @@ class RTDETRTrainer:
             # 加载过滤后的参数
             missing_keys, unexpected_keys = model.load_state_dict(filtered_state_dict, strict=False)
             
-            # 统计加载结果（使用filtered_state_dict）
+            # 统计加载结果
+            # 注意：missing_keys 可能包含预训练模型中不存在的参数（如不同模型结构的差异）
+            # 只统计预训练模型中实际存在的 missing_keys
+            actual_missing_keys = [k for k in missing_keys if k in filtered_state_dict]
             total_params = len(filtered_state_dict)
-            loaded_params = total_params - len(missing_keys)
+            loaded_params = total_params - len(actual_missing_keys)
             
             self.logger.info(f"✓ 成功加载预训练权重: {loaded_params}/{total_params} 个参数")
             
@@ -403,23 +406,28 @@ class RTDETRTrainer:
             if skipped_class_params > 0:
                 self.logger.info(f"  - 跳过类别相关参数: {skipped_class_params} 个（COCO 80类 → DAIR-V2X 8类）")
             
-            # 统计各部分的参数
-            backbone_loaded = sum(1 for k in filtered_state_dict.keys() if k not in missing_keys and 'backbone' in k)
-            encoder_loaded = sum(1 for k in filtered_state_dict.keys() if k not in missing_keys and 'encoder' in k)
-            decoder_loaded = sum(1 for k in filtered_state_dict.keys() if k not in missing_keys and 'decoder' in k)
+            # 统计各部分的参数（只统计预训练模型中实际存在的参数）
+            backbone_loaded = sum(1 for k in filtered_state_dict.keys() if k not in actual_missing_keys and 'backbone' in k)
+            encoder_loaded = sum(1 for k in filtered_state_dict.keys() if k not in actual_missing_keys and 'encoder' in k)
+            decoder_loaded = sum(1 for k in filtered_state_dict.keys() if k not in actual_missing_keys and 'decoder' in k)
             
             self.logger.info(f"  - Backbone: {backbone_loaded} 个参数")
             self.logger.info(f"  - Encoder: {encoder_loaded} 个参数")
             self.logger.info(f"  - Decoder: {decoder_loaded} 个参数")
             
-            if len(missing_keys) > 0:
-                # missing_keys是filtered_state_dict中有但当前模型没有的参数
-                self.logger.info(f"  - 预训练模型缺少参数: {len(missing_keys)} 个（当前模型新增）")
+            if len(actual_missing_keys) > 0:
+                # actual_missing_keys是filtered_state_dict中有但当前模型没有的参数
+                self.logger.info(f"  - 预训练模型缺少参数: {len(actual_missing_keys)} 个（当前模型新增）")
                 # 显示前3个示例
-                if len(missing_keys) <= 5:
-                    self.logger.info(f"    示例: {list(missing_keys)}")
+                if len(actual_missing_keys) <= 5:
+                    self.logger.info(f"    示例: {list(actual_missing_keys)}")
                 else:
-                    self.logger.info(f"    示例: {list(missing_keys)[:3]} ...")
+                    self.logger.info(f"    示例: {list(actual_missing_keys)[:3]} ...")
+            
+            # 如果 missing_keys 中有预训练模型中不存在的参数，说明是模型结构差异
+            model_only_missing = [k for k in missing_keys if k not in filtered_state_dict]
+            if len(model_only_missing) > 0:
+                self.logger.debug(f"  - 模型结构差异导致的 missing_keys: {len(model_only_missing)} 个（预训练模型中不存在，不影响加载统计）")
             
             if len(unexpected_keys) > 0:
                 self.logger.info(f"  - 模型新增参数: {len(unexpected_keys)} 个（将随机初始化）")
