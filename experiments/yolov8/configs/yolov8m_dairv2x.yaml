@@ -28,7 +28,7 @@ training:
   scale: 1.0
   flipud: 0.0
   fliplr: 0.0
-  mosaic: 1.0
+  mosaic: 0.0  # 禁用Mosaic，不适合路测探头场景（会破坏空间关系）
   mixup: 0.0
 
 data:
