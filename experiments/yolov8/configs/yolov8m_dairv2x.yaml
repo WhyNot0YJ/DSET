@@ -1,6 +1,6 @@
 model:
   model_name: "yolov8m.pt"
-  pretrained_weights: null
+  pretrained_weights: "pretrained/yolov8m.pt"  # 使用本地预训练权重
 
 training:
   epochs: 200
