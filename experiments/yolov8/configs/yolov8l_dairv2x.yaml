@@ -4,7 +4,7 @@ model:
 
 training:
   epochs: 200
-  batch_size: 64
+  batch_size: 48
   imgsz: 640
   optimizer: "AdamW"
   lr0: 0.01
