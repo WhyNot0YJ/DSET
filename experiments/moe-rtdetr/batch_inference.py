@@ -124,11 +124,15 @@ def load_model(config_path: str, checkpoint_path: str, device: str = "cuda"):
     model.eval()
     model = model.to(device)
     
+    # 从配置文件读取 num_queries（模型实际生成的查询数量）
+    num_queries = config.get('model', {}).get('num_queries', 300)
+    
     # 创建后处理器（使用RESIZE模式，然后手动处理padding和缩放）
+    # num_top_queries 应该使用配置中的 num_queries，因为模型只生成了这么多查询
     postprocessor = DetDETRPostProcessor(
         num_classes=8,
         use_focal_loss=True,
-        num_top_queries=300,
+        num_top_queries=num_queries,  # 使用配置文件中的 num_queries
         box_process_format=BoxProcessFormat.RESIZE
     )
     

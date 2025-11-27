@@ -285,6 +285,11 @@ class YOLOv8Trainer:
         if 'mixup' in self.training_config:
             train_kwargs['mixup'] = self.training_config['mixup']
         
+        # 检测框数量限制（用于公平对比，默认300，可设置为100与DETR系列对齐）
+        if 'max_det' in self.training_config:
+            train_kwargs['max_det'] = self.training_config['max_det']
+            self.logger.info(f"  检测框数量限制: {self.training_config['max_det']} (用于公平对比)")
+        
         # 恢复训练
         if resume_checkpoint and Path(resume_checkpoint).exists():
             self.logger.info(f"📦 从检查点恢复训练: {resume_checkpoint}")
