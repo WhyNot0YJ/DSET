@@ -790,14 +790,14 @@ def check_amp(model):
         from ultralytics import YOLO
         from pathlib import Path
 
-        # 直接使用 yolov8n.pt（不使用 yolo11n.pt）
+        # 直接使用 yolov8m.pt（优先使用本地文件，不使用 yolo11n.pt）
         # 优先尝试使用本地已有的模型文件
         current_file = Path(__file__)
         # 从 ultralytics/utils/checks.py 向上找到 experiments/yolov8/pretrained
         project_root = current_file.parent.parent.parent.parent  # experiments/yolov8
         local_models = [
-            project_root / "pretrained" / "yolov8n.pt",  # 优先使用本地 yolov8n.pt
-            Path.home() / ".ultralytics" / "weights" / "yolov8n.pt",
+            project_root / "pretrained" / "yolov8m.pt",  # 优先使用本地 yolov8m.pt
+            Path.home() / ".ultralytics" / "weights" / "yolov8m.pt",
         ]
         
         model_path = None
@@ -807,12 +807,12 @@ def check_amp(model):
                 LOGGER.info(f"{prefix}found local model: {model_path}")
                 break
         
-        # 如果找到本地模型，使用它；否则使用 yolov8n.pt（会自动查找或下载）
+        # 如果找到本地模型，使用它；否则使用 yolov8m.pt（会自动查找或下载）
         if model_path:
             assert amp_allclose(YOLO(model_path), im)
         else:
-            # 直接使用 yolov8n.pt，不尝试 yolo11n.pt
-            assert amp_allclose(YOLO("yolov8n.pt"), im)
+            # 直接使用 yolov8m.pt，不尝试 yolo11n.pt
+            assert amp_allclose(YOLO("yolov8m.pt"), im)
         
         LOGGER.info(f"{prefix}checks passed ✅")
     except ConnectionError:
