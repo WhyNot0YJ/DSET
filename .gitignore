@@ -12,3 +12,11 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.so
+
+# Editor files
+*.swp
+*.swo
+*~
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
