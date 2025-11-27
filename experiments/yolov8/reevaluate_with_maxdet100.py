@@ -43,7 +43,21 @@ def reevaluate_model(model_path: str, data_yaml: str, max_det: int = 100, device
     if not Path(model_path).exists():
         raise FileNotFoundError(f"模型文件不存在: {model_path}")
     
-    model = YOLO(model_path)
+    # YOLOv8只接受.pt格式，如果是.pth需要转换
+    model_path_pt = model_path
+    temp_file_created = False
+    if model_path.endswith('.pth'):
+        # 创建.pt副本（临时文件，评估完成后删除）
+        model_path_pt = model_path.replace('.pth', '.pt')
+        if not Path(model_path_pt).exists():
+            import shutil
+            print(f"  检测到.pth格式，创建.pt副本: {model_path_pt}")
+            shutil.copy2(model_path, model_path_pt)
+            temp_file_created = True
+        else:
+            print(f"  检测到.pth格式，使用已存在的.pt文件: {model_path_pt}")
+    
+    model = YOLO(model_path_pt)
     
     # 验证参数
     val_kwargs = {
@@ -83,6 +97,15 @@ def reevaluate_model(model_path: str, data_yaml: str, max_det: int = 100, device
     
     print("="*80)
     print(f"\n✓ 评估完成（max_det={max_det}）")
+    
+    # 清理临时.pt文件（如果创建了）
+    if temp_file_created:
+        try:
+            Path(model_path_pt).unlink()
+            print(f"  已删除临时文件: {model_path_pt}")
+        except Exception as e:
+            print(f"  警告: 删除临时文件失败: {e}")
+    
     print("="*80)
     
     return results
