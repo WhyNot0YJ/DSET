@@ -1,0 +1,5 @@
+[0;34m[INFO][0m 使用键名选择配置
+[1;33m[WARNING][0m 未知键名: --rtdetr-r18
+[1;33m[WARNING][0m 未知键名: --rtdetr-34
+[1;33m[WARNING][0m 未知键名: --dset8-r18
+[0;31m[ERROR][0m --keys 未匹配到任何配置
