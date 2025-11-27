@@ -140,10 +140,27 @@ class YOLOv8Trainer:
         model_name = self.model_config.get('model_name', 'yolov8n.pt')
         pretrained_weights = self.model_config.get('pretrained_weights', None)
         
-        # 如果指定了预训练权重，使用它；否则使用模型名称
-        if pretrained_weights and Path(pretrained_weights).exists():
-            self.logger.info(f"✓ 加载预训练权重: {pretrained_weights}")
-            model = YOLO(pretrained_weights)
+        # 如果指定了预训练权重，尝试解析路径
+        if pretrained_weights:
+            # 如果是相对路径，基于配置文件所在目录或项目根目录解析
+            pretrained_path = Path(pretrained_weights)
+            if not pretrained_path.is_absolute():
+                # 尝试相对于配置文件所在目录
+                if self.config_path:
+                    config_dir = Path(self.config_path).parent
+                    pretrained_path = config_dir / pretrained_weights
+                # 如果还是不存在，尝试相对于项目根目录
+                if not pretrained_path.exists():
+                    project_root = Path(__file__).parent.resolve()
+                    pretrained_path = project_root / pretrained_weights
+            
+            if pretrained_path.exists():
+                self.logger.info(f"✓ 加载预训练权重: {pretrained_path}")
+                model = YOLO(str(pretrained_path))
+            else:
+                self.logger.warning(f"⚠️  预训练权重文件不存在: {pretrained_path}")
+                self.logger.info(f"   将使用模型名称自动加载: {model_name}")
+                model = YOLO(model_name)
         else:
             self.logger.info(f"✓ 创建模型: {model_name}")
             model = YOLO(model_name)
