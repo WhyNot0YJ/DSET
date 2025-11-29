@@ -1043,10 +1043,6 @@ class AdaptiveExpertTrainer:
             targets = [{k: v.to(self.device) if isinstance(v, torch.Tensor) else v 
                        for k, v in t.items()} for t in targets]
             
-            # DEBUG: 检查数据范围 (只在第一个batch打印)
-            if batch_idx == 0:
-                self.logger.info(f"DEBUG: Image Range [{images.min().item():.4f}, {images.max().item():.4f}] (Shape: {images.shape})")
-            
             # 前向传播
             self.optimizer.zero_grad()
             
