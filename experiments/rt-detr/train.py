@@ -1016,7 +1016,7 @@ class RTDETRTrainer:
             should_validate = (epoch >= 30) and (epoch % 2 == 0)
             
             if should_validate:
-            val_metrics = self._validate_epoch()
+                val_metrics = self._validate_epoch()
             else:
                 val_metrics = {}
             
@@ -1029,11 +1029,11 @@ class RTDETRTrainer:
             # 输出日志（不输出mAP，只在best_model时输出）
             self.logger.info(f"Epoch {epoch}:")
             if should_validate:
-            self.logger.info(f"  训练损失: {train_metrics.get('total_loss', 0.0):.2f} | 验证损失: {val_metrics.get('total_loss', 0.0):.2f}")
-            if epoch >= 30:
+                self.logger.info(f"  训练损失: {train_metrics.get('total_loss', 0.0):.2f} | 验证损失: {val_metrics.get('total_loss', 0.0):.2f}")
+                if epoch >= 30:
                     self.logger.info(f"  预测/目标: {val_metrics.get('num_predictions', 0)}/{val_metrics.get('num_targets', 0)}")
-            else:
-                self.logger.info(f"  (前30个epoch仅计算loss，跳过mAP评估)")
+                else:
+                    self.logger.info(f"  (前30个epoch仅计算loss，跳过mAP评估)")
             else:
                 self.logger.info(f"  训练损失: {train_metrics.get('total_loss', 0.0):.2f} | 验证损失: Skipped")
             
