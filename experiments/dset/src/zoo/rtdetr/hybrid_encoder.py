@@ -212,7 +212,6 @@ class TransformerEncoder(nn.Module):
 
 @register()
 class HybridEncoder(nn.Module):
-    __share__ = ['eval_spatial_size', ]
 
     def __init__(self,
                  in_channels=[512, 1024, 2048],
@@ -228,7 +227,6 @@ class HybridEncoder(nn.Module):
                  expansion=1.0,
                  depth_mult=1.0,
                  act='silu',
-                 eval_spatial_size=None, 
                  version='v2',
                  # DSET 双稀疏参数
                  token_keep_ratio=0.7,
@@ -251,7 +249,6 @@ class HybridEncoder(nn.Module):
         self.use_encoder_idx = use_encoder_idx
         self.num_encoder_layers = num_encoder_layers
         self.pe_temperature = pe_temperature
-        self.eval_spatial_size = eval_spatial_size        
         self.out_channels = [hidden_dim for _ in range(len(in_channels))]
         self.out_strides = feat_strides
         
@@ -276,11 +273,8 @@ class HybridEncoder(nn.Module):
             self.input_proj.append(proj)
 
         # 根据模型结构自动计算每一层的 num_patches 和 min_patches
-        # 使用 eval_spatial_size 或默认 640×640
-        if eval_spatial_size is not None:
-            image_h, image_w = eval_spatial_size
-        else:
-            image_h = image_w = 640  # 默认值
+        # 使用默认 640×640
+        image_h = image_w = 640  # 默认值
         
         self.token_pruners = nn.ModuleList([
             PatchLevelPruner(
@@ -330,8 +324,6 @@ class HybridEncoder(nn.Module):
             self.pan_blocks.append(
                 CSPRepLayer(hidden_dim * 2, hidden_dim, round(3 * depth_mult), act=act, expansion=expansion)
             )
-
-        self._reset_parameters()
     
     def _calculate_min_patches_for_layer(self, enc_ind: int, feat_strides: list, 
                                         image_h: int, image_w: int, patch_size: int) -> int:
@@ -372,16 +364,6 @@ class HybridEncoder(nn.Module):
         min_patches = max(1, int(num_patches * 0.75))
         
         return min_patches
-
-    def _reset_parameters(self):
-        if self.eval_spatial_size:
-            for idx in self.use_encoder_idx:
-                stride = self.feat_strides[idx]
-                pos_embed = self.build_2d_sincos_position_embedding(
-                    self.eval_spatial_size[1] // stride, self.eval_spatial_size[0] // stride,
-                    self.hidden_dim, self.pe_temperature)
-                setattr(self, f'pos_embed{idx}', pos_embed)
-                # self.register_buffer(f'pos_embed{idx}', pos_embed)
 
     @staticmethod
     def build_2d_sincos_position_embedding(w, h, embed_dim=256, temperature=10000.):
@@ -466,11 +448,8 @@ class HybridEncoder(nn.Module):
                 h_original, w_original = original_spatial_shape
                 kept_indices = None
                 
-                if self.training or self.eval_spatial_size is None:
-                    pos_embed = self.build_2d_sincos_position_embedding(
-                        w_pruned, h_pruned, self.hidden_dim, self.pe_temperature).to(src_flatten.device)
-                else:
-                    pos_embed = getattr(self, f'pos_embed{enc_ind}', None).to(src_flatten.device)
+                pos_embed = self.build_2d_sincos_position_embedding(
+                    w_pruned, h_pruned, self.hidden_dim, self.pe_temperature).to(src_flatten.device)
 
                 memory :torch.Tensor = self.encoder[i](src_flatten, pos_embed=pos_embed, spatial_shape=(h_pruned, w_pruned))
                 

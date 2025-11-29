@@ -302,8 +302,7 @@ class RTDETRTrainer:
             dim_feedforward=1024,
             dropout=0.0,
             enc_act='gelu',
-            act='silu',
-            eval_spatial_size=[640, 640]
+            act='silu'
         )
         
         # 从配置文件读取模型参数

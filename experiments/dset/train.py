@@ -254,7 +254,6 @@ class DSETRTDETR(nn.Module):
             nhead=8,
             dropout=0.0,
             act='silu',
-            eval_spatial_size=input_size,
             # DSET双稀疏参数（Patch-MoE 必然启用，无需传递）
             token_keep_ratio=self.token_keep_ratio,
             token_pruning_warmup_epochs=self.token_pruning_warmup_epochs,

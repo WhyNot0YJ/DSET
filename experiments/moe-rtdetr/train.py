@@ -195,8 +195,7 @@ class AdaptiveExpertRTDETR(nn.Module):
             expansion=self.encoder_expansion,
             nhead=8,
             dropout=0.0,
-            act='silu',
-            eval_spatial_size=input_size
+            act='silu'
         )
     
     def _build_detr_criterion(self) -> RTDETRCriterionv2:
