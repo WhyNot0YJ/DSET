@@ -1727,7 +1727,7 @@ def main():
     parser.add_argument('--data_root', type=str, default='datasets/DAIR-V2X', 
                        help='DAIR-V2X数据集路径')
     parser.add_argument('--epochs', type=int, default=100, help='训练轮数')
-    parser.add_argument('--batch_size', type=int, default=32, help='批次大小')
+    parser.add_argument('--batch_size', type=int, default=16, help='批次大小')
     parser.add_argument('--pretrained_lr', type=float, default=1e-5, help='预训练组件学习率')
     parser.add_argument('--new_lr', type=float, default=1e-4, help='新组件学习率')
     parser.add_argument('--warmup_epochs', type=int, default=3, 
@@ -1776,7 +1776,7 @@ def main():
             config['model']['backbone'] = args.backbone
         if args.epochs != 100:
             config['training']['epochs'] = args.epochs
-        if args.batch_size != 32:
+        if args.batch_size != 16:
             config['training']['batch_size'] = args.batch_size
         if args.pretrained_lr != 1e-5:
             config['training']['pretrained_lr'] = args.pretrained_lr
@@ -1853,7 +1853,7 @@ def main():
         # 使用配置文件：只传递显式传递的参数，默认值参数传递None
         data_root_arg = None if args.data_root == 'datasets/DAIR-V2X' else args.data_root
         epochs_arg = None if args.epochs == 100 else args.epochs
-        batch_size_arg = None if args.batch_size == 32 else args.batch_size
+        batch_size_arg = None if args.batch_size == 16 else args.batch_size
         warmup_epochs_arg = None if args.warmup_epochs == 3 else args.warmup_epochs
     else:
         # 不使用配置文件：传递所有参数（包括默认值）
