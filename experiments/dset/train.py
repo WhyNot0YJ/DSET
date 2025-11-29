@@ -850,12 +850,35 @@ class DSETTrainer:
         """数据整理函数。"""
         images, targets = zip(*batch)
         
-        if isinstance(images[0], np.ndarray):
-            images = torch.stack([
-                torch.from_numpy(img).permute(2, 0, 1).float() / 255.0 
-                for img in images
-            ], dim=0)
+        # Handle images
+        if isinstance(images[0], (np.ndarray, torch.Tensor)):
+             # If images are already tensors or numpy arrays
+            if isinstance(images[0], np.ndarray):
+                # Convert numpy to tensor and normalize
+                processed_images = [
+                    torch.from_numpy(img).permute(2, 0, 1).float() / 255.0 
+                    for img in images
+                ]
+            else:
+                # Already tensors
+                processed_images = list(images)
+
+            # Check sizes
+            sizes = [img.shape[-2:] for img in processed_images]
+            max_h = max(s[0] for s in sizes)
+            max_w = max(s[1] for s in sizes)
+            
+            # Pad if sizes are different (create a batch of max size)
+            batch_images = torch.zeros(len(processed_images), 3, max_h, max_w)
+            
+            for i, img in enumerate(processed_images):
+                h, w = img.shape[-2:]
+                batch_images[i, :, :h, :w] = img
+                
+            images = batch_images
+            
         else:
+             # Fallback for other types
             images = torch.stack(images, 0)
         
         return images, list(targets)
