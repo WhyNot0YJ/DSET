@@ -80,10 +80,10 @@ class DAIRV2XDetection(DetDataset):
             if split == 'train':
                 self.transforms = T.Compose([
                     RandomPhotometricDistort(
-                        brightness=aug_brightness, 
-                        contrast=aug_contrast, 
-                        saturation=aug_saturation, 
-                        hue=aug_hue
+                        brightness=(max(0, 1 - aug_brightness), 1 + aug_brightness), 
+                        contrast=(max(0, 1 - aug_contrast), 1 + aug_contrast), 
+                        saturation=(max(0, 1 - aug_saturation), 1 + aug_saturation), 
+                        hue=(-aug_hue, aug_hue)
                     ),
                     RandomIoUCrop(min_scale=aug_crop_min, max_scale=aug_crop_max, p=1.0),
                     RandomHorizontalFlip(p=aug_flip_prob),

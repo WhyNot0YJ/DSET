@@ -1,4 +1,0 @@
-[0;34m[INFO][0m 运行指定实验类型（按字典序排序）: RT-DETR
-[0;34m[INFO][0m 开始实验: rt-detr/configs/rtdetr_presnet18.yaml
-[0;32m[SUCCESS][0m ✓ 实验完成: rtdetr_presnet18 (耗时: 05:10:31)
-[0;34m[INFO][0m 开始实验: rt-detr/configs/rtdetr_presnet34.yaml
