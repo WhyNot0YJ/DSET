@@ -1570,23 +1570,23 @@ class AdaptiveExpertTrainer:
             
             # 验证
             # =================================================
-            # ✅ 修正版验证策略：Bug 修复验证 + 长期策略
+            # ✅ 终极防踏空策略：渐进式加密
             # =================================================
             should_validate = False
-
-            # 1. 冲刺期 (最后 10 轮)：每轮都验
-            if epoch >= epochs - 10:
-                should_validate = True
-                
-            # 2. 爬坡期 (30 - 190)：每 10 轮验一次 (省时间)
-            elif epoch >= 30:
-                 if (epoch + 1) % 10 == 0:
+            # 阶段 1: 快速推进 (0 - 100) -> 每 10 轮看一眼
+            # 目的: 确认大趋势向上，没崩就行。
+            if epoch < 100:
+                if (epoch + 1) % 10 == 0:
                     should_validate = True
-            
-            # 3. 潜伏期 (0 - 30)：每 50 轮验一次
+            # 阶段 2: 重点监控 (100 - 160) -> 每 5 轮看一眼
+            # 目的: 防止你在担心的“中期”出现极值。5个Epoch的间隔很安全。
+            elif epoch < 160:
+                if (epoch + 1) % 5 == 0:
+                    should_validate = True
+            # 阶段 3: 决战时刻 (160 - 200) -> 每 1 轮都看！
+            # 目的: 这时候 LR 下降，每一轮都可能创造新高，绝对不能漏。
             else:
-                if epoch % 50 == 0:
-                    should_validate = True
+                should_validate = True
             # =================================================
             
             if should_validate:
