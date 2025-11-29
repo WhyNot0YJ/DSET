@@ -1451,7 +1451,8 @@ class DSETTrainer:
         total_raw_predictions = 0  # 原始query总数
         
         # 前30个epoch只计算loss，不进行cocoEval评估
-        skip_coco_eval = self.current_epoch < 30
+        # ✅ 修正：前3个epoch强制评估 (Sanity Check)，3-30之间跳过
+        skip_coco_eval = (self.current_epoch >= 3 and self.current_epoch < 30)
         
         with torch.no_grad():
             for batch_idx, (images, targets) in enumerate(self.val_loader):
@@ -1894,17 +1895,28 @@ class DSETTrainer:
             train_metrics = self.train_epoch()
             
             # 验证
-            # 验证策略：前松后紧
-            # Epoch 0-150: 每50个epoch验证一次 (0, 50, 100)
-            # Epoch 150-180: 每10个epoch验证一次
-            # Epoch 180-200: 每个epoch验证一次
+            # =================================================
+            # ✅ 修正版验证策略：Bug 修复验证 + 长期策略
+            # =================================================
             should_validate = False
-            if epoch < 150:
-                if epoch % 50 == 0: should_validate = True
-            elif epoch < 180:
-                if epoch % 10 == 0: should_validate = True
-            else:
+
+            # 1. 【关键】启动检查 (前 3 轮)：必须验！看 mAP 是不是 0
+            if epoch < 3:
                 should_validate = True
+                
+            # 2. 冲刺期 (最后 10 轮)：每轮都验
+            elif epoch >= epochs - 10:
+                should_validate = True
+                
+            # 3. 爬坡期 (30 - 190)：每 10 轮验一次 (省时间)
+            elif epoch >= 30:
+                 if (epoch + 1) % 10 == 0:
+                    should_validate = True
+            
+            # 4. 潜伏期 (3 - 30)：跳过，专心跑 Loss
+            else:
+                should_validate = False
+            # =================================================
             
             if should_validate:
                 val_metrics = self.validate()
