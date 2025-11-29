@@ -42,6 +42,7 @@ from src.data.dataset.dairv2x_detection import DAIRV2XDetection
 from src.nn.postprocessor.detr_postprocessor import DetDETRPostProcessor
 from src.nn.postprocessor.box_revert import BoxProcessFormat
 import cv2
+import torchvision.transforms as T
 
 try:
     from batch_inference import postprocess_outputs, draw_boxes, inference_from_preprocessed_image
@@ -589,12 +590,49 @@ class AdaptiveExpertTrainer:
         num_workers = self.config.get('misc', {}).get('num_workers', 16)
         pin_memory = self.config.get('misc', {}).get('pin_memory', True)
         
+        # 创建collate_fn类
+        class CustomCollateFunction(BaseCollateFunction):
+            def __call__(self, batch):
+                images, targets = zip(*batch)
+                
+                # 1. 确保所有图像都是 Tensor
+                # Transforms 应该已经把它们变成了 Tensor
+                if not isinstance(images[0], torch.Tensor):
+                    # 如果万一不是 Tensor，这里只转类型，不除 255 (由Transforms负责归一化)
+                    processed_images = [T.functional.to_tensor(img) for img in images]
+                else:
+                    processed_images = list(images)
+
+                # 2. 获取尺寸
+                sizes = [img.shape[-2:] for img in processed_images]
+                
+                # 3. 计算最大尺寸 (32倍数对齐)
+                stride = 32
+                max_h_raw = max(s[0] for s in sizes)
+                max_w_raw = max(s[1] for s in sizes)
+                max_h = (max_h_raw + stride - 1) // stride * stride
+                max_w = (max_w_raw + stride - 1) // stride * stride
+                
+                # 4. 创建画布 (注意：保持和输入图像相同的数据类型和设备)
+                # 关键！不要想当然地用 float32，要看 processed_images[0] 是什么
+                batch_images = torch.zeros(len(processed_images), 3, max_h, max_w, 
+                                           dtype=processed_images[0].dtype)
+                
+                # 5. 填充
+                for i, img in enumerate(processed_images):
+                    h, w = img.shape[-2:]
+                    batch_images[i, :, :h, :w] = img
+                    
+                return batch_images, list(targets)
+
+        collate_fn = CustomCollateFunction()
+
         train_loader = DataLoader(
             train_dataset, 
             batch_size=batch_size, 
             shuffle=True,
             num_workers=num_workers,
-            collate_fn=self._collate_fn,
+            collate_fn=collate_fn,
             pin_memory=pin_memory,
             persistent_workers=True if num_workers > 0 else False,
             prefetch_factor=2 if num_workers > 0 else None
@@ -605,7 +643,7 @@ class AdaptiveExpertTrainer:
             batch_size=batch_size, 
             shuffle=False,
             num_workers=num_workers,
-            collate_fn=self._collate_fn,
+            collate_fn=collate_fn,
             pin_memory=pin_memory,
             persistent_workers=True if num_workers > 0 else False,
             prefetch_factor=2 if num_workers > 0 else None
@@ -617,53 +655,6 @@ class AdaptiveExpertTrainer:
         self.logger.info(f"  训练集: {len(train_dataset)} | 验证集: {len(val_dataset)}")
         
         return train_loader, val_loader
-    
-    def _collate_fn(self, batch: List[Tuple]) -> Tuple[torch.Tensor, List[Dict]]:
-        """数据整理函数。"""
-        images, targets = zip(*batch)
-        
-        # ---------------------------------------------------------------------
-        # 核心修改区域：动态 Padding + Stride 32 对齐
-        # ---------------------------------------------------------------------
-        if isinstance(images[0], (np.ndarray, torch.Tensor)):
-            # 1. 统一格式：将 numpy 转为 tensor (如果需要)
-            if isinstance(images[0], np.ndarray):
-                processed_images = [
-                    torch.from_numpy(img).permute(2, 0, 1).float() / 255.0 
-                    for img in images
-                ]
-            else:
-                processed_images = list(images)
-
-            # 2. 获取当前 Batch 中所有图片的尺寸 (H, W)
-            sizes = [img.shape[-2:] for img in processed_images]
-            
-            # 3. 计算最大尺寸，并强制向上对齐到 32 的倍数
-            # RT-DETR/ResNet 的最大下采样率是 32，输入必须是 32 的倍数，否则 FPN 上采样会错位
-            stride = 32
-            max_h_raw = max(s[0] for s in sizes)
-            max_w_raw = max(s[1] for s in sizes)
-            
-            # 向上取整公式: (x + stride - 1) // stride * stride
-            max_h = (max_h_raw + stride - 1) // stride * stride
-            max_w = (max_w_raw + stride - 1) // stride * stride
-            
-            # 4. 创建全零画布 (Batch, C, MaxH, MaxW)
-            # RT-DETR expects nested tensors or padded batch
-            batch_images = torch.zeros(len(processed_images), 3, max_h, max_w)
-            
-            # 5. 填充数据 (左上角对齐)
-            for i, img in enumerate(processed_images):
-                h, w = img.shape[-2:]
-                batch_images[i, :, :h, :w] = img
-                
-            images = batch_images
-            
-        else:
-             # Fallback for other types
-            images = torch.stack(images, 0)
-        
-        return images, list(targets)
     
     def _create_optimizer(self) -> optim.AdamW:
         """创建优化器（使用分组学习率，与rt-detr保持一致）。"""
@@ -1051,6 +1042,10 @@ class AdaptiveExpertTrainer:
             images = images.to(self.device)
             targets = [{k: v.to(self.device) if isinstance(v, torch.Tensor) else v 
                        for k, v in t.items()} for t in targets]
+            
+            # DEBUG: 检查数据范围 (只在第一个batch打印)
+            if batch_idx == 0:
+                self.logger.info(f"DEBUG: Image Range [{images.min().item():.4f}, {images.max().item():.4f}] (Shape: {images.shape})")
             
             # 前向传播
             self.optimizer.zero_grad()
