@@ -623,27 +623,37 @@ class AdaptiveExpertTrainer:
         """数据整理函数。"""
         images, targets = zip(*batch)
         
-        # Handle images
+        # ---------------------------------------------------------------------
+        # 核心修改区域：动态 Padding + Stride 32 对齐
+        # ---------------------------------------------------------------------
         if isinstance(images[0], (np.ndarray, torch.Tensor)):
-             # If images are already tensors or numpy arrays
+            # 1. 统一格式：将 numpy 转为 tensor (如果需要)
             if isinstance(images[0], np.ndarray):
-                # Convert numpy to tensor and normalize
                 processed_images = [
                     torch.from_numpy(img).permute(2, 0, 1).float() / 255.0 
                     for img in images
                 ]
             else:
-                # Already tensors
                 processed_images = list(images)
 
-            # Check sizes
+            # 2. 获取当前 Batch 中所有图片的尺寸 (H, W)
             sizes = [img.shape[-2:] for img in processed_images]
-            max_h = max(s[0] for s in sizes)
-            max_w = max(s[1] for s in sizes)
             
-            # Pad if sizes are different (create a batch of max size)
+            # 3. 计算最大尺寸，并强制向上对齐到 32 的倍数
+            # RT-DETR/ResNet 的最大下采样率是 32，输入必须是 32 的倍数，否则 FPN 上采样会错位
+            stride = 32
+            max_h_raw = max(s[0] for s in sizes)
+            max_w_raw = max(s[1] for s in sizes)
+            
+            # 向上取整公式: (x + stride - 1) // stride * stride
+            max_h = (max_h_raw + stride - 1) // stride * stride
+            max_w = (max_w_raw + stride - 1) // stride * stride
+            
+            # 4. 创建全零画布 (Batch, C, MaxH, MaxW)
+            # RT-DETR expects nested tensors or padded batch
             batch_images = torch.zeros(len(processed_images), 3, max_h, max_w)
             
+            # 5. 填充数据 (左上角对齐)
             for i, img in enumerate(processed_images):
                 h, w = img.shape[-2:]
                 batch_images[i, :, :h, :w] = img
