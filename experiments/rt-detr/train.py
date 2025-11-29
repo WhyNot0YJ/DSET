@@ -1020,22 +1020,19 @@ class RTDETRTrainer:
             # =================================================
             should_validate = False
 
-            # 1. 【关键】启动检查 (前 3 轮)：必须验！看 mAP 是不是 0
-            if epoch < 3:
+            # 1. 冲刺期 (最后 10 轮)：每轮都验
+            if epoch >= epochs - 10:
                 should_validate = True
                 
-            # 2. 冲刺期 (最后 10 轮)：每轮都验
-            elif epoch >= epochs - 10:
-                should_validate = True
-                
-            # 3. 爬坡期 (30 - 190)：每 10 轮验一次 (省时间)
+            # 2. 爬坡期 (30 - 190)：每 10 轮验一次 (省时间)
             elif epoch >= 30:
                  if (epoch + 1) % 10 == 0:
                     should_validate = True
             
-            # 4. 潜伏期 (3 - 30)：跳过，专心跑 Loss
+            # 3. 潜伏期 (0 - 30)：每 50 轮验一次
             else:
-                should_validate = False
+                if epoch % 50 == 0: 
+                    should_validate = True
             # =================================================
             
             if should_validate:
@@ -1366,8 +1363,7 @@ class RTDETRTrainer:
         total_raw_predictions = 0  # 原始query总数
         
         # 前30个epoch只计算loss，不进行cocoEval评估
-        # ✅ 修正：前3个epoch强制评估 (Sanity Check)，3-30之间跳过
-        skip_coco_eval = (self.last_epoch >= 3 and self.last_epoch < 30)
+        # ✅ 修正：外部已控制验证频率，进入此函数即意味着需要评估
         
         with torch.no_grad():
             for batch_idx, (images, targets) in enumerate(self.val_dataloader):
@@ -1400,7 +1396,7 @@ class RTDETRTrainer:
                     ('pred_logits' in outputs and 'pred_boxes' in outputs) or
                     ('class_scores' in outputs and 'bboxes' in outputs)
                 )
-                if not skip_coco_eval and has_predictions:
+                if has_predictions:
                     self._collect_predictions(outputs, targets, batch_idx, all_predictions, all_targets)
         
         # 保存预测结果用于后续打印每个类别mAP（避免重复计算）
@@ -1408,18 +1404,6 @@ class RTDETRTrainer:
         self._last_val_targets = all_targets
         
         avg_loss = total_loss / len(self.val_dataloader)
-        
-        # 前30个epoch只返回loss，不计算mAP
-        if skip_coco_eval:
-            return {
-                'total_loss': avg_loss,
-                'mAP_0.5': 0.0,
-                'mAP_0.75': 0.0,
-                'mAP_0.5_0.95': 0.0,
-                'num_predictions': 0,
-                'num_raw_predictions': 0,
-                'num_targets': 0
-            }
         
         # 计算mAP（不计算每个类别的mAP，只在best_model时计算）
         mAP_metrics = self._compute_map_metrics(all_predictions, all_targets, print_per_category=False)
@@ -1864,6 +1848,16 @@ def main():
             'mixup': {'enabled': False, 'alpha': 0.2},
             'cutmix': {'enabled': False, 'alpha': 1.0},
             'mosaic': {'enabled': False, 'prob': 0.0}  # 禁用Mosaic，不适合路测探头场景（会破坏空间关系）
+        },
+        'data_augmentation': {
+            'brightness': 0.15,
+            'contrast': 0.15,
+            'saturation': 0.1,
+            'hue': 0.05,
+            'crop_min': 0.1,  # 关键修改：小目标优化
+            'crop_max': 1.0,
+            'flip_prob': 0.5,
+            'color_jitter_prob': 0.0
         },
         'misc': {
             'device': 'cuda',
