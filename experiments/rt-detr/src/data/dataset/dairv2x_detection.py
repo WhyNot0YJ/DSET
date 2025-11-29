@@ -96,9 +96,9 @@ class DAIRV2XDetection(DetDataset):
                 ])
             else:
                 # 验证/推理配置：矩形推理 (Rectangular Inference)
-                # Resize到1280 (保持长宽比)，短边自适应
+                # Resize到640 (保持长宽比)，短边自适应
                 self.transforms = T.Compose([
-                    T.Resize(size=1280, max_size=1333, antialias=True),
+                    T.Resize(size=640, max_size=1333, antialias=True),
                     T.ToImage(),
                     T.ToDtype(torch.float32, scale=True),
                     Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
