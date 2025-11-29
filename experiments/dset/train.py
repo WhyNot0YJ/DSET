@@ -1890,7 +1890,13 @@ class DSETTrainer:
             train_metrics = self.train_epoch()
             
             # 验证
-            val_metrics = self.validate()
+            # 验证策略：前30个epoch不验证，30个epoch后每两个epoch验证一次
+            should_validate = (epoch >= 30) and (epoch % 2 == 0)
+            
+            if should_validate:
+                val_metrics = self.validate()
+            else:
+                val_metrics = {}
             
             # 学习率调度
             if self.current_epoch < self.warmup_scheduler.warmup_epochs:
@@ -1900,15 +1906,17 @@ class DSETTrainer:
             
             # 输出日志
             self.logger.info(f"Epoch {epoch}:")
-            self.logger.info(f"  训练损失: {train_metrics.get('total_loss', 0.0):.2f} | 验证损失: {val_metrics.get('total_loss', 0.0):.2f}")
-            # 前30个epoch不进行cocoEval评估，跳过预测/目标统计
-            if epoch >= 30:
-                self.logger.info(f"  预测/目标: {val_metrics['num_predictions']}/{val_metrics['num_targets']}")
+            if should_validate:
+                self.logger.info(f"  训练损失: {train_metrics.get('total_loss', 0.0):.2f} | 验证损失: {val_metrics.get('total_loss', 0.0):.2f}")
+                if epoch >= 30:
+                    self.logger.info(f"  预测/目标: {val_metrics.get('num_predictions', 0)}/{val_metrics.get('num_targets', 0)}")
+                else:
+                    self.logger.info(f"  (前30个epoch仅计算loss，跳过mAP评估)")
             else:
-                self.logger.info(f"  (前30个epoch仅计算loss，跳过mAP评估)")
+                self.logger.info(f"  训练损失: {train_metrics.get('total_loss', 0.0):.2f} | 验证损失: Skipped")
             
-            # 显示详细损失（前20个epoch每次显示，之后每5个epoch显示）
-            should_show_details = (epoch < 20) or (epoch % 5 == 0)
+            # 显示详细损失（前30个epoch每次显示，之后每2个epoch显示）
+            should_show_details = (epoch < 30) or (epoch % 2 == 0)
             if should_show_details:
                 self.logger.info(f"  检测损失: {train_metrics['detection_loss']:.2f}")
                 self.logger.info(f"  Decoder MoE损失: {train_metrics.get('decoder_moe_loss', 0.0):.4f}")
@@ -1956,7 +1964,7 @@ class DSETTrainer:
                 self.save_checkpoint(epoch, is_best=True)
             
             # Early Stopping检查（前30个epoch不检查mAP相关的指标）
-            if self.early_stopping:
+            if self.early_stopping and should_validate:
                 # 获取要监控的指标值
                 metric_name = self.early_stopping.metric_name
                 # 如果监控的是mAP相关指标且epoch < 30，跳过Early Stopping检查
