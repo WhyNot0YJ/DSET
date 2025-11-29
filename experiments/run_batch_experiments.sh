@@ -72,28 +72,28 @@ log_warning() {
 
 # 定义所有可用的实验配置
 declare -A RT_DETR_CONFIGS=(
-    ["rt-detr-r18"]="rt-detr/configs/rtdetr_presnet18.yaml"
-    ["rt-detr-r34"]="rt-detr/configs/rtdetr_presnet34.yaml"
+    ["rt-detr-r18"]="rt-detr/configs/rtdetr_r18.yaml"
+    ["rt-detr-r34"]="rt-detr/configs/rtdetr_r34.yaml"
 )
 
 declare -A MOE_RTDETR_CONFIGS=(
-    ["moe2-r18"]="moe-rtdetr/configs/moe2_presnet18.yaml"
-    ["moe2-r34"]="moe-rtdetr/configs/moe2_presnet34.yaml"
-    ["moe3-r18"]="moe-rtdetr/configs/moe3_presnet18.yaml"
-    ["moe3-r34"]="moe-rtdetr/configs/moe3_presnet34.yaml"
+    ["moe4-r18"]="moe-rtdetr/configs/moe4_presnet18.yaml"
+    ["moe4-r34"]="moe-rtdetr/configs/moe4_presnet34.yaml"
     ["moe6-r18"]="moe-rtdetr/configs/moe6_presnet18.yaml"
     ["moe6-r34"]="moe-rtdetr/configs/moe6_presnet34.yaml"
+    ["moe8-r18"]="moe-rtdetr/configs/moe8_presnet18.yaml"
+    ["moe8-r34"]="moe-rtdetr/configs/moe8_presnet34.yaml"
 )
 
 declare -A DSET_CONFIGS=(
-    ["dset2-r18"]="dset/configs/dset2_r18.yaml"
-    ["dset2-r34"]="dset/configs/dset2_r34.yaml"
-    ["dset3-r18"]="dset/configs/dset3_r18.yaml"
-    ["dset3-r34"]="dset/configs/dset3_r34.yaml"
+    ["dset4-r18"]="dset/configs/dset4_r18.yaml"
+    ["dset4-r34"]="dset/configs/dset4_r34.yaml"
     ["dset6-r18"]="dset/configs/dset6_r18.yaml"
     ["dset6-r34"]="dset/configs/dset6_r34.yaml"
     ["dset8-r18"]="dset/configs/dset8_r18.yaml"
     ["dset8-r34"]="dset/configs/dset8_r34.yaml"
+    ["dset48-r18"]="dset/configs/dset48_r18.yaml"
+    ["dset48-r34"]="dset/configs/dset48_r34.yaml"
 )
 
 declare -A YOLOV8_CONFIGS=(
@@ -357,14 +357,14 @@ parse_arguments() {
                 CONFIGS_TO_RUN+=("$p")
             fi
         done
-        # MOE-RTDETR实验（按字典序：moe2→moe3→moe6）
+        # MOE-RTDETR实验（按字典序：moe4→moe6→moe8）
         for key in $(printf '%s\n' "${!MOE_RTDETR_CONFIGS[@]}" | sort); do
             local p="${MOE_RTDETR_CONFIGS[$key]}"
             if filter_by_backbone "$p"; then
                 CONFIGS_TO_RUN+=("$p")
             fi
         done
-        # DSET实验（按字典序：dset2→dset3→dset6）
+        # DSET实验（按字典序：dset4→dset6→dset8→dset48）
         for key in $(printf '%s\n' "${!DSET_CONFIGS[@]}" | sort); do
             local p="${DSET_CONFIGS[$key]}"
             if filter_by_backbone "$p"; then

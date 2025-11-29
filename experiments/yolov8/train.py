@@ -263,13 +263,15 @@ class YOLOv8Trainer:
         if 'patience' in self.training_config:
             train_kwargs['patience'] = self.training_config['patience']
         
-        # 数据增强配置
+        # 颜色增强
         if 'hsv_h' in self.training_config:
             train_kwargs['hsv_h'] = self.training_config['hsv_h']
         if 'hsv_s' in self.training_config:
             train_kwargs['hsv_s'] = self.training_config['hsv_s']
         if 'hsv_v' in self.training_config:
             train_kwargs['hsv_v'] = self.training_config['hsv_v']
+            
+        # 几何增强
         if 'degrees' in self.training_config:
             train_kwargs['degrees'] = self.training_config['degrees']
         if 'translate' in self.training_config:
@@ -285,10 +287,10 @@ class YOLOv8Trainer:
         if 'mixup' in self.training_config:
             train_kwargs['mixup'] = self.training_config['mixup']
         
-        # 检测框数量限制（用于公平对比，默认300，可设置为100与DETR系列对齐）
+        # 检测框数量限制（默认300）
         if 'max_det' in self.training_config:
             train_kwargs['max_det'] = self.training_config['max_det']
-            self.logger.info(f"  检测框数量限制: {self.training_config['max_det']} (用于公平对比)")
+            self.logger.info(f"  检测框数量限制: {self.training_config['max_det']}")
         
         # 恢复训练
         if resume_checkpoint and Path(resume_checkpoint).exists():

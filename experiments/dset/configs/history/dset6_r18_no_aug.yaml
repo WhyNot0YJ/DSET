@@ -1,6 +1,6 @@
 model:
-  num_experts: 8
-  top_k: 4
+  num_experts: 6
+  top_k: 3
   backbone: presnet18
   encoder:
     in_channels:
@@ -16,8 +16,8 @@ model:
   dset:
     token_keep_ratio: 0.7
     token_pruning_warmup_epochs: 10
-    patch_moe_num_experts: 8
-    patch_moe_top_k: 4
+    patch_moe_num_experts: 6
+    patch_moe_top_k: 3
     patch_moe_patch_size: 4
     use_token_pruning_loss: true
     token_pruning_loss_weight: 0.01
@@ -48,10 +48,8 @@ misc:
   num_workers: 16
   pin_memory: true
 data_augmentation:
-  brightness: 0.15
-  contrast: 0.15
-  saturation: 0.1
-  hue: 0.05
-  crop_min: 0.1
-  crop_max: 1.0
-  flip_prob: 0.5
+  brightness: 0.0
+  contrast: 0.0
+  saturation: 0.0
+  hue: 0.0
+  color_jitter_prob: 0.0

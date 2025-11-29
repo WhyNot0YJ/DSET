@@ -20,14 +20,14 @@ training:
   deterministic: false
   patience: 35
   
-  hsv_h: 0.0
-  hsv_s: 0.0
-  hsv_v: 0.0
+  hsv_h: 0.015
+  hsv_s: 0.7
+  hsv_v: 0.4
   degrees: 0.0
   translate: 0.0
-  scale: 1.0
+  scale: 0.5
   flipud: 0.0
-  fliplr: 0.0
+  fliplr: 0.5
   mosaic: 0.0  # 禁用Mosaic，不适合路测探头场景（会破坏空间关系）
   mixup: 0.0
 

@@ -518,11 +518,15 @@ class RTDETRTrainer:
         
         # 获取数据增强配置
         aug_config = self.config.get('data_augmentation', {})
-        aug_brightness = aug_config.get('brightness', 0.0)
-        aug_contrast = aug_config.get('contrast', 0.0)
-        aug_saturation = aug_config.get('saturation', 0.0)
-        aug_hue = aug_config.get('hue', 0.0)
+        # 默认使用Unified Task-Adapted Augmentation的参数
+        aug_brightness = aug_config.get('brightness', 0.15)
+        aug_contrast = aug_config.get('contrast', 0.15)
+        aug_saturation = aug_config.get('saturation', 0.1)
+        aug_hue = aug_config.get('hue', 0.05)
         aug_color_jitter_prob = aug_config.get('color_jitter_prob', 0.0)
+        aug_crop_min = aug_config.get('crop_min', 0.3)
+        aug_crop_max = aug_config.get('crop_max', 1.0)
+        aug_flip_prob = aug_config.get('flip_prob', 0.5)
         
         train_dataset = DAIRV2XDetection(
             data_root=data_root,
@@ -532,7 +536,10 @@ class RTDETRTrainer:
             aug_contrast=aug_contrast,
             aug_saturation=aug_saturation,
             aug_hue=aug_hue,
-            aug_color_jitter_prob=aug_color_jitter_prob
+            aug_color_jitter_prob=aug_color_jitter_prob,
+            aug_crop_min=aug_crop_min,
+            aug_crop_max=aug_crop_max,
+            aug_flip_prob=aug_flip_prob
         )
         
         val_dataset = DAIRV2XDetection(
@@ -1790,7 +1797,7 @@ def main():
         'augmentation': {
             'mixup': {'enabled': False, 'alpha': 0.2},
             'cutmix': {'enabled': False, 'alpha': 1.0},
-            'mosaic': {'enabled': True, 'prob': 0.5}
+            'mosaic': {'enabled': False, 'prob': 0.0}  # 禁用Mosaic，不适合路测探头场景（会破坏空间关系）
         },
         'misc': {
             'device': 'cuda',

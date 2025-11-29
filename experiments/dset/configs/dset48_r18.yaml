@@ -1,5 +1,5 @@
 model:
-  num_experts: 8
+  num_experts: 48
   top_k: 4
   backbone: presnet18
   encoder:
@@ -16,7 +16,7 @@ model:
   dset:
     token_keep_ratio: 0.7
     token_pruning_warmup_epochs: 10
-    patch_moe_num_experts: 8
+    patch_moe_num_experts: 48
     patch_moe_top_k: 4
     patch_moe_patch_size: 4
     use_token_pruning_loss: true
@@ -55,3 +55,4 @@ data_augmentation:
   crop_min: 0.1
   crop_max: 1.0
   flip_prob: 0.5
+

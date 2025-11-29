@@ -18,7 +18,6 @@ from typing import Any, Dict, List, Optional
 from .._misc import convert_to_tv_tensor, _boxes_keys
 from .._misc import Image, Video, Mask, BoundingBoxes
 from .._misc import SanitizeBoundingBoxes
-
 from ...core import register
 
 
@@ -146,3 +145,17 @@ class ConvertPILImage(T.Transform):
 
     def transform(self, inpt: Any, params: Dict[str, Any]) -> Any:
         return self._transform(inpt, params)
+
+@register()
+class RandomResize(T.Transform):
+    def __init__(self, scales, max_size=None, antialias=True):
+        super().__init__()
+        self.scales = scales
+        self.max_size = max_size
+        self.antialias = antialias
+
+    def forward(self, *inputs):
+        inputs = inputs if len(inputs) > 1 else inputs[0]
+        import random
+        target_size = random.choice(self.scales)
+        return T.Resize(target_size, max_size=self.max_size, antialias=self.antialias)(inputs)

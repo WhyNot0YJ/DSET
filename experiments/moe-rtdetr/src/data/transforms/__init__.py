@@ -8,6 +8,7 @@ from ._transforms import (
     RandomZoomOut,
     RandomIoUCrop,
     RandomHorizontalFlip,
+    RandomResize,
     Resize,
     PadToSize,
     SanitizeBoundingBoxes,

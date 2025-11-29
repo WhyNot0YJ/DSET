@@ -563,11 +563,17 @@ class DSETTrainer:
             backbone_type = self.config.get('model', {}).get('backbone', 'unknown')
             # 移除presnet前缀，只保留数字部分（如presnet18 -> r18, presnet34 -> r34）
             backbone_short = backbone_type.replace('presnet', 'r').replace('pres', 'r') if 'presnet' in backbone_type or 'pres' in backbone_type else backbone_type
-            # 直接从配置文件读取专家数量
-            num_experts = self.config.get('model', {}).get('num_experts', 6)
-            expert_num = str(num_experts)
-            # 生成实验名称（不带时间戳）- DSET格式
-            self.experiment_name = f"dset{expert_num}_{backbone_short}"
+            # 从配置文件读取encoder和decoder专家数量
+            num_decoder_experts = self.config.get('model', {}).get('num_experts', 6)
+            dset_config = self.config.get('model', {}).get('dset', {})
+            num_encoder_experts = dset_config.get('patch_moe_num_experts', 4)
+            # 生成实验名称（不带时间戳）
+            # 如果encoder和decoder相同，使用 dset{num}_{backbone} 格式
+            # 如果不同，使用 dset{encoder}{decoder}_{backbone} 格式
+            if num_encoder_experts == num_decoder_experts:
+                self.experiment_name = f"dset{num_decoder_experts}_{backbone_short}"
+            else:
+                self.experiment_name = f"dset{num_encoder_experts}{num_decoder_experts}_{backbone_short}"
             self.log_dir = Path(f"logs/{self.experiment_name}_{timestamp}")
             self.log_dir.mkdir(parents=True, exist_ok=True)
         
@@ -772,11 +778,15 @@ class DSETTrainer:
         
         # 获取数据增强配置
         aug_config = self.config.get('data_augmentation', {})
-        aug_brightness = aug_config.get('brightness', 0.0)
-        aug_contrast = aug_config.get('contrast', 0.0)
-        aug_saturation = aug_config.get('saturation', 0.0)
-        aug_hue = aug_config.get('hue', 0.0)
+        # 默认使用Unified Task-Adapted Augmentation的参数
+        aug_brightness = aug_config.get('brightness', 0.15)
+        aug_contrast = aug_config.get('contrast', 0.15)
+        aug_saturation = aug_config.get('saturation', 0.1)
+        aug_hue = aug_config.get('hue', 0.05)
         aug_color_jitter_prob = aug_config.get('color_jitter_prob', 0.0)
+        aug_crop_min = aug_config.get('crop_min', 0.3)
+        aug_crop_max = aug_config.get('crop_max', 1.0)
+        aug_flip_prob = aug_config.get('flip_prob', 0.5)
         
         train_dataset = DAIRV2XDetection(
             data_root=self.config['data']['data_root'],
@@ -786,7 +796,10 @@ class DSETTrainer:
             aug_contrast=aug_contrast,
             aug_saturation=aug_saturation,
             aug_hue=aug_hue,
-            aug_color_jitter_prob=aug_color_jitter_prob
+            aug_color_jitter_prob=aug_color_jitter_prob,
+            aug_crop_min=aug_crop_min,
+            aug_crop_max=aug_crop_max,
+            aug_flip_prob=aug_flip_prob
         )
         
         val_dataset = DAIRV2XDetection(
@@ -2072,7 +2085,7 @@ def main() -> None:
                 'batch_size': args.batch_size,
                 'pretrained_lr': args.pretrained_lr,
                 'new_lr': args.new_lr,
-                'use_mosaic': True, 
+                'use_mosaic': False,  # 禁用Mosaic，不适合路测探头场景（会破坏空间关系）
                 'warmup_epochs': 3,
                 'ema_decay': 0.9999
             },
