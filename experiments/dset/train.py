@@ -1894,7 +1894,7 @@ class DSETTrainer:
             should_validate = (epoch >= 30) and (epoch % 2 == 0)
             
             if should_validate:
-                val_metrics = self.validate()
+            val_metrics = self.validate()
             else:
                 val_metrics = {}
             
@@ -1907,11 +1907,11 @@ class DSETTrainer:
             # 输出日志
             self.logger.info(f"Epoch {epoch}:")
             if should_validate:
-                self.logger.info(f"  训练损失: {train_metrics.get('total_loss', 0.0):.2f} | 验证损失: {val_metrics.get('total_loss', 0.0):.2f}")
-                if epoch >= 30:
+            self.logger.info(f"  训练损失: {train_metrics.get('total_loss', 0.0):.2f} | 验证损失: {val_metrics.get('total_loss', 0.0):.2f}")
+            if epoch >= 30:
                     self.logger.info(f"  预测/目标: {val_metrics.get('num_predictions', 0)}/{val_metrics.get('num_targets', 0)}")
-                else:
-                    self.logger.info(f"  (前30个epoch仅计算loss，跳过mAP评估)")
+            else:
+                self.logger.info(f"  (前30个epoch仅计算loss，跳过mAP评估)")
             else:
                 self.logger.info(f"  训练损失: {train_metrics.get('total_loss', 0.0):.2f} | 验证损失: Skipped")
             
@@ -2040,7 +2040,7 @@ def main() -> None:
     parser.add_argument('--data_root', type=str, default='datasets/DAIR-V2X', 
                        help='DAIR-V2X数据集路径')
     parser.add_argument('--epochs', type=int, default=100, help='训练轮数')
-    parser.add_argument('--batch_size', type=int, default=16, help='批次大小 (RTX 5090优化)')
+    parser.add_argument('--batch_size', type=int, default=24, help='批次大小 (RTX 5090优化)')
     parser.add_argument('--pretrained_lr', type=float, default=1e-5, help='预训练组件学习率')
     parser.add_argument('--new_lr', type=float, default=1e-4, help='新组件学习率')
     parser.add_argument('--top_k', type=int, default=3, help='路由器Top-K')
@@ -2084,7 +2084,7 @@ def main() -> None:
             config['model']['backbone'] = args.backbone
         if args.epochs != 100:
             config['training']['epochs'] = args.epochs
-        if args.batch_size != 16:
+        if args.batch_size != 24:
             config['training']['batch_size'] = args.batch_size
         if args.pretrained_lr != 1e-5:
             config['training']['pretrained_lr'] = args.pretrained_lr

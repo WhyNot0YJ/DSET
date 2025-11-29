@@ -1016,7 +1016,7 @@ class RTDETRTrainer:
             should_validate = (epoch >= 30) and (epoch % 2 == 0)
             
             if should_validate:
-                val_metrics = self._validate_epoch()
+            val_metrics = self._validate_epoch()
             else:
                 val_metrics = {}
             
@@ -1029,11 +1029,11 @@ class RTDETRTrainer:
             # 输出日志（不输出mAP，只在best_model时输出）
             self.logger.info(f"Epoch {epoch}:")
             if should_validate:
-                self.logger.info(f"  训练损失: {train_metrics.get('total_loss', 0.0):.2f} | 验证损失: {val_metrics.get('total_loss', 0.0):.2f}")
-                if epoch >= 30:
+            self.logger.info(f"  训练损失: {train_metrics.get('total_loss', 0.0):.2f} | 验证损失: {val_metrics.get('total_loss', 0.0):.2f}")
+            if epoch >= 30:
                     self.logger.info(f"  预测/目标: {val_metrics.get('num_predictions', 0)}/{val_metrics.get('num_targets', 0)}")
-                else:
-                    self.logger.info(f"  (前30个epoch仅计算loss，跳过mAP评估)")
+            else:
+                self.logger.info(f"  (前30个epoch仅计算loss，跳过mAP评估)")
             else:
                 self.logger.info(f"  训练损失: {train_metrics.get('total_loss', 0.0):.2f} | 验证损失: Skipped")
             
@@ -1727,7 +1727,7 @@ def main():
     parser.add_argument('--data_root', type=str, default='datasets/DAIR-V2X', 
                        help='DAIR-V2X数据集路径')
     parser.add_argument('--epochs', type=int, default=100, help='训练轮数')
-    parser.add_argument('--batch_size', type=int, default=16, help='批次大小')
+    parser.add_argument('--batch_size', type=int, default=24, help='批次大小')
     parser.add_argument('--pretrained_lr', type=float, default=1e-5, help='预训练组件学习率')
     parser.add_argument('--new_lr', type=float, default=1e-4, help='新组件学习率')
     parser.add_argument('--warmup_epochs', type=int, default=3, 
@@ -1776,7 +1776,7 @@ def main():
             config['model']['backbone'] = args.backbone
         if args.epochs != 100:
             config['training']['epochs'] = args.epochs
-        if args.batch_size != 16:
+        if args.batch_size != 24:
             config['training']['batch_size'] = args.batch_size
         if args.pretrained_lr != 1e-5:
             config['training']['pretrained_lr'] = args.pretrained_lr
@@ -1853,7 +1853,7 @@ def main():
         # 使用配置文件：只传递显式传递的参数，默认值参数传递None
         data_root_arg = None if args.data_root == 'datasets/DAIR-V2X' else args.data_root
         epochs_arg = None if args.epochs == 100 else args.epochs
-        batch_size_arg = None if args.batch_size == 16 else args.batch_size
+        batch_size_arg = None if args.batch_size == 24 else args.batch_size
         warmup_epochs_arg = None if args.warmup_epochs == 3 else args.warmup_epochs
     else:
         # 不使用配置文件：传递所有参数（包括默认值）

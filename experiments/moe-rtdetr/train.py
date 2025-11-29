@@ -1712,7 +1712,7 @@ def main() -> None:
     parser.add_argument('--data_root', type=str, default='datasets/DAIR-V2X', 
                        help='DAIR-V2X数据集路径')
     parser.add_argument('--epochs', type=int, default=100, help='训练轮数')
-    parser.add_argument('--batch_size', type=int, default=16, help='批次大小 (RTX 5090优化)')
+    parser.add_argument('--batch_size', type=int, default=24, help='批次大小 (RTX 5090优化)')
     parser.add_argument('--pretrained_lr', type=float, default=1e-5, help='预训练组件学习率')
     parser.add_argument('--new_lr', type=float, default=1e-4, help='新组件学习率')
     parser.add_argument('--top_k', type=int, default=3, help='路由器Top-K')
@@ -1756,7 +1756,7 @@ def main() -> None:
             config['model']['backbone'] = args.backbone
         if args.epochs != 100:
             config['training']['epochs'] = args.epochs
-        if args.batch_size != 16:
+        if args.batch_size != 24:
             config['training']['batch_size'] = args.batch_size
         if args.pretrained_lr != 1e-5:
             config['training']['pretrained_lr'] = args.pretrained_lr
