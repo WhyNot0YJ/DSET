@@ -89,7 +89,7 @@ class DAIRV2XDetection(DetDataset):
                     T.ToImage(),
                     T.ToDtype(torch.float32, scale=True),
                     Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-                    ConvertBoxes(fmt='cxcywh', normalize=True)
+                    ConvertBoxes(fmt='cxcywh', normalize=False)
                 ])
             else:
                 # 验证/推理配置：矩形推理 (Rectangular Inference)
@@ -100,7 +100,7 @@ class DAIRV2XDetection(DetDataset):
                     T.ToImage(),
                     T.ToDtype(torch.float32, scale=True),
                     Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-                    ConvertBoxes(fmt='cxcywh', normalize=True)
+                    ConvertBoxes(fmt='cxcywh', normalize=False)
                 ])
         else:
             self.transforms = transforms

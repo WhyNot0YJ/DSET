@@ -502,37 +502,52 @@ class RTDETRTrainer:
             def __call__(self, batch):
                 images, targets = zip(*batch)
                 
-                # 1. 确保所有图像都是 Tensor
-                # Transforms 应该已经把它们变成了 Tensor
+                # 1. 处理图像 (保持 Tensor 格式)
                 if not isinstance(images[0], torch.Tensor):
-                    # 如果万一不是 Tensor，这里只转类型，不除 255 (由Transforms负责归一化)
                     processed_images = [T.functional.to_tensor(img) for img in images]
                 else:
                     processed_images = list(images)
 
-                # 2. 获取尺寸
+                # 2. 计算 Batch 最大尺寸
                 sizes = [img.shape[-2:] for img in processed_images]
-                
-                # 3. 计算最大尺寸 (32倍数对齐)
                 stride = 32
                 max_h_raw = max(s[0] for s in sizes)
                 max_w_raw = max(s[1] for s in sizes)
+                # 向上取整到 32 倍数
                 max_h = (max_h_raw + stride - 1) // stride * stride
                 max_w = (max_w_raw + stride - 1) // stride * stride
                 
-                # 4. 创建画布 (注意：保持和输入图像相同的数据类型和设备)
-                # 关键！不要想当然地用 float32，要看 processed_images[0] 是什么
+                # 3. 创建画布并填充 (左上角对齐)
                 batch_images = torch.zeros(len(processed_images), 3, max_h, max_w, 
                                            dtype=processed_images[0].dtype)
                 
-                # 5. 填充
                 for i, img in enumerate(processed_images):
                     h, w = img.shape[-2:]
                     batch_images[i, :, :h, :w] = img
                     
-                # 6. 确保 targets 里有原始尺寸 (Dataset中已包含)
+                # 4. ✅ 核心修复：根据最终 Batch 尺寸进行归一化
+                new_targets = []
+                for t in list(targets):
+                    # 复制 target 防止原地修改污染数据
+                    new_t = t.copy()
+                    boxes = new_t['boxes'] # 此时是绝对坐标 cx, cy, w, h
+                    
+                    # 手动归一化：除以 max_w 和 max_h
+                    # 格式是 cx, cy, w, h
+                    # x轴数据 (cx, w) 除以 max_w
+                    # y轴数据 (cy, h) 除以 max_h
+                    boxes[:, 0] = boxes[:, 0] / max_w
+                    boxes[:, 1] = boxes[:, 1] / max_h
+                    boxes[:, 2] = boxes[:, 2] / max_w
+                    boxes[:, 3] = boxes[:, 3] / max_h
+                    
+                    # 限制数值在 0-1 之间 (防止浮点溢出)
+                    boxes = torch.clamp(boxes, 0.0, 1.0)
+                    
+                    new_t['boxes'] = boxes
+                    new_targets.append(new_t)
                 
-                return batch_images, list(targets)
+                return batch_images, new_targets
         
         # 直接使用DAIRV2XDetection类（直接使用配置文件中的data.data_root）
         data_root = self.config['data']['data_root']
@@ -1000,8 +1015,17 @@ class RTDETRTrainer:
             train_metrics = self._train_epoch()
             
             # 验证
-            # 验证策略：前30个epoch不验证，30个epoch后每两个epoch验证一次
-            should_validate = (epoch >= 30) and (epoch % 2 == 0)
+            # 验证策略：前松后紧
+            # Epoch 0-150: 每50个epoch验证一次 (0, 50, 100)
+            # Epoch 150-180: 每10个epoch验证一次
+            # Epoch 180-200: 每个epoch验证一次
+            should_validate = False
+            if epoch < 150:
+                if epoch % 50 == 0: should_validate = True
+            elif epoch < 180:
+                if epoch % 10 == 0: should_validate = True
+            else:
+                should_validate = True
             
             if should_validate:
                 val_metrics = self._validate_epoch()
