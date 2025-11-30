@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""DSET训练脚本 - 双稀疏专家架构（Token Pruning + Patch-MoE + Decoder MoE）"""
+"""DSET Training Script - Dual-Sparse Expert Transformer (Token Pruning + Patch-MoE + Decoder MoE)"""
 
 import os
 import sys
@@ -52,13 +52,13 @@ except ImportError:
 
 
 def create_backbone(backbone_type: str, **kwargs) -> nn.Module:
-    """创建backbone的工厂函数"""
+    """Factory function to create backbone"""
     if backbone_type.startswith('presnet'):
         depth_match = re.search(r'(\d+)', backbone_type)
         if depth_match:
             depth = int(depth_match.group(1))
         else:
-            raise ValueError(f"无法从backbone类型 {backbone_type} 解析depth")
+            raise ValueError(f"Cannot parse depth from backbone type {backbone_type}")
         
         default_params = {
             'depth': depth,
@@ -74,7 +74,7 @@ def create_backbone(backbone_type: str, **kwargs) -> nn.Module:
     elif backbone_type.startswith('hgnetv2'):
         name_map = {'hgnetv2_l': 'L', 'hgnetv2_x': 'X', 'hgnetv2_h': 'H'}
         if backbone_type not in name_map:
-            raise ValueError(f"不支持的HGNetv2类型: {backbone_type}")
+            raise ValueError(f"Unsupported HGNetv2 type: {backbone_type}")
         
         default_params = {
             'name': name_map[backbone_type],
@@ -86,11 +86,11 @@ def create_backbone(backbone_type: str, **kwargs) -> nn.Module:
         default_params.update(kwargs)
         return HGNetv2(**default_params)
     
-    # CSPResNet配置
+    # CSPResNet config
     elif backbone_type.startswith('cspresnet'):
         name_map = {'cspresnet_s': 's', 'cspresnet_m': 'm', 'cspresnet_l': 'l', 'cspresnet_x': 'x'}
         if backbone_type not in name_map:
-            raise ValueError(f"不支持的CSPResNet类型: {backbone_type}")
+            raise ValueError(f"Unsupported CSPResNet type: {backbone_type}")
         
         default_params = {
             'name': name_map[backbone_type],
@@ -100,7 +100,7 @@ def create_backbone(backbone_type: str, **kwargs) -> nn.Module:
         default_params.update(kwargs)
         return CSPResNet(**default_params)
     
-    # CSPDarkNet配置
+    # CSPDarkNet config
     elif backbone_type == 'cspdarknet':
         default_params = {'return_idx': [2, 3, -1]}
         default_params.update(kwargs)
@@ -113,7 +113,7 @@ def create_backbone(backbone_type: str, **kwargs) -> nn.Module:
         return MResNet(**default_params)
     
     else:
-        raise ValueError(f"不支持的backbone类型: {backbone_type}")
+        raise ValueError(f"Unsupported backbone type: {backbone_type}")
 
 
 
@@ -121,15 +121,15 @@ def create_backbone(backbone_type: str, **kwargs) -> nn.Module:
 
 
 class DSETRTDETR(nn.Module):
-    """DSET (Dual-Sparse Expert Transformer) RT-DETR模型。
+    """DSET (Dual-Sparse Expert Transformer) RT-DETR model.
     
-    架构设计：
-    1. 共享Backbone：提取多尺度特征
-    2. DSET Encoder（双稀疏）：
-       - Token Pruning：剪枝冗余tokens
-       - Patch-MoE：空间特征的稀疏专家处理
-    3. MoE Decoder：FFN层使用AdaptiveExpertLayer
-    4. 统一输出：直接输出检测结果
+    Architecture Design:
+    1. Shared Backbone: Extracts multi-scale features
+    2. DSET Encoder (Dual-Sparse):
+       - Token Pruning: Prunes redundant tokens
+       - Patch-MoE: Sparse expert processing for spatial features
+    3. MoE Decoder: AdaptiveExpertLayer in FFN
+    4. Unified Output: Directly outputs detection results
     """
     
     def __init__(self, hidden_dim: int = 256, 
@@ -142,35 +142,35 @@ class DSETRTDETR(nn.Module):
                  patch_moe_num_experts: int = 4,
                  patch_moe_top_k: int = 2,
                  patch_moe_patch_size: int = 4,
-                 # MoE权重配置
+                 # MoE weight config
                  decoder_moe_balance_weight: float = None,
                  encoder_moe_balance_weight: float = None,
                  use_token_pruning_loss: bool = False,
                  token_pruning_loss_weight: float = 0.001):
-        """初始化DSET RT-DETR模型。
+        """Initialize DSET RT-DETR model.
         
         Args:
-            hidden_dim: 隐藏层维度
-            num_queries: 查询数量
-            top_k: 路由器Top-K选择
-            backbone_type: Backbone类型
-            num_decoder_layers: Decoder层数
-            encoder_in_channels: Encoder输入通道数
-            encoder_expansion: Encoder expansion参数
-            num_experts: Decoder专家数量（必需）
-            num_encoder_layers: Encoder Transformer层数（默认1，支持共享MoE）
-            token_keep_ratio: Patch保留比例（用于Patch-level Pruning）
-            token_pruning_warmup_epochs: Token Pruning warmup epochs
-            patch_moe_num_experts: Patch-MoE专家数量
+            hidden_dim: Hidden dimension
+            num_queries: Number of queries
+            top_k: Top-K experts for router
+            backbone_type: Backbone type
+            num_decoder_layers: Number of decoder layers
+            encoder_in_channels: Encoder input channels
+            encoder_expansion: Encoder expansion parameter
+            num_experts: Number of decoder experts (required)
+            num_encoder_layers: Number of encoder transformer layers
+            token_keep_ratio: Patch retention ratio
+            token_pruning_warmup_epochs: Pruning warmup epochs
+            patch_moe_num_experts: Number of Patch-MoE experts
             patch_moe_top_k: Patch-MoE top-k
-            patch_moe_patch_size: Patch-MoE patch大小（默认4x4）
+            patch_moe_patch_size: Patch-MoE patch size
             
-        注意：
-            - Patch-MoE 和 Patch-level Pruning 必然启用（DSET核心特性）
-            - 无需配置 use_patch_moe 和 use_token_pruning
-            decoder_moe_balance_weight: Decoder MoE负载均衡损失权重（可选，默认自动调整）
-            encoder_moe_balance_weight: Encoder MoE负载均衡损失权重（可选，默认自动调整）
-            use_token_pruning_loss: 是否计算Token Pruning辅助损失
+        Note:
+            - Patch-MoE and Patch-level Pruning are always enabled (DSET core features)
+            - No need to configure use_patch_moe and use_token_pruning
+            decoder_moe_balance_weight: Decoder MoE balance loss weight
+            encoder_moe_balance_weight: Encoder MoE balance loss weight
+            use_token_pruning_loss: Whether to compute token pruning auxiliary loss
         """
         super().__init__()
         
@@ -205,15 +205,15 @@ class DSETRTDETR(nn.Module):
         # 设置专家数量
         self.num_experts = num_experts
         
-        # ========== 共享组件 ==========
+        # ========== Shared Components ==========
         self.backbone = self._build_backbone()
         self.encoder = self._build_encoder()
         
-        # ========== 细粒度MoE Decoder ==========
-        # 使用传入的decoder层数参数
+        # ========== Fine-grained MoE Decoder ==========
+        # Use passed decoder layers argument
         
         self.decoder = RTDETRTransformerv2(
-            num_classes=8,  # 8类：Car, Truck, Van, Bus, Pedestrian, Cyclist, Motorcyclist, Trafficcone
+            num_classes=8,  # 8 classes
             hidden_dim=hidden_dim,
             num_queries=num_queries,
             num_layers=num_decoder_layers,
@@ -224,26 +224,26 @@ class DSETRTDETR(nn.Module):
             feat_channels=[256, 256, 256],
             feat_strides=[8, 16, 32],
             num_levels=3,
-            # 细粒度MoE配置
+            # Fine-grained MoE config
             use_moe=True,
             num_experts=self.num_experts,
             moe_top_k=top_k
         )
         
-        print(f"✓ MoE Decoder配置: {num_decoder_layers}层, {self.num_experts}个专家, top_k={top_k}")
+        print(f"✓ MoE Decoder config: {num_decoder_layers} layers, {self.num_experts} experts, top_k={top_k}")
         
-        # RT-DETR损失函数
+        # RT-DETR Loss
         self.detr_criterion = self._build_detr_criterion()
         
     def _build_backbone(self) -> nn.Module:
-        """构建backbone。"""
+        """Build backbone."""
         return create_backbone(self.backbone_type)
     
     def _build_encoder(self) -> nn.Module:
-        """构建encoder - 支持DSET双稀疏机制。"""
+        """Build encoder - Supports DSET dual-sparse mechanism."""
         input_size = [self.image_size, self.image_size]
         
-        # 支持共享MoE：当num_encoder_layers>1时，所有层共享同一组专家参数
+        # Support Shared MoE
         
         return HybridEncoder(
             in_channels=self.encoder_in_channels,
@@ -255,7 +255,7 @@ class DSETRTDETR(nn.Module):
             nhead=8,
             dropout=0.0,
             act='silu',
-            # DSET双稀疏参数（Patch-MoE 必然启用，无需传递）
+            # DSET dual-sparse params
             token_keep_ratio=self.token_keep_ratio,
             token_pruning_warmup_epochs=self.token_pruning_warmup_epochs,
             patch_moe_num_experts=self.patch_moe_num_experts,
@@ -264,7 +264,7 @@ class DSETRTDETR(nn.Module):
         )
     
     def _build_detr_criterion(self) -> RTDETRCriterionv2:
-        """构建RT-DETR损失函数。"""
+        """Build RT-DETR loss function."""
         matcher = HungarianMatcher(
             weight_dict={'cost_class': 2, 'cost_bbox': 5, 'cost_giou': 2},
             use_focal_loss=False,
@@ -272,29 +272,28 @@ class DSETRTDETR(nn.Module):
             gamma=2.0
         )
         
-        # 主损失权重
+        # Main loss weights
         main_weight_dict = {
             'loss_vfl': 1.0,
             'loss_bbox': 5.0,
             'loss_giou': 2.0
         }
         
-        # 从实例变量动态读取decoder层数，而非硬编码
+        # Dynamically read decoder layers
         num_decoder_layers = self.num_decoder_layers
         aux_weight_dict = {}
-        for i in range(num_decoder_layers - 1):  # 前N-1层
+        for i in range(num_decoder_layers - 1):  # First N-1 layers
             aux_weight_dict[f'loss_vfl_aux_{i}'] = 1.0
             aux_weight_dict[f'loss_bbox_aux_{i}'] = 5.0
             aux_weight_dict[f'loss_giou_aux_{i}'] = 2.0
         
-        # Encoder辅助损失（通常1层）
+        # Encoder auxiliary loss (usually 1 layer)
         aux_weight_dict['loss_vfl_enc_0'] = 1.0
         aux_weight_dict['loss_bbox_enc_0'] = 5.0
         aux_weight_dict['loss_giou_enc_0'] = 2.0
         
-        # Denoising辅助损失（如果启用num_denoising>0）
-        # RT-DETR默认num_denoising=100，我们也需要添加这些损失的权重
-        num_denoising_layers = num_decoder_layers  # 和decoder层数一致
+        # Denoising auxiliary loss
+        num_denoising_layers = num_decoder_layers
         for i in range(num_denoising_layers):
             aux_weight_dict[f'loss_vfl_dn_{i}'] = 1.0
             aux_weight_dict[f'loss_bbox_dn_{i}'] = 5.0

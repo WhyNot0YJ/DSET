@@ -3,6 +3,7 @@ model:
   top_k: 3
   backbone: presnet34
   encoder:
+    use_encoder_idx: [0, 1, 2]
     in_channels:
     - 128
     - 256
@@ -14,7 +15,7 @@ model:
   hidden_dim: 256
   num_queries: 100
   dset:
-    token_keep_ratio: 0.7
+    token_keep_ratio: {0: 0.9, 1: 0.7, 2: 0.5}
     token_pruning_warmup_epochs: 10
     patch_moe_num_experts: 6
     patch_moe_top_k: 3

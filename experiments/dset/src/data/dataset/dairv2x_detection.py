@@ -24,7 +24,7 @@ __all__ = ['DAIRV2XDetection']
 
 @register()
 class DAIRV2XDetection(DetDataset):
-    """DAIR-V2X数据集检测器 - 支持COCO格式评估"""
+    """DAIR-V2X Dataset Detector - Supports COCO format evaluation"""
     
     def __init__(self, data_root: str, split: str = "train", transforms=None, 
                  target_size: int = 640,
@@ -34,14 +34,14 @@ class DAIRV2XDetection(DetDataset):
                  aug_hue: float = 0.0,
                  aug_color_jitter_prob: float = 0.0):
         """
-        初始化DAIR-V2X数据集
+        Initialize DAIR-V2X Dataset
         
         Args:
-            data_root: 数据集根目录
-            split: 数据集分割 ('train' 或 'val')
-            transforms: 数据变换 (如果为None，将使用默认的Unified Task-Adapted Augmentation)
-            target_size: 目标图像尺寸 (保留参数以兼容，但会被新的增强策略覆盖)
-            aug_*: 保留参数以兼容，但会被新的增强策略覆盖
+            data_root: Dataset root directory
+            split: Dataset split ('train' or 'val')
+            transforms: Data transforms (if None, default Unified Task-Adapted Augmentation will be used)
+            target_size: Target image size (retained for compatibility, but overridden by new augmentation strategy)
+            aug_*: Retained for compatibility, but overridden by new augmentation strategy
         """
         super().__init__()
         
@@ -49,29 +49,29 @@ class DAIRV2XDetection(DetDataset):
         self.split = split
         self.target_size = target_size
         
-        # DAIR-V2X类别定义（8类：前7类是交通参与者，Trafficcone是道路设施）
+        # DAIR-V2X Class Definitions (8 classes: first 7 are traffic participants, Trafficcone is road facility)
         self.class_names = [
             "Car", "Truck", "Van", "Bus", "Pedestrian", 
             "Cyclist", "Motorcyclist", "Trafficcone"
         ]
         self.class_to_id = {name: i for i, name in enumerate(self.class_names)}
         
-        # 类别合并映射：Barrowlist -> Cyclist (ID=5)
+        # Class Merge Mapping: Barrowlist -> Cyclist (ID=5)
         self.class_merge_map = {
             "Barrowlist": 5,
         }
         
-        # Ignore类别列表（训练时应过滤，不参与AP计算）
+        # Ignore Class List (should be filtered during training, not involved in AP calculation)
         self.ignore_classes = [
             "PedestrianIgnore", "CarIgnore", "OtherIgnore", 
             "Unknown_movable", "Unknown_unmovable"
         ]
         
-        # 加载数据信息
+        # Load Data Info
         self.data_info = self._load_data_info()
         self.split_indices = self._load_split_indices()
         
-        # 初始化变换策略 (Unified Task-Adapted Augmentation)
+        # Initialize Transform Strategy (Unified Task-Adapted Augmentation)
         if transforms is None:
             scales = list(range(480, 801, 32))
             if split == 'train':
@@ -92,8 +92,8 @@ class DAIRV2XDetection(DetDataset):
                     ConvertBoxes(fmt='cxcywh', normalize=False)
                 ])
             else:
-                # 验证/推理配置：矩形推理 (Rectangular Inference)
-                # Resize到720 (短边)，长边最大1280 (保持长宽比)
+                # Val/Inference Config: Rectangular Inference
+                # Resize to 720 (short edge), max 1280 (long edge, keep aspect ratio)
                 # 1920x1080 -> 1280x720 (16:9)
                 self.transforms = T.Compose([
                     T.Resize(size=720, max_size=1280, antialias=True),
@@ -106,16 +106,16 @@ class DAIRV2XDetection(DetDataset):
             self.transforms = transforms
     
     def _load_data_info(self):
-        """加载数据信息"""
+        """Load data info"""
         data_info_path = self.data_root / "metadata" / "data_info.json"
         if data_info_path.exists():
             with open(data_info_path, 'r', encoding='utf-8') as f:
                 return json.load(f)
         else:
-            raise FileNotFoundError(f"数据信息文件不存在: {data_info_path}")
+            raise FileNotFoundError(f"Data info file not found: {data_info_path}")
     
     def _load_split_indices(self):
-        """加载训练/验证分割"""
+        """Load train/val split"""
         split_path = self.data_root / "metadata" / "split_data.json"
         if split_path.exists():
             with open(split_path, 'r', encoding='utf-8') as f:
@@ -132,7 +132,7 @@ class DAIRV2XDetection(DetDataset):
             return self._create_random_split()
     
     def _create_random_split(self):
-        """创建随机分割（按路口分层随机分割）"""
+        """Create random split (stratified by intersection location)"""
         import random
         from collections import defaultdict
         
@@ -165,19 +165,19 @@ class DAIRV2XDetection(DetDataset):
         return len(self.split_indices)
     
     def __getitem__(self, idx):
-        """获取数据项 - 返回COCO格式的数据"""
+        """Get data item - returns COCO format data"""
         actual_idx = self.split_indices[idx]
         
-        # 加载图像 (PIL)
+        # Load Image (PIL)
         image_path = self.data_root / "image" / f"{actual_idx:06d}.jpg"
         image = Image.open(image_path).convert("RGB")
         w, h = image.size
         
-        # 加载标注
+        # Load Annotations
         annotation_path = self.data_root / "annotations" / "camera" / f"{actual_idx:06d}.json"
         annotations = self._load_annotations(annotation_path)
         
-        # 准备Target
+        # Prepare Target
         if len(annotations) > 0:
             boxes = torch.tensor([ann['bbox'] for ann in annotations], dtype=torch.float32) # XYXY
             labels = torch.tensor([ann['class_id'] for ann in annotations], dtype=torch.int64)
@@ -189,7 +189,7 @@ class DAIRV2XDetection(DetDataset):
             areas = torch.zeros((0,), dtype=torch.float32)
             iscrowd = torch.zeros((0,), dtype=torch.int64)
         
-        # 包装成 BoundingBoxes
+        # Wrap as BoundingBoxes
         boxes = BoundingBoxes(boxes, format='xyxy', canvas_size=(h, w))
         
         target = {
@@ -201,18 +201,18 @@ class DAIRV2XDetection(DetDataset):
             'orig_size': torch.tensor([h, w]), # H, W
         }
         
-        # 应用变换
+        # Apply transforms
         if self.transforms is not None:
             image, target = self.transforms(image, target)
         
-        # 更新size（变换后的尺寸）
+        # Update size (transformed size)
         if isinstance(image, torch.Tensor):
             target['size'] = torch.tensor(image.shape[-2:]) # H, W
         
         return image, target
     
     def _load_annotations(self, annotation_path: Path) -> List[Dict]:
-        """加载标注文件，Ignore框标记为iscrowd=1"""
+        """Load annotation file, mark ignore boxes with iscrowd=1"""
         if not annotation_path.exists():
             return []
         
@@ -223,7 +223,7 @@ class DAIRV2XDetection(DetDataset):
         for ann in annotations:
             class_name = ann["type"]
             
-            # 获取2D边界框
+            # Get 2D BBox
             bbox_2d = ann["2d_box"]
             x1 = float(bbox_2d["xmin"])
             y1 = float(bbox_2d["ymin"])
@@ -240,9 +240,9 @@ class DAIRV2XDetection(DetDataset):
             area = width * height
             
             if class_name in self.ignore_classes:
-                # 训练时：如果split是train，可以过滤掉ignore框
-                # 但为了保持代码一致性，这里保留并标记iscrowd=1
-                # SanitizeBoundingBoxes 可能不会过滤 iscrowd=1
+                # Training: If split is train, can filter ignore boxes
+                # But for consistency, we keep and mark iscrowd=1
+                # SanitizeBoundingBoxes might not filter iscrowd=1
                 processed_annotations.append({
                     'class_id': 0,
                     'bbox': bbox,
@@ -266,17 +266,17 @@ class DAIRV2XDetection(DetDataset):
                     'iscrowd': 0
                 })
         
-        # 如果是训练集，且为了避免ignore框干扰训练（如DETR matching），可以过滤掉iscrowd=1的框
-        # 但Transform可能会crop掉它们。
-        # 这里我们保留，但在__getitem__中可以根据需要过滤
-        # 按照之前的逻辑：训练时过滤ignore框
+        # If training set, filter out iscrowd=1 boxes to avoid interference
+        # But Transform might crop them out.
+        # We keep them here, but filter in __getitem__ if needed
+        # Logic: Filter ignore boxes during training
         if self.split == 'train':
             processed_annotations = [ann for ann in processed_annotations if ann['iscrowd'] == 0]
             
         return processed_annotations
     
     def get_categories(self):
-        """获取类别信息 - COCO格式"""
+        """Get category info - COCO format"""
         categories = []
         for i, class_name in enumerate(self.class_names):
             categories.append({
@@ -287,12 +287,12 @@ class DAIRV2XDetection(DetDataset):
         return categories
     
     def get_image_info(self, image_id: int):
-        """获取图像信息 - COCO格式"""
+        """Get image info - COCO format"""
         if image_id < len(self.data_info):
             data_item = self.data_info[image_id]
-            # 注意：这里的size可能是原始尺寸，或者默认target_size
-            # 实际上应该读取图片获取真实尺寸，或者使用metadata中的信息
-            # 简单起见，这里暂时不读取图片
+            # Note: size might be original or default target_size
+            # Should read image for real size or use metadata
+            # For simplicity, not reading image here
             return {
                 'id': image_id,
                 'file_name': data_item["image_path"],

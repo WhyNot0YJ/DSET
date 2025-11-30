@@ -18,12 +18,11 @@ class AdaptiveRouter(nn.Module):
     """自适应路由器 - 智能选择Top-K专家处理每个token。"""
     
     def __init__(self, hidden_dim: int, num_experts: int, top_k: int = 2):
-        """初始化路由器。
-        
+        """
         Args:
-            hidden_dim: 输入特征维度
-            num_experts: 专家数量
-            top_k: 选择前K个专家
+            hidden_dim: Input dimension
+            num_experts: Number of experts
+            top_k: Top-K experts to select
         """
         super().__init__()
         self.hidden_dim = hidden_dim
@@ -37,18 +36,16 @@ class AdaptiveRouter(nn.Module):
         nn.init.normal_(self.gate.weight, mean=0.0, std=0.01)
         
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """路由器前向传播。
-        
+        """
         Args:
             x: [batch_size * seq_len, hidden_dim]
         
         Returns:
-            Tuple:
-                - expert_weights: [N, top_k] 专家权重
-                - expert_indices: [N, top_k] 专家索引
-                - router_logits: [N, num_experts] 原始logits（用于负载均衡损失）
+            expert_weights: [N, top_k]
+            expert_indices: [N, top_k]
+            router_logits: [N, num_experts]
         """
-        # 计算路由logits
+        # Router logits
         router_logits = self.gate(x)  # [N, E]
         
         # Softmax + Top-K
@@ -217,24 +214,7 @@ class AdaptiveExpertLayer(nn.Module):
 def compute_patch_moe_balance_loss(router_logits_list: List[torch.Tensor],
                                    num_experts: int,
                                    expert_indices_list: List[torch.Tensor] = None) -> torch.Tensor:
-    """计算Patch-MoE专用的负载均衡损失（Patch-level）。
-    
-    使用Patch-MoE的特殊设计：
-    L_balance = (1/E) * sum_{e=1 to E} ( (N_e / N_patch) - (1/E) )^2
-    
-    其中：
-    - E: 专家数量
-    - N_e: 第e个专家被选中的patch数
-    - N_patch: 所有patch数
-    
-    Args:
-        router_logits_list: List of [B*N_patches, num_experts] 每层的路由logits
-        num_experts: 专家数量
-        expert_indices_list: List of [B*N_patches, top_k] 每层的专家索引
-    
-    Returns:
-        balance_loss: 标量损失
-    """
+    """Compute Patch-MoE balance loss (Patch-level)."""
     if len(router_logits_list) == 0:
         return torch.tensor(0.0)
     
@@ -275,22 +255,7 @@ def compute_patch_moe_balance_loss(router_logits_list: List[torch.Tensor],
 
 
 def compute_patch_moe_entropy_loss(router_logits_list: List[torch.Tensor]) -> torch.Tensor:
-    """计算Patch-MoE的熵正则项损失。
-    
-    防止gating机制变成硬分配，鼓励更平滑的gating分布：
-    L_entropy = - (1/N_patch) * sum_{i=1 to N_patch} sum_{e=1 to E} p_{i,e} * log(p_{i,e})
-    
-    其中：
-    - N_patch: patch总数
-    - E: 专家数量
-    - p_{i,e}: patch i 被路由到专家 e 的概率
-    
-    Args:
-        router_logits_list: List of [B*N_patches, num_experts] 每层的路由logits
-    
-    Returns:
-        entropy_loss: 标量损失（负熵，越小越好，所以需要最小化）
-    """
+    """Compute Patch-MoE entropy loss to encourage smoother gating distribution."""
     if len(router_logits_list) == 0:
         return torch.tensor(0.0)
     
@@ -324,25 +289,7 @@ def compute_patch_moe_entropy_loss(router_logits_list: List[torch.Tensor]) -> to
 def compute_expert_balance_loss(router_logits_list: List[torch.Tensor], 
                                 num_experts: int,
                                 expert_indices_list: List[torch.Tensor] = None) -> torch.Tensor:
-    """计算专家负载均衡损失。
-    
-    确保各个专家被均匀激活，避免某些专家过载或闲置。
-    使用标准的Switch Transformer负载均衡损失：
-        loss = num_experts * sum(f_i * P_i)
-    其中：
-        - f_i: 实际路由到专家i的token比例（基于top-k选择）
-        - P_i: 所有token对专家i的平均路由概率（softmax后的概率）
-    
-    这个损失鼓励实际使用分布和概率分布保持平衡。
-    
-    Args:
-        router_logits_list: List of [N, num_experts] 每层的路由logits
-        num_experts: 专家数量
-        expert_indices_list: List of [N, top_k] 每层的专家索引（用于计算实际使用频率）
-    
-    Returns:
-        load_balance_loss: 标量损失
-    """
+    """Compute expert balance loss (Switch Transformer style)."""
     if len(router_logits_list) == 0:
         return torch.tensor(0.0)
     
@@ -494,13 +441,7 @@ class PatchLevelRouter(nn.Module):
 
 
 class PatchMoELayer(nn.Module):
-    """Patch-MoE层 - 用于Encoder的FFN层
-    
-    与Decoder MoE的区别：
-    - 处理的是空间patch tokens（2D结构）
-    - 可以考虑局部patch的相关性
-    - 更注重空间特征的建模
-    """
+    """Patch-MoE layer for Encoder FFN."""
     
     def __init__(self, 
                  d_model: int, 
@@ -510,16 +451,15 @@ class PatchMoELayer(nn.Module):
                  dropout: float = 0.1, 
                  activation: str = 'gelu',
                  patch_size: int = 4):
-        """初始化Patch-MoE层
-        
+        """
         Args:
-            d_model: 输入/输出维度
-            dim_feedforward: FFN中间层维度
-            num_experts: 专家数量（Encoder通常用较少的专家，如4个）
-            top_k: 每次激活的专家数
-            dropout: Dropout比率
-            activation: 激活函数
-            patch_size: patch大小（默认4x4）
+            d_model: Input/Output dimension
+            dim_feedforward: FFN intermediate dimension
+            num_experts: Number of experts
+            top_k: Top-K experts to select
+            dropout: Dropout ratio
+            activation: Activation function
+            patch_size: Patch size
         """
         super().__init__()
         self.d_model = d_model

@@ -186,10 +186,10 @@ class TransformerDecoderLayer(nn.Module):
         self.dropout2 = nn.Dropout(dropout)
         self.norm2 = nn.LayerNorm(d_model)
 
-        # ffn (支持自适应专家层)
+        # ffn (Supports Adaptive Expert Layer)
         self.use_moe = use_moe
         if use_moe:
-            # 使用自适应专家层
+            # Use Adaptive Expert Layer
             self.adaptive_expert_layer = AdaptiveExpertLayer(
                 d_model=d_model,
                 dim_feedforward=dim_feedforward,
@@ -199,7 +199,7 @@ class TransformerDecoderLayer(nn.Module):
                 activation=activation
             )
         else:
-            # 标准FFN
+            # Standard FFN
             self.linear1 = nn.Linear(d_model, dim_feedforward)
             self.activation = get_activation(activation)
             self.dropout3 = nn.Dropout(dropout)
@@ -353,7 +353,7 @@ class RTDETRTransformerv2(nn.Module):
         self.eval_spatial_size = eval_spatial_size
         self.aux_loss = aux_loss
         
-        # MoE配置
+        # MoE Config
         self.use_moe = use_moe
         self.num_experts = num_experts
         self.moe_top_k = moe_top_k
@@ -366,7 +366,7 @@ class RTDETRTransformerv2(nn.Module):
         # backbone feature projection
         self._build_input_proj_layer(feat_channels)
 
-        # Transformer module (支持MoE)
+        # Transformer module (Supports MoE)
         decoder_layer = TransformerDecoderLayer(
             hidden_dim, nhead, dim_feedforward, dropout, 
             activation, num_levels, num_points, 
@@ -628,7 +628,7 @@ class RTDETRTransformerv2(nn.Module):
             out['enc_aux_outputs'] = self._set_aux_loss(enc_topk_logits_list, enc_topk_bboxes_list)
             out['enc_meta'] = {'class_agnostic': self.query_select_method == 'agnostic'}
         
-        # 添加MoE负载均衡损失
+        # Add MoE Load Balance Loss
         if self.use_moe and self.training:
             moe_load_balance_loss = self.get_moe_load_balance_loss()
             out['moe_load_balance_loss'] = moe_load_balance_loss
@@ -649,9 +649,9 @@ class RTDETRTransformerv2(nn.Module):
                 for a, b in zip(outputs_class, outputs_coord)]
     
     def get_moe_load_balance_loss(self):
-        """获取专家负载均衡损失。
+        """Get MoE load balance loss.
         
-        收集所有Decoder层的路由器logits和专家索引并计算负载均衡损失。
+        Collect router logits and expert indices from all decoder layers and compute loss.
         """
         if not self.use_moe:
             return torch.tensor(0.0)
@@ -664,7 +664,7 @@ class RTDETRTransformerv2(nn.Module):
                     ael = layer.adaptive_expert_layer
                     if hasattr(ael, 'router_logits_cache') and ael.router_logits_cache is not None:
                         router_logits_list.append(ael.router_logits_cache)
-                        # 收集expert_indices（如果可用）
+                        # Collect expert_indices if available
                         if hasattr(ael, 'expert_indices_cache') and ael.expert_indices_cache is not None:
                             expert_indices_list.append(ael.expert_indices_cache)
                         else:

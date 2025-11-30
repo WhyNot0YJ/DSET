@@ -56,12 +56,12 @@ class TokenPruner(nn.Module):
                  prune_in_eval: bool = True):
         """
         Args:
-            input_dim: 输入特征维度
-            keep_ratio: 保留比例（0.5-0.7）
-            adaptive: 是否自适应剪枝
-            min_tokens: 最少保留token数
-            warmup_epochs: warmup epoch数
-            prune_in_eval: 验证时是否剪枝
+            input_dim: Input feature dimension
+            keep_ratio: Retention ratio (0.5-0.7)
+            adaptive: Whether to use adaptive pruning
+            min_tokens: Minimum tokens to keep
+            warmup_epochs: Warmup epochs
+            prune_in_eval: Whether to prune during evaluation
         """
         super().__init__()
         self.input_dim = input_dim
@@ -85,8 +85,7 @@ class TokenPruner(nn.Module):
         """获取当前保留比例（渐进式调整）"""
         if not self.pruning_enabled or self.current_epoch < self.warmup_epochs:
             return 1.0
-        # 当 epoch >= warmup_epochs 时开始剪枝，progress 从 1/(warmup_epochs+1) 开始
-        # 这样在 epoch = warmup_epochs 时就有一定的剪枝比例
+        # Start pruning when epoch >= warmup_epochs
         progress = min(1.0, (self.current_epoch - self.warmup_epochs + 1) / max(1, self.warmup_epochs))
         return 1.0 - progress * (1.0 - self.keep_ratio)
     

@@ -20,13 +20,13 @@ class PatchLevelPruner(nn.Module):
                  prune_in_eval: bool = True):
         """
         Args:
-            input_dim: 输入特征维度
-            patch_size: patch大小（需与Patch-MoE一致）
-            keep_ratio: 保留比例（0.5-0.7）
-            adaptive: 是否自适应剪枝
-            min_patches: 最少保留patch数
-            warmup_epochs: warmup epoch数
-            prune_in_eval: 验证时是否剪枝
+            input_dim: Input feature dimension
+            patch_size: Patch size (must match Patch-MoE)
+            keep_ratio: Retention ratio (0.5-0.7)
+            adaptive: Whether to use adaptive pruning
+            min_patches: Minimum patches to keep
+            warmup_epochs: Warmup epochs
+            prune_in_eval: Whether to prune during evaluation
         """
         super().__init__()
         self.input_dim = input_dim
@@ -57,10 +57,7 @@ class PatchLevelPruner(nn.Module):
             return 1.0
         if self.current_epoch < self.warmup_epochs:
             return 1.0
-        # 当 epoch >= warmup_epochs 时开始剪枝
-        # progress 从 (epoch - warmup_epochs + 1) / warmup_epochs 开始
-        # 例如：warmup_epochs=10, epoch=10: progress=1/10=0.1, keep_ratio=0.97
-        #      warmup_epochs=10, epoch=11: progress=2/10=0.2, keep_ratio=0.94
+        # Start pruning when epoch >= warmup_epochs
         progress = min(1.0, (self.current_epoch - self.warmup_epochs + 1) / max(1, self.warmup_epochs))
         keep_ratio = 1.0 - progress * (1.0 - self.keep_ratio)
         return keep_ratio
@@ -87,14 +84,6 @@ class PatchLevelPruner(nn.Module):
             raise ValueError(f"spatial_shape {spatial_shape} does not match num_tokens {num_tokens}")
         
         should_prune = self.pruning_enabled and (self.training or self.prune_in_eval)
-        
-        # 调试信息（仅在训练时且 epoch >= warmup_epochs 时打印一次）
-        if self.training and self.current_epoch >= self.warmup_epochs and self.current_epoch == getattr(self, '_last_debug_epoch', -1) + 1:
-            import logging
-            logger = logging.getLogger(__name__)
-            logger.info(f"[PatchLevelPruner] Epoch {self.current_epoch}: pruning_enabled={self.pruning_enabled}, "
-                       f"should_prune={should_prune}, training={self.training}, prune_in_eval={self.prune_in_eval}")
-            self._last_debug_epoch = self.current_epoch
         
         # 即使不执行剪枝，也计算 importance_scores 用于 loss 计算（训练时）
         should_compute_scores = self.training  # 训练时总是计算 scores，即使 pruning_enabled=False
@@ -175,26 +164,6 @@ class PatchLevelPruner(nn.Module):
         num_keep_patches = max(self.min_patches, num_keep_patches_by_ratio)
         # 确保 num_keep_patches 不超过 num_patches，避免 torch.topk 报错
         num_keep_patches = min(num_keep_patches, num_patches)
-        
-        # 调试：如果应该剪枝但 ratio 会是 0，记录详细信息
-        if should_prune and self.current_epoch >= self.warmup_epochs:
-            if self.current_epoch == getattr(self, '_last_ratio_debug_epoch', -1) + 1:
-                import logging
-                logger = logging.getLogger(__name__)
-                expected_ratio = 1.0 - (num_keep_patches / num_patches) if num_patches > 0 else 0.0
-                logger.info(f"[PatchLevelPruner Ratio Debug] Epoch {self.current_epoch}: "
-                           f"should_prune={should_prune}, current_keep_ratio={current_keep_ratio:.4f}, "
-                           f"num_patches={num_patches}, num_keep_patches_by_ratio={num_keep_patches_by_ratio}, "
-                           f"min_patches={self.min_patches}, num_keep_patches={num_keep_patches}, "
-                           f"expected_ratio={expected_ratio:.4f}")
-                self._last_ratio_debug_epoch = self.current_epoch
-        
-        # 调试：如果应该剪枝但 keep_ratio = 1.0，说明有问题
-        if should_prune and current_keep_ratio >= 1.0 - 1e-6:
-            # 即使 keep_ratio = 1.0，也应该执行剪枝逻辑（虽然实际上不剪），以便正确计算 ratio
-            # 但这里如果 keep_ratio = 1.0，num_keep_patches = num_patches，ratio 会是 0.0
-            # 这是正常的，因为确实没有剪枝
-            pass
         
         tokens_2d_conv = tokens_2d_padded.permute(0, 3, 1, 2)
         patches = tokens_2d_conv.unfold(2, patch_h, patch_h).unfold(3, patch_w, patch_w)

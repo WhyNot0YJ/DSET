@@ -72,42 +72,42 @@ COLORS = [
 
 
 def load_model(config_path: str, checkpoint_path: str, device: str = "cuda"):
-    """加载模型和权重"""
-    # [CHANGE] 导入 DSETTrainer
+    """Load model and weights."""
+    # [CHANGE] Import DSETTrainer
     DSETTrainer, _, DetDETRPostProcessor, BoxProcessFormat = _import_modules()
     
-    # 加载配置
+    # Load config
     with open(config_path, 'r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
     
-    # 创建训练器以构建模型
+    # Create trainer to build model
     trainer = DSETTrainer(config)
     
-    # 创建一个简单的logger（推理时不需要日志，只需要模型能创建）
+    # Simple logger for inference
     if trainer.logger is None:
         class SimpleLogger:
-            def info(self, msg): pass  # 什么都不做
+            def info(self, msg): pass
         trainer.logger = SimpleLogger()
     
     model = trainer.create_model()
     
-    # 加载checkpoint
+    # Load checkpoint
     try:
         checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
     except TypeError:
         checkpoint = torch.load(checkpoint_path, map_location='cpu')
     
-    # [FIX] 增强的权重加载逻辑
+    # [FIX] Enhanced weight loading logic
     if 'ema_state_dict' in checkpoint:
-        print("  ✓ 检测到 'ema_state_dict'，加载 EMA 权重")
+        print("  ✓ Found 'ema_state_dict', loading EMA weights")
         state_dict = checkpoint['ema_state_dict']
         if isinstance(state_dict, dict) and 'module' in state_dict:
             state_dict = state_dict['module']
     elif 'ema' in checkpoint and 'module' in checkpoint['ema']:
-        print("  ✓ 检测到 'ema.module'，加载 EMA 权重")
+        print("  ✓ Found 'ema.module', loading EMA weights")
         state_dict = checkpoint['ema']['module']
     elif 'model_state_dict' in checkpoint:
-        print("  ⚠ 未找到 EMA，加载普通 'model_state_dict' 权重")
+        print("  ⚠ EMA not found, loading 'model_state_dict'")
         state_dict = checkpoint['model_state_dict']
     elif 'model' in checkpoint:
         state_dict = checkpoint['model']
@@ -133,7 +133,7 @@ def load_model(config_path: str, checkpoint_path: str, device: str = "cuda"):
 def inference_from_preprocessed_image(img_tensor, model, postprocessor, orig_image_path, 
                                       conf_threshold=0.3, target_size=640, device='cuda', 
                                       class_names=None, colors=None, verbose=False):
-    """供 Trainer 调用的推理接口"""
+    """Inference interface called by Trainer."""
     orig_image = cv2.imread(str(orig_image_path))
     if orig_image is None:
         return None
@@ -177,11 +177,11 @@ def inference_from_preprocessed_image(img_tensor, model, postprocessor, orig_ima
 
 
 def preprocess_image(image_path: str, target_size: int = 1280):
-    """预处理图像 - PIL 版本"""
+    """Preprocess image (PIL version)."""
     try:
         image_pil = Image.open(str(image_path)).convert("RGB")
     except Exception as e:
-        raise ValueError(f"无法读取图像: {image_path}, 错误: {e}")
+        raise ValueError(f"Failed to read image: {image_path}, Error: {e}")
     
     orig_w, orig_h = image_pil.size
     im_size_min = min(orig_h, orig_w)

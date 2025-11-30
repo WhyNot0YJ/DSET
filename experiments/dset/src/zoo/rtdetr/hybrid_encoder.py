@@ -236,11 +236,11 @@ class HybridEncoder(nn.Module):
                  patch_moe_patch_size=4):
         """
         Args:
-            token_keep_ratio: Patch保留比例（0.5-0.7）
-            token_pruning_warmup_epochs: Pruning warmup epochs
-            patch_moe_num_experts: Patch-MoE专家数量
-            patch_moe_top_k: Patch-MoE top-k
-            patch_moe_patch_size: Patch大小（需与Pruning一致）
+            token_keep_ratio: Patch retention ratio (0.5-0.7)
+            token_pruning_warmup_epochs: Warmup epochs for pruning
+            patch_moe_num_experts: Number of experts for Patch-MoE
+            patch_moe_top_k: Top-K experts for Patch-MoE
+            patch_moe_patch_size: Patch size (must match pruning)
         """
         super().__init__()
         self.in_channels = in_channels
@@ -276,19 +276,32 @@ class HybridEncoder(nn.Module):
         # 使用默认 640×640
         image_h = image_w = 640  # 默认值
         
-        self.token_pruners = nn.ModuleList([
-            PatchLevelPruner(
+        # [HSP 核心修改] Support hierarchical scale-aware pruning
+        self.token_pruners = nn.ModuleList()
+        for enc_ind in use_encoder_idx:
+            # 1. Determine keep_ratio for current layer
+            if isinstance(token_keep_ratio, dict):
+                # If dict, get by layer index (0=P3, 1=P4, 2=P5), default to 0.7
+                current_keep_ratio = token_keep_ratio.get(enc_ind, 0.7)
+            else:
+                # If single float, keep old behavior
+                current_keep_ratio = token_keep_ratio
+
+            # 2. Log HSP strategy (optional)
+            
+            # 3. Create pruner
+            pruner = PatchLevelPruner(
                 input_dim=hidden_dim,
                 patch_size=patch_moe_patch_size,
-                keep_ratio=token_keep_ratio,
+                keep_ratio=current_keep_ratio,  # Use layer-specific ratio
                 adaptive=True,
                 min_patches=self._calculate_min_patches_for_layer(
                     enc_ind, feat_strides, image_h, image_w, patch_moe_patch_size
                 ),
                 warmup_epochs=token_pruning_warmup_epochs,
                 prune_in_eval=True
-            ) for enc_ind in use_encoder_idx
-        ])
+            )
+            self.token_pruners.append(pruner)
         
         encoder_layer = TransformerEncoderLayer(
             hidden_dim, 
@@ -327,40 +340,22 @@ class HybridEncoder(nn.Module):
     
     def _calculate_min_patches_for_layer(self, enc_ind: int, feat_strides: list, 
                                         image_h: int, image_w: int, patch_size: int) -> int:
-        """
-        根据模型结构计算该层的 num_patches 和合适的 min_patches
-        
-        计算逻辑与 PatchLevelPruner.forward 中的逻辑完全一致：
-        - 特征图尺寸 = 输入图像尺寸 / stride
-        - patch_h = min(patch_size, feat_h)
-        - num_patches_h = (feat_h + patch_h - 1) // patch_h
-        - num_patches = num_patches_h * num_patches_w
-        
-        Args:
-            enc_ind: encoder 层索引（对应 feat_strides 的索引）
-            feat_strides: 特征图 stride 列表，如 [8, 16, 32]
-            image_h: 输入图像高度（如 640）
-            image_w: 输入图像宽度（如 640）
-            patch_size: patch 大小（如 4）
-        
-        Returns:
-            min_patches: 该层的最小保留 patch 数（确保可以剪枝）
-        """
-        # 获取该层对应的 stride
+        """Calculate min_patches based on layer structure, aligning with PatchLevelPruner."""
+        # Get stride for current layer
         stride = feat_strides[enc_ind] if enc_ind < len(feat_strides) else feat_strides[-1]
         
-        # 计算特征图尺寸
+        # Calculate feature map size
         feat_h = image_h // stride
         feat_w = image_w // stride
         
-        # 计算 num_patches（与 PatchLevelPruner.forward 中的逻辑完全一致）
+        # Calculate num_patches
         patch_h = min(patch_size, feat_h)
         patch_w = min(patch_size, feat_w)
         num_patches_h = (feat_h + patch_h - 1) // patch_h
         num_patches_w = (feat_w + patch_w - 1) // patch_w
         num_patches = num_patches_h * num_patches_w
         
-        # 至少保留 1 个，确保可以剪枝
+        # Keep at least 1 patch
         min_patches = max(1, int(num_patches * 0.75))
         
         return min_patches
@@ -390,14 +385,8 @@ class HybridEncoder(nn.Module):
                 pruner.set_epoch(epoch)
     
     def get_encoder_moe_loss(self, encoder_info: dict) -> Dict[str, torch.Tensor]:
-        """计算Encoder Patch-MoE的损失（包含负载均衡损失和熵正则项）
-        
-        返回：
-            Dict包含：
-            - 'balance_loss': Patch-level负载均衡损失
-            - 'entropy_loss': 熵正则项损失
-        """
-        # Patch-MoE 必然启用，无需检查
+        """Compute Encoder Patch-MoE loss (balance loss + entropy loss)."""
+        # Patch-MoE is always enabled
         from .moe_components import compute_patch_moe_balance_loss, compute_patch_moe_entropy_loss
         
         router_logits_list = encoder_info.get('moe_router_logits', [])

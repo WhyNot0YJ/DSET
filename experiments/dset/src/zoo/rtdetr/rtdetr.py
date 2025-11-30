@@ -45,7 +45,7 @@ class RTDETR(nn.Module):
 
 
 class Router(nn.Module):
-    """路由器 - 决定哪些专家应该被激活"""
+    """Router - Decides which experts should be activated"""
     
     def __init__(self, input_dim: int, num_experts: int, top_k: int = 2):
         super().__init__()
@@ -53,7 +53,7 @@ class Router(nn.Module):
         self.num_experts = num_experts
         self.top_k = top_k
         
-        # 路由器网络
+        # Router Network
         self.router_net = nn.Sequential(
             nn.Linear(input_dim, input_dim // 2),
             nn.ReLU(),
@@ -64,28 +64,28 @@ class Router(nn.Module):
     def forward(self, features: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Args:
-            features: [batch_size, seq_len, input_dim] 输入特征
+            features: [batch_size, seq_len, input_dim] Input features
         Returns:
-            expert_weights: [batch_size, seq_len, num_experts] 专家权重
-            expert_indices: [batch_size, seq_len, top_k] 选中的专家索引
-            routing_weights: [batch_size, seq_len, top_k] 路由权重
+            expert_weights: [batch_size, seq_len, num_experts] Expert weights
+            expert_indices: [batch_size, seq_len, top_k] Selected expert indices
+            routing_weights: [batch_size, seq_len, top_k] Routing weights
         """
         batch_size, seq_len, _ = features.shape
         
-        # 计算专家权重
+        # Compute expert weights
         expert_logits = self.router_net(features)  # [batch_size, seq_len, num_experts]
         
-        # Top-K选择
+        # Top-K Selection
         top_k_weights, top_k_indices = torch.topk(expert_logits, self.top_k, dim=-1)
         
-        # 重新归一化权重
+        # Renormalize weights
         routing_weights = torch.softmax(top_k_weights, dim=-1)
         
         return expert_logits, top_k_indices, routing_weights
 
 
 class ExpertNetwork(nn.Module):
-    """单个专家网络"""
+    """Single Expert Network"""
     
     def __init__(self, input_dim: int, hidden_dim: int, output_dim: int):
         super().__init__()
@@ -93,7 +93,7 @@ class ExpertNetwork(nn.Module):
         self.hidden_dim = hidden_dim
         self.output_dim = output_dim
         
-        # 专家特定的处理网络
+        # Expert-specific processing network
         self.expert_net = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
             nn.ReLU(),
@@ -103,13 +103,13 @@ class ExpertNetwork(nn.Module):
         )
         
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """专家前向传播"""
+        """Expert forward pass"""
         return self.expert_net(x)
 
 
 @register()
 class MOERTDETR(nn.Module):
-    """MOE RT-DETR模型"""
+    """MOE RT-DETR Model"""
     __inject__ = ['backbone', 'encoder', 'decoder']
     
     def __init__(self, 
@@ -127,22 +127,22 @@ class MOERTDETR(nn.Module):
         self.top_k = top_k
         self.config_name = config_name
         
-        # MOE配置
+        # MOE Config
         self.config = self._get_moe_config(config_name)
         
-        # 路由器
-        self.router = Router(256, num_experts, top_k)  # 假设hidden_dim=256
+        # Router
+        self.router = Router(256, num_experts, top_k)  # Assume hidden_dim=256
         
-        # 专家网络
+        # Expert Networks
         self.experts = nn.ModuleList([
             ExpertNetwork(256, 256, 256) for _ in range(num_experts)
         ])
         
-        # 专家权重（可学习参数）
+        # Expert Weights (Learnable parameters)
         self.expert_weights = nn.Parameter(torch.ones(num_experts) / num_experts)
         
     def _get_moe_config(self, config_name: str) -> Dict:
-        """获取MOE配置"""
+        """Get MOE Config"""
         configs = {
             "A": {
                 "num_experts": 6,
@@ -179,55 +179,55 @@ class MOERTDETR(nn.Module):
         return configs.get(config_name, configs["A"])
     
     def forward(self, x, targets=None):
-        """前向传播"""
-        # 共享特征提取
+        """Forward pass"""
+        # Shared feature extraction
         x = self.backbone(x)
         x = self.encoder(x)
         
-        # 获取编码特征用于路由器
+        # Get encoded features for router
         if isinstance(x, (list, tuple)):
             encoder_features = x[0] if len(x) > 0 else x
         else:
             encoder_features = x
         
-        # 确保encoder_features是3D tensor [batch_size, seq_len, hidden_dim]
+        # Ensure encoder_features is 3D tensor [batch_size, seq_len, hidden_dim]
         if len(encoder_features.shape) == 4:  # [B, C, H, W]
             B, C, H, W = encoder_features.shape
             encoder_features = encoder_features.flatten(2).transpose(1, 2)  # [B, H*W, C]
         
-        # 路由器决定专家选择
+        # Router decides expert selection
         expert_logits, expert_indices, routing_weights = self.router(encoder_features)
         
-        # 专家处理
+        # Expert processing
         expert_outputs = []
         for expert in self.experts:
             expert_output = expert(encoder_features)
             expert_outputs.append(expert_output)
         
-        # 加权融合专家输出
+        # Weighted fusion of expert outputs
         combined_features = self._combine_expert_outputs(
             expert_outputs, expert_indices, routing_weights
         )
         
-        # 使用融合后的特征进行解码
+        # Use fused features for decoding
         if isinstance(x, (list, tuple)):
-            # 如果encoder返回的是列表，替换第一个元素
+            # If encoder returns a list, replace the first element
             x[0] = combined_features
         else:
             x = combined_features
         
-        # 解码器处理
+        # Decoder processing
         x = self.decoder(x, targets)
         
         if self.training and targets is not None:
-            # 训练模式：添加MOE相关信息
+            # Training mode: Add MOE related info
             if isinstance(x, dict):
                 x['expert_logits'] = expert_logits
                 x['expert_indices'] = expert_indices
                 x['routing_weights'] = routing_weights
                 x['router_loss'] = self._compute_router_loss(expert_logits)
             else:
-                # 如果decoder返回的不是字典，包装成字典
+                # If decoder does not return a dict, wrap it
                 x = {
                     'outputs': x,
                     'expert_logits': expert_logits,
@@ -241,13 +241,13 @@ class MOERTDETR(nn.Module):
     def _combine_expert_outputs(self, expert_outputs: List[torch.Tensor], 
                                expert_indices: torch.Tensor, 
                                routing_weights: torch.Tensor) -> torch.Tensor:
-        """融合专家输出"""
+        """Fuse expert outputs"""
         batch_size, seq_len, top_k = expert_indices.shape
         
-        # 初始化输出
+        # Initialize output
         combined_output = torch.zeros_like(expert_outputs[0])
         
-        # 加权融合
+        # Weighted fusion
         for b in range(batch_size):
             for s in range(seq_len):
                 for k in range(top_k):
@@ -258,21 +258,21 @@ class MOERTDETR(nn.Module):
         return combined_output
     
     def _compute_router_loss(self, expert_logits: torch.Tensor) -> torch.Tensor:
-        """计算路由器损失（负载均衡）"""
-        # 计算每个专家的使用频率
+        """Compute router loss (Load Balance)"""
+        # Compute usage frequency for each expert
         expert_usage = torch.mean(expert_logits, dim=[0, 1])  # [num_experts]
         
-        # 计算使用频率的标准差（鼓励均匀使用）
+        # Compute standard deviation of usage (encourage uniform usage)
         usage_std = torch.std(expert_usage)
         
-        # 计算负载均衡损失
+        # Compute load balance loss
         target_usage = 1.0 / self.num_experts
         load_balance_loss = torch.sum((expert_usage - target_usage) ** 2)
         
         return usage_std + load_balance_loss
     
     def deploy(self):
-        """部署模式"""
+        """Deploy mode"""
         self.eval()
         for m in self.modules():
             if hasattr(m, 'convert_to_deploy'):
