@@ -227,10 +227,10 @@ def postprocess_outputs(outputs, postprocessor, meta, conf_threshold=0.3, target
     # 我们传入实际输入网络的尺寸 (padded_w, padded_h)
     target_sizes = torch.tensor([[meta['padded_h'], meta['padded_w']]], device=output_device)
     
-    # DetDETRPostProcessor 默认使用 orig_target_sizes 将 0-1 映射回像素
+    # DetDETRPostProcessor 默认使用 orig_sizes 将 0-1 映射回像素
     # 这里我们要它映射回 "padded_image" 的像素坐标
-    # 注意：必须使用关键字参数 orig_target_sizes，因为 DetDETRPostProcessor.forward 只接受 outputs 作为位置参数
-    results = postprocessor(outputs, orig_target_sizes=target_sizes) 
+    # 注意：必须使用关键字参数 orig_sizes，因为 DetDETRPostProcessor.forward 只接受 outputs 作为位置参数
+    results = postprocessor(outputs, orig_sizes=target_sizes) 
     result = results[0]
     
     # 2. 提取结果
