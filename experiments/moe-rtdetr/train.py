@@ -922,10 +922,9 @@ class AdaptiveExpertTrainer:
                 with torch.no_grad():
                     outputs = self.ema.module(single_image)
                 
-                # [FIX] 不要使用硬编码的 640x640，使用 batch 图片的实际尺寸
-                # postprocessor 需要的是模型输入的尺寸 (或者 padded 尺寸)，用于将 0-1 映射回像素
-                _, _, h, w = single_image.shape
-                eval_sizes = torch.tensor([[h, w]], device=self.device)
+                # [FIX] 根据 box_revert 文档，orig_sizes 应该是 (w, h)
+                # 之前的 [h, w] 可能导致了左下角偏移或宽高反转
+                eval_sizes = torch.tensor([[w, h]], device=self.device)
                 
                 results = self.postprocessor(outputs, orig_sizes=eval_sizes)
                 

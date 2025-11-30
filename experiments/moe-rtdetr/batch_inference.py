@@ -273,7 +273,8 @@ def postprocess_outputs(outputs, postprocessor, meta, conf_threshold=0.3, target
         output_device = torch.device(device)
 
     # 1. 告诉 PostProcessor 画布有多大 (padded_w, padded_h)
-    target_sizes = torch.tensor([[meta['padded_h'], meta['padded_w']]], device=output_device)
+    # [FIX] 调换顺序，使用 [padded_w, padded_h] 以匹配 box_revert 的期望
+    target_sizes = torch.tensor([[meta['padded_w'], meta['padded_h']]], device=output_device)
     
     # 2. 获取归一化还原后的坐标 (在 Padded Image 上的绝对坐标)
     # DetDETRPostProcessor 默认使用 orig_sizes 将 0-1 映射回像素
