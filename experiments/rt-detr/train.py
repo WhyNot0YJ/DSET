@@ -1336,8 +1336,7 @@ class RTDETRTrainer:
             
             detection_loss += det_loss_val
             
-            # 每50个batch打印一次（参照moe-rtdetr格式）
-            if batch_idx % 50 == 0:
+            if batch_idx % 100 == 0:
                 self.logger.info(f'Epoch {self.last_epoch} | Batch {batch_idx} | '
                                f'Loss: {loss.item():.2f} (Det: {det_loss_val:.2f})')
             

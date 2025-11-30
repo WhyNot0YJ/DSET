@@ -120,165 +120,126 @@ def load_model(config_path: str, checkpoint_path: str, device: str = "cuda"):
     return model, postprocessor
 
 
-def preprocess_image(image_path: str, target_size: int = 640):
-    """预处理图像 - 与训练时保持一致"""
-    # 读取图像（BGR格式）
+def preprocess_image(image_path: str, target_size: int = 1280):
+    """
+    预处理图像 - 适配 Phase 2 高清矩形推理
+    target_size: 这里指 max_size (长边限制)，建议设为 1280
+    """
+    # 1. 读取图像
     image_bgr = cv2.imread(str(image_path))
     if image_bgr is None:
         raise ValueError(f"无法读取图像: {image_path}")
     
-    # ⚠️ 关键修复：转换为RGB格式（训练时使用RGB）
+    # BGR -> RGB
     image = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-    
     orig_h, orig_w = image.shape[:2]
     
-    # ⚠️ 关键修复：确保尺寸是32的倍数（与训练时一致）
-    # 计算缩放比例（保持宽高比）
-    scale = min(target_size / orig_h, target_size / orig_w)
-    new_h = int(orig_h * scale)
+    # 2. 智能缩放 (Rectangular Resize: short=720, max=1280)
+    # 逻辑：计算缩放比例
+    # 尝试将短边缩放到 720
+    scale = 720 / min(orig_h, orig_w)
+    # 如果长边超过 1280，则按长边缩放到 1280
+    if max(orig_h, orig_w) * scale > 1280:
+        scale = 1280 / max(orig_h, orig_w)
+    
     new_w = int(orig_w * scale)
+    new_h = int(orig_h * scale)
     
-    # 确保缩放后的尺寸是32的倍数（backbone需要）
-    new_h = ((new_h + 31) // 32) * 32
-    new_w = ((new_w + 31) // 32) * 32
-    
-    # 确保不超过目标尺寸
-    new_h = min(new_h, target_size)
-    new_w = min(new_w, target_size)
-    
-    # ⚠️ 关键修复：使用torch的interpolate（与训练时一致）
-    # 转换为tensor进行缩放
-    image_tensor = torch.from_numpy(image).float().permute(2, 0, 1)  # HWC -> CHW
-    resized_image = torch.nn.functional.interpolate(
+    # 使用 Bilinear 插值缩放
+    image_tensor = torch.from_numpy(image).float().permute(2, 0, 1) # HWC->CHW
+    image_tensor = torch.nn.functional.interpolate(
         image_tensor.unsqueeze(0), 
         size=(new_h, new_w), 
-        mode='bilinear', 
-        align_corners=False,
-        antialias=False
+        mode='bilinear', align_corners=False
     ).squeeze(0)
     
-    # 创建填充后的图像
-    padded_image = torch.zeros(3, target_size, target_size, dtype=resized_image.dtype)
-    pad_h = (target_size - new_h) // 2
-    pad_w = (target_size - new_w) // 2
-    padded_image[:, pad_h:pad_h+new_h, pad_w:pad_w+new_w] = resized_image
+    # 3. 归一化 (Normalize) - 关键修正！
+    image_tensor = image_tensor / 255.0  # [0, 255] -> [0, 1]
+    mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+    std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+    image_tensor = (image_tensor - mean) / std
     
-    # ⚠️ 关键修复：训练时图像未归一化！
-    img_tensor = padded_image  # 保持[0, 255]范围，与训练时一致
-    img_tensor = img_tensor.unsqueeze(0)  # [1, 3, H, W]
+    # 4. 32倍数对齐 + 左上角填充 (Top-Left Padding)
+    stride = 32
+    # 计算 padding 后的尺寸
+    padded_h = (new_h + stride - 1) // stride * stride
+    padded_w = (new_w + stride - 1) // stride * stride
     
-    # 保存原始尺寸和padding信息用于后处理
-    # ⚠️ 关键修复：计算实际缩放比例（考虑32倍数调整）
-    actual_scale_h = new_h / orig_h
-    actual_scale_w = new_w / orig_w
+    pad_h = padded_h - new_h
+    pad_w = padded_w - new_w
+    
+    # 创建画布 (填充 0)
+    padded_image = torch.zeros(3, padded_h, padded_w, dtype=torch.float32)
+    padded_image[:, :new_h, :new_w] = image_tensor  # 👈 左上角对齐！
+    
+    # 添加 Batch 维度
+    img_input = padded_image.unsqueeze(0) # [1, 3, H, W]
+    
+    # 构建 Meta 信息 (用于还原坐标)
     meta = {
-        'orig_size': torch.tensor([[orig_h, orig_w]]),  # [h, w] format
-        'pad_h': pad_h,
-        'pad_w': pad_w,
-        'scale': scale,  # 保留原始scale用于兼容性
-        'scale_h': actual_scale_h,  # 实际高度缩放比例
-        'scale_w': actual_scale_w,  # 实际宽度缩放比例
+        'orig_size': torch.tensor([[orig_h, orig_w]]),
         'new_h': new_h,
-        'new_w': new_w
+        'new_w': new_w,
+        'pad_h': 0,       # 左上角对齐，Top padding = 0
+        'pad_w': 0,       # 左上角对齐，Left padding = 0
+        'scale_h': new_h / orig_h,
+        'scale_w': new_w / orig_w,
+        'padded_h': padded_h, # 记录网络实际输入尺寸
+        'padded_w': padded_w
     }
     
-    # 返回原始BGR图像用于绘制（cv2使用BGR）
-    return img_tensor, image_bgr, meta
+    return img_input, image_bgr, meta
 
 
-def postprocess_outputs(outputs, postprocessor, meta, conf_threshold=0.3, target_size=640, device='cuda', verbose=False):
-    """后处理模型输出
-    
-    Args:
-        outputs: 模型输出
-        postprocessor: 后处理器
-        meta: 包含原始尺寸、padding等信息的字典
-        conf_threshold: 置信度阈值
-        target_size: 目标尺寸（默认640）
-        device: 设备
-        verbose: 是否打印调试信息（默认False，避免训练时输出过多）
-    
-    Returns:
-        labels, boxes, scores: 检测结果
-    """
+def postprocess_outputs(outputs, postprocessor, meta, conf_threshold=0.3, target_size=None, device='cuda', verbose=False):
+    """后处理模型输出"""
     # 获取模型输出的设备
     if isinstance(outputs, dict) and 'pred_logits' in outputs:
         output_device = outputs['pred_logits'].device
     else:
         output_device = torch.device(device)
     
-    # 获取原始尺寸和resize后的尺寸 [w, h] 格式
-    orig_h, orig_w = meta['orig_size'][0].tolist()
-    # ⚠️ 关键修复：优先使用保存的new_h/new_w，如果没有则使用实际缩放比例计算
-    if 'new_h' in meta and 'new_w' in meta:
-        new_h = meta['new_h']
-        new_w = meta['new_w']
-    elif 'scale_h' in meta and 'scale_w' in meta:
-        new_h = int(orig_h * meta['scale_h'])
-        new_w = int(orig_w * meta['scale_w'])
-    else:
-        # Fallback: 使用原始scale（不推荐，但保持兼容性）
-        new_h = int(orig_h * meta['scale'])
-        new_w = int(orig_w * meta['scale'])
+    # 1. 让 PostProcessor 在 "Padding 后的画布" 上输出绝对坐标
+    # 我们传入实际输入网络的尺寸 (padded_w, padded_h)
+    target_sizes = torch.tensor([[meta['padded_h'], meta['padded_w']]], device=output_device)
     
-    # 准备后处理参数（使用RESIZE模式，只传递eval_sizes，得到640x640坐标）
-    eval_sizes = torch.tensor([[target_size, target_size]], device=output_device)  # [1, 2] format: [w, h]
-    
-    # 后处理：归一化boxes -> 乘以eval_sizes -> 640x640坐标（包含padding区域）
-    results = postprocessor(
-        outputs, 
-        eval_sizes=eval_sizes
-    )
-    
-    # 手动处理坐标转换：640x640（含padding）-> resize后图像 -> 原始图像
+    # DetDETRPostProcessor 默认使用 orig_target_sizes 将 0-1 映射回像素
+    # 这里我们要它映射回 "padded_image" 的像素坐标
+    results = postprocessor(outputs, target_sizes) 
     result = results[0]
-    boxes_640 = result['boxes']  # [num_queries, 4] in xyxy format, 640x640 coordinates
     
-    # 减去padding，得到resize后图像的坐标
-    pad_w = meta['pad_w']
-    pad_h = meta['pad_h']
-    boxes_resized = boxes_640.clone()
-    boxes_resized[:, [0, 2]] -= pad_w  # x coordinates
-    boxes_resized[:, [1, 3]] -= pad_h  # y coordinates
-    
-    # 裁剪到resize后图像的有效区域 [0, 0, new_w, new_h]
-    boxes_resized[:, 0] = torch.clamp(boxes_resized[:, 0], 0, new_w)
-    boxes_resized[:, 1] = torch.clamp(boxes_resized[:, 1], 0, new_h)
-    boxes_resized[:, 2] = torch.clamp(boxes_resized[:, 2], 0, new_w)
-    boxes_resized[:, 3] = torch.clamp(boxes_resized[:, 3], 0, new_h)
-    
-    # 缩放回原始图像尺寸
-    scale_w = orig_w / new_w
-    scale_h = orig_h / new_h
-    boxes_resized[:, [0, 2]] *= scale_w  # x coordinates
-    boxes_resized[:, [1, 3]] *= scale_h  # y coordinates
-    
-    # 更新结果
-    result['boxes'] = boxes_resized
-    results = [result]
-    
-    # 提取结果
-    result = results[0]  # batch_size=1
+    # 2. 提取结果
     labels = result['labels'].cpu().numpy()
-    boxes = result['boxes'].cpu().numpy()
+    boxes = result['boxes'].cpu().numpy() # [x1, y1, x2, y2] 在 padded 图上的坐标
     scores = result['scores'].cpu().numpy()
     
-    # 调试信息：检查坐标范围和置信度（仅在verbose模式下打印）
-    if verbose and len(boxes) > 0:
-        print(f"  检测到 {len(boxes)} 个候选框，坐标范围: x=[{boxes[:, 0].min():.1f}, {boxes[:, 2].max():.1f}], y=[{boxes[:, 1].min():.1f}, {boxes[:, 3].max():.1f}], 原始图像尺寸: {orig_w}x{orig_h}")
-        print(f"  置信度范围: [{scores.min():.4f}, {scores.max():.4f}], 阈值: {conf_threshold:.4f}, 最大10个置信度: {np.sort(scores)[-10:][::-1]}")
+    # 3. 坐标映射回原图 (Map back to original image)
+    # 因为是左上角对齐，所以 x_orig = x_padded / scale
+    scale_w = meta['scale_w']
+    scale_h = meta['scale_h']
     
-    # 过滤低置信度
+    boxes[:, 0] /= scale_w
+    boxes[:, 2] /= scale_w
+    boxes[:, 1] /= scale_h
+    boxes[:, 3] /= scale_h
+    
+    # 4. 裁剪边界 (防止超出原图)
+    orig_h, orig_w = meta['orig_size'][0].tolist()
+    boxes[:, 0] = np.clip(boxes[:, 0], 0, orig_w)
+    boxes[:, 2] = np.clip(boxes[:, 2], 0, orig_w)
+    boxes[:, 1] = np.clip(boxes[:, 1], 0, orig_h)
+    boxes[:, 3] = np.clip(boxes[:, 3], 0, orig_h)
+    
+    # 5. 过滤低置信度
     mask = scores >= conf_threshold
     labels = labels[mask]
     boxes = boxes[mask]
     scores = scores[mask]
     
-    if verbose:
-        if len(labels) > 0:
-            print(f"  置信度过滤后: {len(labels)} 个目标，坐标范围: x=[{boxes[:, 0].min():.1f}, {boxes[:, 2].max():.1f}], y=[{boxes[:, 1].min():.1f}, {boxes[:, 3].max():.1f}]")
-        elif len(boxes) > 0:
-            print(f"  警告: 所有 {len(boxes)} 个候选框都被置信度阈值 {conf_threshold:.4f} 过滤掉了")
+    # 调试信息：检查坐标范围和置信度（仅在verbose模式下打印）
+    if verbose and len(boxes) > 0:
+        print(f"  检测到 {len(boxes)} 个候选框")
+        print(f"  置信度范围: [{scores.min():.4f}, {scores.max():.4f}], 阈值: {conf_threshold:.4f}")
     
     return labels, boxes, scores
 
@@ -403,7 +364,7 @@ def inference_from_preprocessed_image(image_tensor, model, postprocessor, orig_i
 
 
 def process_single_image(image_path: Path, model, postprocessor, output_dir: Path, 
-                        conf_threshold: float, device: str, target_size: int = 640):
+                        conf_threshold: float, device: str, target_size: int = 1280):
     """处理单张图像"""
     try:
         # 预处理图像
@@ -434,6 +395,7 @@ def process_single_image(image_path: Path, model, postprocessor, output_dir: Pat
 def batch_inference(image_dir: str, config_path: str, checkpoint_path: str, 
                    output_dir: str = None, conf_threshold: float = 0.3, 
                    device: str = "cuda", max_images: int = None,
+                   target_size: int = 1280,
                    image_extensions: tuple = ('.jpg', '.jpeg', '.png', '.bmp')):
     """批量推理"""
     # 加载模型
@@ -453,6 +415,7 @@ def batch_inference(image_dir: str, config_path: str, checkpoint_path: str,
     
     output_dir.mkdir(parents=True, exist_ok=True)
     print(f"输出目录: {output_dir}")
+    print(f"推理尺寸 (Max Size): {target_size}")
     
     # 获取所有图像文件
     image_files = []
@@ -480,7 +443,7 @@ def batch_inference(image_dir: str, config_path: str, checkpoint_path: str,
     for image_path in tqdm(image_files, desc="处理图像"):
         num_detections, success, error = process_single_image(
             image_path, model, postprocessor, output_dir, 
-            conf_threshold, device
+            conf_threshold, device, target_size
         )
         
         if success:
@@ -520,6 +483,8 @@ if __name__ == "__main__":
                        help="设备 (cuda/cpu)")
     parser.add_argument("--max_images", type=int, default=None,
                        help="最大处理图像数量（默认：处理所有图像）")
+    parser.add_argument("--target_size", type=int, default=1280,
+                       help="推理图像尺寸（长边限制，默认1280）")
     
     args = parser.parse_args()
     
@@ -530,6 +495,7 @@ if __name__ == "__main__":
         args.output_dir,
         args.conf,
         args.device,
-        args.max_images
+        args.max_images,
+        args.target_size
     )
 

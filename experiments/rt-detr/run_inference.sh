@@ -16,6 +16,7 @@ DEFAULT_OUTPUT_DIR=${OUTPUT_DIR:-/root/autodl-fs/datasets/DAIR-V2X/image_results
 DEFAULT_CONF=${CONF:-0.5}
 DEFAULT_DEVICE=${DEVICE:-cuda}
 DEFAULT_MAX_IMAGES=${MAX_IMAGES:-50}
+DEFAULT_TARGET_SIZE=${TARGET_SIZE:-1280}
 
 # 解析命令行参数
 CONFIG_FILE=$DEFAULT_CONFIG
@@ -25,6 +26,7 @@ OUTPUT_DIR=$DEFAULT_OUTPUT_DIR
 CONF_THRESHOLD=$DEFAULT_CONF
 DEVICE=$DEFAULT_DEVICE
 MAX_IMAGES=$DEFAULT_MAX_IMAGES
+TARGET_SIZE=$DEFAULT_TARGET_SIZE
 
 # 解析参数
 ARGS=()
@@ -58,6 +60,10 @@ while [[ $# -gt 0 ]]; do
             MAX_IMAGES="$2"
             shift 2
             ;;
+        --target_size)
+            TARGET_SIZE="$2"
+            shift 2
+            ;;
         *)
             ARGS+=("$1")
             shift
@@ -74,6 +80,7 @@ echo "输出目录: $OUTPUT_DIR"
 echo "置信度阈值: $CONF_THRESHOLD"
 echo "设备: $DEVICE"
 echo "最大处理图像数: $MAX_IMAGES"
+echo "推理尺寸: $TARGET_SIZE"
 echo "============================================================"
 
 # 检查配置文件是否存在
@@ -110,6 +117,7 @@ python batch_inference.py \
     --conf "$CONF_THRESHOLD" \
     --device "$DEVICE" \
     --max_images "$MAX_IMAGES" \
+    --target_size "$TARGET_SIZE" \
     "${ARGS[@]}"
 
 EXIT_CODE=$?
