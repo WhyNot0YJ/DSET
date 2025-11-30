@@ -873,7 +873,7 @@ class DSETTrainer:
             h, w = img.shape[-2:]
             batch_images[i, :, :h, :w] = img
             
-        # 4. ✅ 核心修复：根据最终 Batch 尺寸进行归一化
+        # 4. 根据最终 Batch 尺寸进行归一化
         new_targets = []
         for t in list(targets):
             # 复制 target 防止原地修改污染数据
@@ -1450,11 +1450,11 @@ class DSETTrainer:
         all_targets = []
         total_raw_predictions = 0  # 原始query总数
         
-        # 前30个epoch只计算loss，不进行cocoEval评估
-        # ✅ 修正：外部已控制验证频率，进入此函数即意味着需要评估
-        
+        # 验证逻辑
         with torch.no_grad():
             for batch_idx, (images, targets) in enumerate(self.val_loader):
+                # 动态获取 Tensor 尺寸
+                B, C, H_tensor, W_tensor = images.shape
                 images = images.to(self.device)
                 targets = [{k: v.to(self.device) if isinstance(v, torch.Tensor) else v 
                            for k, v in t.items()} for t in targets]
@@ -1471,7 +1471,7 @@ class DSETTrainer:
                     
                     # 收集预测结果（只在需要计算mAP时收集，前30个epoch跳过）
                     if 'class_scores' in outputs and 'bboxes' in outputs:
-                        self._collect_predictions(outputs, targets, batch_idx, all_predictions, all_targets)
+                        self._collect_predictions(outputs, targets, batch_idx, all_predictions, all_targets, W_tensor, H_tensor)
         
         # 保存预测结果用于后续打印每个类别mAP（避免重复计算）
         self._last_val_predictions = all_predictions
@@ -1493,7 +1493,7 @@ class DSETTrainer:
         }
     
     def _collect_predictions(self, outputs: Dict, targets: List[Dict], batch_idx: int,
-                            all_predictions: List, all_targets: List) -> None:
+                            all_predictions: List, all_targets: List, img_w: int, img_h: int) -> None:
         """收集预测结果用于mAP计算。保留所有有效预测框，不做top-k限制。"""
         pred_logits = outputs['class_scores']  # [B, Q, C]
         pred_boxes = outputs['bboxes']  # [B, Q, 4]
@@ -1517,18 +1517,18 @@ class DSETTrainer:
                     boxes_coco = torch.zeros_like(filtered_boxes)
                     if filtered_boxes.max() <= 1.0:
                         # 归一化坐标 -> 像素坐标
-                        boxes_coco[:, 0] = (filtered_boxes[:, 0] - filtered_boxes[:, 2] / 2) * self.model.image_size
-                        boxes_coco[:, 1] = (filtered_boxes[:, 1] - filtered_boxes[:, 3] / 2) * self.model.image_size
-                        boxes_coco[:, 2] = filtered_boxes[:, 2] * self.model.image_size
-                        boxes_coco[:, 3] = filtered_boxes[:, 3] * self.model.image_size
+                        boxes_coco[:, 0] = (filtered_boxes[:, 0] - filtered_boxes[:, 2] / 2) * img_w
+                        boxes_coco[:, 1] = (filtered_boxes[:, 1] - filtered_boxes[:, 3] / 2) * img_h
+                        boxes_coco[:, 2] = filtered_boxes[:, 2] * img_w
+                        boxes_coco[:, 3] = filtered_boxes[:, 3] * img_h
                     else:
                         boxes_coco = filtered_boxes.clone()
                     
                     # Clamp坐标
-                    boxes_coco[:, 0] = torch.clamp(boxes_coco[:, 0], 0, self.model.image_size)
-                    boxes_coco[:, 1] = torch.clamp(boxes_coco[:, 1], 0, self.model.image_size)
-                    boxes_coco[:, 2] = torch.clamp(boxes_coco[:, 2], 1, self.model.image_size)
-                    boxes_coco[:, 3] = torch.clamp(boxes_coco[:, 3], 1, self.model.image_size)
+                    boxes_coco[:, 0] = torch.clamp(boxes_coco[:, 0], 0, img_w)
+                    boxes_coco[:, 1] = torch.clamp(boxes_coco[:, 1], 0, img_h)
+                    boxes_coco[:, 2] = torch.clamp(boxes_coco[:, 2], 1, img_w)
+                    boxes_coco[:, 3] = torch.clamp(boxes_coco[:, 3], 1, img_h)
                     
                     for j in range(boxes_coco.shape[0]):
                         all_predictions.append({
@@ -1544,20 +1544,23 @@ class DSETTrainer:
                 true_boxes = targets[i]['boxes']
                 
                 if len(true_labels) > 0:
-                    img_size = self.model.image_size
+                    img_size = img_h
                     max_val = float(true_boxes.max().item()) if true_boxes.numel() > 0 else 0.0
                     scale = img_size if max_val <= 1.0 + 1e-6 else 1.0
                     
                     true_boxes_coco = torch.zeros_like(true_boxes)
-                    true_boxes_coco[:, 0] = (true_boxes[:, 0] - true_boxes[:, 2] / 2) * scale
-                    true_boxes_coco[:, 1] = (true_boxes[:, 1] - true_boxes[:, 3] / 2) * scale
-                    true_boxes_coco[:, 2] = true_boxes[:, 2] * scale
-                    true_boxes_coco[:, 3] = true_boxes[:, 3] * scale
+                    if max_val <= 1.0 + 1e-6:
+                        true_boxes_coco[:, 0] = (true_boxes[:, 0] - true_boxes[:, 2] / 2) * img_w
+                        true_boxes_coco[:, 1] = (true_boxes[:, 1] - true_boxes[:, 3] / 2) * img_h
+                        true_boxes_coco[:, 2] = true_boxes[:, 2] * img_w
+                        true_boxes_coco[:, 3] = true_boxes[:, 3] * img_h
+                    else:
+                        true_boxes_coco = true_boxes.clone()
                     
-                    true_boxes_coco[:, 0] = torch.clamp(true_boxes_coco[:, 0], 0, img_size)
-                    true_boxes_coco[:, 1] = torch.clamp(true_boxes_coco[:, 1], 0, img_size)
-                    true_boxes_coco[:, 2] = torch.clamp(true_boxes_coco[:, 2], 1, img_size)
-                    true_boxes_coco[:, 3] = torch.clamp(true_boxes_coco[:, 3], 1, img_size)
+                    true_boxes_coco[:, 0] = torch.clamp(true_boxes_coco[:, 0], 0, img_w)
+                    true_boxes_coco[:, 1] = torch.clamp(true_boxes_coco[:, 1], 0, img_h)
+                    true_boxes_coco[:, 2] = torch.clamp(true_boxes_coco[:, 2], 1, img_w)
+                    true_boxes_coco[:, 3] = torch.clamp(true_boxes_coco[:, 3], 1, img_h)
                     
                     # 获取iscrowd字段（评估时存在）
                     has_iscrowd = 'iscrowd' in targets[i]
@@ -1597,6 +1600,8 @@ class DSETTrainer:
                 
                 with torch.no_grad():
                     for batch_idx, (images, targets) in enumerate(self.val_dataloader):
+                        # 动态获取 Tensor 尺寸
+                        B, C, H_tensor, W_tensor = images.shape
                         images = images.to(self.device)
                         targets = [{k: v.to(self.device) if isinstance(v, torch.Tensor) else v 
                                    for k, v in t.items()} for t in targets]
@@ -1604,7 +1609,7 @@ class DSETTrainer:
                         outputs = self.ema.module(images, targets)
                         
                         if 'class_scores' in outputs and 'bboxes' in outputs:
-                            self._collect_predictions(outputs, targets, batch_idx, all_predictions, all_targets)
+                            self._collect_predictions(outputs, targets, batch_idx, all_predictions, all_targets, W_tensor, H_tensor)
                 
                 mAP_metrics = self._compute_map_metrics(all_predictions, all_targets, print_per_category=True)
                 per_category_map = mAP_metrics.get('per_category_map', {})
@@ -1659,8 +1664,8 @@ class DSETTrainer:
             for img_id in image_ids:
                 coco_gt['images'].append({
                     'id': img_id, 
-                    'width': self.model.image_size, 
-                    'height': self.model.image_size
+                    'width': 1344,
+                    'height': 768
                 })
             
             # 添加标注
@@ -1881,26 +1886,19 @@ class DSETTrainer:
             # 训练
             train_metrics = self.train_epoch()
             
-            # 验证
-            # =================================================
-            # ✅ 终极防踏空策略：渐进式加密
-            # =================================================
+            # 验证策略：
+            # - 前100 epoch：每10轮验证一次
+            # - 100-160 epoch：每5轮验证一次
+            # - 160 epoch以后：每轮验证
             should_validate = False
-            # 阶段 1: 快速推进 (0 - 100) -> 每 10 轮看一眼
-            # 目的: 确认大趋势向上，没崩就行。
             if epoch < 100:
                 if (epoch + 1) % 10 == 0:
                     should_validate = True
-            # 阶段 2: 重点监控 (100 - 160) -> 每 5 轮看一眼
-            # 目的: 防止你在担心的“中期”出现极值。5个Epoch的间隔很安全。
             elif epoch < 160:
                 if (epoch + 1) % 5 == 0:
                     should_validate = True
-            # 阶段 3: 决战时刻 (160 - 200) -> 每 1 轮都看！
-            # 目的: 这时候 LR 下降，每一轮都可能创造新高，绝对不能漏。
             else:
                 should_validate = True
-            # =================================================
             
             if should_validate:
                 val_metrics = self.validate()

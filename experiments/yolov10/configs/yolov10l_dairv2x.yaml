@@ -1,0 +1,42 @@
+model:
+  model_name: "yolov10l.pt"
+  pretrained_weights: "pretrained/yolov10l.pt"  # 使用本地预训练权重
+
+training:
+  epochs: 200
+  batch_size: 48
+  imgsz: 640
+  optimizer: "AdamW"
+  lr0: 0.01
+  lrf: 0.01
+  momentum: 0.937
+  weight_decay: 0.0001
+  warmup_epochs: 3.0
+  warmup_momentum: 0.8
+  warmup_bias_lr: 0.1
+  save_period: 10
+  cos_lr: true
+  seed: 42
+  deterministic: false
+  patience: 35
+  
+  hsv_h: 0.015
+  hsv_s: 0.7
+  hsv_v: 0.4
+  degrees: 0.0
+  translate: 0.0
+  scale: 0.5
+  flipud: 0.0
+  fliplr: 0.5
+  mosaic: 0.0  # 禁用Mosaic，不适合路测探头场景（会破坏空间关系）
+  mixup: 0.0
+
+data:
+  data_yaml: "/root/autodl-fs/datasets/DAIR-V2X_YOLO/dairv2x.yaml"
+
+checkpoint:
+  log_dir: "logs"
+
+misc:
+  device: "cuda"
+  num_workers: 16
