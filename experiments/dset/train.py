@@ -1129,7 +1129,7 @@ class DSETTrainer:
                     self.postprocessor,
                     orig_image_path,
                     conf_threshold=0.3,
-                    target_size=640,
+                    target_size=1280,  # [FIX] 与验证集一致，使用 1280
                     device=str(self.device),
                     class_names=self.class_names,
                     colors=self.colors,
