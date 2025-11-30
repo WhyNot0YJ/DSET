@@ -92,8 +92,6 @@ declare -A DSET_CONFIGS=(
     ["dset4-r34"]="dset/configs/dset4_r34.yaml"
     ["dset6-r18"]="dset/configs/dset6_r18.yaml"
     ["dset6-r34"]="dset/configs/dset6_r34.yaml"
-    ["dset8-r18"]="dset/configs/dset8_r18.yaml"
-    ["dset8-r34"]="dset/configs/dset8_r34.yaml"
     ["dset48-r18"]="dset/configs/dset48_r18.yaml"
     ["dset48-r34"]="dset/configs/dset48_r34.yaml"
 )
@@ -391,7 +389,7 @@ parse_arguments() {
                 CONFIGS_TO_RUN+=("$p")
             fi
         done
-        # DSET实验（按字典序：dset4→dset6→dset8→dset48）
+        # DSET实验（按字典序：dset4→dset48→dset6）
         for key in $(printf '%s\n' "${!DSET_CONFIGS[@]}" | sort); do
             local p="${DSET_CONFIGS[$key]}"
             if filter_by_backbone "$p"; then
