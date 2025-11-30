@@ -871,13 +871,13 @@ class DSETTrainer:
         for i, img in enumerate(processed_images):
             h, w = img.shape[-2:]
             batch_images[i, :, :h, :w] = img
-            
-        # 4. 根据最终 Batch 尺寸进行归一化
+
+        # 4. Normalize targets based on final Batch size
         new_targets = []
         for t in list(targets):
-            # [FIX] 使用 deepcopy 或者 clone 确保不修改原始数据
+            # [FIX] Use deepcopy or clone to ensure original data is not modified
             new_t = t.copy()
-            # 必须 clone，否则 boxes[:, 0] = ... 会修改源 tensor
+            # Must clone, otherwise boxes[:, 0] = ... modifies source tensor
             boxes = new_t['boxes'].clone()
             
             # 手动归一化：除以 max_w 和 max_h

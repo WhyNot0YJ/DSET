@@ -32,7 +32,10 @@ class DAIRV2XDetection(DetDataset):
                  aug_contrast: float = 0.0,
                  aug_saturation: float = 0.0,
                  aug_hue: float = 0.0,
-                 aug_color_jitter_prob: float = 0.0):
+                 aug_color_jitter_prob: float = 0.0,
+                 aug_crop_min: float = 0.3,
+                 aug_crop_max: float = 1.0,
+                 aug_flip_prob: float = 0.5):
         """
         Initialize DAIR-V2X Dataset
         
