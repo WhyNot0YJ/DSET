@@ -1603,11 +1603,10 @@ class AdaptiveExpertTrainer:
             # 输出日志
             self.logger.info(f"Epoch {epoch}:")
             if should_validate:
+                current_map = val_metrics.get('mAP_0.5_0.95', 0.0)
+                current_map_50 = val_metrics.get('mAP_0.5', 0.0)
                 self.logger.info(f"  训练损失: {train_metrics.get('total_loss', 0.0):.2f} | 验证损失: {val_metrics.get('total_loss', 0.0):.2f}")
-                if epoch >= 30:
-                    self.logger.info(f"  预测/目标: {val_metrics.get('num_predictions', 0)}/{val_metrics.get('num_targets', 0)}")
-                else:
-                    self.logger.info(f"  (前30个epoch仅计算loss，跳过mAP评估)")
+                self.logger.info(f"  📊 当前mAP: {current_map:.4f} (mAP@50: {current_map_50:.4f})")
             else:
                 self.logger.info(f"  训练损失: {train_metrics.get('total_loss', 0.0):.2f} | 验证损失: Skipped")
             
