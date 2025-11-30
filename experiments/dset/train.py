@@ -872,30 +872,30 @@ class DSETTrainer:
             h, w = img.shape[-2:]
             batch_images[i, :, :h, :w] = img
             
-                # 4. 根据最终 Batch 尺寸进行归一化
-                new_targets = []
-                for t in list(targets):
-                    # [FIX] 使用 deepcopy 或者 clone 确保不修改原始数据
-                    new_t = t.copy()
-                    # 必须 clone，否则 boxes[:, 0] = ... 会修改源 tensor
-                    boxes = new_t['boxes'].clone()
-                    
-                    # 手动归一化：除以 max_w 和 max_h
-                    # 格式是 cx, cy, w, h
-                    # x轴数据 (cx, w) 除以 max_w
-                    # y轴数据 (cy, h) 除以 max_h
-                    boxes[:, 0] = boxes[:, 0] / max_w
-                    boxes[:, 1] = boxes[:, 1] / max_h
-                    boxes[:, 2] = boxes[:, 2] / max_w
-                    boxes[:, 3] = boxes[:, 3] / max_h
-                    
-                    # 限制数值在 0-1 之间 (防止浮点溢出)
-                    boxes = torch.clamp(boxes, 0.0, 1.0)
-                    
-                    new_t['boxes'] = boxes
-                    new_targets.append(new_t)
-                
-                return batch_images, new_targets
+        # 4. 根据最终 Batch 尺寸进行归一化
+        new_targets = []
+        for t in list(targets):
+            # [FIX] 使用 deepcopy 或者 clone 确保不修改原始数据
+            new_t = t.copy()
+            # 必须 clone，否则 boxes[:, 0] = ... 会修改源 tensor
+            boxes = new_t['boxes'].clone()
+            
+            # 手动归一化：除以 max_w 和 max_h
+            # 格式是 cx, cy, w, h
+            # x轴数据 (cx, w) 除以 max_w
+            # y轴数据 (cy, h) 除以 max_h
+            boxes[:, 0] = boxes[:, 0] / max_w
+            boxes[:, 1] = boxes[:, 1] / max_h
+            boxes[:, 2] = boxes[:, 2] / max_w
+            boxes[:, 3] = boxes[:, 3] / max_h
+            
+            # 限制数值在 0-1 之间 (防止浮点溢出)
+            boxes = torch.clamp(boxes, 0.0, 1.0)
+            
+            new_t['boxes'] = boxes
+            new_targets.append(new_t)
+        
+        return batch_images, new_targets
     
     def _create_optimizer(self) -> optim.AdamW:
         """创建优化器（使用分组学习率，与rt-detr保持一致）。"""
