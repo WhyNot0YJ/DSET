@@ -120,8 +120,8 @@ def load_model(config_path: str, checkpoint_path: str, device: str = "cuda"):
 
 def preprocess_image(image_path: str, target_size: int = 1280):
     """
-    预处理图像 - 适配 Phase 2 高清矩形推理
-    target_size: 这里指 max_size (长边限制)，建议设为 1280
+    预处理图像 - 严格对齐 Phase 2 验证集逻辑
+    逻辑：Resize(short=720, max=1280) -> Normalize -> Top-Left Pad stride 32
     """
     # 1. 读取图像
     image_bgr = cv2.imread(str(image_path))
@@ -132,43 +132,47 @@ def preprocess_image(image_path: str, target_size: int = 1280):
     image = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
     orig_h, orig_w = image.shape[:2]
     
-    # 2. 智能缩放 (Rectangular Resize: short=720, max=1280)
-    # 逻辑：计算缩放比例
-    # 尝试将短边缩放到 720
-    scale = 720 / min(orig_h, orig_w)
-    # 如果长边超过 1280，则按长边缩放到 1280
-    if max(orig_h, orig_w) * scale > 1280:
-        scale = 1280 / max(orig_h, orig_w)
+    # 2. 智能缩放 (Rectangular Resize)
+    # 目标：短边720，长边限制1280 (对应 target_size)
+    # 计算缩放比例
+    im_size_min = min(orig_h, orig_w)
+    im_size_max = max(orig_h, orig_w)
     
-    new_w = int(orig_w * scale)
-    new_h = int(orig_h * scale)
+    # 这里的逻辑复刻 T.Resize(size=720, max_size=1280)
+    scale = 720 / float(im_size_min)
     
-    # 使用 Bilinear 插值缩放
+    # 如果缩放后长边超过 1280，则按长边缩放
+    if round(scale * im_size_max) > target_size:
+        scale = target_size / float(im_size_max)
+    
+    new_w = int(round(orig_w * scale))
+    new_h = int(round(orig_h * scale))
+    
+    # Bilinear 插值
     image_tensor = torch.from_numpy(image).float().permute(2, 0, 1) # HWC->CHW
     image_tensor = torch.nn.functional.interpolate(
         image_tensor.unsqueeze(0), 
         size=(new_h, new_w), 
-        mode='bilinear', align_corners=False
+        mode='bilinear', 
+        align_corners=False
     ).squeeze(0)
     
-    # 3. 归一化 (Normalize) - 关键修正！
-    image_tensor = image_tensor / 255.0  # [0, 255] -> [0, 1]
+    # 3. 归一化 (Normalize)
+    image_tensor = image_tensor / 255.0
     mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
     std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
     image_tensor = (image_tensor - mean) / std
     
-    # 4. 32倍数对齐 + 左上角填充 (Top-Left Padding)
+    # 4. 左上角对齐填充 (Top-Left Padding to Stride 32)
     stride = 32
-    # 计算 padding 后的尺寸
-    padded_h = (new_h + stride - 1) // stride * stride
-    padded_w = (new_w + stride - 1) // stride * stride
+    # 向上取整到 32 的倍数
+    padded_h = int(np.ceil(new_h / stride) * stride)
+    padded_w = int(np.ceil(new_w / stride) * stride)
     
-    pad_h = padded_h - new_h
-    pad_w = padded_w - new_w
-    
-    # 创建画布 (填充 0)
+    # 创建画布 (填充 0，即黑边)
+    # 注意：虽然 Normalize 后 0 不是黑色，但 RT-DETR 对 Padding 值不敏感，0 即可
     padded_image = torch.zeros(3, padded_h, padded_w, dtype=torch.float32)
-    padded_image[:, :new_h, :new_w] = image_tensor  # 👈 左上角对齐！
+    padded_image[:, :new_h, :new_w] = image_tensor  # 👈 关键：贴在左上角！
     
     # 添加 Batch 维度
     img_input = padded_image.unsqueeze(0) # [1, 3, H, W]
@@ -176,14 +180,12 @@ def preprocess_image(image_path: str, target_size: int = 1280):
     # 构建 Meta 信息 (用于还原坐标)
     meta = {
         'orig_size': torch.tensor([[orig_h, orig_w]]),
-        'new_h': new_h,
-        'new_w': new_w,
-        'pad_h': 0,       # 左上角对齐，Top padding = 0
-        'pad_w': 0,       # 左上角对齐，Left padding = 0
-        'scale_h': new_h / orig_h,
-        'scale_w': new_w / orig_w,
-        'padded_h': padded_h, # 记录网络实际输入尺寸
-        'padded_w': padded_w
+        'scale': scale,        # 缩放比例
+        'padded_h': padded_h,  # 输入网络的实际高
+        'padded_w': padded_w,  # 输入网络的实际宽
+        # 下面这两个其实不需要了，因为是 0，但为了兼容性保留
+        'pad_h': 0, 
+        'pad_w': 0
     }
     
     return img_input, image_bgr, meta
@@ -196,31 +198,26 @@ def postprocess_outputs(outputs, postprocessor, meta, conf_threshold=0.3, target
         output_device = outputs['pred_logits'].device
     else:
         output_device = torch.device(device)
-    
-    # 1. 让 PostProcessor 在 "Padding 后的画布" 上输出绝对坐标
-    # 我们传入实际输入网络的尺寸 (padded_w, padded_h)
+
+    # 1. 告诉 PostProcessor 画布有多大 (padded_w, padded_h)
     target_sizes = torch.tensor([[meta['padded_h'], meta['padded_w']]], device=output_device)
     
+    # 2. 获取归一化还原后的坐标 (在 Padded Image 上的绝对坐标)
     # DetDETRPostProcessor 默认使用 orig_sizes 将 0-1 映射回像素
     # 这里我们要它映射回 "padded_image" 的像素坐标
     # 注意：必须使用关键字参数 orig_sizes，因为 DetDETRPostProcessor.forward 只接受 outputs 作为位置参数
     results = postprocessor(outputs, orig_sizes=target_sizes) 
     result = results[0]
     
-    # 2. 提取结果
     labels = result['labels'].cpu().numpy()
-    boxes = result['boxes'].cpu().numpy() # [x1, y1, x2, y2] 在 padded 图上的坐标
+    boxes = result['boxes'].cpu().numpy() # [x1, y1, x2, y2]
     scores = result['scores'].cpu().numpy()
     
-    # 3. 坐标映射回原图 (Map back to original image)
-    # 因为是左上角对齐，所以 x_orig = x_padded / scale
-    scale_w = meta['scale_w']
-    scale_h = meta['scale_h']
+    # 3. 映射回原图
+    # 因为是左上角对齐，原点 (0,0) 没变，所以只需要除以缩放比例 scale
+    scale = meta['scale']
     
-    boxes[:, 0] /= scale_w
-    boxes[:, 2] /= scale_w
-    boxes[:, 1] /= scale_h
-    boxes[:, 3] /= scale_h
+    boxes /= scale  # ✅ 核心修正：直接除以比例，无需减 padding
     
     # 4. 裁剪边界 (防止超出原图)
     orig_h, orig_w = meta['orig_size'][0].tolist()
@@ -319,30 +316,33 @@ def inference_from_preprocessed_image(image_tensor, model, postprocessor, orig_i
     
     orig_h, orig_w = orig_image_bgr.shape[:2]
     
-    # 构建meta字典（与preprocess_image返回格式一致）
-    scale = min(target_size / orig_h, target_size / orig_w)
-    new_h = int(orig_h * scale)
-    new_w = int(orig_w * scale)
-    new_h = ((new_h + 31) // 32) * 32
-    new_w = ((new_w + 31) // 32) * 32
-    new_h = min(new_h, target_size)
-    new_w = min(new_w, target_size)
-    pad_h = (target_size - new_h) // 2
-    pad_w = (target_size - new_w) // 2
+    # 复用 preprocess_image 中的逻辑计算 meta
+    # 注意：这里为了简单，重新计算一遍 scale 等信息
+    # 实际应该从外部传入 meta，或者提取公共函数
     
-    # ⚠️ 关键修复：计算实际缩放比例（考虑32倍数调整）
-    actual_scale_h = new_h / orig_h
-    actual_scale_w = new_w / orig_w
+    im_size_min = min(orig_h, orig_w)
+    im_size_max = max(orig_h, orig_w)
+    scale = 720 / float(im_size_min)
+    if round(scale * im_size_max) > target_size:
+        scale = target_size / float(im_size_max)
+        
+    new_w = int(round(orig_w * scale))
+    new_h = int(round(orig_h * scale))
+    
+    stride = 32
+    padded_h = int(np.ceil(new_h / stride) * stride)
+    padded_w = int(np.ceil(new_w / stride) * stride)
+    
+    pad_h = 0
+    pad_w = 0
     
     meta = {
-        'orig_size': torch.tensor([[orig_h, orig_w]]),  # [1, 2] format: [h, w]
+        'orig_size': torch.tensor([[orig_h, orig_w]]),
+        'scale': scale,
+        'padded_h': padded_h,
+        'padded_w': padded_w,
         'pad_h': pad_h,
-        'pad_w': pad_w,
-        'scale': scale,  # 保留原始scale用于兼容性
-        'scale_h': actual_scale_h,  # 实际高度缩放比例
-        'scale_w': actual_scale_w,  # 实际宽度缩放比例
-        'new_h': new_h,
-        'new_w': new_w
+        'pad_w': pad_w
     }
     
     # 推理
@@ -497,4 +497,3 @@ if __name__ == "__main__":
         args.max_images,
         args.target_size
     )
-
