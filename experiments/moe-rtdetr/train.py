@@ -621,9 +621,10 @@ class AdaptiveExpertTrainer:
                 # 4. 根据最终 Batch 尺寸进行归一化
                 new_targets = []
                 for t in list(targets):
-                    # 复制 target 防止原地修改污染数据
+                    # [FIX] 使用 deepcopy 或者 clone 确保不修改原始数据
                     new_t = t.copy()
-                    boxes = new_t['boxes'] # 此时是绝对坐标 cx, cy, w, h
+                    # 必须 clone，否则 boxes[:, 0] = ... 会修改源 tensor
+                    boxes = new_t['boxes'].clone()
                     
                     # 手动归一化：除以 max_w 和 max_h
                     # 格式是 cx, cy, w, h
@@ -921,9 +922,12 @@ class AdaptiveExpertTrainer:
                 with torch.no_grad():
                     outputs = self.ema.module(single_image)
                 
-                # 简化的后处理和绘制（不推荐，但作为备用）
-                eval_sizes = torch.tensor([[640, 640]], device=self.device)
-                results = self.postprocessor(outputs, eval_sizes=eval_sizes)
+                # [FIX] 不要使用硬编码的 640x640，使用 batch 图片的实际尺寸
+                # postprocessor 需要的是模型输入的尺寸 (或者 padded 尺寸)，用于将 0-1 映射回像素
+                _, _, h, w = single_image.shape
+                eval_sizes = torch.tensor([[h, w]], device=self.device)
+                
+                results = self.postprocessor(outputs, orig_sizes=eval_sizes)
                 
                 if len(results) > 0:
                     result = results[0]

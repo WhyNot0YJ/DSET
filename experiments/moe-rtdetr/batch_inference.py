@@ -108,19 +108,15 @@ def load_model(config_path: str, checkpoint_path: str, device: str = "cuda"):
         # 旧版本 PyTorch 不支持 weights_only 参数
         checkpoint = torch.load(checkpoint_path, map_location='cpu')
     
-    # 验证时使用 self.ema.module，所以推理时也应该使用EMA权重
+    # [FIX] 增强的权重加载逻辑
     if 'ema_state_dict' in checkpoint:
-        # EMA模型通常性能更好
-        print("  使用EMA模型权重（与验证时一致）")
-        ema_state_dict = checkpoint['ema_state_dict']
-        # EMA的state_dict格式是 {'module': {...}, 'updates': ...}
-        if isinstance(ema_state_dict, dict) and 'module' in ema_state_dict:
-            state_dict = ema_state_dict['module']
-        else:
-            # 兼容旧格式
-            state_dict = ema_state_dict
+        print("  ✓ 检测到 'ema_state_dict'，加载 EMA 权重")
+        state_dict = checkpoint['ema_state_dict']
+        # EMA state dict 可能包含 'module' 键 (如果使用 ModelEMA 类保存)
+        if isinstance(state_dict, dict) and 'module' in state_dict:
+            state_dict = state_dict['module']
     elif 'model_state_dict' in checkpoint:
-        print("  使用普通模型权重（未找到EMA权重）")
+        print("  ⚠ 未找到 EMA，加载普通 'model_state_dict' 权重")
         state_dict = checkpoint['model_state_dict']
     elif 'model' in checkpoint:
         state_dict = checkpoint['model']
@@ -144,6 +140,56 @@ def load_model(config_path: str, checkpoint_path: str, device: str = "cuda"):
     )
     
     return model, postprocessor
+
+
+def inference_from_preprocessed_image(img_tensor, model, postprocessor, orig_image_path, 
+                                      conf_threshold=0.3, target_size=640, device='cuda', 
+                                      class_names=None, colors=None, verbose=False):
+    """
+    供 Trainer 调用的推理接口
+    img_tensor: [1, 3, H, W] 已经归一化并 padding 好的 tensor (来自 validation loader)
+    """
+    # 1. 计算 Meta 信息 (我们需要反推 scale 和 padding)
+    # Trainer 里的图片通常已经是 pad 到了 32 的倍数，且 resize 过了。
+    # 这里我们假设 img_tensor 已经是模型输入所需的格式。
+    
+    # 读取原图用于画图
+    orig_image = cv2.imread(str(orig_image_path))
+    if orig_image is None:
+        return None
+    
+    orig_h, orig_w = orig_image.shape[:2]
+    input_h, input_w = img_tensor.shape[-2:]
+    
+    # 重新计算 scale (参考 preprocess_image 的逻辑，假设是短边 resize 到了 720 或者类似的)
+    # 但 validation loader 的 transform 逻辑是 T.Resize(size=720, max_size=1280)
+    # 我们近似反推 scale
+    im_size_min = min(orig_h, orig_w)
+    im_size_max = max(orig_h, orig_w)
+    scale = 720 / float(im_size_min)
+    if round(scale * im_size_max) > 1280:
+        scale = 1280 / float(im_size_max)
+        
+    # 构建简化的 meta
+    meta = {
+        'orig_size': torch.tensor([[orig_h, orig_w]]),
+        'padded_h': input_h,
+        'padded_w': input_w,
+        'scale': scale # 近似值，用于绘图
+    }
+    
+    # 推理
+    with torch.no_grad():
+        outputs = model(img_tensor)
+        
+    # 后处理
+    labels, boxes, scores = postprocess_outputs(
+        outputs, postprocessor, meta, conf_threshold, target_size, device, verbose=verbose
+    )
+    
+    # 画图
+    result_image = draw_boxes(orig_image, labels, boxes, scores, class_names, colors)
+    return result_image
 
 
 def preprocess_image(image_path: str, target_size: int = 1280):

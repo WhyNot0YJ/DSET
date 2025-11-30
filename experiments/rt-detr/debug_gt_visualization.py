@@ -74,7 +74,12 @@ class CustomCollateFunction:
         return batch_images, new_targets
 
 def visualize_gt(loader, num_images=5):
+    # 创建输出目录
+    output_dir = Path("experiments/rt-detr/debug_vis")
+    output_dir.mkdir(parents=True, exist_ok=True)
     print(f"开始可视化 {num_images} 张 GT 图像...")
+    print(f"结果将保存到: {output_dir.resolve()}")
+
     for i, (images, targets) in enumerate(loader):
         if i >= num_images: break
         
@@ -127,8 +132,8 @@ def visualize_gt(loader, num_images=5):
             
             cv2.rectangle(img_np, (x1, y1), (x2, y2), (0, 255, 0), 2) # 绿色框
             
-        output_filename = f"debug_gt_{i}.jpg"
-        cv2.imwrite(output_filename, img_np)
+        output_filename = output_dir / f"debug_gt_{i}.jpg"
+        cv2.imwrite(str(output_filename), img_np)
         print(f"Saved {output_filename}")
 
 if __name__ == "__main__":
