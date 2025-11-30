@@ -9,6 +9,7 @@ import torchvision.transforms as T
 from PIL import Image
 import cv2
 import numpy as np
+import json
 from pathlib import Path
 
 try:
@@ -178,8 +179,22 @@ def inference_from_preprocessed_image(img_tensor, model, postprocessor, orig_ima
         outputs, postprocessor, meta, conf_threshold, target_size, device, verbose=verbose
     )
     
-    # 画图
-    result_image = draw_boxes(orig_image, labels, boxes, scores, class_names, colors)
+    # [NEW] 尝试加载并绘制 GT (如果能找到对应json)
+    # 预测图
+    pred_image = draw_boxes(orig_image.copy(), labels, boxes, scores, class_names, colors)
+    cv2.putText(pred_image, "Prediction", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+    
+    # GT图
+    gt_path = get_gt_annotation_path(Path(orig_image_path))
+    if gt_path and class_names:
+        gt_labels, gt_boxes, gt_scores = load_gt_boxes(gt_path, class_names)
+        gt_image = draw_boxes(orig_image.copy(), gt_labels, gt_boxes, gt_scores, class_names, colors)
+        cv2.putText(gt_image, "Ground Truth", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+        # 拼接
+        result_image = cv2.hconcat([pred_image, gt_image])
+    else:
+        result_image = pred_image
+        
     return result_image
 
 
@@ -193,7 +208,7 @@ def preprocess_image(image_path: str, target_size: int = 1280):
         image_pil = Image.open(str(image_path)).convert("RGB")
     except Exception as e:
         raise ValueError(f"无法读取图像: {image_path}, 错误: {e}")
-
+    
     orig_w, orig_h = image_pil.size  # PIL 是 (W, H)
     
     # 2. 智能缩放计算 (Rectangular Resize)
@@ -262,7 +277,7 @@ def postprocess_outputs(outputs, postprocessor, meta, conf_threshold=0.3, target
         output_device = outputs['pred_logits'].device
     else:
         output_device = torch.device(device)
-
+    
     # 1. 告诉 PostProcessor 画布有多大 (padded_w, padded_h)
     # [FIX] 调换顺序，使用 [padded_w, padded_h] 以匹配 box_revert 的期望
     target_sizes = torch.tensor([[meta['padded_w'], meta['padded_h']]], device=output_device)
@@ -319,6 +334,10 @@ def draw_boxes(image, labels, boxes, scores, class_names=None, colors=None):
     Returns:
         绘制了检测框的图像
     """
+    # 确保image是连续的内存块 (避免 hconcat 报错)
+    if not image.flags['C_CONTIGUOUS']:
+        image = np.ascontiguousarray(image)
+
     if len(labels) == 0:
         return image
     
@@ -354,6 +373,79 @@ def draw_boxes(image, labels, boxes, scores, class_names=None, colors=None):
     return image
 
 
+def get_gt_annotation_path(image_path: Path):
+    """尝试根据图像路径推断标注文件路径"""
+    # 假设结构: .../image/xxxxx.jpg -> .../annotations/camera/xxxxx.json
+    try:
+        # 策略1: 检查父目录是否是 image, 且有 annotations 兄弟目录
+        if image_path.parent.name == 'image':
+            data_root = image_path.parent.parent
+            # DAIR-V2X 标准结构
+            json_path = data_root / 'annotations' / 'camera' / f"{image_path.stem}.json"
+            if json_path.exists():
+                return json_path
+            
+            # 或者是单路侧数据集 (infrastructure-side) 可能的变体
+            json_path = data_root / 'infrastructure-side' / 'annotations' / 'camera' / f"{image_path.stem}.json"
+            if json_path.exists():
+                return json_path
+        
+        # 策略2: 检查是否有同名的 json 文件 (flat 结构)
+        json_path = image_path.with_suffix('.json')
+        if json_path.exists():
+            return json_path
+            
+    except Exception:
+        pass
+    return None
+
+
+def load_gt_boxes(json_path, class_names_list):
+    """加载GT框"""
+    with open(json_path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    
+    boxes = []
+    labels = []
+    scores = [] # GT confidence = 1.0
+    
+    # 建立 name -> id 映射
+    name_to_id = {name: i for i, name in enumerate(class_names_list)}
+    
+    # 特殊映射 (参考 dairv2x_detection.py)
+    merge_map = {"Barrowlist": "Cyclist"}
+    ignore_classes = ["PedestrianIgnore", "CarIgnore", "OtherIgnore", "Unknown_movable", "Unknown_unmovable"]
+    
+    # 只有当data是列表时才遍历（DAIR-V2X格式）
+    if isinstance(data, list):
+        for ann in data:
+            if 'type' not in ann or '2d_box' not in ann:
+                continue
+                
+            cat_name = ann['type']
+            
+            # 处理映射
+            if cat_name in merge_map:
+                cat_name = merge_map[cat_name]
+                
+            if cat_name in ignore_classes:
+                continue
+                
+            if cat_name not in name_to_id:
+                continue
+                
+            class_id = name_to_id[cat_name]
+            
+            bbox = ann['2d_box']
+            x1, y1, x2, y2 = float(bbox['xmin']), float(bbox['ymin']), float(bbox['xmax']), float(bbox['ymax'])
+            
+            boxes.append([x1, y1, x2, y2])
+            labels.append(class_id)
+            scores.append(1.0)
+            
+    return np.array(labels), np.array(boxes), np.array(scores)
+
+
 def process_single_image(image_path: Path, model, postprocessor, output_dir: Path, 
                         conf_threshold: float, device: str, target_size: int = 1280):
     """处理单张图像"""
@@ -371,12 +463,28 @@ def process_single_image(image_path: Path, model, postprocessor, output_dir: Pat
             outputs, postprocessor, meta, conf_threshold, target_size, device, verbose=True
         )
         
-        # 绘制结果
-        result_image = draw_boxes(orig_image.copy(), labels, boxes, scores)
+        # [NEW] 绘制预测结果并尝试加载 GT 拼接对比
+        
+        # 1. 绘制预测图
+        pred_image = draw_boxes(orig_image.copy(), labels, boxes, scores)
+        # 添加标题
+        cv2.putText(pred_image, "Prediction", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+        
+        # 2. 尝试加载 GT
+        gt_path = get_gt_annotation_path(image_path)
+        if gt_path:
+            gt_labels, gt_boxes, gt_scores = load_gt_boxes(gt_path, CLASS_NAMES)
+            gt_image = draw_boxes(orig_image.copy(), gt_labels, gt_boxes, gt_scores)
+            cv2.putText(gt_image, "Ground Truth", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+            
+            # 拼接图片 (左右)
+            final_image = cv2.hconcat([pred_image, gt_image])
+        else:
+            final_image = pred_image
         
         # 保存结果
         output_path = output_dir / image_path.name
-        cv2.imwrite(str(output_path), result_image)
+        cv2.imwrite(str(output_path), final_image)
         
         return len(labels), True, None
     except Exception as e:

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""DSET (Dual-Sparse Expert Transformer) 批量推理脚本 - 处理整个图像目录"""
+"""DSET 批量推理脚本 - 处理整个图像目录"""
 
 import sys
 import argparse
@@ -9,6 +9,7 @@ import torchvision.transforms as T
 from PIL import Image
 import cv2
 import numpy as np
+import json
 from pathlib import Path
 
 try:
@@ -47,10 +48,11 @@ def _setup_paths():
 def _import_modules():
     """延迟导入模块"""
     _setup_paths()
-    from train import DSETRTDETR, DSETTrainer
+    # [CHANGE] 使用 DSETTrainer
+    from train import DSETTrainer, create_backbone
     from src.nn.postprocessor.detr_postprocessor import DetDETRPostProcessor
     from src.nn.postprocessor.box_revert import box_revert, BoxProcessFormat
-    return DSETRTDETR, DSETTrainer, DetDETRPostProcessor, BoxProcessFormat
+    return DSETTrainer, create_backbone, DetDETRPostProcessor, BoxProcessFormat
 
 # 类别名称（8类）
 CLASS_NAMES = [
@@ -71,29 +73,34 @@ COLORS = [
 
 def load_model(config_path: str, checkpoint_path: str, device: str = "cuda"):
     """加载模型和权重"""
-    _, DSETTrainer, DetDETRPostProcessor, BoxProcessFormat = _import_modules()
+    # [CHANGE] 导入 DSETTrainer
+    DSETTrainer, _, DetDETRPostProcessor, BoxProcessFormat = _import_modules()
     
     # 加载配置
     with open(config_path, 'r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
     
     # 创建训练器以构建模型
-    trainer = DSETTrainer(config, config_file_path=config_path)
-    model = trainer.model
+    trainer = DSETTrainer(config)
+    
+    # 创建一个简单的logger（推理时不需要日志，只需要模型能创建）
+    if trainer.logger is None:
+        class SimpleLogger:
+            def info(self, msg): pass  # 什么都不做
+        trainer.logger = SimpleLogger()
+    
+    model = trainer.create_model()
     
     # 加载checkpoint
-    # 兼容 PyTorch 2.6+ (weights_only=True by default)
     try:
         checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
     except TypeError:
-        # 旧版本 PyTorch 不支持 weights_only 参数
         checkpoint = torch.load(checkpoint_path, map_location='cpu')
     
     # [FIX] 增强的权重加载逻辑
     if 'ema_state_dict' in checkpoint:
         print("  ✓ 检测到 'ema_state_dict'，加载 EMA 权重")
         state_dict = checkpoint['ema_state_dict']
-        # EMA state dict 可能包含 'module' 键 (如果使用 ModelEMA 类保存)
         if isinstance(state_dict, dict) and 'module' in state_dict:
             state_dict = state_dict['module']
     elif 'ema' in checkpoint and 'module' in checkpoint['ema']:
@@ -111,15 +118,12 @@ def load_model(config_path: str, checkpoint_path: str, device: str = "cuda"):
     model.eval()
     model = model.to(device)
     
-    # 从配置文件读取 num_queries（模型实际生成的查询数量）
     num_queries = config.get('model', {}).get('num_queries', 300)
     
-    # 创建后处理器（使用RESIZE模式，然后手动处理padding和缩放）
-    # num_top_queries 应该使用配置中的 num_queries，因为模型只生成了这么多查询
     postprocessor = DetDETRPostProcessor(
         num_classes=8,
         use_focal_loss=True,
-        num_top_queries=num_queries,  # 使用配置文件中的 num_queries
+        num_top_queries=num_queries,
         box_process_format=BoxProcessFormat.RESIZE
     )
     
@@ -129,15 +133,7 @@ def load_model(config_path: str, checkpoint_path: str, device: str = "cuda"):
 def inference_from_preprocessed_image(img_tensor, model, postprocessor, orig_image_path, 
                                       conf_threshold=0.3, target_size=640, device='cuda', 
                                       class_names=None, colors=None, verbose=False):
-    """
-    供 Trainer 调用的推理接口
-    img_tensor: [1, 3, H, W] 已经归一化并 padding 好的 tensor (来自 validation loader)
-    """
-    # 1. 计算 Meta 信息 (我们需要反推 scale 和 padding)
-    # Trainer 里的图片通常已经是 pad 到了 32 的倍数，且 resize 过了。
-    # 这里我们假设 img_tensor 已经是模型输入所需的格式。
-    
-    # 读取原图用于画图
+    """供 Trainer 调用的推理接口"""
     orig_image = cv2.imread(str(orig_image_path))
     if orig_image is None:
         return None
@@ -145,96 +141,75 @@ def inference_from_preprocessed_image(img_tensor, model, postprocessor, orig_ima
     orig_h, orig_w = orig_image.shape[:2]
     input_h, input_w = img_tensor.shape[-2:]
     
-    # 重新计算 scale (参考 preprocess_image 的逻辑，假设是短边 resize 到了 720 或者类似的)
-    # 但 validation loader 的 transform 逻辑是 T.Resize(size=720, max_size=1280)
-    # 我们近似反推 scale
     im_size_min = min(orig_h, orig_w)
     im_size_max = max(orig_h, orig_w)
     scale = 720 / float(im_size_min)
     if round(scale * im_size_max) > 1280:
         scale = 1280 / float(im_size_max)
         
-    # 构建简化的 meta
     meta = {
         'orig_size': torch.tensor([[orig_h, orig_w]]),
         'padded_h': input_h,
         'padded_w': input_w,
-        'scale': scale # 近似值，用于绘图
+        'scale': scale
     }
     
-    # 推理
     with torch.no_grad():
         outputs = model(img_tensor)
         
-    # 后处理
     labels, boxes, scores = postprocess_outputs(
         outputs, postprocessor, meta, conf_threshold, target_size, device, verbose=verbose
     )
     
-    # 画图
-    result_image = draw_boxes(orig_image, labels, boxes, scores, class_names, colors)
+    pred_image = draw_boxes(orig_image.copy(), labels, boxes, scores, class_names, colors)
+    cv2.putText(pred_image, "Prediction", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+    
+    gt_path = get_gt_annotation_path(Path(orig_image_path))
+    if gt_path and class_names:
+        gt_labels, gt_boxes, gt_scores = load_gt_boxes(gt_path, class_names)
+        gt_image = draw_boxes(orig_image.copy(), gt_labels, gt_boxes, gt_scores, class_names, colors)
+        cv2.putText(gt_image, "Ground Truth", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+        result_image = cv2.hconcat([pred_image, gt_image])
+    else:
+        result_image = pred_image
+        
     return result_image
 
 
 def preprocess_image(image_path: str, target_size: int = 1280):
-    """
-    预处理图像 - PIL 版本 (保证与训练数据流一致)
-    逻辑：PIL读取(RGB) -> Resize(Rect) -> Normalize -> Top-Left Pad
-    """
-    # 1. 使用 PIL 读取 (原生 RGB)
+    """预处理图像 - PIL 版本"""
     try:
         image_pil = Image.open(str(image_path)).convert("RGB")
     except Exception as e:
         raise ValueError(f"无法读取图像: {image_path}, 错误: {e}")
-
-    orig_w, orig_h = image_pil.size  # PIL 是 (W, H)
     
-    # 2. 智能缩放计算 (Rectangular Resize)
-    # 逻辑：尝试短边缩放到 720
+    orig_w, orig_h = image_pil.size
     im_size_min = min(orig_h, orig_w)
     im_size_max = max(orig_h, orig_w)
-    
-    # 目标短边设为 720 (对应 target_size=1280 的长边限制逻辑)
     target_short = 720
-    
     scale = target_short / float(im_size_min)
-    # 如果缩放后长边超过 target_size (1280)，则按长边缩放
     if round(scale * im_size_max) > target_size:
         scale = target_size / float(im_size_max)
     
     new_w = int(round(orig_w * scale))
     new_h = int(round(orig_h * scale))
     
-    # 3. 执行缩放 (使用 Bilinear，与训练一致)
-    # image_pil.resize 接受 (W, H)
     resized_pil = image_pil.resize((new_w, new_h), resample=Image.BILINEAR)
-    
-    # 4. 转 Tensor 并归一化
-    # T.functional.to_tensor() 会自动除以 255 并转为 [C, H, W]
     image_tensor = T.functional.to_tensor(resized_pil) 
-    
-    # 标准化 (ImageNet Mean/Std)
     mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
     std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
     image_tensor = (image_tensor - mean) / std
     
-    # 5. 左上角对齐填充 (Top-Left Padding to Stride 32)
     stride = 32
     padded_h = int(np.ceil(new_h / stride) * stride)
     padded_w = int(np.ceil(new_w / stride) * stride)
     
-    # 创建画布 (填充 0)
     padded_image = torch.zeros(3, padded_h, padded_w, dtype=torch.float32)
     padded_image[:, :new_h, :new_w] = image_tensor
+    img_input = padded_image.unsqueeze(0)
     
-    # 添加 Batch 维度
-    img_input = padded_image.unsqueeze(0) # [1, 3, H, W]
-    
-    # 6. 准备用于画图的 BGR 图片 (OpenCV 格式)
-    # PIL (RGB) -> Numpy (RGB) -> cv2 (BGR)
     image_bgr_vis = cv2.cvtColor(np.array(image_pil), cv2.COLOR_RGB2BGR)
     
-    # 构建 Meta 信息
     meta = {
         'orig_size': torch.tensor([[orig_h, orig_w]]),
         'scale': scale,
@@ -250,47 +225,35 @@ def preprocess_image(image_path: str, target_size: int = 1280):
 
 def postprocess_outputs(outputs, postprocessor, meta, conf_threshold=0.3, target_size=None, device='cuda', verbose=False):
     """后处理模型输出"""
-    # 获取模型输出的设备
     if isinstance(outputs, dict) and 'pred_logits' in outputs:
         output_device = outputs['pred_logits'].device
     else:
         output_device = torch.device(device)
-
-    # 1. 告诉 PostProcessor 画布有多大 (padded_w, padded_h)
-    # [FIX] 调换顺序，使用 [padded_w, padded_h] 以匹配 box_revert 的期望
+    
+    # [FIX] 使用 [padded_w, padded_h]
     target_sizes = torch.tensor([[meta['padded_w'], meta['padded_h']]], device=output_device)
     
-    # 2. 获取归一化还原后的坐标 (在 Padded Image 上的绝对坐标)
-    # DetDETRPostProcessor 默认使用 orig_sizes 将 0-1 映射回像素
-    # 这里我们要它映射回 "padded_image" 的像素坐标
-    # 注意：必须使用关键字参数 orig_sizes，因为 DetDETRPostProcessor.forward 只接受 outputs 作为位置参数
     results = postprocessor(outputs, orig_sizes=target_sizes) 
     result = results[0]
     
     labels = result['labels'].cpu().numpy()
-    boxes = result['boxes'].cpu().numpy() # [x1, y1, x2, y2]
+    boxes = result['boxes'].cpu().numpy()
     scores = result['scores'].cpu().numpy()
     
-    # 3. 映射回原图
-    # 因为是左上角对齐，原点 (0,0) 没变，所以只需要除以缩放比例 scale
     scale = meta['scale']
+    boxes /= scale
     
-    boxes /= scale  # ✅ 核心修正：直接除以比例，无需减 padding
-    
-    # 4. 裁剪边界 (防止超出原图)
     orig_h, orig_w = meta['orig_size'][0].tolist()
     boxes[:, 0] = np.clip(boxes[:, 0], 0, orig_w)
     boxes[:, 2] = np.clip(boxes[:, 2], 0, orig_w)
     boxes[:, 1] = np.clip(boxes[:, 1], 0, orig_h)
     boxes[:, 3] = np.clip(boxes[:, 3], 0, orig_h)
     
-    # 5. 过滤低置信度
     mask = scores >= conf_threshold
     labels = labels[mask]
     boxes = boxes[mask]
     scores = scores[mask]
     
-    # 调试信息：检查坐标范围和置信度（仅在verbose模式下打印）
     if verbose and len(boxes) > 0:
         print(f"  检测到 {len(boxes)} 个候选框")
         print(f"  置信度范围: [{scores.min():.4f}, {scores.max():.4f}], 阈值: {conf_threshold:.4f}")
@@ -299,19 +262,10 @@ def postprocess_outputs(outputs, postprocessor, meta, conf_threshold=0.3, target
 
 
 def draw_boxes(image, labels, boxes, scores, class_names=None, colors=None):
-    """在图像上绘制预测框
-    
-    Args:
-        image: BGR格式的图像（numpy数组）
-        labels: 类别标签数组
-        boxes: 边界框数组 [N, 4] (x1, y1, x2, y2)
-        scores: 置信度数组
-        class_names: 类别名称列表（默认使用全局CLASS_NAMES）
-        colors: 颜色列表（默认使用全局COLORS）
-    
-    Returns:
-        绘制了检测框的图像
-    """
+    """在图像上绘制预测框"""
+    if not image.flags['C_CONTIGUOUS']:
+        image = np.ascontiguousarray(image)
+
     if len(labels) == 0:
         return image
     
@@ -322,22 +276,17 @@ def draw_boxes(image, labels, boxes, scores, class_names=None, colors=None):
     
     for label, box, score in zip(labels, boxes, scores):
         x1, y1, x2, y2 = box.astype(int)
-        
-        # 确保坐标在图像范围内
         x1 = max(0, min(x1, image.shape[1] - 1))
         y1 = max(0, min(y1, image.shape[0] - 1))
         x2 = max(0, min(x2, image.shape[1] - 1))
         y2 = max(0, min(y2, image.shape[0] - 1))
         
-        # 绘制边界框
         color = colors[label]
         cv2.rectangle(image, (x1, y1), (x2, y2), color, 2)
         
-        # 绘制标签和置信度
         class_name = class_names[label]
         label_text = f"{class_name}: {score:.2f}"
         
-        # 计算文本位置
         (text_w, text_h), _ = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
         text_y = max(text_h + 4, y1)
         cv2.rectangle(image, (x1, text_y - text_h - 4), (x1 + text_w, text_y), color, -1)
@@ -347,29 +296,89 @@ def draw_boxes(image, labels, boxes, scores, class_names=None, colors=None):
     return image
 
 
+def get_gt_annotation_path(image_path: Path):
+    """尝试根据图像路径推断标注文件路径"""
+    try:
+        if image_path.parent.name == 'image':
+            data_root = image_path.parent.parent
+            json_path = data_root / 'annotations' / 'camera' / f"{image_path.stem}.json"
+            if json_path.exists():
+                return json_path
+            json_path = data_root / 'infrastructure-side' / 'annotations' / 'camera' / f"{image_path.stem}.json"
+            if json_path.exists():
+                return json_path
+        
+        json_path = image_path.with_suffix('.json')
+        if json_path.exists():
+            return json_path
+    except Exception:
+        pass
+    return None
+
+
+def load_gt_boxes(json_path, class_names_list):
+    """加载GT框"""
+    with open(json_path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    
+    boxes = []
+    labels = []
+    scores = []
+    name_to_id = {name: i for i, name in enumerate(class_names_list)}
+    merge_map = {"Barrowlist": "Cyclist"}
+    ignore_classes = ["PedestrianIgnore", "CarIgnore", "OtherIgnore", "Unknown_movable", "Unknown_unmovable"]
+    
+    if isinstance(data, list):
+        for ann in data:
+            if 'type' not in ann or '2d_box' not in ann:
+                continue
+            cat_name = ann['type']
+            if cat_name in merge_map:
+                cat_name = merge_map[cat_name]
+            if cat_name in ignore_classes:
+                continue
+            if cat_name not in name_to_id:
+                continue
+            class_id = name_to_id[cat_name]
+            bbox = ann['2d_box']
+            x1, y1, x2, y2 = float(bbox['xmin']), float(bbox['ymin']), float(bbox['xmax']), float(bbox['ymax'])
+            boxes.append([x1, y1, x2, y2])
+            labels.append(class_id)
+            scores.append(1.0)
+            
+    return np.array(labels), np.array(boxes), np.array(scores)
+
+
 def process_single_image(image_path: Path, model, postprocessor, output_dir: Path, 
                         conf_threshold: float, device: str, target_size: int = 1280):
     """处理单张图像"""
     try:
-        # 预处理图像
         img_tensor, orig_image, meta = preprocess_image(str(image_path), target_size)
         img_tensor = img_tensor.to(device)
         
-        # 推理
         with torch.no_grad():
             outputs = model(img_tensor)
         
-        # 后处理（verbose=True 用于批量推理时显示信息）
         labels, boxes, scores = postprocess_outputs(
             outputs, postprocessor, meta, conf_threshold, target_size, device, verbose=True
         )
         
-        # 绘制结果
-        result_image = draw_boxes(orig_image.copy(), labels, boxes, scores)
+        # 绘制预测结果 (左)
+        pred_image = draw_boxes(orig_image.copy(), labels, boxes, scores)
+        cv2.putText(pred_image, "Prediction", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
         
-        # 保存结果
+        # 尝试加载 GT (右)
+        gt_path = get_gt_annotation_path(image_path)
+        if gt_path:
+            gt_labels, gt_boxes, gt_scores = load_gt_boxes(gt_path, CLASS_NAMES)
+            gt_image = draw_boxes(orig_image.copy(), gt_labels, gt_boxes, gt_scores)
+            cv2.putText(gt_image, "Ground Truth", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+            final_image = cv2.hconcat([pred_image, gt_image])
+        else:
+            final_image = pred_image
+        
         output_path = output_dir / image_path.name
-        cv2.imwrite(str(output_path), result_image)
+        cv2.imwrite(str(output_path), final_image)
         
         return len(labels), True, None
     except Exception as e:
@@ -382,12 +391,10 @@ def batch_inference(image_dir: str, config_path: str, checkpoint_path: str,
                    target_size: int = 1280,
                    image_extensions: tuple = ('.jpg', '.jpeg', '.png', '.bmp')):
     """批量推理"""
-    # 加载模型
     print(f"加载模型: {checkpoint_path}")
     model, postprocessor = load_model(config_path, checkpoint_path, device)
     print("✓ 模型加载完成")
     
-    # 设置输入和输出目录
     image_dir = Path(image_dir)
     if not image_dir.exists():
         raise ValueError(f"图像目录不存在: {image_dir}")
@@ -401,7 +408,6 @@ def batch_inference(image_dir: str, config_path: str, checkpoint_path: str,
     print(f"输出目录: {output_dir}")
     print(f"推理尺寸 (Max Size): {target_size}")
     
-    # 获取所有图像文件
     image_files = []
     for ext in image_extensions:
         image_files.extend(list(image_dir.glob(f"*{ext}")))
@@ -411,7 +417,6 @@ def batch_inference(image_dir: str, config_path: str, checkpoint_path: str,
         print(f"警告: 在 {image_dir} 中未找到图像文件")
         return
     
-    # 限制处理数量
     total_images = len(image_files)
     if max_images is not None and max_images > 0:
         image_files = image_files[:max_images]
@@ -419,7 +424,6 @@ def batch_inference(image_dir: str, config_path: str, checkpoint_path: str,
     else:
         print(f"找到 {len(image_files)} 张图像")
     
-    # 批量处理
     total_detections = 0
     success_count = 0
     failed_images = []
@@ -436,39 +440,28 @@ def batch_inference(image_dir: str, config_path: str, checkpoint_path: str,
         else:
             failed_images.append((image_path.name, error))
     
-    # 打印统计信息
     print("\n" + "="*50)
     print("处理完成!")
     print(f"成功处理: {success_count}/{len(image_files)} 张图像")
     print(f"总检测数: {total_detections} 个目标")
     if failed_images:
         print(f"失败: {len(failed_images)} 张图像")
-        for img_name, error in failed_images[:5]:  # 只显示前5个错误
+        for img_name, error in failed_images[:5]:
             print(f"  - {img_name}: {error}")
-        if len(failed_images) > 5:
-            print(f"  ... 还有 {len(failed_images) - 5} 个错误")
     print(f"结果保存在: {output_dir}")
     print("="*50)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="DSET 批量推理脚本")
-    parser.add_argument("--image_dir", type=str, required=True, 
-                       help="输入图像目录路径")
-    parser.add_argument("--config", type=str, required=True, 
-                       help="配置文件路径")
-    parser.add_argument("--checkpoint", type=str, required=True, 
-                       help="模型checkpoint路径")
-    parser.add_argument("--output_dir", type=str, default=None, 
-                       help="输出图像目录路径（默认：输入目录_results）")
-    parser.add_argument("--conf", type=float, default=0.3, 
-                       help="置信度阈值")
-    parser.add_argument("--device", type=str, default="cuda", 
-                       help="设备 (cuda/cpu)")
-    parser.add_argument("--max_images", type=int, default=None,
-                       help="最大处理图像数量（默认：处理所有图像）")
-    parser.add_argument("--target_size", type=int, default=1280,
-                       help="推理图像尺寸（长边限制，默认1280）")
+    parser.add_argument("--image_dir", type=str, required=True, help="输入图像目录路径")
+    parser.add_argument("--config", type=str, required=True, help="配置文件路径")
+    parser.add_argument("--checkpoint", type=str, required=True, help="模型checkpoint路径")
+    parser.add_argument("--output_dir", type=str, default=None, help="输出图像目录路径")
+    parser.add_argument("--conf", type=float, default=0.3, help="置信度阈值")
+    parser.add_argument("--device", type=str, default="cuda", help="设备 (cuda/cpu)")
+    parser.add_argument("--max_images", type=int, default=None, help="最大处理图像数量")
+    parser.add_argument("--target_size", type=int, default=1280, help="推理图像尺寸")
     
     args = parser.parse_args()
     
