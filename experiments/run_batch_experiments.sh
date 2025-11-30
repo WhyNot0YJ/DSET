@@ -17,10 +17,12 @@
 #   ./run_batch_experiments.sh --moe-rtdetr                    # 只运行MOE-RTDETR实验
 #   ./run_batch_experiments.sh --dset                          # 只运行DSET实验
 #   ./run_batch_experiments.sh --yolov8                        # 只运行YOLOv8实验
+#   ./run_batch_experiments.sh --yolov10                       # 只运行YOLOv10实验
 #   ./run_batch_experiments.sh --test --rt-detr                # 测试模式只运行RT-DETR
 #   ./run_batch_experiments.sh --test --moe-rtdetr             # 测试模式只运行MOE-RTDETR
 #   ./run_batch_experiments.sh --test --dset                   # 测试模式只运行DSET
 #   ./run_batch_experiments.sh --test --yolov8                 # 测试模式只运行YOLOv8
+#   ./run_batch_experiments.sh --test --yolov10                # 测试模式只运行YOLOv10
 #   ./run_batch_experiments.sh --r18                           # 只运行ResNet-18实验
 #   ./run_batch_experiments.sh --r34                           # 只运行ResNet-34实验
 #   ./run_batch_experiments.sh --r18 --r34                     # 运行R18和R34实验
@@ -98,8 +100,12 @@ declare -A DSET_CONFIGS=(
 
 declare -A YOLOV8_CONFIGS=(
     ["yolov8s"]="yolov8/configs/yolov8s_dairv2x.yaml"
-    ["yolov8m"]="yolov8/configs/yolov8m_dairv2x.yaml"
     ["yolov8l"]="yolov8/configs/yolov8l_dairv2x.yaml"
+)
+
+declare -A YOLOV10_CONFIGS=(
+    ["yolov10s"]="yolov10/configs/yolov10s_dairv2x.yaml"
+    ["yolov10l"]="yolov10/configs/yolov10l_dairv2x.yaml"
 )
 
 # 构建全部配置列表与名称映射
@@ -135,6 +141,14 @@ build_all_configs() {
     done
     for key in "${!YOLOV8_CONFIGS[@]}"; do
         local p="${YOLOV8_CONFIGS[$key]}"
+        all_configs_paths+=("$p")
+        local b
+        b=$(basename "$p" .yaml)
+        NAME_TO_PATH["$key"]="$p"
+        NAME_TO_PATH["$b"]="$p"
+    done
+    for key in "${!YOLOV10_CONFIGS[@]}"; do
+        local p="${YOLOV10_CONFIGS[$key]}"
         all_configs_paths+=("$p")
         local b
         b=$(basename "$p" .yaml)
@@ -275,6 +289,7 @@ parse_arguments() {
     local has_moe_rtdetr=false
     local has_dset=false
     local has_yolov8=false
+    local has_yolov10=false
     
     for arg in "$@"; do
         case "$arg" in
@@ -290,17 +305,21 @@ parse_arguments() {
             --yolov8)
                 has_yolov8=true
                 ;;
+            --yolov10)
+                has_yolov10=true
+                ;;
         esac
     done
     
     # 如果指定了实验类型，只运行指定的类型（支持多个）
-    if [ "$has_rt_detr" = true ] || [ "$has_moe_rtdetr" = true ] || [ "$has_dset" = true ] || [ "$has_yolov8" = true ]; then
+    if [ "$has_rt_detr" = true ] || [ "$has_moe_rtdetr" = true ] || [ "$has_dset" = true ] || [ "$has_yolov8" = true ] || [ "$has_yolov10" = true ]; then
         # 显示将要运行的类型
         local selected_types=()
         [ "$has_rt_detr" = true ] && selected_types+=("RT-DETR")
         [ "$has_moe_rtdetr" = true ] && selected_types+=("MOE-RTDETR")
         [ "$has_dset" = true ] && selected_types+=("DSET")
         [ "$has_yolov8" = true ] && selected_types+=("YOLOv8")
+        [ "$has_yolov10" = true ] && selected_types+=("YOLOv10")
         local types_str=$(IFS='+'; echo "${selected_types[*]}")
         if [ "$has_test" = true ]; then
             log_info "测试模式：运行指定实验类型（按字典序排序）: $types_str"
@@ -343,6 +362,14 @@ parse_arguments() {
                 CONFIGS_TO_RUN+=("$p")
             done
         fi
+
+        if [ "$has_yolov10" = true ]; then
+            for key in $(printf '%s\n' "${!YOLOV10_CONFIGS[@]}" | sort); do
+                local p="${YOLOV10_CONFIGS[$key]}"
+                # YOLOv10不使用backbone过滤（它有自己的模型大小）
+                CONFIGS_TO_RUN+=("$p")
+            done
+        fi
     elif [ $# -eq 0 ]; then
         # 默认：运行所有实验（按字典序排序）
         if [ "$has_test" = true ]; then
@@ -375,6 +402,11 @@ parse_arguments() {
         for key in $(printf '%s\n' "${!YOLOV8_CONFIGS[@]}" | sort); do
             local p="${YOLOV8_CONFIGS[$key]}"
             # YOLOv8不使用backbone过滤（它有自己的模型大小）
+            CONFIGS_TO_RUN+=("$p")
+        done
+        # YOLOv10实验
+        for key in $(printf '%s\n' "${!YOLOV10_CONFIGS[@]}" | sort); do
+            local p="${YOLOV10_CONFIGS[$key]}"
             CONFIGS_TO_RUN+=("$p")
         done
     elif [ "$1" == "--custom" ]; then
@@ -442,10 +474,12 @@ parse_arguments() {
         echo "  ./run_batch_experiments.sh --moe-rtdetr                    # 只运行MOE-RTDETR"
         echo "  ./run_batch_experiments.sh --dset                          # 只运行DSET"
         echo "  ./run_batch_experiments.sh --yolov8                        # 只运行YOLOv8"
+        echo "  ./run_batch_experiments.sh --yolov10                       # 只运行YOLOv10"
         echo "  ./run_batch_experiments.sh --test --rt-detr                # 测试模式只运行RT-DETR"
         echo "  ./run_batch_experiments.sh --test --moe-rtdetr             # 测试模式只运行MOE-RTDETR"
         echo "  ./run_batch_experiments.sh --test --dset                   # 测试模式只运行DSET"
         echo "  ./run_batch_experiments.sh --test --yolov8                 # 测试模式只运行YOLOv8"
+        echo "  ./run_batch_experiments.sh --test --yolov10                # 测试模式只运行YOLOv10"
         echo "  ./run_batch_experiments.sh --rt-detr --moe-rtdetr --dset   # 运行多个实验类型（可叠加）"
         echo "  ./run_batch_experiments.sh --test --rt-detr --dset          # 测试模式运行多个类型"
         echo "  ./run_batch_experiments.sh --r18                           # 只运行R18"
@@ -484,6 +518,9 @@ run_single_experiment() {
     if [[ "$exp_dir" == *"yolov8"* ]]; then
         TRAIN_SCRIPT="yolov8/train.py"
         WORK_DIR="yolov8"
+    elif [[ "$exp_dir" == *"yolov10"* ]]; then
+        TRAIN_SCRIPT="yolov10/train.py"
+        WORK_DIR="yolov10"
     elif [[ "$exp_dir" == *"dset"* ]]; then
         TRAIN_SCRIPT="dset/train.py"
         WORK_DIR="dset"
@@ -599,6 +636,7 @@ generate_report() {
     echo -e "${BLUE}      - MOE-RTDETR日志: moe-rtdetr/logs/${NC}"
     echo -e "${BLUE}      - DSET日志: dset/logs/${NC}"
     echo -e "${BLUE}      - YOLOv8日志: yolov8/logs/${NC}"
+    echo -e "${BLUE}      - YOLOv10日志: yolov10/logs/${NC}"
     echo ""
     echo -e "${BLUE}完整报告: $report_file${NC}"
     echo -e "${BLUE}CSV结果: $BATCH_LOG_DIR/results.csv${NC}"
@@ -674,4 +712,3 @@ main() {
 
 # 运行主函数
 main "$@"
-
