@@ -5,6 +5,8 @@ import sys
 import argparse
 import yaml
 import torch
+import torchvision.transforms as T
+from PIL import Image
 import cv2
 import numpy as np
 from pathlib import Path
@@ -146,75 +148,74 @@ def load_model(config_path: str, checkpoint_path: str, device: str = "cuda"):
 
 def preprocess_image(image_path: str, target_size: int = 1280):
     """
-    预处理图像 - 严格对齐 Phase 2 验证集逻辑
-    逻辑：Resize(short=720, max=1280) -> Normalize -> Top-Left Pad stride 32
+    预处理图像 - PIL 版本 (保证与训练数据流一致)
+    逻辑：PIL读取(RGB) -> Resize(Rect) -> Normalize -> Top-Left Pad
     """
-    # 1. 读取图像
-    image_bgr = cv2.imread(str(image_path))
-    if image_bgr is None:
-        raise ValueError(f"无法读取图像: {image_path}")
+    # 1. 使用 PIL 读取 (原生 RGB)
+    try:
+        image_pil = Image.open(str(image_path)).convert("RGB")
+    except Exception as e:
+        raise ValueError(f"无法读取图像: {image_path}, 错误: {e}")
+
+    orig_w, orig_h = image_pil.size  # PIL 是 (W, H)
     
-    # BGR -> RGB
-    image = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-    orig_h, orig_w = image.shape[:2]
-    
-    # 2. 智能缩放 (Rectangular Resize)
-    # 目标：短边720，长边限制1280 (对应 target_size)
-    # 计算缩放比例
+    # 2. 智能缩放计算 (Rectangular Resize)
+    # 逻辑：尝试短边缩放到 720
     im_size_min = min(orig_h, orig_w)
     im_size_max = max(orig_h, orig_w)
     
-    # 这里的逻辑复刻 T.Resize(size=720, max_size=1280)
-    scale = 720 / float(im_size_min)
+    # 目标短边设为 720 (对应 target_size=1280 的长边限制逻辑)
+    target_short = 720
     
-    # 如果缩放后长边超过 1280，则按长边缩放
+    scale = target_short / float(im_size_min)
+    # 如果缩放后长边超过 target_size (1280)，则按长边缩放
     if round(scale * im_size_max) > target_size:
         scale = target_size / float(im_size_max)
     
     new_w = int(round(orig_w * scale))
     new_h = int(round(orig_h * scale))
     
-    # Bilinear 插值
-    image_tensor = torch.from_numpy(image).float().permute(2, 0, 1) # HWC->CHW
-    image_tensor = torch.nn.functional.interpolate(
-        image_tensor.unsqueeze(0), 
-        size=(new_h, new_w), 
-        mode='bilinear', 
-        align_corners=False
-    ).squeeze(0)
+    # 3. 执行缩放 (使用 Bilinear，与训练一致)
+    # image_pil.resize 接受 (W, H)
+    resized_pil = image_pil.resize((new_w, new_h), resample=Image.BILINEAR)
     
-    # 3. 归一化 (Normalize)
-    image_tensor = image_tensor / 255.0
+    # 4. 转 Tensor 并归一化
+    # T.functional.to_tensor() 会自动除以 255 并转为 [C, H, W]
+    image_tensor = T.functional.to_tensor(resized_pil) 
+    
+    # 标准化 (ImageNet Mean/Std)
     mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
     std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
     image_tensor = (image_tensor - mean) / std
     
-    # 4. 左上角对齐填充 (Top-Left Padding to Stride 32)
+    # 5. 左上角对齐填充 (Top-Left Padding to Stride 32)
     stride = 32
-    # 向上取整到 32 的倍数
     padded_h = int(np.ceil(new_h / stride) * stride)
     padded_w = int(np.ceil(new_w / stride) * stride)
     
-    # 创建画布 (填充 0，即黑边)
-    # 注意：虽然 Normalize 后 0 不是黑色，但 RT-DETR 对 Padding 值不敏感，0 即可
+    # 创建画布 (填充 0)
     padded_image = torch.zeros(3, padded_h, padded_w, dtype=torch.float32)
-    padded_image[:, :new_h, :new_w] = image_tensor  # 👈 关键：贴在左上角！
+    padded_image[:, :new_h, :new_w] = image_tensor
     
     # 添加 Batch 维度
     img_input = padded_image.unsqueeze(0) # [1, 3, H, W]
     
-    # 构建 Meta 信息 (用于还原坐标)
+    # 6. 准备用于画图的 BGR 图片 (OpenCV 格式)
+    # PIL (RGB) -> Numpy (RGB) -> cv2 (BGR)
+    image_bgr_vis = cv2.cvtColor(np.array(image_pil), cv2.COLOR_RGB2BGR)
+    
+    # 构建 Meta 信息
     meta = {
         'orig_size': torch.tensor([[orig_h, orig_w]]),
-        'scale': scale,        # 缩放比例
-        'padded_h': padded_h,  # 输入网络的实际高
-        'padded_w': padded_w,  # 输入网络的实际宽
-        # 下面这两个其实不需要了，因为是 0，但为了兼容性保留
-        'pad_h': 0, 
-        'pad_w': 0
+        'scale': scale,
+        'padded_h': padded_h,
+        'padded_w': padded_w,
+        'scale_h': scale,
+        'scale_w': scale,
+        'pad_h': 0, 'pad_w': 0
     }
     
-    return img_input, image_bgr, meta
+    return img_input, image_bgr_vis, meta
 
 
 def postprocess_outputs(outputs, postprocessor, meta, conf_threshold=0.3, target_size=None, device='cuda', verbose=False):
@@ -313,79 +314,6 @@ def draw_boxes(image, labels, boxes, scores, class_names=None, colors=None):
                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
     
     return image
-
-
-def inference_from_preprocessed_image(image_tensor, model, postprocessor, orig_image_path, 
-                                     conf_threshold=0.3, target_size=640, device='cuda', 
-                                     class_names=None, colors=None, verbose=False):
-    """从已预处理的图像tensor进行推理（用于训练时）
-    
-    Args:
-        image_tensor: 已预处理的图像tensor [1, 3, H, W]
-        model: 模型
-        postprocessor: 后处理器
-        orig_image_path: 原始图像路径（用于读取原始图像和构建meta）
-        conf_threshold: 置信度阈值
-        target_size: 目标尺寸
-        device: 设备
-        class_names: 类别名称列表
-        colors: 颜色列表
-        verbose: 是否打印调试信息
-    
-    Returns:
-        result_image: 绘制了检测框的图像（BGR格式），如果没有检测结果则返回None
-    """
-    # 读取原始图像
-    orig_image_bgr = cv2.imread(str(orig_image_path))
-    if orig_image_bgr is None:
-        return None
-    
-    orig_h, orig_w = orig_image_bgr.shape[:2]
-    
-    # 复用 preprocess_image 中的逻辑计算 meta
-    # 注意：这里为了简单，重新计算一遍 scale 等信息
-    # 实际应该从外部传入 meta，或者提取公共函数
-    
-    im_size_min = min(orig_h, orig_w)
-    im_size_max = max(orig_h, orig_w)
-    scale = 720 / float(im_size_min)
-    if round(scale * im_size_max) > target_size:
-        scale = target_size / float(im_size_max)
-        
-    new_w = int(round(orig_w * scale))
-    new_h = int(round(orig_h * scale))
-    
-    stride = 32
-    padded_h = int(np.ceil(new_h / stride) * stride)
-    padded_w = int(np.ceil(new_w / stride) * stride)
-    
-    pad_h = 0
-    pad_w = 0
-    
-    meta = {
-        'orig_size': torch.tensor([[orig_h, orig_w]]),
-        'scale': scale,
-        'padded_h': padded_h,
-        'padded_w': padded_w,
-        'pad_h': pad_h,
-        'pad_w': pad_w
-    }
-    
-    # 推理
-    with torch.no_grad():
-        outputs = model(image_tensor)
-    
-    # 后处理
-    labels, boxes, scores = postprocess_outputs(
-        outputs, postprocessor, meta, conf_threshold, target_size, device, verbose=verbose
-    )
-    
-    if len(labels) == 0:
-        return None
-    
-    # 绘制结果
-    result_image = draw_boxes(orig_image_bgr.copy(), labels, boxes, scores, class_names, colors)
-    return result_image
 
 
 def process_single_image(image_path: Path, model, postprocessor, output_dir: Path, 
