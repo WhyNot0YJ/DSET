@@ -99,7 +99,12 @@ def load_model(config_path: str, checkpoint_path: str, device: str = "cuda"):
     )
     
     # 加载checkpoint
-    checkpoint = torch.load(checkpoint_path, map_location='cpu')
+    # 兼容 PyTorch 2.6+ (weights_only=True by default)
+    try:
+        checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+    except TypeError:
+        # 旧版本 PyTorch 不支持 weights_only 参数
+        checkpoint = torch.load(checkpoint_path, map_location='cpu')
     
     # 验证时使用 self.ema.module，所以推理时也应该使用EMA权重
     if 'ema_state_dict' in checkpoint:
