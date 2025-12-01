@@ -1,15 +1,15 @@
 model:
-  num_experts: 4
-  top_k: 2
-  backbone: presnet34
+  num_experts: 6
+  top_k: 3
+  backbone: presnet18
   encoder:
     in_channels:
     - 128
     - 256
     - 512
     expansion: 0.5
-  pretrained_weights: pretrained/rtdetrv2_r34vd_120e_coco_ema.pth
-  num_decoder_layers: 4
+  pretrained_weights: pretrained/rtdetrv2_r18vd_120e_coco_rerun_48.1.pth
+  num_decoder_layers: 3
   hidden_dim: 256
   num_queries: 100
 training:
@@ -45,4 +45,3 @@ data_augmentation:
   crop_min: 0.1
   crop_max: 1.0
   flip_prob: 0.5
-

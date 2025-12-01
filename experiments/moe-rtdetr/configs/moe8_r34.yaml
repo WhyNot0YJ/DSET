@@ -1,5 +1,5 @@
 model:
-  num_experts: 6
+  num_experts: 8
   top_k: 3
   backbone: presnet34
   encoder:
@@ -35,7 +35,7 @@ checkpoint:
   log_dir: logs
 misc:
   device: cuda
-  num_workers: 4
+  num_workers: 8
   pin_memory: true
 data_augmentation:
   brightness: 0.15
@@ -45,3 +45,4 @@ data_augmentation:
   crop_min: 0.1
   crop_max: 1.0
   flip_prob: 0.5
+

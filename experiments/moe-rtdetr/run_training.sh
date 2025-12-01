@@ -4,14 +4,14 @@
 # 使用方法: ./run_training.sh [config_file] [override_params...]
 # 
 # 示例:
-#   ./run_training.sh configs/moe6_presnet34.yaml
-#   ./run_training.sh configs/moe6_presnet18.yaml --epochs 100
-#   ./run_training.sh configs/moe3_presnet34.yaml --top_k 2
-#   ./run_training.sh configs/moe6_presnet34.yaml --resume  # 自动从最新检查点恢复
-#   ./run_training.sh configs/moe6_presnet34.yaml --resume_from_checkpoint logs/moe6_rtdetr_r34_20240101_120000/latest_checkpoint.pth
+#   ./run_training.sh configs/moe6_r34.yaml
+#   ./run_training.sh configs/moe6_r18.yaml --epochs 100
+#   ./run_training.sh configs/moe4_r34.yaml --top_k 2
+#   ./run_training.sh configs/moe6_r34.yaml --resume  # 自动从最新检查点恢复
+#   ./run_training.sh configs/moe6_r34.yaml --resume_from_checkpoint logs/moe6_rtdetr_r34_20240101_120000/latest_checkpoint.pth
 
 # 默认配置文件 (6专家 + PResNet34 - 平衡速度和精度，适合路测)
-CONFIG_FILE=${1:-configs/moe6_presnet34.yaml}
+CONFIG_FILE=${1:-configs/moe6_r34.yaml}
 
 # 检查配置文件是否存在
 if [ ! -f "$CONFIG_FILE" ]; then

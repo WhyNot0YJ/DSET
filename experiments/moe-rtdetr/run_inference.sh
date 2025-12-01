@@ -6,10 +6,10 @@
 # 示例:
 #   ./run_inference.sh
 #   ./run_inference.sh --conf 0.1 --max_images 10
-#   ./run_inference.sh --image_dir datasets/DAIR-V2X/image --config configs/moe3_presnet18.yaml
+#   ./run_inference.sh --image_dir datasets/DAIR-V2X/image --config configs/moe6_r18.yaml
 
 # 默认参数
-DEFAULT_CONFIG=${CONFIG:-configs/moe3_presnet18.yaml}
+DEFAULT_CONFIG=${CONFIG:-configs/moe6_r18.yaml}
 DEFAULT_CHECKPOINT=${CHECKPOINT:-logs/best_model.pth}
 DEFAULT_IMAGE_DIR=${IMAGE_DIR:-/root/autodl-fs/datasets/DAIR-V2X/image}
 DEFAULT_OUTPUT_DIR=${OUTPUT_DIR:-/root/autodl-fs/datasets/DAIR-V2X/image_results}

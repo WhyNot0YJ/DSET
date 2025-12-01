@@ -32,7 +32,7 @@ checkpoint:
   log_dir: logs
 misc:
   device: cuda
-  num_workers: 4
+  num_workers: 8
   pin_memory: true
 data_augmentation:
   brightness: 0.15
