@@ -23,8 +23,28 @@ if str(project_root) not in sys.path:
 if str(project_root.parent) not in sys.path:
     sys.path.insert(0, str(project_root.parent))
 
+# Debug: Check environment
+try:
+    import ultralytics
+except ImportError:
+    # Fallback: Attempt to use yolov8's ultralytics if local one fails
+    yolov8_path = project_root.parent / "yolov8"
+    if yolov8_path.exists() and str(yolov8_path) not in sys.path:
+         print(f"Warning: Local ultralytics not found, attempting to use {yolov8_path}")
+         sys.path.insert(0, str(yolov8_path))
+
 # 导入ultralytics（本地副本）
-from ultralytics import YOLO
+try:
+    from ultralytics import YOLO
+except ImportError as e:
+    print(f"Critical Error: Could not import ultralytics. Search paths: {sys.path}")
+    # Check if local directory exists
+    local_lib = project_root / "ultralytics"
+    print(f"Local ultralytics dir exists: {local_lib.exists()}")
+    if local_lib.exists():
+         print(f"Local ultralytics contents: {list(local_lib.glob('*'))}")
+    raise e
+
 
 # DAIR-V2X类别定义（8类）
 CLASS_NAMES = [

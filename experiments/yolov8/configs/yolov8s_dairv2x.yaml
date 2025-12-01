@@ -4,7 +4,7 @@ model:
 
 training:
   epochs: 200
-  batch_size: 64
+  batch_size: 32
   imgsz: 1280
   optimizer: "auto"   # 回归官方默认 (SGD)，避免 AdamW + 0.01 lr 的风险
   lr0: 0.01           # SGD 标准学习率
@@ -18,14 +18,7 @@ training:
   cos_lr: true
   seed: 42
   deterministic: false
-  patience: 03.3 模型策略优化：层级尺度感知剪枝 (HSP)
-我们将原本作为 R18 补救措施的“差异化剪枝”策略，正式升级为 DSET 的核心创新点之一：Hierarchical Scale-Aware Pruning (HSP)。该策略将同时应用于 R18 和 R34。
-•	创新动机：Transformer 的不同特征层级对信息的敏感度不同。浅层（P3）负责高分辨率空间细节（小目标），深层（P5）负责低分辨率语义信息（大目标/背景）。统一的剪枝比例（如 0.7）会导致浅层信息丢失，而深层冗余未被充分利用。
-•	实施方案 (HSP Strategy)：
-o	P3 层 (High-Res, Spatial-Sensitive)：实施 "Heavy-Retention" 策略。设置极高的保留率（keep_ratio >= 0.9），确保远处小车的几个关键像素点不被误删。
-o	P4 层 (Mid-Res, Transition)：实施 "Medium-Retention" 策略（keep_ratio ≈ 0.7），平衡语义与空间。
-o	P5 层 (Low-Res, Semantic-Redundant)：实施 "Light-Retention" 策略。设置激进的剪枝比例（keep_ratio <= 0.5），大面积去除天空、路面等背景冗余，以换取计算效率。
-@dset 请先定位 修改的位置 告诉我修改的方案，随后听我指示。
+  patience: 0
   
   hsv_h: 0.015
   hsv_s: 0.7
