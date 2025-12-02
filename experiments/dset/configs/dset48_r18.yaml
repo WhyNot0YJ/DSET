@@ -15,13 +15,13 @@ model:
   hidden_dim: 256
   num_queries: 100
   dset:
-    token_keep_ratio: {0: 0.9, 1: 0.7, 2: 0.5}
+    token_keep_ratio: {0: 0.8, 1: 0.8, 2: 1.0}
     token_pruning_warmup_epochs: 10
     patch_moe_num_experts: 4
     patch_moe_top_k: 2
     patch_moe_patch_size: 4
     use_token_pruning_loss: true
-    token_pruning_loss_weight: 0.01
+    token_pruning_loss_weight: 0.005
 training:
   epochs: 200
   batch_size: 16
@@ -38,7 +38,7 @@ training:
   seed: 42
   deterministic: false
   decoder_moe_balance_weight: 0.05
-  encoder_moe_balance_weight: 0.03
+  encoder_moe_balance_weight: 0.001
 data:
   data_root: /root/autodl-fs/datasets/DAIR-V2X
 checkpoint:
@@ -49,13 +49,11 @@ misc:
   num_workers: 8
   pin_memory: true
 data_augmentation:
-  # [修改] 大幅提升光照变化的强度，对齐 YOLOv10
-  brightness: 0.4   # 原 0.15 -> 0.4
-  contrast: 0.4     # 原 0.15 -> 0.4
-  saturation: 0.7   # 原 0.1 -> 0.7
-  hue: 0.015        # 原 0.05 -> 0.015
-  
-  # [保持] 几何增强
+  brightness: 0.15
+  contrast: 0.15
+  saturation: 0.1
+  hue: 0.05
   crop_min: 0.1
   crop_max: 1.0
   flip_prob: 0.5
+  mosaic: 0.0

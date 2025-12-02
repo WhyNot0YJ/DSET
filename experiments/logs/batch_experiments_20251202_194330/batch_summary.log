@@ -1,0 +1,14 @@
+[0;34m[INFO][0m 运行指定实验类型（按字典序排序）: DSET
+[0;34m[INFO][0m 开始实验: dset/configs/dset4_r18.yaml
+[0;31m[ERROR][0m 配置文件不存在: dset/configs/dset4_r18.yaml
+[0;34m[INFO][0m 开始实验: dset/configs/dset4_r34.yaml
+[0;31m[ERROR][0m 配置文件不存在: dset/configs/dset4_r34.yaml
+[0;34m[INFO][0m 开始实验: dset/configs/dset48_r18.yaml
+[0;31m[ERROR][0m 配置文件不存在: dset/configs/dset48_r18.yaml
+[0;34m[INFO][0m 开始实验: dset/configs/dset48_r34.yaml
+[0;31m[ERROR][0m 配置文件不存在: dset/configs/dset48_r34.yaml
+[0;34m[INFO][0m 开始实验: dset/configs/dset6_r18.yaml
+[0;31m[ERROR][0m 配置文件不存在: dset/configs/dset6_r18.yaml
+[0;34m[INFO][0m 开始实验: dset/configs/dset6_r34.yaml
+[0;31m[ERROR][0m 配置文件不存在: dset/configs/dset6_r34.yaml
+[0;34m[INFO][0m 所有实验完成! 总耗时: 00:00:00
