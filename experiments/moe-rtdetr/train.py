@@ -1816,10 +1816,10 @@ def main() -> None:
                 'pin_memory': True
             },
             'data_augmentation': {
-                'brightness': 0.15,
-                'contrast': 0.15,
-                'saturation': 0.1,
-                'hue': 0.05,
+                'brightness': 0.4,
+                'contrast': 0.4,
+                'saturation': 0.7,
+                'hue': 0.015,
                 'crop_min': 0.1,  # 关键修改：小目标优化
                 'crop_max': 1.0,
                 'flip_prob': 0.5,

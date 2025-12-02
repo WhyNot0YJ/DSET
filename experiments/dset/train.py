@@ -2145,11 +2145,12 @@ def main() -> None:
                 'pin_memory': True
             },
             'data_augmentation': {
-                'brightness': 0.15,
-                'contrast': 0.15,
-                'saturation': 0.1,
-                'hue': 0.05,
-                'crop_min': 0.1,  # 关键修改：小目标优化
+                # [修改] 大幅提升光照变化的强度，对齐 YOLOv10
+                'brightness': 0.4,   # 原 0.15 -> 0.4
+                'contrast': 0.4,     # 原 0.15 -> 0.4
+                'saturation': 0.7,   # 原 0.1 -> 0.7
+                'hue': 0.015,        # 原 0.05 -> 0.015
+                'crop_min': 0.1,
                 'crop_max': 1.0,
                 'flip_prob': 0.5,
                 'color_jitter_prob': 0.0
