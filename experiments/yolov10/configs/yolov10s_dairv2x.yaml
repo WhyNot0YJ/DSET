@@ -32,7 +32,7 @@ training:
   mixup: 0.0
 
 data:
-  data_yaml: "/root/autodl-fs/datasets/DAIR-V2X_YOLO/dairv2x.yaml"
+  data_yaml: "/root/autodl-tmp/datasets/DAIR-V2X_YOLO/dairv2x.yaml"
 
 checkpoint:
   log_dir: "logs"

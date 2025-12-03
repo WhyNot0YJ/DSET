@@ -11,8 +11,8 @@
 # 默认参数
 DEFAULT_CONFIG=${CONFIG:-configs/moe6_r18.yaml}
 DEFAULT_CHECKPOINT=${CHECKPOINT:-logs/best_model.pth}
-DEFAULT_IMAGE_DIR=${IMAGE_DIR:-/root/autodl-fs/datasets/DAIR-V2X/image}
-DEFAULT_OUTPUT_DIR=${OUTPUT_DIR:-/root/autodl-fs/datasets/DAIR-V2X/image_results}
+DEFAULT_IMAGE_DIR=${IMAGE_DIR:-/root/autodl-tmp/datasets/DAIR-V2X/image}
+DEFAULT_OUTPUT_DIR=${OUTPUT_DIR:-/root/autodl-tmp/datasets/DAIR-V2X/image_results}
 DEFAULT_CONF=${CONF:-0.5}
 DEFAULT_DEVICE=${DEVICE:-cuda}
 DEFAULT_MAX_IMAGES=${MAX_IMAGES:-50}

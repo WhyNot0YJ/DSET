@@ -39,7 +39,7 @@ training:
   decoder_moe_balance_weight: 0.05
   encoder_moe_balance_weight: 0.03
 data:
-  data_root: /root/autodl-fs/datasets/DAIR-V2X
+  data_root: /root/autodl-tmp/datasets/DAIR-V2X
 checkpoint:
   resume_mode: auto
   log_dir: logs

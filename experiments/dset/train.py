@@ -1369,24 +1369,46 @@ class DSETTrainer:
                         num_encoder_experts = self.model.patch_moe_num_experts if hasattr(self.model, 'patch_moe_num_experts') else 4
                         encoder_expert_count = [0] * num_encoder_experts
                     
-                    # 统计encoder专家使用
+                    # 统计encoder专家使用（使用torch.bincount向量化，避免CPU-GPU同步）
                     for expert_indices in encoder_info['moe_expert_indices']:
                         if expert_indices is not None:
-                            for idx in expert_indices.flatten().tolist():
-                                if 0 <= idx < len(encoder_expert_count):
-                                    encoder_expert_count[idx] += 1
+                            # 1. 展平
+                            flat_indices = expert_indices.flatten()
+                            
+                            # 2. 使用 torch.bincount 在 GPU 上直接统计
+                            # minlength 保证即使某个专家没被选中，输出维度也是对的
+                            counts = torch.bincount(flat_indices, minlength=len(encoder_expert_count))
+                            
+                            # 3. 只把最终的几个数字搬回CPU（而不是几千个）
+                            current_counts = counts.cpu().tolist()
+                            
+                            # 4. 累加
+                            for i in range(len(encoder_expert_count)):
+                                if i < len(current_counts):
+                                    encoder_expert_count[i] += current_counts[i]
+                            
                             encoder_total_tokens += expert_indices.numel()
             
-            # 收集Decoder细粒度MoE的专家使用统计
+            # 收集Decoder细粒度MoE的专家使用统计（使用torch.bincount向量化）
             if self.model.decoder.use_moe:
                 for layer in self.model.decoder.decoder.layers:
                     if hasattr(layer, 'adaptive_expert_layer') and layer.adaptive_expert_layer.router_logits_cache is not None:
                         router_logits = layer.adaptive_expert_layer.router_logits_cache  # [N, num_experts]
                         # 计算每个token选择的top-k专家
                         _, top_indices = torch.topk(router_logits, self.model.decoder.moe_top_k, dim=-1)  # [N, K]
-                        # 统计每个专家被选中的次数
-                        for expert_id in range(self.model.num_experts):
-                            expert_usage_count[expert_id] += (top_indices == expert_id).sum().item()
+                        
+                        # 使用 torch.bincount 在 GPU 上直接统计（向量化）
+                        flat_indices = top_indices.flatten()
+                        counts = torch.bincount(flat_indices, minlength=self.model.num_experts)
+                        
+                        # 只把最终的几个数字搬回CPU
+                        current_counts = counts.cpu().tolist()
+                        
+                        # 累加
+                        for i in range(self.model.num_experts):
+                            if i < len(current_counts):
+                                expert_usage_count[i] += current_counts[i]
+                        
                         total_tokens += router_logits.shape[0] * self.model.decoder.moe_top_k
             
             if batch_idx % 100 == 0:

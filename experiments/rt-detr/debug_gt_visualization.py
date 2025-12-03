@@ -138,13 +138,13 @@ def visualize_gt(loader, num_images=5):
 
 if __name__ == "__main__":
     # 数据集路径
-    # 注意：确保路径正确。用户环境是 /root/autodl-fs/datasets/DAIR-V2X
+    # 注意：确保路径正确。用户环境是 /root/autodl-tmp/datasets/DAIR-V2X
     # 或者使用 train.py 默认的 datasets/DAIR-V2X
     # 我们使用 train.py 默认值或者用户提供的值
     data_root = "datasets/DAIR-V2X" 
     # 如果本地没有，尝试绝对路径
     if not os.path.exists(data_root):
-        data_root = "/root/autodl-fs/datasets/DAIR-V2X"
+        data_root = "/root/autodl-tmp/datasets/DAIR-V2X"
         
     if not os.path.exists(data_root):
         print(f"Warning: Data root {data_root} does not exist.")

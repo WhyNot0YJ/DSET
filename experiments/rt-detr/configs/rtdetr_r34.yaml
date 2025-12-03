@@ -26,7 +26,7 @@ training:
   seed: 42
   deterministic: false
 data:
-  data_root: /root/autodl-fs/datasets/DAIR-V2X
+  data_root: /root/autodl-tmp/datasets/DAIR-V2X
 checkpoint:
   resume_mode: auto
   log_dir: logs
