@@ -815,6 +815,8 @@ class DSETTrainer:
         # 从misc配置中读取num_workers和pin_memory
         num_workers = self.config.get('misc', {}).get('num_workers', 16)
         pin_memory = self.config.get('misc', {}).get('pin_memory', True)
+        # 增加预取因子：让 CPU 始终领先 GPU 4-8 个 Batch 的进度
+        prefetch_factor = self.config.get('misc', {}).get('prefetch_factor', 4)
         
         train_loader = DataLoader(
             train_dataset, 
@@ -824,7 +826,7 @@ class DSETTrainer:
             collate_fn=self._collate_fn,
             pin_memory=pin_memory,
             persistent_workers=True if num_workers > 0 else False,
-            prefetch_factor=2 if num_workers > 0 else None
+            prefetch_factor=prefetch_factor if num_workers > 0 else None
         )
         
         val_loader = DataLoader(
@@ -835,13 +837,14 @@ class DSETTrainer:
             collate_fn=self._collate_fn,
             pin_memory=pin_memory,
             persistent_workers=True if num_workers > 0 else False,
-            prefetch_factor=2 if num_workers > 0 else None
+            prefetch_factor=prefetch_factor if num_workers > 0 else None
         )
         
         self.val_dataset = val_dataset
         
         self.logger.info(f"✓ 创建数据加载器")
         self.logger.info(f"  训练集: {len(train_dataset)} | 验证集: {len(val_dataset)}")
+        self.logger.info(f"  数据加载配置: num_workers={num_workers}, prefetch_factor={prefetch_factor}, pin_memory={pin_memory}")
         
         return train_loader, val_loader
     
