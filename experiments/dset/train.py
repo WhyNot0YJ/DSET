@@ -1411,7 +1411,7 @@ class DSETTrainer:
                         
                         total_tokens += router_logits.shape[0] * self.model.decoder.moe_top_k
             
-            if batch_idx % 100 == 0:
+            if batch_idx % 2 == 0:
                 det_loss_val = outputs.get('detection_loss', torch.tensor(0.0)).item() if isinstance(outputs, dict) else 0.0
                 moe_loss_val = outputs.get('moe_load_balance_loss', torch.tensor(0.0)).item() if isinstance(outputs, dict) else 0.0
                 self.logger.info(f'Epoch {self.current_epoch} | Batch {batch_idx} | '
