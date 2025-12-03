@@ -126,20 +126,22 @@ class PatchLevelPruner(nn.Module):
         if num_patches <= self.min_patches:
             if should_compute_scores:
                 # 计算 importance_scores 用于 loss（即使不执行剪枝）
+                # ✅ 向量化修复：批量计算所有patches的评分，避免900次GPU调用
                 tokens_2d_conv = tokens_2d_padded.permute(0, 3, 1, 2)
                 patches = tokens_2d_conv.unfold(2, patch_h, patch_h).unfold(3, patch_w, patch_w)
                 patches = patches.contiguous().view(batch_size, channels, num_patches, patch_h, patch_w)
                 patches_flat = patches.permute(0, 2, 3, 4, 1).contiguous()
+                # patches_flat: [B, num_patches, patch_area, C]
                 patches_flat = patches_flat.reshape(batch_size, num_patches, patch_h * patch_w, channels)
                 
-                patch_importance_list = []
-                for p_idx in range(num_patches):
-                    patch_tokens = patches_flat[:, p_idx, :, :]
-                    token_importance = self.importance_predictor(patch_tokens)
-                    patch_importance = token_importance.mean(dim=-1)
-                    patch_importance_list.append(patch_importance)
+                # 向量化：将所有patches展平为 [B*num_patches, patch_area, C]
+                patches_batch = patches_flat.view(batch_size * num_patches, patch_h * patch_w, channels)
                 
-                patch_importance_scores = torch.stack(patch_importance_list, dim=1)
+                # 一次性计算所有patches的token重要性分数
+                token_importance = self.importance_predictor(patches_batch)  # [B*num_patches, patch_area]
+                
+                # 计算每个patch的平均分数，然后重塑回 [B, num_patches]
+                patch_importance_scores = token_importance.mean(dim=-1).view(batch_size, num_patches)
             else:
                 patch_importance_scores = None
             
@@ -170,16 +172,18 @@ class PatchLevelPruner(nn.Module):
         patches = patches.contiguous().view(batch_size, channels, num_patches, patch_h, patch_w)
         
         patches_flat = patches.permute(0, 2, 3, 4, 1).contiguous()
+        # patches_flat: [B, num_patches, patch_area, C]
         patches_flat = patches_flat.reshape(batch_size, num_patches, patch_h * patch_w, channels)
         
-        patch_importance_list = []
-        for p_idx in range(num_patches):
-            patch_tokens = patches_flat[:, p_idx, :, :]
-            token_importance = self.importance_predictor(patch_tokens)
-            patch_importance = token_importance.mean(dim=-1)
-            patch_importance_list.append(patch_importance)
+        # ✅ 向量化修复：批量计算所有patches的评分，避免900次GPU调用
+        # 将所有patches展平为 [B*num_patches, patch_area, C]
+        patches_batch = patches_flat.view(batch_size * num_patches, patch_h * patch_w, channels)
         
-        patch_importance_scores = torch.stack(patch_importance_list, dim=1)
+        # 一次性计算所有patches的token重要性分数
+        token_importance = self.importance_predictor(patches_batch)  # [B*num_patches, patch_area]
+        
+        # 计算每个patch的平均分数，然后重塑回 [B, num_patches]
+        patch_importance_scores = token_importance.mean(dim=-1).view(batch_size, num_patches)
         
         # 如果不执行剪枝，但需要计算 scores（用于 loss），直接返回原始 tokens 和 scores
         if not should_prune:
