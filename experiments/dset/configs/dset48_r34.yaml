@@ -19,7 +19,7 @@ model:
     token_pruning_warmup_epochs: 10
     patch_moe_num_experts: 4
     patch_moe_top_k: 2
-    patch_moe_patch_size: 1
+    patch_moe_patch_size: 2
     use_token_pruning_loss: true
     token_pruning_loss_weight: 0.005
 training:
