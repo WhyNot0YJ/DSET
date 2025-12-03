@@ -241,19 +241,28 @@ class MOERTDETR(nn.Module):
     def _combine_expert_outputs(self, expert_outputs: List[torch.Tensor], 
                                expert_indices: torch.Tensor, 
                                routing_weights: torch.Tensor) -> torch.Tensor:
-        """融合专家输出"""
+        """融合专家输出 - 向量化版本，避免三重循环"""
         batch_size, seq_len, top_k = expert_indices.shape
+        hidden_dim = expert_outputs[0].shape[-1]
         
-        # 初始化输出
-        combined_output = torch.zeros_like(expert_outputs[0])
+        # ✅ 向量化修复：将所有专家输出堆叠为 [num_experts, B, seq_len, C]
+        expert_outputs_stack = torch.stack(expert_outputs, dim=0)  # [num_experts, B, seq_len, C]
         
-        # 加权融合
-        for b in range(batch_size):
-            for s in range(seq_len):
-                for k in range(top_k):
-                    expert_idx = expert_indices[b, s, k].item()
-                    weight = routing_weights[b, s, k]
-                    combined_output[b, s] += weight * expert_outputs[expert_idx][b, s]
+        # 使用高级索引选择对应的专家输出
+        # expert_indices: [B, seq_len, top_k] -> 展平为 [B*seq_len*top_k]
+        B, S, K = batch_size, seq_len, top_k
+        expert_indices_flat = expert_indices.view(B * S * K)  # [B*S*K]
+        batch_indices = torch.arange(B, device=expert_indices.device).view(B, 1, 1).expand(B, S, K).reshape(B * S * K)
+        seq_indices = torch.arange(S, device=expert_indices.device).view(1, S, 1).expand(B, S, K).reshape(B * S * K)
+        
+        # 使用高级索引选择专家输出：expert_outputs_stack[expert_idx, batch_idx, seq_idx, :]
+        selected_outputs = expert_outputs_stack[expert_indices_flat, batch_indices, seq_indices]  # [B*S*K, C]
+        selected_outputs = selected_outputs.view(B, S, K, hidden_dim)  # [B, S, K, C]
+        
+        # 应用权重并求和
+        routing_weights_expanded = routing_weights.unsqueeze(-1)  # [B, S, K, 1]
+        weighted_outputs = selected_outputs * routing_weights_expanded  # [B, S, K, C]
+        combined_output = weighted_outputs.sum(dim=2)  # [B, S, C]
         
         return combined_output
     

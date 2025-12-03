@@ -205,14 +205,14 @@ class PatchLevelPruner(nn.Module):
         # 执行剪枝
         _, top_patch_indices = torch.topk(patch_importance_scores, num_keep_patches, dim=-1)
         top_patch_indices_sorted, _ = torch.sort(top_patch_indices, dim=-1)
-        kept_patches_list = []
-        for b in range(batch_size):
-            batch_patches = patches[b, :, :, :, :]
-            kept_patch_indices = top_patch_indices_sorted[b]
-            kept_patches = batch_patches[:, kept_patch_indices, :, :]
-            kept_patches_list.append(kept_patches)
         
-        kept_patches = torch.stack(kept_patches_list, dim=0)
+        # ✅ 向量化修复：使用高级索引批量gather，避免batch循环
+        # patches: [B, C, num_patches, patch_h, patch_w]
+        # top_patch_indices_sorted: [B, num_keep_patches]
+        # 使用 gather 或高级索引选择patches
+        batch_indices = torch.arange(batch_size, device=patches.device).view(batch_size, 1).expand(batch_size, num_keep_patches)
+        # 使用高级索引：patches[batch_indices, :, top_patch_indices_sorted, :, :]
+        kept_patches = patches[batch_indices, :, top_patch_indices_sorted, :, :]  # [B, C, num_keep_patches, patch_h, patch_w]
         
         num_keep_patches_h = int((num_keep_patches + num_patches_w - 1) // num_patches_w)
         num_keep_patches_w = min(num_keep_patches, num_patches_w)
@@ -229,43 +229,60 @@ class PatchLevelPruner(nn.Module):
         
         H_pruned = num_keep_patches_h * patch_h
         W_pruned = num_keep_patches_w * patch_w
-        pruned_2d = torch.zeros(batch_size, channels, H_pruned, W_pruned, 
-                               device=tokens.device, dtype=tokens.dtype)
         
-        for h_idx in range(num_keep_patches_h):
-            for w_idx in range(num_keep_patches_w):
-                p_idx = h_idx * num_keep_patches_w + w_idx
-                if p_idx < num_keep_patches:
-                    h_start = h_idx * patch_h
-                    h_end = h_start + patch_h
-                    w_start = w_idx * patch_w
-                    w_end = w_start + patch_w
-                    pruned_2d[:, :, h_start:h_end, w_start:w_end] = kept_patches_reshaped[:, :, h_idx, w_idx, :, :]
+        # ✅ 向量化修复：使用permute + reshape替代双重循环填充
+        # kept_patches_reshaped: [B, C, num_keep_patches_h, num_keep_patches_w, patch_h, patch_w]
+        # 目标：pruned_2d: [B, C, H_pruned, W_pruned]
+        # 方法：permute + reshape
+        pruned_2d = kept_patches_reshaped.permute(0, 1, 2, 4, 3, 5).contiguous()  # [B, C, num_keep_patches_h, patch_h, num_keep_patches_w, patch_w]
+        pruned_2d = pruned_2d.view(batch_size, channels, H_pruned, W_pruned)  # [B, C, H_pruned, W_pruned]
         
         pruned_tokens = pruned_2d.permute(0, 2, 3, 1).reshape(batch_size, H_pruned * W_pruned, channels)
         
         if return_indices:
-            kept_token_indices_list = []
-            for b in range(batch_size):
-                batch_kept_patches = top_patch_indices_sorted[b]
-                batch_indices = []
-                for p_idx in batch_kept_patches:
-                    p_h = int(p_idx.item()) // num_patches_w
-                    p_w = int(p_idx.item()) % num_patches_w
-                    for ph in range(patch_h):
-                        for pw in range(patch_w):
-                            orig_h = p_h * patch_h + ph
-                            orig_w = p_w * patch_w + pw
-                            if orig_h < H_padded and orig_w < W_padded:
-                                orig_idx = orig_h * W_padded + orig_w
-                                if orig_h < H and orig_w < W:
-                                    batch_indices.append(orig_idx)
-                kept_token_indices_list.append(torch.tensor(batch_indices, device=tokens.device))
+            # ✅ 向量化修复：使用向量化索引生成，避免4重循环
+            # top_patch_indices_sorted: [B, num_keep_patches]
+            # 计算每个patch对应的 (p_h, p_w)
+            p_h_indices = top_patch_indices_sorted // num_patches_w  # [B, num_keep_patches]
+            p_w_indices = top_patch_indices_sorted % num_patches_w   # [B, num_keep_patches]
             
-            max_len = max(len(indices) for indices in kept_token_indices_list) if kept_token_indices_list else 0
+            # 生成patch内所有token的偏移量
+            ph_offsets = torch.arange(patch_h, device=tokens.device).view(1, 1, patch_h, 1)  # [1, 1, patch_h, 1]
+            pw_offsets = torch.arange(patch_w, device=tokens.device).view(1, 1, 1, patch_w)  # [1, 1, 1, patch_w]
+            
+            # 扩展维度以便广播
+            p_h_expanded = p_h_indices.unsqueeze(-1).unsqueeze(-1)  # [B, num_keep_patches, 1, 1]
+            p_w_expanded = p_w_indices.unsqueeze(-1).unsqueeze(-1)  # [B, num_keep_patches, 1, 1]
+            
+            # 计算所有token的原始坐标
+            orig_h_all = p_h_expanded * patch_h + ph_offsets  # [B, num_keep_patches, patch_h, 1]
+            orig_w_all = p_w_expanded * patch_w + pw_offsets  # [B, num_keep_patches, 1, patch_w]
+            
+            # 广播到完整形状
+            orig_h_all = orig_h_all.expand(-1, -1, -1, patch_w)  # [B, num_keep_patches, patch_h, patch_w]
+            orig_w_all = orig_w_all.expand(-1, -1, patch_h, -1)  # [B, num_keep_patches, patch_h, patch_w]
+            
+            # 计算原始索引
+            orig_idx_all = orig_h_all * W_padded + orig_w_all  # [B, num_keep_patches, patch_h, patch_w]
+            
+            # 创建mask：只保留有效的token（在原始H, W范围内）
+            valid_mask = (orig_h_all < H) & (orig_w_all < W)  # [B, num_keep_patches, patch_h, patch_w]
+            
+            # 展平并过滤有效索引
+            orig_idx_flat = orig_idx_all.reshape(batch_size, num_keep_patches * patch_h * patch_w)  # [B, num_keep_patches*patch_h*patch_w]
+            valid_mask_flat = valid_mask.reshape(batch_size, num_keep_patches * patch_h * patch_w)  # [B, num_keep_patches*patch_h*patch_w]
+            
+            # 为每个batch收集有效索引
+            kept_indices_list = []
+            max_len = 0
+            for b in range(batch_size):
+                valid_indices = orig_idx_flat[b][valid_mask_flat[b]]  # [num_valid]
+                kept_indices_list.append(valid_indices)
+                max_len = max(max_len, len(valid_indices))
+            
             if max_len > 0:
                 kept_indices = torch.full((batch_size, max_len), -1, device=tokens.device, dtype=torch.long)
-                for b, indices in enumerate(kept_token_indices_list):
+                for b, indices in enumerate(kept_indices_list):
                     if len(indices) > 0:
                         kept_indices[b, :len(indices)] = indices
             else:
