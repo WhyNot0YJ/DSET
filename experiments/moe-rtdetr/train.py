@@ -589,6 +589,8 @@ class AdaptiveExpertTrainer:
         # 从misc配置中读取num_workers和pin_memory
         num_workers = self.config.get('misc', {}).get('num_workers', 16)
         pin_memory = self.config.get('misc', {}).get('pin_memory', True)
+        # 增加预取因子：让 CPU 始终领先 GPU 4-8 个 Batch 的进度
+        prefetch_factor = self.config.get('misc', {}).get('prefetch_factor', 4)
         
         # 创建collate_fn类
         class CustomCollateFunction(BaseCollateFunction):
@@ -653,7 +655,7 @@ class AdaptiveExpertTrainer:
             collate_fn=collate_fn,
             pin_memory=pin_memory,
             persistent_workers=True if num_workers > 0 else False,
-            prefetch_factor=2 if num_workers > 0 else None
+            prefetch_factor=prefetch_factor if num_workers > 0 else None
         )
         
         val_loader = DataLoader(
@@ -664,13 +666,14 @@ class AdaptiveExpertTrainer:
             collate_fn=collate_fn,
             pin_memory=pin_memory,
             persistent_workers=True if num_workers > 0 else False,
-            prefetch_factor=2 if num_workers > 0 else None
+            prefetch_factor=prefetch_factor if num_workers > 0 else None
         )
         
         self.val_dataset = val_dataset
         
         self.logger.info(f"✓ 创建数据加载器")
         self.logger.info(f"  训练集: {len(train_dataset)} | 验证集: {len(val_dataset)}")
+        self.logger.info(f"  数据加载配置: num_workers={num_workers}, prefetch_factor={prefetch_factor}, pin_memory={pin_memory}")
         
         return train_loader, val_loader
     
@@ -1724,6 +1727,18 @@ class AdaptiveExpertTrainer:
 
 def main() -> None:
     """主函数。"""
+    
+    # ==========================================
+    # [新增] 解决 AutoDL/Docker 共享内存不足导致的死锁问题
+    # ==========================================
+    import torch.multiprocessing
+    try:
+        torch.multiprocessing.set_sharing_strategy('file_system')
+        print("✓ 已设置多进程共享策略为: file_system (防止共享内存溢出)")
+    except:
+        pass
+    # ==========================================
+    
     parser = argparse.ArgumentParser(description='自适应专家RT-DETR训练')
     parser.add_argument('--config', type=str, default='A', 
                        help='专家配置 (A: 6专家, B: 3专家) 或YAML配置文件路径')
