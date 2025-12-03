@@ -2,7 +2,6 @@
 """
 
 
-from .rtdetr import RTDETR
 from .matcher import HungarianMatcher
 from .hybrid_encoder import HybridEncoder
 from .rtdetr_postprocessor import RTDETRPostProcessor

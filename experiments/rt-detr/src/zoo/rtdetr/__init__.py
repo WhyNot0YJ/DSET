@@ -11,6 +11,6 @@ from .rtdetr_postprocessor import RTDETRPostProcessor
 from .rtdetrv2_decoder import RTDETRTransformerv2
 from .rtdetrv2_criterion import RTDETRCriterionv2
 
-# MOE
-from .rtdetr import MOERTDETR, Router, ExpertNetwork
-from .rtdetrv2_criterion import MOERTDETRCriterion
+# MOE (deprecated - not used)
+# from .rtdetr import MOERTDETR, Router, ExpertNetwork
+# from .rtdetrv2_criterion import MOERTDETRCriterion
