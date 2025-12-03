@@ -1411,7 +1411,7 @@ class DSETTrainer:
                         
                         total_tokens += router_logits.shape[0] * self.model.decoder.moe_top_k
             
-            if batch_idx % 2 == 0:
+            if batch_idx % 100 == 0:
                 det_loss_val = outputs.get('detection_loss', torch.tensor(0.0)).item() if isinstance(outputs, dict) else 0.0
                 moe_loss_val = outputs.get('moe_load_balance_loss', torch.tensor(0.0)).item() if isinstance(outputs, dict) else 0.0
                 self.logger.info(f'Epoch {self.current_epoch} | Batch {batch_idx} | '
@@ -2059,6 +2059,18 @@ class DSETTrainer:
 
 def main() -> None:
     """主函数。"""
+    
+    # ==========================================
+    # [新增] 解决 AutoDL/Docker 共享内存不足导致的死锁问题
+    # ==========================================
+    import torch.multiprocessing
+    try:
+        torch.multiprocessing.set_sharing_strategy('file_system')
+        print("✓ 已设置多进程共享策略为: file_system (防止共享内存溢出)")
+    except:
+        pass
+    # ==========================================
+    
     parser = argparse.ArgumentParser(description='自适应专家RT-DETR训练')
     parser.add_argument('--config', type=str, default='A', 
                        help='专家配置 (A: 6专家, B: 3专家) 或YAML配置文件路径')
