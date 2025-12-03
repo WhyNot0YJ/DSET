@@ -206,13 +206,13 @@ class PatchLevelPruner(nn.Module):
         _, top_patch_indices = torch.topk(patch_importance_scores, num_keep_patches, dim=-1)
         top_patch_indices_sorted, _ = torch.sort(top_patch_indices, dim=-1)
         
-        # ✅ 向量化修复：使用高级索引批量gather，避免batch循环
+        # ✅ 向量化修复：使用torch.gather批量gather，避免batch循环
         # patches: [B, C, num_patches, patch_h, patch_w]
         # top_patch_indices_sorted: [B, num_keep_patches]
-        # 使用 gather 或高级索引选择patches
-        batch_indices = torch.arange(batch_size, device=patches.device).view(batch_size, 1).expand(batch_size, num_keep_patches)
-        # 使用高级索引：patches[batch_indices, :, top_patch_indices_sorted, :, :]
-        kept_patches = patches[batch_indices, :, top_patch_indices_sorted, :, :]  # [B, C, num_keep_patches, patch_h, patch_w]
+        # 使用 gather 在 dim=2 (num_patches维度) 上选择patches
+        top_patch_indices_expanded = top_patch_indices_sorted.unsqueeze(1).unsqueeze(-1).unsqueeze(-1)  # [B, 1, num_keep_patches, 1, 1]
+        top_patch_indices_expanded = top_patch_indices_expanded.expand(-1, channels, -1, patch_h, patch_w)  # [B, C, num_keep_patches, patch_h, patch_w]
+        kept_patches = patches.gather(dim=2, index=top_patch_indices_expanded)  # [B, C, num_keep_patches, patch_h, patch_w]
         
         num_keep_patches_h = int((num_keep_patches + num_patches_w - 1) // num_patches_w)
         num_keep_patches_w = min(num_keep_patches, num_patches_w)
