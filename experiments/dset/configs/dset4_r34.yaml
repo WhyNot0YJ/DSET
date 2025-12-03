@@ -1,9 +1,9 @@
 model:
-  num_experts: 4  # Decoder专家数
+  num_experts: 4
   top_k: 2
   backbone: presnet34
   encoder:
-    use_encoder_idx: [0, 1, 2]
+    use_encoder_idx: [2]
     in_channels:
     - 128
     - 256
@@ -15,11 +15,11 @@ model:
   hidden_dim: 256
   num_queries: 100
   dset:
-    token_keep_ratio: {0: 0.8, 1: 0.8, 2: 1.0}
+    token_keep_ratio: {2: 0.9}
     token_pruning_warmup_epochs: 10
-    patch_moe_num_experts: 4  # Encoder专家数 (Config A: Tiny)
+    patch_moe_num_experts: 4
     patch_moe_top_k: 2
-    patch_moe_patch_size: 4
+    patch_moe_patch_size: 1
     use_token_pruning_loss: true
     token_pruning_loss_weight: 0.005
 training:
