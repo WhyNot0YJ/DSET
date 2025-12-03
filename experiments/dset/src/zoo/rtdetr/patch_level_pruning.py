@@ -206,41 +206,21 @@ class PatchLevelPruner(nn.Module):
         _, top_patch_indices = torch.topk(patch_importance_scores, num_keep_patches, dim=-1)
         top_patch_indices_sorted, _ = torch.sort(top_patch_indices, dim=-1)
         
-        # ✅ 向量化修复：使用torch.gather批量gather，避免batch循环
-        # patches: [B, C, num_patches, patch_h, patch_w]
-        # top_patch_indices_sorted: [B, num_keep_patches]
-        # 使用 gather 在 dim=2 (num_patches维度) 上选择patches
-        top_patch_indices_expanded = top_patch_indices_sorted.unsqueeze(1).unsqueeze(-1).unsqueeze(-1)  # [B, 1, num_keep_patches, 1, 1]
-        top_patch_indices_expanded = top_patch_indices_expanded.expand(-1, channels, -1, patch_h, patch_w)  # [B, C, num_keep_patches, patch_h, patch_w]
-        kept_patches = patches.gather(dim=2, index=top_patch_indices_expanded)  # [B, C, num_keep_patches, patch_h, patch_w]
+        # ✅ 终极优化：直接输出1D序列，跳过2D重建（避免F.fold等慢操作）
+        # patches_flat: [B, num_patches, patch_h*patch_w, C]
+        # 使用 gather 在 dim=1 (num_patches维度) 上选择patches
+        top_patch_indices_expanded = top_patch_indices_sorted.unsqueeze(-1).unsqueeze(-1)  # [B, num_keep_patches, 1, 1]
+        top_patch_indices_expanded = top_patch_indices_expanded.expand(-1, -1, patch_h * patch_w, channels)  # [B, num_keep_patches, patch_h*patch_w, C]
+        kept_patches_flat = patches_flat.gather(dim=1, index=top_patch_indices_expanded)  # [B, num_keep_patches, patch_h*patch_w, C]
         
-        num_keep_patches_h = int((num_keep_patches + num_patches_w - 1) // num_patches_w)
-        num_keep_patches_w = min(num_keep_patches, num_patches_w)
-        if num_keep_patches_h * num_keep_patches_w < num_keep_patches:
-            num_keep_patches_h += 1
+        # 直接reshape为1D序列，无需重建2D图像
+        pruned_tokens = kept_patches_flat.reshape(batch_size, num_keep_patches * patch_h * patch_w, channels)  # [B, num_keep_patches*patch_h*patch_w, C]
         
-        if num_keep_patches < num_keep_patches_h * num_keep_patches_w:
-            pad_patches = num_keep_patches_h * num_keep_patches_w - num_keep_patches
-            zero_patches = torch.zeros(batch_size, channels, pad_patches, patch_h, patch_w, 
-                                      device=kept_patches.device, dtype=kept_patches.dtype)
-            kept_patches = torch.cat([kept_patches, zero_patches], dim=2)
-        
-        kept_patches_reshaped = kept_patches.reshape(batch_size, channels, num_keep_patches_h, num_keep_patches_w, patch_h, patch_w)
-        
-        H_pruned = num_keep_patches_h * patch_h
-        W_pruned = num_keep_patches_w * patch_w
-        
-        # ✅ 向量化修复：使用permute + reshape替代双重循环填充
-        # kept_patches_reshaped: [B, C, num_keep_patches_h, num_keep_patches_w, patch_h, patch_w]
-        # 目标：pruned_2d: [B, C, H_pruned, W_pruned]
-        # 方法：permute + reshape
-        pruned_2d = kept_patches_reshaped.permute(0, 1, 2, 4, 3, 5).contiguous()  # [B, C, num_keep_patches_h, patch_h, num_keep_patches_w, patch_w]
-        pruned_2d = pruned_2d.view(batch_size, channels, H_pruned, W_pruned)  # [B, C, H_pruned, W_pruned]
-        
-        pruned_tokens = pruned_2d.permute(0, 2, 3, 1).reshape(batch_size, H_pruned * W_pruned, channels)
+        # 计算实际保留的token数量（考虑padding）
+        num_kept_tokens_actual = num_keep_patches * patch_h * patch_w
         
         if return_indices:
-            # ✅ 向量化修复：使用向量化索引生成，避免4重循环
+            # ✅ 完全向量化索引生成：消除所有Python循环
             # top_patch_indices_sorted: [B, num_keep_patches]
             # 计算每个patch对应的 (p_h, p_w)
             p_h_indices = top_patch_indices_sorted // num_patches_w  # [B, num_keep_patches]
@@ -268,29 +248,39 @@ class PatchLevelPruner(nn.Module):
             # 创建mask：只保留有效的token（在原始H, W范围内）
             valid_mask = (orig_h_all < H) & (orig_w_all < W)  # [B, num_keep_patches, patch_h, patch_w]
             
-            # 展平并过滤有效索引
-            orig_idx_flat = orig_idx_all.reshape(batch_size, num_keep_patches * patch_h * patch_w)  # [B, num_keep_patches*patch_h*patch_w]
-            valid_mask_flat = valid_mask.reshape(batch_size, num_keep_patches * patch_h * patch_w)  # [B, num_keep_patches*patch_h*patch_w]
+            # ✅ 优化索引生成：最小化循环（只循环batch维度，循环内纯向量化操作）
+            # 展平
+            orig_idx_flat = orig_idx_all.reshape(batch_size, -1)  # [B, num_keep_patches*patch_h*patch_w]
+            valid_mask_flat = valid_mask.reshape(batch_size, -1)  # [B, num_keep_patches*patch_h*patch_w]
             
-            # 为每个batch收集有效索引
-            kept_indices_list = []
-            max_len = 0
-            for b in range(batch_size):
-                valid_indices = orig_idx_flat[b][valid_mask_flat[b]]  # [num_valid]
-                kept_indices_list.append(valid_indices)
-                max_len = max(max_len, len(valid_indices))
+            # 计算每个batch的有效token数（向量化）
+            valid_counts = valid_mask_flat.sum(dim=1)  # [B]
+            max_valid_count = int(valid_counts.max().item()) if valid_counts.numel() > 0 and valid_counts.max() > 0 else 0
             
-            if max_len > 0:
-                kept_indices = torch.full((batch_size, max_len), -1, device=tokens.device, dtype=torch.long)
-                for b, indices in enumerate(kept_indices_list):
-                    if len(indices) > 0:
-                        kept_indices[b, :len(indices)] = indices
+            if max_valid_count > 0:
+                # 创建输出tensor，用-1填充无效位置
+                kept_indices = torch.full((batch_size, max_valid_count), -1, device=tokens.device, dtype=torch.long)
+                
+                # ✅ 最小化循环：只循环batch维度（不可避免，因为每个batch的有效token数不同）
+                # 但循环内是纯向量化操作，无.item()调用，无Python列表操作
+                for b in range(batch_size):
+                    batch_valid_mask = valid_mask_flat[b]  # [num_keep_patches*patch_h*patch_w]
+                    if batch_valid_mask.any():  # 向量化判断
+                        batch_indices_flat = orig_idx_flat[b]  # [num_keep_patches*patch_h*patch_w]
+                        valid_indices = batch_indices_flat[batch_valid_mask]  # [num_valid] - 纯向量化masked_select
+                        num_valid = valid_indices.shape[0]  # 无.item()，直接取shape[0]
+                        if num_valid > 0:
+                            kept_indices[b, :num_valid] = valid_indices  # 向量化赋值
             else:
                 kept_indices = None
         else:
             kept_indices = None
         
-        num_kept_tokens = H_pruned * W_pruned
+        num_kept_tokens = num_kept_tokens_actual
+        # 计算近似的2D形状（用于兼容性，实际输出是1D序列）
+        H_pruned_approx = int((num_kept_tokens + W - 1) // W) if W > 0 else num_kept_tokens
+        W_pruned_approx = W if H_pruned_approx * W >= num_kept_tokens else num_kept_tokens
+        
         info = {
             'pruning_ratio': 1.0 - (num_keep_patches / num_patches),
             'num_kept_tokens': num_kept_tokens,
@@ -299,7 +289,7 @@ class PatchLevelPruner(nn.Module):
             'num_kept_patches': num_keep_patches,
             'num_pruned_patches': num_patches - num_keep_patches,
             'patch_importance_scores': patch_importance_scores,
-            'new_spatial_shape': (H_pruned, W_pruned),
+            'new_spatial_shape': (H_pruned_approx, W_pruned_approx),  # 近似2D形状（实际输出是1D序列）
             'original_spatial_shape': (H, W)
         }
         
