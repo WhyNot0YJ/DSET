@@ -627,10 +627,6 @@ class DSETTrainer:
         # 从配置文件读取num_encoder_layers，默认为1
         num_encoder_layers = self.config.get('model', {}).get('encoder', {}).get('num_encoder_layers', 1)
         
-        # [DEBUG] 验证配置读取
-        print(f"[DEBUG] Config hidden_dim: {self.config['model']['hidden_dim']}")
-        print(f"[DEBUG] Config type: {type(self.config['model']['hidden_dim'])}")
-        
         model = DSETRTDETR(
             hidden_dim=self.config['model']['hidden_dim'],
             num_queries=self.config['model']['num_queries'],
@@ -654,13 +650,6 @@ class DSETTrainer:
             decoder_moe_balance_weight=decoder_moe_balance_weight,
             encoder_moe_balance_weight=encoder_moe_balance_weight
         )
-        
-        # [DEBUG] 模型初始化时检查
-        print(f"[DEBUG] Model hidden_dim: {model.hidden_dim}")
-        print(f"[DEBUG] Encoder hidden_dim: {model.encoder.hidden_dim}")
-        if hasattr(model.encoder, 'input_proj') and len(model.encoder.input_proj) > 2:
-            print(f"[DEBUG] input_proj[2] output channels: {model.encoder.input_proj[2][0].out_channels}")
-            print(f"[DEBUG] input_proj[2] input channels: {model.encoder.input_proj[2][0].in_channels}")
         
         # 加载预训练权重
         pretrained_weights = self.config['model'].get('pretrained_weights', None)
@@ -741,18 +730,6 @@ class DSETTrainer:
             
             # 加载过滤后的参数
             missing_keys, unexpected_keys = model.load_state_dict(filtered_state_dict, strict=False)
-            
-            # [DEBUG] 检查预训练权重加载
-            print(f"[DEBUG] Missing keys containing input_proj:")
-            input_proj_missing = [k for k in missing_keys if 'input_proj' in k]
-            if input_proj_missing:
-                for key in input_proj_missing:
-                    if key in filtered_state_dict:
-                        print(f"  - {key}: shape={filtered_state_dict[key].shape}")
-                    else:
-                        print(f"  - {key}: NOT IN STATE_DICT")
-            else:
-                print("  - No input_proj keys in missing_keys")
             
             # 统计加载结果
             # 注意：missing_keys 可能包含预训练模型中不存在的参数（如 dset8 的 experts.6/7）
@@ -1322,9 +1299,6 @@ class DSETTrainer:
             if self.current_epoch >= 10 and self.current_epoch % 5 == 0:  # 每5个epoch打印一次
                 if hasattr(self.model.encoder, 'token_pruners') and self.model.encoder.token_pruners:
                     pruner = self.model.encoder.token_pruners[0]
-                    self.logger.info(f"[DEBUG] Epoch {self.current_epoch}: pruner.current_epoch={pruner.current_epoch}, "
-                                   f"pruner.pruning_enabled={pruner.pruning_enabled}, "
-                                   f"pruner.warmup_epochs={pruner.warmup_epochs}")
         
         total_loss = 0.0
         detection_loss = 0.0
@@ -1947,16 +1921,18 @@ class DSETTrainer:
             train_metrics = self.train_epoch()
             
             # 验证策略：
-            # - 前5个epoch：每个epoch都验证
-            # - 之后：每10个epoch验证一次
+            # - 前100 epoch：每10轮验证一次
+            # - 100-160 epoch：每5轮验证一次
+            # - 160 epoch以后：每轮验证
             should_validate = False
-            if epoch < 5:
-                # 前5个epoch：每个epoch都验证
-                should_validate = True
-            else:
-                # 之后：每10个epoch验证一次
+            if epoch < 100:
                 if (epoch + 1) % 10 == 0:
                     should_validate = True
+            elif epoch < 160:
+                if (epoch + 1) % 5 == 0:
+                    should_validate = True
+            else:
+                should_validate = True
             
             if should_validate:
                 val_metrics = self.validate()
