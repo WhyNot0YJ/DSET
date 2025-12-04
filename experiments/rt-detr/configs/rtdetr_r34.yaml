@@ -45,4 +45,4 @@ data_augmentation:
   scales_min: 480
   scales_max: 800
   scales_step: 32
-  max_size: 1333
+  max_size: 1280
