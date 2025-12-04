@@ -14,7 +14,7 @@ model:
   num_queries: 100
 training:
   epochs: 200
-  batch_size: 16
+  batch_size: 24
   warmup_epochs: 3
   pretrained_lr: 1e-5
   new_lr: 1e-4
@@ -49,4 +49,4 @@ data_augmentation:
   scales_min: 480
   scales_max: 800
   scales_step: 32
-  max_size: 1333
+  max_size: 1280
