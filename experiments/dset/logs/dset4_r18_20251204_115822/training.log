@@ -1,0 +1,22 @@
+2025-12-04 11:58:22,426 - INFO - 从本地文件加载预训练权重: pretrained/rtdetrv2_r18vd_120e_coco_rerun_48.1.pth
+2025-12-04 11:58:22,502 - INFO - ✓ 检测到EMA checkpoint格式
+2025-12-04 11:58:22,513 - INFO - ✓ 成功加载预训练权重: 529/529 个参数
+2025-12-04 11:58:22,514 - INFO -   - 跳过类别相关参数: 9 个（COCO 80类 → DAIR-V2X 8类）
+2025-12-04 11:58:22,514 - INFO -   - Backbone: 138 个参数
+2025-12-04 11:58:22,514 - INFO -   - Encoder: 270 个参数
+2025-12-04 11:58:22,514 - INFO -   - Decoder: 121 个参数
+2025-12-04 11:58:22,514 - INFO -   - 模型新增参数: 18 个（将随机初始化）
+2025-12-04 11:58:22,727 - INFO - ✓ 已启用GPU优化: cudnn.benchmark=True, TF32=True
+2025-12-04 11:58:22,727 - INFO - ✓ 创建DSET RT-DETR模型
+2025-12-04 11:58:22,727 - INFO -   Decoder专家数量: 4
+2025-12-04 11:58:22,727 - INFO -   Backbone: presnet18
+2025-12-04 11:58:22,728 - INFO -   Encoder: in_channels=[128, 256, 512], expansion=0.5, num_layers=1
+2025-12-04 11:58:22,728 - INFO -   Encoder MoE设计: 层间共享
+2025-12-04 11:58:22,728 - INFO -   双稀疏配置（DSET核心特性，必然启用）:
+2025-12-04 11:58:22,728 - INFO -     - Patch-MoE: 启用 (experts=4, top_k=2, patch_size=4)
+2025-12-04 11:58:22,728 - INFO -     - Patch-level Pruning: 启用（与 Patch-MoE 兼容）
+2025-12-04 11:58:22,728 - INFO -       → keep_ratio={0: 0.9, 1: 0.7, 2: 0.5}, warmup=10
+2025-12-04 11:58:22,728 - INFO -   损失权重配置:
+2025-12-04 11:58:22,728 - INFO -     - Token Pruning Loss: True (weight=0.01)
+2025-12-04 11:58:22,728 - INFO -     - Decoder MoE: 0.05
+2025-12-04 11:58:22,728 - INFO -     - Encoder MoE: 0.03

@@ -1,0 +1,32 @@
+2025-12-02 11:25:12,870 - INFO - ✓ 配置已保存到: logs/yolo_v10l_20251202_112512/config.yaml
+2025-12-02 11:25:12,871 - INFO - ✓ 初始化YOLOv10训练器
+2025-12-02 11:25:12,871 - INFO -   类别数量: 8
+2025-12-02 11:25:12,871 - INFO -   类别: Car, Truck, Van, Bus, Pedestrian, Cyclist, Motorcyclist, Trafficcone
+2025-12-02 11:25:12,872 - INFO - ✓ 配置已保存到: logs/yolo_v10l_20251202_112512/config.yaml
+2025-12-02 11:25:12,872 - INFO - ================================================================================
+2025-12-02 11:25:12,872 - INFO - 🚀 开始YOLOv10训练
+2025-12-02 11:25:12,872 - INFO - ================================================================================
+2025-12-02 11:25:12,872 - WARNING - ⚠️  预训练权重文件不存在: /root/autodl-tmp/DSET/experiments/yolov10/pretrained/yolov10l.pt
+2025-12-02 11:25:12,872 - INFO -    将使用模型名称自动加载: yolov10l.pt
+2025-12-02 11:25:13,072 - INFO -   模型将在训练时自动适配 8 类（从data.yaml读取）
+2025-12-02 11:25:13,074 - INFO - 📝 训练配置:
+2025-12-02 11:25:13,074 - INFO -   数据集路径: /root/autodl-fs/datasets/DAIR-V2X_YOLO/dairv2x.yaml
+2025-12-02 11:25:13,074 - INFO -   训练轮数: 200
+2025-12-02 11:25:13,074 - INFO -   批次大小: 16
+2025-12-02 11:25:13,074 - INFO -   优化器: auto
+2025-12-02 11:25:13,074 - INFO -   初始学习率: 0.01
+2025-12-02 11:25:13,074 - INFO -   Weight decay: 0.0005
+2025-12-02 11:25:13,074 - INFO -   输出目录: logs/yolo_v10l_20251202_112512
+2025-12-02 11:25:13,074 - INFO -   预训练权重: pretrained/yolov10l.pt
+2025-12-02 11:25:13,074 - INFO - ================================================================================
+2025-12-02 11:25:13,074 - INFO - 训练配置摘要:
+2025-12-02 11:25:13,074 - INFO -   - 训练轮数: 200
+2025-12-02 11:25:13,074 - INFO -   - 批次大小: 16
+2025-12-02 11:25:13,074 - INFO -   - 优化器: auto
+2025-12-02 11:25:13,074 - INFO -   - 初始学习率: 0.01
+2025-12-02 11:25:13,074 - INFO -   - Weight decay: 0.0005
+2025-12-02 11:25:13,074 - INFO -   - Warmup轮数: 3.0
+2025-12-02 11:25:13,074 - INFO -   - 设备: cuda
+2025-12-02 11:25:13,074 - INFO - ================================================================================
+2025-12-02 11:25:13,074 - INFO - 开始训练 200 epochs
+2025-12-02 11:26:24,748 - ERROR - 训练失败: CUDA out of memory. Tried to allocate 100.00 MiB. GPU 0 has a total capacity of 31.37 GiB of which 1.75 MiB is free. Including non-PyTorch memory, this process has 31.35 GiB memory in use. Of the allocated memory 30.61 GiB is allocated by PyTorch, and 124.48 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)

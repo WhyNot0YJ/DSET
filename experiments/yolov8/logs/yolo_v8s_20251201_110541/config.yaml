@@ -1,0 +1,37 @@
+checkpoint:
+  log_dir: logs
+data:
+  data_yaml: /root/autodl-fs/datasets/DAIR-V2X_YOLO/dairv2x.yaml
+misc:
+  device: cuda
+  num_workers: 16
+model:
+  model_name: yolov8s.pt
+  pretrained_weights: pretrained/yolov8s.pt
+training:
+  batch_size: 32
+  cos_lr: true
+  degrees: 0.0
+  deterministic: false
+  epochs: 200
+  fliplr: 0.5
+  flipud: 0.0
+  hsv_h: 0.015
+  hsv_s: 0.7
+  hsv_v: 0.4
+  imgsz: 1280
+  lr0: 0.01
+  lrf: 0.01
+  mixup: 0.0
+  momentum: 0.937
+  mosaic: 0.0
+  optimizer: auto
+  patience: 0
+  save_period: 10
+  scale: 0.5
+  seed: 42
+  translate: 0.0
+  warmup_bias_lr: 0.1
+  warmup_epochs: 3.0
+  warmup_momentum: 0.8
+  weight_decay: 0.0005
