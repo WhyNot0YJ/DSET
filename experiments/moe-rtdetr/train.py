@@ -561,6 +561,12 @@ class AdaptiveExpertTrainer:
         aug_crop_max = aug_config.get('crop_max', 1.0)
         aug_flip_prob = aug_config.get('flip_prob', 0.5)
         
+        # 读取多尺度训练配置
+        train_scales_min = aug_config.get('scales_min', 480)
+        train_scales_max = aug_config.get('scales_max', 800)
+        train_scales_step = aug_config.get('scales_step', 32)
+        train_max_size = aug_config.get('max_size', 1333)
+        
         train_dataset = DAIRV2XDetection(
             data_root=self.config['data']['data_root'],
             split='train',
@@ -572,7 +578,11 @@ class AdaptiveExpertTrainer:
             aug_color_jitter_prob=aug_color_jitter_prob,
             aug_crop_min=aug_crop_min,
             aug_crop_max=aug_crop_max,
-            aug_flip_prob=aug_flip_prob
+            aug_flip_prob=aug_flip_prob,
+            train_scales_min=train_scales_min,
+            train_scales_max=train_scales_max,
+            train_scales_step=train_scales_step,
+            train_max_size=train_max_size
         )
         
         val_dataset = DAIRV2XDetection(

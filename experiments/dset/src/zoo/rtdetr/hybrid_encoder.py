@@ -409,6 +409,11 @@ class HybridEncoder(nn.Module):
         assert len(feats) == len(self.in_channels)
         proj_feats = [self.input_proj[i](feat) for i, feat in enumerate(feats)]
         
+        # [DEBUG] proj_feats 创建后检查
+        for idx, pf in enumerate(proj_feats):
+            if idx in self.use_encoder_idx:
+                print(f"[DEBUG] proj_feats[{idx}].shape: {pf.shape}")
+        
         encoder_info = {
             'token_pruning_ratios': [],
             'importance_scores_list': [],
@@ -420,6 +425,10 @@ class HybridEncoder(nn.Module):
             for i, enc_ind in enumerate(self.use_encoder_idx):
                 h, w = proj_feats[enc_ind].shape[2:]
                 src_flatten = proj_feats[enc_ind].flatten(2).permute(0, 2, 1)
+                
+                # [DEBUG] src_flatten 创建后检查
+                print(f"[DEBUG] src_flatten.shape (before pruning): {src_flatten.shape}")
+                print(f"[DEBUG] src_flatten channels: {src_flatten.shape[2]}")
                 
                 src_flatten, kept_indices, prune_info = self.token_pruners[i](
                     src_flatten, 
@@ -437,8 +446,63 @@ class HybridEncoder(nn.Module):
                 h_original, w_original = original_spatial_shape
                 kept_indices = None
                 
+                # [DEBUG] src_flatten 剪枝后检查
+                print(f"[DEBUG] src_flatten.shape (after pruning): {src_flatten.shape}")
+                print(f"[DEBUG] src_flatten channels (after pruning): {src_flatten.shape[2]}")
+                
+                # 修复：使用实际的token数量计算pos_embed，确保维度匹配
+                # src_flatten 的实际形状是 [B, N_tokens, C]，其中 N_tokens 可能不等于 h_pruned * w_pruned
+                num_tokens_actual = src_flatten.shape[1]
+                # 计算最接近的2D形状用于位置编码，确保 h_pruned * w_pruned == num_tokens_actual
+                if h_pruned * w_pruned != num_tokens_actual:
+                    import math
+                    # 尝试找到最接近的因子分解
+                    sqrt_n = int(math.sqrt(num_tokens_actual))
+                    found_factor = False
+                    for h_candidate in range(sqrt_n, 0, -1):
+                        if num_tokens_actual % h_candidate == 0:
+                            h_pruned = h_candidate
+                            w_pruned = num_tokens_actual // h_candidate
+                            found_factor = True
+                            break
+                    if not found_factor:
+                        # 如果找不到完美因子，使用近似值（向上取整）
+                        h_pruned = int(math.sqrt(num_tokens_actual))
+                        w_pruned = int(math.ceil(num_tokens_actual / h_pruned))
+                        # 确保 w_pruned * h_pruned >= num_tokens_actual，然后截断pos_embed
+                        # [DEBUG] pos_embed 创建前检查
+                        print(f"[DEBUG] Before pos_embed creation:")
+                        print(f"  - self.hidden_dim: {self.hidden_dim}")
+                        print(f"  - w_pruned: {w_pruned}, h_pruned: {h_pruned}")
+                        print(f"  - num_tokens_actual: {num_tokens_actual}")
+                        pos_embed = self.build_2d_sincos_position_embedding(
+                            w_pruned, h_pruned, self.hidden_dim, self.pe_temperature).to(src_flatten.device)
+                        # 截断到实际token数量
+                        pos_embed = pos_embed[:, :num_tokens_actual, :]
+                    else:
+                        # [DEBUG] pos_embed 创建前检查
+                        print(f"[DEBUG] Before pos_embed creation (found_factor=True):")
+                        print(f"  - self.hidden_dim: {self.hidden_dim}")
+                        print(f"  - w_pruned: {w_pruned}, h_pruned: {h_pruned}")
+                        print(f"  - num_tokens_actual: {num_tokens_actual}")
+                        pos_embed = self.build_2d_sincos_position_embedding(
+                            w_pruned, h_pruned, self.hidden_dim, self.pe_temperature).to(src_flatten.device)
+                else:
+                    # [DEBUG] pos_embed 创建前检查
+                    print(f"[DEBUG] Before pos_embed creation (h_pruned * w_pruned == num_tokens_actual):")
+                    print(f"  - self.hidden_dim: {self.hidden_dim}")
+                    print(f"  - w_pruned: {w_pruned}, h_pruned: {h_pruned}")
+                    print(f"  - num_tokens_actual: {num_tokens_actual}")
                 pos_embed = self.build_2d_sincos_position_embedding(
                     w_pruned, h_pruned, self.hidden_dim, self.pe_temperature).to(src_flatten.device)
+                
+                # [DEBUG] pos_embed 创建后检查
+                print(f"[DEBUG] pos_embed.shape: {pos_embed.shape}")
+                print(f"[DEBUG] pos_embed channels: {pos_embed.shape[2]}")
+                print(f"[DEBUG] src_flatten.shape: {src_flatten.shape}")
+                print(f"[DEBUG] src_flatten channels: {src_flatten.shape[2]}")
+                if pos_embed.shape[2] != src_flatten.shape[2]:
+                    print(f"[ERROR] Dimension mismatch! pos_embed channels={pos_embed.shape[2]}, src_flatten channels={src_flatten.shape[2]}")
 
                 memory :torch.Tensor = self.encoder[i](src_flatten, pos_embed=pos_embed, spatial_shape=(h_pruned, w_pruned))
                 

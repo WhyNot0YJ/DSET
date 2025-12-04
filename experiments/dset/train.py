@@ -16,7 +16,7 @@ import logging
 from datetime import datetime
 import json
 import numpy as np
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Union
 from pycocotools.cocoeval import COCOeval
 from pycocotools.coco import COCO
 
@@ -137,7 +137,8 @@ class DSETRTDETR(nn.Module):
                  num_decoder_layers: int = 3, encoder_in_channels: list = None, 
                  encoder_expansion: float = 1.0, num_experts: int = 6,
                  num_encoder_layers: int = 1,
-                 token_keep_ratio: float = 0.7,
+                 use_encoder_idx: list = None,
+                 token_keep_ratio: Union[float, Dict[int, float]] = None,
                  token_pruning_warmup_epochs: int = 10,
                  patch_moe_num_experts: int = 4,
                  patch_moe_top_k: int = 2,
@@ -159,18 +160,20 @@ class DSETRTDETR(nn.Module):
             encoder_expansion: Encoder expansion parameter
             num_experts: Number of decoder experts (required)
             num_encoder_layers: Number of encoder transformer layers
-            token_keep_ratio: Patch retention ratio
+            use_encoder_idx: Which feature pyramid levels (P3, P4, P5) to process with Transformer Encoder
+            token_keep_ratio: Patch retention ratio, can be float (uniform) or dict mapping layer index to ratio (e.g., {2: 0.9})
             token_pruning_warmup_epochs: Pruning warmup epochs
             patch_moe_num_experts: Number of Patch-MoE experts
             patch_moe_top_k: Patch-MoE top-k
             patch_moe_patch_size: Patch-MoE patch size
+            decoder_moe_balance_weight: Decoder MoE balance loss weight
+            encoder_moe_balance_weight: Encoder MoE balance loss weight
+            use_token_pruning_loss: Whether to compute token pruning auxiliary loss
+            token_pruning_loss_weight: Token pruning loss weight
             
         Note:
             - Patch-MoE and Patch-level Pruning are always enabled (DSET core features)
             - No need to configure use_patch_moe and use_token_pruning
-            decoder_moe_balance_weight: Decoder MoE balance loss weight
-            encoder_moe_balance_weight: Encoder MoE balance loss weight
-            use_token_pruning_loss: Whether to compute token pruning auxiliary loss
         """
         super().__init__()
         
@@ -178,13 +181,13 @@ class DSETRTDETR(nn.Module):
         self.num_queries = num_queries
         self.top_k = top_k
         self.backbone_type = backbone_type
-        self.image_size = 640
         self.num_decoder_layers = num_decoder_layers
         
         # Encoder配置
-        self.encoder_in_channels = encoder_in_channels or [512, 1024, 2048]
+        self.encoder_in_channels = encoder_in_channels
         self.encoder_expansion = encoder_expansion
         self.num_encoder_layers = num_encoder_layers
+        self.use_encoder_idx = use_encoder_idx
         
         # DSET双稀疏配置（Patch-MoE 必然启用，无需存储）
         self.token_keep_ratio = token_keep_ratio
@@ -221,7 +224,7 @@ class DSETRTDETR(nn.Module):
             dim_feedforward=1024,
             dropout=0.1,
             activation='relu',
-            feat_channels=[256, 256, 256],
+            feat_channels=[hidden_dim, hidden_dim, hidden_dim],
             feat_strides=[8, 16, 32],
             num_levels=3,
             # Fine-grained MoE config
@@ -241,15 +244,13 @@ class DSETRTDETR(nn.Module):
     
     def _build_encoder(self) -> nn.Module:
         """Build encoder - Supports DSET dual-sparse mechanism."""
-        input_size = [self.image_size, self.image_size]
-        
         # Support Shared MoE
         
         return HybridEncoder(
             in_channels=self.encoder_in_channels,
             feat_strides=[8, 16, 32],
-            hidden_dim=256,
-            use_encoder_idx=[2],
+            hidden_dim=self.hidden_dim,
+            use_encoder_idx=self.use_encoder_idx,
             num_encoder_layers=self.num_encoder_layers,
             expansion=self.encoder_expansion,
             nhead=8,
@@ -603,6 +604,7 @@ class DSETTrainer:
         encoder_config = self.config['model']['encoder']
         encoder_in_channels = encoder_config['in_channels']
         encoder_expansion = encoder_config['expansion']
+        use_encoder_idx = encoder_config.get('use_encoder_idx', [0, 1, 2])
         
         # 从配置文件读取专家数量
         num_experts = self.config['model'].get('num_experts', 6)
@@ -625,6 +627,10 @@ class DSETTrainer:
         # 从配置文件读取num_encoder_layers，默认为1
         num_encoder_layers = self.config.get('model', {}).get('encoder', {}).get('num_encoder_layers', 1)
         
+        # [DEBUG] 验证配置读取
+        print(f"[DEBUG] Config hidden_dim: {self.config['model']['hidden_dim']}")
+        print(f"[DEBUG] Config type: {type(self.config['model']['hidden_dim'])}")
+        
         model = DSETRTDETR(
             hidden_dim=self.config['model']['hidden_dim'],
             num_queries=self.config['model']['num_queries'],
@@ -635,6 +641,7 @@ class DSETTrainer:
             encoder_expansion=encoder_expansion,
             num_experts=num_experts,
             num_encoder_layers=num_encoder_layers,
+            use_encoder_idx=use_encoder_idx,
             # DSET双稀疏参数（Patch-MoE 必然启用，无需传递）
             token_keep_ratio=token_keep_ratio,
             token_pruning_warmup_epochs=token_pruning_warmup_epochs,
@@ -647,6 +654,13 @@ class DSETTrainer:
             decoder_moe_balance_weight=decoder_moe_balance_weight,
             encoder_moe_balance_weight=encoder_moe_balance_weight
         )
+        
+        # [DEBUG] 模型初始化时检查
+        print(f"[DEBUG] Model hidden_dim: {model.hidden_dim}")
+        print(f"[DEBUG] Encoder hidden_dim: {model.encoder.hidden_dim}")
+        if hasattr(model.encoder, 'input_proj') and len(model.encoder.input_proj) > 2:
+            print(f"[DEBUG] input_proj[2] output channels: {model.encoder.input_proj[2][0].out_channels}")
+            print(f"[DEBUG] input_proj[2] input channels: {model.encoder.input_proj[2][0].in_channels}")
         
         # 加载预训练权重
         pretrained_weights = self.config['model'].get('pretrained_weights', None)
@@ -728,6 +742,18 @@ class DSETTrainer:
             # 加载过滤后的参数
             missing_keys, unexpected_keys = model.load_state_dict(filtered_state_dict, strict=False)
             
+            # [DEBUG] 检查预训练权重加载
+            print(f"[DEBUG] Missing keys containing input_proj:")
+            input_proj_missing = [k for k in missing_keys if 'input_proj' in k]
+            if input_proj_missing:
+                for key in input_proj_missing:
+                    if key in filtered_state_dict:
+                        print(f"  - {key}: shape={filtered_state_dict[key].shape}")
+                    else:
+                        print(f"  - {key}: NOT IN STATE_DICT")
+            else:
+                print("  - No input_proj keys in missing_keys")
+            
             # 统计加载结果
             # 注意：missing_keys 可能包含预训练模型中不存在的参数（如 dset8 的 experts.6/7）
             # 只统计预训练模型中实际存在的 missing_keys
@@ -773,7 +799,6 @@ class DSETTrainer:
         """创建数据加载器。"""
         # 修改：移除不必要的max()，使用配置值
         batch_size = self.config['training']['batch_size']
-        target_size = self.model.image_size
         
         # 获取数据增强配置
         aug_config = self.config.get('data_augmentation', {})
@@ -787,10 +812,15 @@ class DSETTrainer:
         aug_crop_max = aug_config.get('crop_max', 1.0)
         aug_flip_prob = aug_config.get('flip_prob', 0.5)
         
+        # 读取多尺度训练配置
+        train_scales_min = aug_config.get('scales_min', 480)
+        train_scales_max = aug_config.get('scales_max', 800)
+        train_scales_step = aug_config.get('scales_step', 32)
+        train_max_size = aug_config.get('max_size', 1333)
+        
         train_dataset = DAIRV2XDetection(
             data_root=self.config['data']['data_root'],
             split='train',
-            target_size=target_size,
             aug_brightness=aug_brightness,
             aug_contrast=aug_contrast,
             aug_saturation=aug_saturation,
@@ -798,13 +828,16 @@ class DSETTrainer:
             aug_color_jitter_prob=aug_color_jitter_prob,
             aug_crop_min=aug_crop_min,
             aug_crop_max=aug_crop_max,
-            aug_flip_prob=aug_flip_prob
+            aug_flip_prob=aug_flip_prob,
+            train_scales_min=train_scales_min,
+            train_scales_max=train_scales_max,
+            train_scales_step=train_scales_step,
+            train_max_size=train_max_size
         )
         
         val_dataset = DAIRV2XDetection(
             data_root=self.config['data']['data_root'],
             split='val',
-            target_size=target_size,
             aug_brightness=0.0,
             aug_contrast=0.0,
             aug_saturation=0.0,

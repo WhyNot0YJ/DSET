@@ -27,7 +27,6 @@ class DAIRV2XDetection(DetDataset):
     """DAIR-V2X Dataset Detector - Supports COCO format evaluation"""
     
     def __init__(self, data_root: str, split: str = "train", transforms=None, 
-                 target_size: int = 640,
                  aug_brightness: float = 0.0,
                  aug_contrast: float = 0.0,
                  aug_saturation: float = 0.0,
@@ -35,7 +34,11 @@ class DAIRV2XDetection(DetDataset):
                  aug_color_jitter_prob: float = 0.0,
                  aug_crop_min: float = 0.3,
                  aug_crop_max: float = 1.0,
-                 aug_flip_prob: float = 0.5):
+                 aug_flip_prob: float = 0.5,
+                 train_scales_min: int = 480,
+                 train_scales_max: int = 800,
+                 train_scales_step: int = 32,
+                 train_max_size: int = 1333):
         """
         Initialize DAIR-V2X Dataset
         
@@ -43,14 +46,16 @@ class DAIRV2XDetection(DetDataset):
             data_root: Dataset root directory
             split: Dataset split ('train' or 'val')
             transforms: Data transforms (if None, default Unified Task-Adapted Augmentation will be used)
-            target_size: Target image size (retained for compatibility, but overridden by new augmentation strategy)
             aug_*: Retained for compatibility, but overridden by new augmentation strategy
+            train_scales_min: Minimum short edge size for multi-scale training
+            train_scales_max: Maximum short edge size for multi-scale training
+            train_scales_step: Step size for generating scale options
+            train_max_size: Maximum long edge size for multi-scale training
         """
         super().__init__()
         
         self.data_root = Path(data_root)
         self.split = split
-        self.target_size = target_size
         
         # DAIR-V2X Class Definitions (8 classes: first 7 are traffic participants, Trafficcone is road facility)
         self.class_names = [
@@ -76,7 +81,7 @@ class DAIRV2XDetection(DetDataset):
         
         # Initialize Transform Strategy (Unified Task-Adapted Augmentation)
         if transforms is None:
-            scales = list(range(480, 801, 32))
+            scales = list(range(train_scales_min, train_scales_max + 1, train_scales_step))
             if split == 'train':
                 self.transforms = T.Compose([
                     RandomPhotometricDistort(
@@ -87,7 +92,7 @@ class DAIRV2XDetection(DetDataset):
                     ),
                     RandomIoUCrop(min_scale=aug_crop_min, max_scale=aug_crop_max, p=1.0),
                     RandomHorizontalFlip(p=aug_flip_prob),
-                    RandomResize(scales=scales, max_size=1333),
+                    RandomResize(scales=scales, max_size=train_max_size),
                     SanitizeBoundingBoxes(),
                     T.ToImage(),
                     T.ToDtype(torch.float32, scale=True),
@@ -293,7 +298,6 @@ class DAIRV2XDetection(DetDataset):
         """Get image info - COCO format"""
         if image_id < len(self.data_info):
             data_item = self.data_info[image_id]
-            # Note: size might be original or default target_size
             # Should read image for real size or use metadata
             # For simplicity, not reading image here
             return {

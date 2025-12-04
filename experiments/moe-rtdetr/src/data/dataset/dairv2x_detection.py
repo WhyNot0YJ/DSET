@@ -35,7 +35,11 @@ class DAIRV2XDetection(DetDataset):
                  aug_color_jitter_prob: float = 0.0,
                  aug_crop_min: float = 0.3,
                  aug_crop_max: float = 1.0,
-                 aug_flip_prob: float = 0.5):
+                 aug_flip_prob: float = 0.5,
+                 train_scales_min: int = 480,
+                 train_scales_max: int = 800,
+                 train_scales_step: int = 32,
+                 train_max_size: int = 1333):
         """
         初始化DAIR-V2X数据集
         
@@ -45,6 +49,10 @@ class DAIRV2XDetection(DetDataset):
             transforms: 数据变换 (如果为None，将使用默认的Unified Task-Adapted Augmentation)
             target_size: 目标图像尺寸 (保留参数以兼容，但会被新的增强策略覆盖)
             aug_*: 保留参数以兼容，但会被新的增强策略覆盖
+            train_scales_min: Minimum short edge size for multi-scale training
+            train_scales_max: Maximum short edge size for multi-scale training
+            train_scales_step: Step size for generating scale options
+            train_max_size: Maximum long edge size for multi-scale training
         """
         super().__init__()
         
@@ -76,7 +84,7 @@ class DAIRV2XDetection(DetDataset):
         
         # 初始化变换策略 (Unified Task-Adapted Augmentation)
         if transforms is None:
-            scales = list(range(480, 801, 32))
+            scales = list(range(train_scales_min, train_scales_max + 1, train_scales_step))
             if split == 'train':
                 self.transforms = T.Compose([
                     RandomPhotometricDistort(
@@ -87,7 +95,7 @@ class DAIRV2XDetection(DetDataset):
                     ),
                     RandomIoUCrop(min_scale=aug_crop_min, max_scale=aug_crop_max, p=1.0),
                     RandomHorizontalFlip(p=aug_flip_prob),
-                    RandomResize(scales=scales, max_size=1333),
+                    RandomResize(scales=scales, max_size=train_max_size),
                     SanitizeBoundingBoxes(),
                     T.ToImage(),
                     T.ToDtype(torch.float32, scale=True),

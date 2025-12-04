@@ -152,10 +152,12 @@ class MOERTDETR(nn.Module):
         self.expert_weights = nn.Parameter(torch.ones(self.num_experts) / self.num_experts)
         
         # 门控网络（用于第二阶段）
+        # 使用 hidden_dim 作为中间维度，保持与模型维度一致
+        gating_hidden_dim = hidden_dim
         self.gating_network = nn.Sequential(
-            nn.Linear(hidden_dim, 256),
+            nn.Linear(hidden_dim, gating_hidden_dim),
             nn.ReLU(),
-            nn.Linear(256, self.num_experts),
+            nn.Linear(gating_hidden_dim, self.num_experts),
             nn.Softmax(dim=-1)
         )
         
