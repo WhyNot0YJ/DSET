@@ -128,7 +128,7 @@ class DSETRTDETR(nn.Module):
     2. DSET Encoder (Dual-Sparse):
        - Token Pruning: Prunes redundant tokens
        - Patch-MoE: Sparse expert processing for spatial features
-    3. MoE Decoder: AdaptiveExpertLayer in FFN
+    3. MoE Decoder: MoELayer in FFN
     4. Unified Output: Directly outputs detection results
     """
     

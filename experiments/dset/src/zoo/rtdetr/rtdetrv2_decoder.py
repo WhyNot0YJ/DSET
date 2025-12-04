@@ -15,7 +15,7 @@ from typing import List
 from .denoising import get_contrastive_denoising_training_group
 from .utils import deformable_attention_core_func_v2, get_activation, inverse_sigmoid
 from .utils import bias_init_with_prob
-from .moe_components import AdaptiveExpertLayer, compute_expert_balance_loss
+from .moe_components import MoELayer, compute_expert_balance_loss
 
 from ...core import register
 
@@ -190,7 +190,7 @@ class TransformerDecoderLayer(nn.Module):
         self.use_moe = use_moe
         if use_moe:
             # Use Adaptive Expert Layer
-            self.adaptive_expert_layer = AdaptiveExpertLayer(
+            self.adaptive_expert_layer = MoELayer(
                 d_model=d_model,
                 dim_feedforward=dim_feedforward,
                 num_experts=num_experts,

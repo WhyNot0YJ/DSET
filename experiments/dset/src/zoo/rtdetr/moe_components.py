@@ -184,7 +184,3 @@ def compute_expert_balance_loss(router_logits_list: List[torch.Tensor],
     
     return total_loss / num_layers if num_layers > 0 else torch.tensor(0.0)
 
-# =========================================================================
-# 向后兼容：保留 AdaptiveExpertLayer 作为 MoELayer 的别名
-# =========================================================================
-AdaptiveExpertLayer = MoELayer

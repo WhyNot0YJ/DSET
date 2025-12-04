@@ -153,29 +153,3 @@ def compute_expert_balance_loss(router_logits_list: List[torch.Tensor],
     
     return total_loss / num_layers if num_layers > 0 else torch.tensor(0.0)
 
-# =========================================================================
-# 向后兼容：保留 AdaptiveExpertLayer 作为 MoELayer 的别名
-# =========================================================================
-AdaptiveExpertLayer = MoELayer
-
-# =========================================================================
-# 向后兼容：保留 AdaptiveRouter（虽然不再直接使用，但可能被其他代码引用）
-# =========================================================================
-class AdaptiveRouter(nn.Module):
-    """自适应路由器 - 保留用于向后兼容"""
-    
-    def __init__(self, hidden_dim: int, num_experts: int, top_k: int = 2):
-        super().__init__()
-        self.hidden_dim = hidden_dim
-        self.num_experts = num_experts
-        self.top_k = min(top_k, num_experts)
-        self.gate = nn.Linear(hidden_dim, num_experts, bias=False)
-        nn.init.normal_(self.gate.weight, mean=0.0, std=0.01)
-        
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        # x: [N, D] 或 [B*N, D]
-        router_logits = self.gate(x)
-        router_probs = F.softmax(router_logits, dim=-1)
-        expert_weights, expert_indices = torch.topk(router_probs, self.top_k, dim=-1)
-        expert_weights = expert_weights / (expert_weights.sum(dim=-1, keepdim=True) + 1e-9)
-        return expert_weights, expert_indices, router_logits
