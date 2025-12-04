@@ -11,7 +11,7 @@ import torch.nn.functional as F
 from .utils import get_activation
 from .token_pruning import TokenPruner, SpatialTokenPruner
 from .patch_level_pruning import PatchLevelPruner
-from .moe_components import PatchMoELayer
+from .moe_components import MoELayer
 
 from ...core import register
 
@@ -136,15 +136,14 @@ class TransformerEncoderLayer(nn.Module):
 
         # FFN层：支持MoE
         if use_moe:
-            # 使用Patch-MoE层
-            self.patch_moe_layer = PatchMoELayer(
+            # 使用统一的Token-Level MoE层
+            self.moe_layer = MoELayer(
                 d_model=d_model,
                 dim_feedforward=dim_feedforward,
                 num_experts=num_experts,
                 top_k=moe_top_k,
                 dropout=dropout,
-                activation=activation,
-                patch_size=patch_size
+                activation=activation
             )
         else:
             # 标准FFN
@@ -165,7 +164,8 @@ class TransformerEncoderLayer(nn.Module):
     def forward_ffn(self, src, spatial_shape=None):
         """FFN前向传播（支持MoE）"""
         if self.use_moe:
-            return self.patch_moe_layer(src, spatial_shape=spatial_shape)
+            # spatial_shape 仅作为元数据传递，不再用于计算
+            return self.moe_layer(src, spatial_shape=spatial_shape)
         else:
             return self.linear2(self.dropout(self.activation(self.linear1(src))))
 
@@ -238,9 +238,9 @@ class HybridEncoder(nn.Module):
         Args:
             token_keep_ratio: Patch retention ratio (0.5-0.7)
             token_pruning_warmup_epochs: Warmup epochs for pruning
-            patch_moe_num_experts: Number of experts for Patch-MoE
-            patch_moe_top_k: Top-K experts for Patch-MoE
-            patch_moe_patch_size: Patch size (must match pruning)
+            patch_moe_num_experts: Number of experts for MoE
+            patch_moe_top_k: Top-K experts for MoE
+            patch_moe_patch_size: Patch size for pruning (MoE is now token-level, patch_size=1)
         """
         super().__init__()
         self.in_channels = in_channels
@@ -303,7 +303,7 @@ class HybridEncoder(nn.Module):
             )
             self.token_pruners.append(pruner)
         
-        encoder_layer = TransformerEncoderLayer(
+            encoder_layer = TransformerEncoderLayer(
             hidden_dim, 
             nhead=nhead,
             dim_feedforward=dim_feedforward, 
@@ -312,7 +312,7 @@ class HybridEncoder(nn.Module):
             use_moe=True,
             num_experts=patch_moe_num_experts,
             moe_top_k=patch_moe_top_k,
-            patch_size=patch_moe_patch_size)
+            patch_size=1)  # MoE现在是token-level，patch_size固定为1
 
         self.encoder = nn.ModuleList([
             TransformerEncoder(encoder_layer, num_encoder_layers) for _ in range(len(use_encoder_idx))
@@ -419,8 +419,16 @@ class HybridEncoder(nn.Module):
         if self.num_encoder_layers > 0:
             for i, enc_ind in enumerate(self.use_encoder_idx):
                 h, w = proj_feats[enc_ind].shape[2:]
-                src_flatten = proj_feats[enc_ind].flatten(2).permute(0, 2, 1)
+                h_original, w_original = h, w
+                src_flatten = proj_feats[enc_ind].flatten(2).permute(0, 2, 1)  # [B, H*W, C]
                 
+                # 1. 生成完整原始分辨率的 PosEmbed
+                pos_embed_full = self.build_2d_sincos_position_embedding(
+                    w_original, h_original, self.hidden_dim, self.pe_temperature
+                ).to(src_flatten.device)  # [1, H*W, C]
+                pos_embed_full = pos_embed_full.squeeze(0)  # [H*W, C]
+                
+                # 2. 执行 Token Pruning
                 src_flatten, kept_indices, prune_info = self.token_pruners[i](
                     src_flatten, 
                     spatial_shape=(h, w),
@@ -431,56 +439,80 @@ class HybridEncoder(nn.Module):
                 if 'patch_importance_scores' in prune_info:
                     encoder_info['importance_scores_list'].append(prune_info['patch_importance_scores'])
                 
-                new_spatial_shape = prune_info.get('new_spatial_shape', (h, w))
-                h_pruned, w_pruned = new_spatial_shape
-                original_spatial_shape = prune_info.get('original_spatial_shape', (h, w))
-                h_original, w_original = original_spatial_shape
-                kept_indices = None
+                # 3. 使用 Gather 提取对应的 PosEmbed
+                # kept_indices: [B, N_kept] (可能包含 -1 作为填充值)
+                B = src_flatten.shape[0]
+                N_kept = src_flatten.shape[1]
                 
-                # 修复：使用实际的token数量计算pos_embed，确保维度匹配
-                # src_flatten 的实际形状是 [B, N_tokens, C]，其中 N_tokens 可能不等于 h_pruned * w_pruned
-                num_tokens_actual = src_flatten.shape[1]
-                # 计算最接近的2D形状用于位置编码，确保 h_pruned * w_pruned == num_tokens_actual
-                if h_pruned * w_pruned != num_tokens_actual:
-                    import math
-                    # 尝试找到最接近的因子分解
-                    sqrt_n = int(math.sqrt(num_tokens_actual))
-                    found_factor = False
-                    for h_candidate in range(sqrt_n, 0, -1):
-                        if num_tokens_actual % h_candidate == 0:
-                            h_pruned = h_candidate
-                            w_pruned = num_tokens_actual // h_candidate
-                            found_factor = True
-                            break
-                    if not found_factor:
-                        # 如果找不到完美因子，使用近似值（向上取整）
-                        h_pruned = int(math.sqrt(num_tokens_actual))
-                        w_pruned = int(math.ceil(num_tokens_actual / h_pruned))
-                        # 确保 w_pruned * h_pruned >= num_tokens_actual，然后截断pos_embed
-                        pos_embed = self.build_2d_sincos_position_embedding(
-                            w_pruned, h_pruned, self.hidden_dim, self.pe_temperature).to(src_flatten.device)
-                        # 截断到实际token数量
-                        pos_embed = pos_embed[:, :num_tokens_actual, :]
-                    else:
-                        pos_embed = self.build_2d_sincos_position_embedding(
-                            w_pruned, h_pruned, self.hidden_dim, self.pe_temperature).to(src_flatten.device)
+                if kept_indices is not None:
+                    # 确保 kept_indices 是 2D: [B, N_kept]
+                    if kept_indices.dim() == 1:
+                        kept_indices = kept_indices.unsqueeze(0).expand(B, -1)
+                    elif kept_indices.dim() == 2 and kept_indices.shape[0] == 1:
+                        kept_indices = kept_indices.expand(B, -1)
+                    
+                    # 处理 -1 填充值：将 -1 替换为 0（安全值，实际不会使用）
+                    valid_mask = (kept_indices >= 0) & (kept_indices < h_original * w_original)
+                    kept_indices_clean = kept_indices.clamp(0, h_original * w_original - 1)
+                    
+                    # Gather: 从完整PosEmbed中提取对应位置
+                    pos_embed_full_batch = pos_embed_full.unsqueeze(0).expand(B, -1, -1)  # [B, H*W, C]
+                    batch_indices = torch.arange(B, device=kept_indices.device).unsqueeze(1).expand(-1, N_kept)  # [B, N_kept]
+                    pos_embed = pos_embed_full_batch[batch_indices, kept_indices_clean]  # [B, N_kept, C]
+                    
+                    # 将无效位置的位置编码设为0
+                    pos_embed = pos_embed * valid_mask.unsqueeze(-1)
                 else:
-                    pos_embed = self.build_2d_sincos_position_embedding(
-                        w_pruned, h_pruned, self.hidden_dim, self.pe_temperature).to(src_flatten.device)
-
-                memory :torch.Tensor = self.encoder[i](src_flatten, pos_embed=pos_embed, spatial_shape=(h_pruned, w_pruned))
+                    # 如果没有 kept_indices（warmup期间），使用所有位置
+                    pos_embed = pos_embed_full.unsqueeze(0).expand(B, -1, -1)  # [B, H*W, C]
                 
+                # 4. Encoder 处理（spatial_shape 仅作为元数据，不再用于计算）
+                memory :torch.Tensor = self.encoder[i](
+                    src_flatten, 
+                    pos_embed=pos_embed, 
+                    spatial_shape=None  # 不再用于reshape
+                )
+                
+                # 5. 收集 MoE 信息
                 for layer in self.encoder[i].layers:
-                    if hasattr(layer, 'patch_moe_layer'):
-                        moe_layer = layer.patch_moe_layer
+                    if hasattr(layer, 'moe_layer'):
+                        moe_layer = layer.moe_layer
                         if hasattr(moe_layer, 'router_logits_cache') and moe_layer.router_logits_cache is not None:
                             encoder_info['moe_router_logits'].append(moe_layer.router_logits_cache)
                         if hasattr(moe_layer, 'expert_indices_cache') and moe_layer.expert_indices_cache is not None:
                             encoder_info['moe_expert_indices'].append(moe_layer.expert_indices_cache)
                 
-                memory_2d = memory.permute(0, 2, 1).reshape(-1, self.hidden_dim, h_pruned, w_pruned).contiguous()
-                if h_pruned != h_original or w_pruned != w_original:
-                    memory_2d = F.interpolate(memory_2d, size=(h_original, w_original), mode='bilinear', align_corners=False)
+                # 6. 特征还原：使用 Scatter/Fill-Zero 模式
+                # memory: [B, N_kept, C]
+                # 创建全0画布: [B, H_original * W_original, C]
+                memory_2d_flat = torch.zeros(
+                    B, h_original * w_original, self.hidden_dim,
+                    device=memory.device, dtype=memory.dtype
+                )
+                
+                # 使用 kept_indices 将 memory 填回画布对应位置
+                if kept_indices is not None:
+                    # 处理 -1 填充值：只填充有效位置
+                    valid_mask = (kept_indices >= 0) & (kept_indices < h_original * w_original)
+                    kept_indices_clean = kept_indices.clamp(0, h_original * w_original - 1)
+                    
+                    # 对每个batch分别处理（因为每个batch的有效token数可能不同）
+                    for b in range(B):
+                        batch_valid = valid_mask[b]  # [N_kept]
+                        if batch_valid.any():
+                            valid_indices_b = kept_indices_clean[b][batch_valid]  # [M]
+                            valid_memory_b = memory[b][batch_valid]  # [M, C]
+                            memory_2d_flat[b, valid_indices_b] = valid_memory_b  # Scatter操作
+                else:
+                    # 如果没有 kept_indices（warmup期间），直接填充
+                    if memory.shape[1] == h_original * w_original:
+                        memory_2d_flat = memory
+                    else:
+                        # 如果数量不匹配，只填充前 N_kept 个位置
+                        memory_2d_flat[:, :N_kept] = memory
+                
+                # Reshape 回 [B, C, H_original, W_original]
+                memory_2d = memory_2d_flat.permute(0, 2, 1).reshape(B, self.hidden_dim, h_original, w_original).contiguous()
                 proj_feats[enc_ind] = memory_2d
 
         # broadcasting and fusion
