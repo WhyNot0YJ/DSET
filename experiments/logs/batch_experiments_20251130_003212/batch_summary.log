@@ -1,4 +1,0 @@
-[0;34m[INFO][0m 运行指定实验类型（按字典序排序）: RT-DETR
-[0;34m[INFO][0m 开始实验: rt-detr/configs/rtdetr_r18.yaml
-[0;31m[ERROR][0m ✗ rtdetr_r18 | 失败 (退出码: 1, 耗时: 00:00:39)
-[0;34m[INFO][0m 开始实验: rt-detr/configs/rtdetr_r34.yaml
