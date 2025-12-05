@@ -51,7 +51,10 @@ def load_model(checkpoint_path: str, device: str = "cuda", model_name: str = "yo
                 print(f"  ✓ 已删除旧文件")
             except Exception as e:
                 print(f"  ⚠️  删除失败: {e}，将尝试覆盖")
-        else:
+        
+        # 开始转换
+        conversion_success = False
+        try:
             # 转换 .pth 到 YOLO .pt 格式
             try:
                 # 1. 加载 checkpoint
@@ -196,16 +199,33 @@ def load_model(checkpoint_path: str, device: str = "cuda", model_name: str = "yo
                 
                 print(f"  ✓ 已保存为: {pt_path}")
                 checkpoint_path = pt_path
+                conversion_success = True
             except Exception as e:
                 import traceback
                 print(f"  ⚠️  转换失败: {e}")
                 print(f"  📋 错误详情:")
                 traceback.print_exc()
-                print(f"  ℹ️  尝试直接加载 .pth 文件（可能失败）...")
-                # 如果转换失败，尝试直接加载（可能会失败）
+                print(f"  ℹ️  将尝试直接加载 .pth 文件（可能失败）...")
+                conversion_success = False
+        
+        # 如果转换成功，使用转换后的 .pt 文件
+        if conversion_success and pt_path.exists():
+            checkpoint_path = pt_path
+            print(f"  ✓ 转换完成，将使用: {checkpoint_path}")
+        else:
+            print(f"  ⚠️  转换未完成，将尝试直接加载原始 .pth 文件")
     
     # 加载模型
-    # 如果文件是 .pth 格式，YOLO 可能无法直接加载，需要指定 task
+    print(f"  📦 加载模型文件: {checkpoint_path}")
+    
+    # 如果文件是 .pth 格式，YOLO 可能无法直接加载
+    if checkpoint_path.suffix == '.pth':
+        raise RuntimeError(
+            f"无法直接加载 .pth 文件: {checkpoint_path}\n"
+            f"请确保已成功转换为 .pt 格式，或使用已转换的 .pt 文件"
+        )
+    
+    # 加载 .pt 文件
     try:
         model = YOLO(str(checkpoint_path), task='detect')
     except Exception as e:
@@ -214,15 +234,27 @@ def load_model(checkpoint_path: str, device: str = "cuda", model_name: str = "yo
         try:
             model = YOLO(str(checkpoint_path))
         except Exception as e2:
-            raise RuntimeError(f"无法加载模型文件 {checkpoint_path}: {e2}\n"
-                             f"提示：如果这是 .pth 文件转换的，可能需要提供模型结构信息")
+            raise RuntimeError(
+                f"无法加载模型文件 {checkpoint_path}: {e2}\n"
+                f"提示：转换后的 .pt 文件格式可能不正确，请检查转换过程"
+            )
+    
+    # 验证模型对象是否正确加载
+    if not hasattr(model, 'model') or model.model is None:
+        raise RuntimeError(f"模型对象加载失败: model.model 为 None")
+    if isinstance(model.model, str):
+        raise RuntimeError(
+            f"模型对象格式错误: model.model 是字符串而不是模型对象\n"
+            f"这可能是因为 YOLO 无法识别文件格式。请检查转换后的 .pt 文件。"
+        )
     
     # 移动到设备
     try:
         model.to(device)
     except Exception as e:
         print(f"  ⚠️  移动到设备失败: {e}")
-        print(f"  ℹ️  模型可能已经在正确的设备上，继续...")
+        print(f"  ℹ️  尝试在推理时指定设备...")
+        # 不在这里移动，让 YOLO 在推理时处理
     
     model.eval()
     
