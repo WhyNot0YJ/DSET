@@ -55,11 +55,9 @@ def load_model(checkpoint_path: str, device: str = "cuda", model_name: str = "yo
         # 开始转换
         conversion_success = False
         try:
-            # 转换 .pth 到 YOLO .pt 格式
-            try:
-                # 1. 加载 checkpoint
-                checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
-                print(f"  ✓ 已加载 checkpoint")
+            # 1. 加载 checkpoint
+            checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+            print(f"  ✓ 已加载 checkpoint")
                 
                 # 2. 检查 checkpoint 结构并转换为 YOLO 格式
                 print("  💾 转换 checkpoint 为 YOLO 格式...")
@@ -213,16 +211,16 @@ def load_model(checkpoint_path: str, device: str = "cuda", model_name: str = "yo
                     }
                     torch.save(ckpt, str(pt_path))
                 
-                print(f"  ✓ 已保存为: {pt_path}")
-                checkpoint_path = pt_path
-                conversion_success = True
-            except Exception as e:
-                import traceback
-                print(f"  ⚠️  转换失败: {e}")
-                print(f"  📋 错误详情:")
-                traceback.print_exc()
-                print(f"  ℹ️  将尝试直接加载 .pth 文件（可能失败）...")
-                conversion_success = False
+            print(f"  ✓ 已保存为: {pt_path}")
+            checkpoint_path = pt_path
+            conversion_success = True
+        except Exception as e:
+            import traceback
+            print(f"  ⚠️  转换失败: {e}")
+            print(f"  📋 错误详情:")
+            traceback.print_exc()
+            print(f"  ℹ️  将尝试直接加载 .pth 文件（可能失败）...")
+            conversion_success = False
         
         # 如果转换成功，使用转换后的 .pt 文件
         if conversion_success and pt_path.exists():
