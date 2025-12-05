@@ -31,13 +31,62 @@ except ImportError:
 
 
 def load_model(checkpoint_path: str, device: str = "cuda"):
-    """加载YOLO模型"""
+    """加载YOLO模型，支持 .pth 和 .pt 格式"""
     print(f"📦 加载模型: {checkpoint_path}")
     
-    if not Path(checkpoint_path).exists():
+    checkpoint_path = Path(checkpoint_path)
+    if not checkpoint_path.exists():
         raise FileNotFoundError(f"模型文件不存在: {checkpoint_path}")
     
-    model = YOLO(checkpoint_path)
+    # 如果是 .pth 文件，转换为 .pt 格式
+    if checkpoint_path.suffix == '.pth':
+        print(f"🔄 检测到 .pth 文件，转换为 .pt 格式...")
+        pt_path = checkpoint_path.with_suffix('.pt')
+        
+        # 如果 .pt 文件已存在，直接使用
+        if pt_path.exists():
+            print(f"  ✓ .pt 文件已存在，使用: {pt_path}")
+            checkpoint_path = pt_path
+        else:
+            # 转换 .pth 到 .pt
+            try:
+                checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+                
+                # 提取模型权重
+                if isinstance(checkpoint, dict):
+                    if 'model_state_dict' in checkpoint:
+                        state_dict = checkpoint['model_state_dict']
+                        print("  ✓ 找到 'model_state_dict'")
+                    elif 'ema_state_dict' in checkpoint:
+                        state_dict = checkpoint['ema_state_dict']
+                        print("  ✓ 找到 'ema_state_dict'")
+                    elif 'model' in checkpoint:
+                        state_dict = checkpoint['model']
+                        print("  ✓ 找到 'model'")
+                    elif 'state_dict' in checkpoint:
+                        state_dict = checkpoint['state_dict']
+                        print("  ✓ 找到 'state_dict'")
+                    else:
+                        state_dict = checkpoint
+                        print("  ℹ️  使用整个 checkpoint 作为 state_dict")
+                    
+                    # 保存为 YOLO 格式
+                    if isinstance(state_dict, dict) and 'model' not in state_dict:
+                        pt_data = {'model': state_dict}
+                    else:
+                        pt_data = state_dict
+                else:
+                    pt_data = {'model': checkpoint}
+                
+                torch.save(pt_data, pt_path)
+                print(f"  ✓ 已转换并保存为: {pt_path}")
+                checkpoint_path = pt_path
+            except Exception as e:
+                print(f"  ⚠️  转换失败: {e}")
+                print(f"  ℹ️  尝试直接加载 .pth 文件...")
+                # 如果转换失败，尝试直接加载
+    
+    model = YOLO(str(checkpoint_path))
     model.to(device)
     model.eval()
     

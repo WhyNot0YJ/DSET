@@ -93,6 +93,16 @@ if [ ! -f "$CHECKPOINT_FILE" ]; then
     exit 1
 fi
 
+# 如果是 .pth 文件，检查是否有对应的 .pt 文件，如果没有则提示转换
+if [[ "$CHECKPOINT_FILE" == *.pth ]]; then
+    PT_FILE="${CHECKPOINT_FILE%.pth}.pt"
+    if [ ! -f "$PT_FILE" ]; then
+        echo "ℹ️  检测到 .pth 文件，脚本将自动转换为 .pt 格式"
+    else
+        echo "ℹ️  找到对应的 .pt 文件: $PT_FILE"
+    fi
+fi
+
 echo "🚀 开始评估 YOLOv10 (max_det=$MAX_DET)"
 echo "============================================================"
 echo "模型检查点: $CHECKPOINT_FILE"
