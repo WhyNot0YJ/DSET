@@ -30,7 +30,7 @@ except ImportError:
     from ultralytics import YOLO
 
 
-def load_model(checkpoint_path: str, device: str = "cuda"):
+def load_model(checkpoint_path: str, device: str = "cuda", model_name: str = "yolov10l.pt"):
     """加载YOLO模型，支持 .pth 和 .pt 格式"""
     print(f"📦 加载模型: {checkpoint_path}")
     
@@ -38,9 +38,9 @@ def load_model(checkpoint_path: str, device: str = "cuda"):
     if not checkpoint_path.exists():
         raise FileNotFoundError(f"模型文件不存在: {checkpoint_path}")
     
-    # 如果是 .pth 文件，转换为 .pt 格式
+    # 如果是 .pth 文件，需要先加载权重到 YOLO 模型，然后保存为 .pt
     if checkpoint_path.suffix == '.pth':
-        print(f"🔄 检测到 .pth 文件，转换为 .pt 格式...")
+        print(f"🔄 检测到 .pth 文件，转换为 YOLO .pt 格式...")
         pt_path = checkpoint_path.with_suffix('.pt')
         
         # 如果 .pt 文件已存在，直接使用
@@ -48,11 +48,13 @@ def load_model(checkpoint_path: str, device: str = "cuda"):
             print(f"  ✓ .pt 文件已存在，使用: {pt_path}")
             checkpoint_path = pt_path
         else:
-            # 转换 .pth 到 .pt
+            # 转换 .pth 到 YOLO .pt 格式
             try:
+                # 1. 加载 checkpoint
                 checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+                print(f"  ✓ 已加载 checkpoint")
                 
-                # 提取模型权重
+                # 2. 提取模型权重
                 if isinstance(checkpoint, dict):
                     if 'model_state_dict' in checkpoint:
                         state_dict = checkpoint['model_state_dict']
@@ -61,31 +63,55 @@ def load_model(checkpoint_path: str, device: str = "cuda"):
                         state_dict = checkpoint['ema_state_dict']
                         print("  ✓ 找到 'ema_state_dict'")
                     elif 'model' in checkpoint:
-                        state_dict = checkpoint['model']
-                        print("  ✓ 找到 'model'")
+                        # 如果 'model' 已经是完整的模型对象
+                        if hasattr(checkpoint['model'], 'state_dict'):
+                            state_dict = checkpoint['model'].state_dict()
+                            print("  ✓ 从 'model' 对象提取 state_dict")
+                        else:
+                            state_dict = checkpoint['model']
+                            print("  ✓ 找到 'model' state_dict")
                     elif 'state_dict' in checkpoint:
                         state_dict = checkpoint['state_dict']
                         print("  ✓ 找到 'state_dict'")
                     else:
                         state_dict = checkpoint
                         print("  ℹ️  使用整个 checkpoint 作为 state_dict")
-                    
-                    # 保存为 YOLO 格式
-                    if isinstance(state_dict, dict) and 'model' not in state_dict:
-                        pt_data = {'model': state_dict}
-                    else:
-                        pt_data = state_dict
                 else:
-                    pt_data = {'model': checkpoint}
+                    state_dict = checkpoint
+                    print("  ℹ️  checkpoint 直接是 state_dict")
                 
-                torch.save(pt_data, pt_path)
+                # 3. 创建 YOLO 模型实例（使用预训练权重或模型名称）
+                print(f"  📦 创建 YOLO 模型实例: {model_name}")
+                try:
+                    # 尝试从预训练权重创建
+                    temp_model = YOLO(model_name)
+                except:
+                    # 如果失败，尝试使用 yolov10l
+                    try:
+                        temp_model = YOLO('yolov10l.pt')
+                    except:
+                        # 最后尝试 yolov10s
+                        temp_model = YOLO('yolov10s.pt')
+                
+                # 4. 加载权重到模型
+                print(f"  🔄 加载权重到模型...")
+                temp_model.model.load_state_dict(state_dict, strict=False)
+                
+                # 5. 使用 YOLO 的 save 方法保存为正确的格式
+                print(f"  💾 保存为 YOLO 格式: {pt_path}")
+                temp_model.save(str(pt_path))
+                
                 print(f"  ✓ 已转换并保存为: {pt_path}")
                 checkpoint_path = pt_path
             except Exception as e:
+                import traceback
                 print(f"  ⚠️  转换失败: {e}")
-                print(f"  ℹ️  尝试直接加载 .pth 文件...")
-                # 如果转换失败，尝试直接加载
+                print(f"  📋 错误详情:")
+                traceback.print_exc()
+                print(f"  ℹ️  尝试直接加载 .pth 文件（可能失败）...")
+                # 如果转换失败，尝试直接加载（可能会失败）
     
+    # 加载模型
     model = YOLO(str(checkpoint_path))
     model.to(device)
     model.eval()
@@ -177,7 +203,9 @@ def main():
     """主函数"""
     parser = argparse.ArgumentParser(description='YOLOv10评估脚本 - 限制最大检测框数量为100')
     parser.add_argument('--checkpoint', type=str, required=True,
-                       help='模型检查点路径（.pt文件）')
+                       help='模型检查点路径（支持 .pt 和 .pth 文件）')
+    parser.add_argument('--model_name', type=str, default='yolov10l.pt',
+                       help='YOLO 模型名称（用于 .pth 转换，默认: yolov10l.pt）')
     parser.add_argument('--data_yaml', type=str, required=True,
                        help='数据集配置文件路径（YAML格式）')
     parser.add_argument('--max_det', type=int, default=100,
@@ -212,7 +240,7 @@ def main():
     print("="*60)
     
     # 加载模型
-    model = load_model(args.checkpoint, args.device)
+    model = load_model(args.checkpoint, args.device, args.model_name)
     
     # 评估
     metrics = evaluate_with_max_det(
