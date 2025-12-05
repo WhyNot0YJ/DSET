@@ -22,7 +22,7 @@ misc:
   pin_memory: true
   prefetch_factor: 4
 model:
-  backbone: presnet18
+  backbone: presnet34
   dset:
     patch_moe_num_experts: 4
     patch_moe_patch_size: 1
@@ -42,13 +42,13 @@ model:
     use_encoder_idx:
     - 2
   hidden_dim: 256
-  num_decoder_layers: 3
+  num_decoder_layers: 4
   num_experts: 4
   num_queries: 100
-  pretrained_weights: pretrained/rtdetrv2_r18vd_120e_coco_rerun_48.1.pth
+  pretrained_weights: pretrained/rtdetrv2_r34vd_120e_coco_ema.pth
   top_k: 2
 training:
-  batch_size: 24
+  batch_size: 16
   clip_max_norm: 10.0
   decoder_moe_balance_weight: 0.05
   deterministic: false

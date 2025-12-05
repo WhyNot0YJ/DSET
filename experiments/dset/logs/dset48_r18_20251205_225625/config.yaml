@@ -43,10 +43,10 @@ model:
     - 2
   hidden_dim: 256
   num_decoder_layers: 3
-  num_experts: 4
+  num_experts: 8
   num_queries: 100
   pretrained_weights: pretrained/rtdetrv2_r18vd_120e_coco_rerun_48.1.pth
-  top_k: 2
+  top_k: 4
 training:
   batch_size: 24
   clip_max_norm: 10.0
