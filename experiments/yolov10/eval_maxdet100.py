@@ -77,36 +77,24 @@ def load_model(checkpoint_path: str, device: str = "cuda", model_name: str = "yo
                         # 检查是否是完整的模型对象（有 forward 方法）
                         if hasattr(model_obj, 'forward'):
                             print("  ✓ 'model' 是完整的模型对象")
-                            # 使用 YOLO 的保存方式：创建一个临时 YOLO 模型来保存
-                            # 但我们需要先创建一个 YOLO 包装器
-                            try:
-                                # 尝试直接保存 checkpoint（YOLO 可能无法识别）
-                                # 更好的方法是使用 YOLO 的 save 方法
-                                # 但我们需要先创建一个 YOLO 模型实例
-                                print("  ℹ️  尝试使用 YOLO 兼容格式保存...")
-                                
-                                # 创建一个临时的 YOLO 模型来保存
-                                # 我们需要从 checkpoint 中提取模型并包装
-                                from ultralytics.engine.model import Model
-                                
-                                # 创建一个新的 YOLO 模型，使用 checkpoint 中的模型
-                                # 注意：这需要模型对象是 YOLO 兼容的
-                                temp_yolo = Model(model=model_obj, task='detect')
-                                
-                                # 添加其他信息
-                                if 'names' in checkpoint:
-                                    temp_yolo.names = checkpoint['names']
-                                if 'nc' in checkpoint:
-                                    temp_yolo.nc = checkpoint['nc']
-                                
-                                # 使用 YOLO 的 save 方法
-                                temp_yolo.save(str(pt_path))
-                                print("  ✓ 使用 YOLO save() 方法保存")
-                            except Exception as save_error:
-                                print(f"  ⚠️  YOLO save() 失败: {save_error}")
-                                print("  ℹ️  使用 torch.save() 直接保存...")
-                                # 如果 YOLO save 失败，直接保存 checkpoint
-                                torch.save(checkpoint, str(pt_path))
+                            # 使用 YOLO 的 Model 类来正确保存
+                            # 直接保存 checkpoint，YOLO 应该能够识别包含模型对象的格式
+                            print("  💾 保存 checkpoint（包含完整模型对象）...")
+                            ckpt_to_save = {
+                                'model': model_obj,  # 完整的模型对象
+                                'epoch': checkpoint.get('epoch', -1),
+                                'best_fitness': checkpoint.get('best_fitness', None),
+                                'optimizer': checkpoint.get('optimizer', None),
+                                'ema': checkpoint.get('ema', None),
+                                'updates': checkpoint.get('updates', None),
+                            }
+                            # 添加 YOLO 需要的元数据
+                            for key in ['names', 'nc', 'yaml', 'args', 'task', 'date', 'version', 'license', 'docs', 'git']:
+                                if key in checkpoint:
+                                    ckpt_to_save[key] = checkpoint[key]
+                            
+                            torch.save(ckpt_to_save, str(pt_path))
+                            print("  ✓ 已保存为 YOLO 兼容格式")
                         elif isinstance(model_obj, dict):
                             print("  ℹ️  'model' 是 state_dict，需要模型结构来创建完整模型")
                             # 这是 state_dict，需要创建模型实例来加载权重
@@ -268,12 +256,24 @@ def load_model(checkpoint_path: str, device: str = "cuda", model_name: str = "yo
             )
     
     # 验证模型对象是否正确加载
-    if not hasattr(model, 'model') or model.model is None:
+    if not hasattr(model, 'model'):
+        raise RuntimeError(f"模型对象加载失败: 没有 'model' 属性")
+    
+    if model.model is None:
         raise RuntimeError(f"模型对象加载失败: model.model 为 None")
+    
     if isinstance(model.model, str):
         raise RuntimeError(
-            f"模型对象格式错误: model.model 是字符串而不是模型对象\n"
-            f"这可能是因为 YOLO 无法识别文件格式。请检查转换后的 .pt 文件。"
+            f"模型对象格式错误: model.model 是字符串 '{model.model}' 而不是模型对象\n"
+            f"这可能是因为 YOLO 无法识别文件格式。\n"
+            f"请检查转换后的 .pt 文件，或尝试重新转换。"
+        )
+    
+    # 验证模型对象是否有 forward 方法
+    if not hasattr(model.model, 'forward'):
+        raise RuntimeError(
+            f"模型对象格式错误: model.model 没有 'forward' 方法\n"
+            f"模型类型: {type(model.model)}"
         )
     
     # 移动到设备
@@ -281,7 +281,7 @@ def load_model(checkpoint_path: str, device: str = "cuda", model_name: str = "yo
         model.to(device)
     except Exception as e:
         print(f"  ⚠️  移动到设备失败: {e}")
-        print(f"  ℹ️  尝试在推理时指定设备...")
+        print(f"  ℹ️  模型将在推理时自动使用指定设备")
         # 不在这里移动，让 YOLO 在推理时处理
     
     model.eval()
