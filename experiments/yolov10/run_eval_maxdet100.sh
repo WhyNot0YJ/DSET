@@ -9,7 +9,7 @@
 
 # 默认参数
 DEFAULT_CHECKPOINT=${CHECKPOINT:-logs/yolo_v10l_20251202_112836/weights/best.pt}
-DEFAULT_DATA_YAML=${DATA_YAML:-/root/autodl-fs/datasets/DAIR-V2X_YOLO/dairv2x.yaml}
+DEFAULT_DATA_YAML=${DATA_YAML:-/root/autodl-tmp/datasets/DAIR-V2X_YOLO/dairv2x.yaml}
 DEFAULT_MAX_DET=${MAX_DET:-100}
 DEFAULT_CONF=${CONF:-0.001}
 DEFAULT_IOU=${IOU:-0.6}
