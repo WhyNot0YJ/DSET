@@ -77,8 +77,36 @@ def load_model(checkpoint_path: str, device: str = "cuda", model_name: str = "yo
                         # 检查是否是完整的模型对象（有 forward 方法）
                         if hasattr(model_obj, 'forward'):
                             print("  ✓ 'model' 是完整的模型对象")
-                            # 直接保存，YOLO 应该能识别
-                            torch.save(checkpoint, str(pt_path))
+                            # 使用 YOLO 的保存方式：创建一个临时 YOLO 模型来保存
+                            # 但我们需要先创建一个 YOLO 包装器
+                            try:
+                                # 尝试直接保存 checkpoint（YOLO 可能无法识别）
+                                # 更好的方法是使用 YOLO 的 save 方法
+                                # 但我们需要先创建一个 YOLO 模型实例
+                                print("  ℹ️  尝试使用 YOLO 兼容格式保存...")
+                                
+                                # 创建一个临时的 YOLO 模型来保存
+                                # 我们需要从 checkpoint 中提取模型并包装
+                                from ultralytics.engine.model import Model
+                                
+                                # 创建一个新的 YOLO 模型，使用 checkpoint 中的模型
+                                # 注意：这需要模型对象是 YOLO 兼容的
+                                temp_yolo = Model(model=model_obj, task='detect')
+                                
+                                # 添加其他信息
+                                if 'names' in checkpoint:
+                                    temp_yolo.names = checkpoint['names']
+                                if 'nc' in checkpoint:
+                                    temp_yolo.nc = checkpoint['nc']
+                                
+                                # 使用 YOLO 的 save 方法
+                                temp_yolo.save(str(pt_path))
+                                print("  ✓ 使用 YOLO save() 方法保存")
+                            except Exception as save_error:
+                                print(f"  ⚠️  YOLO save() 失败: {save_error}")
+                                print("  ℹ️  使用 torch.save() 直接保存...")
+                                # 如果 YOLO save 失败，直接保存 checkpoint
+                                torch.save(checkpoint, str(pt_path))
                         elif isinstance(model_obj, dict):
                             print("  ℹ️  'model' 是 state_dict，需要模型结构来创建完整模型")
                             # 这是 state_dict，需要创建模型实例来加载权重
