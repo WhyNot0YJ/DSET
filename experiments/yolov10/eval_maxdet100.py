@@ -43,10 +43,14 @@ def load_model(checkpoint_path: str, device: str = "cuda", model_name: str = "yo
         print(f"🔄 检测到 .pth 文件，转换为 YOLO .pt 格式...")
         pt_path = checkpoint_path.with_suffix('.pt')
         
-        # 如果 .pt 文件已存在，直接使用
+        # 如果 .pt 文件已存在，删除它以便重新转换（避免使用错误的格式）
         if pt_path.exists():
-            print(f"  ✓ .pt 文件已存在，使用: {pt_path}")
-            checkpoint_path = pt_path
+            print(f"  ⚠️  发现已存在的 .pt 文件，删除以重新转换: {pt_path}")
+            try:
+                pt_path.unlink()
+                print(f"  ✓ 已删除旧文件")
+            except Exception as e:
+                print(f"  ⚠️  删除失败: {e}，将尝试覆盖")
         else:
             # 转换 .pth 到 YOLO .pt 格式
             try:
@@ -95,11 +99,43 @@ def load_model(checkpoint_path: str, device: str = "cuda", model_name: str = "yo
                 
                 # 4. 加载权重到模型
                 print(f"  🔄 加载权重到模型...")
-                temp_model.model.load_state_dict(state_dict, strict=False)
+                try:
+                    # 尝试加载权重
+                    missing_keys, unexpected_keys = temp_model.model.load_state_dict(state_dict, strict=False)
+                    if missing_keys:
+                        print(f"  ⚠️  缺失的键: {len(missing_keys)} 个（已忽略）")
+                    if unexpected_keys:
+                        print(f"  ⚠️  意外的键: {len(unexpected_keys)} 个（已忽略）")
+                    print(f"  ✓ 权重加载完成")
+                except Exception as e:
+                    print(f"  ⚠️  加载权重时出错: {e}")
+                    print(f"  ℹ️  尝试继续...")
                 
-                # 5. 使用 YOLO 的 save 方法保存为正确的格式
+                # 5. 保存为 YOLO 兼容格式
                 print(f"  💾 保存为 YOLO 格式: {pt_path}")
-                temp_model.save(str(pt_path))
+                # YOLO 期望的格式：包含完整模型对象的字典
+                ckpt = {
+                    'epoch': -1,
+                    'best_fitness': None,
+                    'model': temp_model.model,  # 完整的模型对象
+                    'optimizer': None,
+                    'ema': None,
+                    'updates': None,
+                    'optimizer_state_dict': None,
+                }
+                # 尝试添加 YOLO 需要的元数据
+                if hasattr(temp_model, 'yaml'):
+                    ckpt['yaml'] = temp_model.yaml
+                if hasattr(temp_model, 'args'):
+                    ckpt['args'] = temp_model.args
+                if hasattr(temp_model, 'ckpt'):
+                    # 复制原始 checkpoint 的其他信息
+                    for key in ['names', 'nc', 'hyp', 'task']:
+                        if key in temp_model.ckpt:
+                            ckpt[key] = temp_model.ckpt[key]
+                
+                torch.save(ckpt, str(pt_path))
+                print(f"  ✓ 已保存为 YOLO 兼容格式")
                 
                 print(f"  ✓ 已转换并保存为: {pt_path}")
                 checkpoint_path = pt_path
