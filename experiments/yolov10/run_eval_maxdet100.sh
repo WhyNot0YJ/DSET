@@ -8,7 +8,7 @@
 #   ./run_eval_maxdet100.sh --checkpoint logs/xxx/weights/best.pt --data_yaml /path/to/data.yaml --max_det 100 --output results_maxdet100.json
 
 # 默认参数
-DEFAULT_CHECKPOINT=${CHECKPOINT:-logs/*/weights/best.pt}
+DEFAULT_CHECKPOINT=${CHECKPOINT:-logs/yolo_v10l_20251202_112836/weights/best.pt}
 DEFAULT_DATA_YAML=${DATA_YAML:-/root/autodl-fs/datasets/DAIR-V2X_YOLO/dairv2x.yaml}
 DEFAULT_MAX_DET=${MAX_DET:-100}
 DEFAULT_CONF=${CONF:-0.001}
@@ -16,7 +16,7 @@ DEFAULT_IOU=${IOU:-0.6}
 DEFAULT_IMGSZ=${IMGSZ:-1280}
 DEFAULT_DEVICE=${DEVICE:-cuda}
 DEFAULT_SPLIT=${SPLIT:-val}
-DEFAULT_OUTPUT=${OUTPUT:-results_maxdet100.json}
+DEFAULT_OUTPUT=${OUTPUT:-results_yolo_v10l_20251202_112836_maxdet100.json}
 
 # 解析命令行参数
 CHECKPOINT_FILE=$DEFAULT_CHECKPOINT
@@ -84,6 +84,13 @@ if [[ "$CHECKPOINT_FILE" == *"*"* ]]; then
         echo "请指定 --checkpoint 参数"
         exit 1
     fi
+fi
+
+# 检查checkpoint文件是否存在
+if [ ! -f "$CHECKPOINT_FILE" ]; then
+    echo "❌ 错误: 模型检查点文件不存在: $CHECKPOINT_FILE"
+    echo "请检查路径是否正确"
+    exit 1
 fi
 
 echo "🚀 开始评估 YOLOv10 (max_det=$MAX_DET)"
