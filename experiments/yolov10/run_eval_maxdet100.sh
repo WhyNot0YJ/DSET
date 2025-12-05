@@ -4,7 +4,7 @@
 # 使用方法: ./run_eval_maxdet100.sh [参数覆盖...]
 # 
 # 示例:
-#   ./run_eval_maxdet100.sh --checkpoint logs/yolo_v10s_20251202_202549/weights/best.pt --data_yaml /root/autodl-fs/datasets/DAIR-V2X_YOLO/dairv2x.yaml
+#   ./run_eval_maxdet100.sh --checkpoint logs/yolo_v10s_20251202_202549/weights/best.pt --data_yaml /root/autodl-tmp/datasets/DAIR-V2X_YOLO/dairv2x.yaml
 #   ./run_eval_maxdet100.sh --checkpoint logs/xxx/weights/best.pt --data_yaml /path/to/data.yaml --max_det 100 --output results_maxdet100.json
 
 # 默认参数
