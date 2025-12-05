@@ -1,0 +1,8 @@
+[0;34m[INFO][0m 使用键名选择配置
+[0;34m[INFO][0m 开始实验: dset/configs/dset4_r34.yaml
+[0;32m[SUCCESS][0m ✓ 实验完成: dset4_r34 (耗时: 08:52:18)
+[0;34m[INFO][0m 开始实验: dset/configs/dset6_r18.yaml
+[0;32m[SUCCESS][0m ✓ 实验完成: dset6_r18 (耗时: 07:29:36)
+[0;34m[INFO][0m 开始实验: dset/configs/dset6_r34.yaml
+[0;31m[ERROR][0m ✗ dset6_r34 | 失败 (退出码: 134, 耗时: 10:27:07)
+[0;34m[INFO][0m 开始实验: dset/configs/dset48_r18.yaml

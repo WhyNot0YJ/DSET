@@ -1,0 +1,4 @@
+[0;34m[INFO][0m 运行指定实验类型（按字典序排序）: DSET
+[0;34m[INFO][0m 开始实验: dset/configs/dset4_r18.yaml
+[0;32m[SUCCESS][0m ✓ 实验完成: dset4_r18 (耗时: 06:52:54)
+[0;34m[INFO][0m 开始实验: dset/configs/dset4_r34.yaml
