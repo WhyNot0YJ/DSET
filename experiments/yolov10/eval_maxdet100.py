@@ -58,84 +58,56 @@ def load_model(checkpoint_path: str, device: str = "cuda", model_name: str = "yo
                 checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
                 print(f"  ✓ 已加载 checkpoint")
                 
-                # 2. 提取模型权重
+                # 2. 直接保存 checkpoint 为 .pt 格式（YOLO 可以自己处理）
+                print("  💾 直接保存 checkpoint 为 YOLO 格式...")
+                
+                # 检查 checkpoint 结构
                 if isinstance(checkpoint, dict):
-                    if 'model_state_dict' in checkpoint:
-                        state_dict = checkpoint['model_state_dict']
-                        print("  ✓ 找到 'model_state_dict'")
-                    elif 'ema_state_dict' in checkpoint:
-                        state_dict = checkpoint['ema_state_dict']
-                        print("  ✓ 找到 'ema_state_dict'")
-                    elif 'model' in checkpoint:
-                        # 如果 'model' 已经是完整的模型对象
-                        if hasattr(checkpoint['model'], 'state_dict'):
-                            state_dict = checkpoint['model'].state_dict()
-                            print("  ✓ 从 'model' 对象提取 state_dict")
-                        else:
-                            state_dict = checkpoint['model']
-                            print("  ✓ 找到 'model' state_dict")
-                    elif 'state_dict' in checkpoint:
-                        state_dict = checkpoint['state_dict']
-                        print("  ✓ 找到 'state_dict'")
+                    # 如果已经有 'model' 键，直接保存（YOLO 可以识别）
+                    if 'model' in checkpoint:
+                        print("  ✓ checkpoint 包含 'model' 键，直接保存")
+                        # 保存为 YOLO 兼容格式
+                        torch.save(checkpoint, str(pt_path))
                     else:
-                        state_dict = checkpoint
-                        print("  ℹ️  使用整个 checkpoint 作为 state_dict")
+                        # 如果没有 'model' 键，尝试添加
+                        print("  ℹ️  重组 checkpoint 格式...")
+                        # 提取权重
+                        if 'model_state_dict' in checkpoint:
+                            state_dict = checkpoint['model_state_dict']
+                        elif 'ema_state_dict' in checkpoint:
+                            state_dict = checkpoint['ema_state_dict']
+                        elif 'state_dict' in checkpoint:
+                            state_dict = checkpoint['state_dict']
+                        else:
+                            state_dict = checkpoint
+                        
+                        # 保存为 YOLO 格式（只有权重，YOLO 需要从其他地方获取模型结构）
+                        ckpt = {
+                            'epoch': checkpoint.get('epoch', -1),
+                            'best_fitness': checkpoint.get('best_fitness', None),
+                            'model': state_dict,  # 保存权重
+                            'optimizer': checkpoint.get('optimizer', None),
+                            'ema': checkpoint.get('ema', None),
+                        }
+                        # 保留其他可能有用的信息
+                        for key in ['names', 'nc', 'hyp', 'task', 'yaml', 'args']:
+                            if key in checkpoint:
+                                ckpt[key] = checkpoint[key]
+                        torch.save(ckpt, str(pt_path))
                 else:
-                    state_dict = checkpoint
-                    print("  ℹ️  checkpoint 直接是 state_dict")
+                    # 如果 checkpoint 直接是模型对象或 state_dict
+                    print("  ℹ️  checkpoint 是直接的对象/权重，包装后保存")
+                    ckpt = {
+                        'epoch': -1,
+                        'best_fitness': None,
+                        'model': checkpoint,
+                        'optimizer': None,
+                        'ema': None,
+                    }
+                    torch.save(ckpt, str(pt_path))
                 
-                # 3. 创建 YOLO 模型实例（使用预训练权重或模型名称）
-                print(f"  📦 创建 YOLO 模型实例: {model_name}")
-                try:
-                    # 尝试从预训练权重创建
-                    temp_model = YOLO(model_name)
-                except:
-                    # 如果失败，尝试使用 yolov10l
-                    try:
-                        temp_model = YOLO('yolov10l.pt')
-                    except:
-                        # 最后尝试 yolov10s
-                        temp_model = YOLO('yolov10s.pt')
-                
-                # 4. 加载权重到模型
-                print(f"  🔄 加载权重到模型...")
-                try:
-                    # 尝试加载权重
-                    missing_keys, unexpected_keys = temp_model.model.load_state_dict(state_dict, strict=False)
-                    if missing_keys:
-                        print(f"  ⚠️  缺失的键: {len(missing_keys)} 个（已忽略）")
-                    if unexpected_keys:
-                        print(f"  ⚠️  意外的键: {len(unexpected_keys)} 个（已忽略）")
-                    print(f"  ✓ 权重加载完成")
-                except Exception as e:
-                    print(f"  ⚠️  加载权重时出错: {e}")
-                    print(f"  ℹ️  尝试继续...")
-                
-                # 5. 保存为 YOLO 兼容格式
-                print(f"  💾 保存为 YOLO 格式: {pt_path}")
-                # YOLO 期望的格式：包含完整模型对象的字典
-                ckpt = {
-                    'epoch': -1,
-                    'best_fitness': None,
-                    'model': temp_model.model,  # 完整的模型对象
-                    'optimizer': None,
-                    'ema': None,
-                    'updates': None,
-                    'optimizer_state_dict': None,
-                }
-                # 尝试添加 YOLO 需要的元数据
-                if hasattr(temp_model, 'yaml'):
-                    ckpt['yaml'] = temp_model.yaml
-                if hasattr(temp_model, 'args'):
-                    ckpt['args'] = temp_model.args
-                if hasattr(temp_model, 'ckpt'):
-                    # 复制原始 checkpoint 的其他信息
-                    for key in ['names', 'nc', 'hyp', 'task']:
-                        if key in temp_model.ckpt:
-                            ckpt[key] = temp_model.ckpt[key]
-                
-                torch.save(ckpt, str(pt_path))
-                print(f"  ✓ 已保存为 YOLO 兼容格式")
+                print(f"  ✓ 已保存为: {pt_path}")
+                checkpoint_path = pt_path
                 
                 print(f"  ✓ 已转换并保存为: {pt_path}")
                 checkpoint_path = pt_path
