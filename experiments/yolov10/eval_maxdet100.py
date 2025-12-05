@@ -58,45 +58,133 @@ def load_model(checkpoint_path: str, device: str = "cuda", model_name: str = "yo
                 checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
                 print(f"  ✓ 已加载 checkpoint")
                 
-                # 2. 直接保存 checkpoint 为 .pt 格式（YOLO 可以自己处理）
-                print("  💾 直接保存 checkpoint 为 YOLO 格式...")
+                # 2. 检查 checkpoint 结构并转换为 YOLO 格式
+                print("  💾 转换 checkpoint 为 YOLO 格式...")
                 
                 # 检查 checkpoint 结构
                 if isinstance(checkpoint, dict):
-                    # 如果已经有 'model' 键，直接保存（YOLO 可以识别）
+                    print(f"  📋 Checkpoint 键: {list(checkpoint.keys())}")
+                    
+                    # 检查 'model' 键的内容
                     if 'model' in checkpoint:
-                        print("  ✓ checkpoint 包含 'model' 键，直接保存")
-                        # 保存为 YOLO 兼容格式
-                        torch.save(checkpoint, str(pt_path))
+                        model_obj = checkpoint['model']
+                        print(f"  ✓ 找到 'model' 键")
+                        print(f"  📦 'model' 类型: {type(model_obj)}")
+                        
+                        # 检查是否是完整的模型对象（有 forward 方法）
+                        if hasattr(model_obj, 'forward'):
+                            print("  ✓ 'model' 是完整的模型对象")
+                            # 直接保存，YOLO 应该能识别
+                            torch.save(checkpoint, str(pt_path))
+                        elif isinstance(model_obj, dict):
+                            print("  ℹ️  'model' 是 state_dict，需要模型结构来创建完整模型")
+                            # 这是 state_dict，需要创建模型实例来加载权重
+                            # 尝试从配置文件获取模型信息
+                            config_file = checkpoint_path.parent / 'config.yaml'
+                            model_type = None
+                            if config_file.exists():
+                                try:
+                                    import yaml
+                                    with open(config_file, 'r') as f:
+                                        config = yaml.safe_load(f)
+                                    model_name_from_config = config.get('model', {}).get('model_name', 'yolov10l.pt')
+                                    print(f"  ✓ 从配置文件读取模型类型: {model_name_from_config}")
+                                    model_type = model_name_from_config
+                                except Exception as e:
+                                    print(f"  ⚠️  读取配置文件失败: {e}")
+                            
+                            # 尝试查找本地预训练权重或已训练的模型
+                            temp_model = None
+                            
+                            # 1. 检查同目录下是否有其他 .pt 文件
+                            log_dir = checkpoint_path.parent
+                            other_pt_files = [f for f in log_dir.glob('*.pt') if f != pt_path]
+                            if other_pt_files:
+                                print(f"  ✓ 找到其他 .pt 文件作为参考: {other_pt_files[0]}")
+                                try:
+                                    temp_model = YOLO(str(other_pt_files[0]), task='detect')
+                                    print(f"  ✓ 成功加载参考模型")
+                                except Exception as e:
+                                    print(f"  ⚠️  加载参考模型失败: {e}")
+                            
+                            # 2. 如果还没有，尝试使用本地预训练权重
+                            if temp_model is None:
+                                pretrained_paths = [
+                                    'pretrained/yolov10l.pt',
+                                    'pretrained/yolov10s.pt',
+                                    str(Path(__file__).parent / 'pretrained' / 'yolov10l.pt'),
+                                    str(Path(__file__).parent / 'pretrained' / 'yolov10s.pt'),
+                                ]
+                                for pretrained_path in pretrained_paths:
+                                    if Path(pretrained_path).exists():
+                                        print(f"  ✓ 使用本地预训练权重: {pretrained_path}")
+                                        try:
+                                            temp_model = YOLO(pretrained_path, task='detect')
+                                            break
+                                        except:
+                                            continue
+                            
+                            # 3. 如果有模型实例，加载权重并保存
+                            if temp_model is not None:
+                                print(f"  🔄 加载权重到模型...")
+                                try:
+                                    missing_keys, unexpected_keys = temp_model.model.load_state_dict(model_obj, strict=False)
+                                    if missing_keys:
+                                        print(f"  ⚠️  缺失的键: {len(missing_keys)} 个")
+                                    if unexpected_keys:
+                                        print(f"  ⚠️  意外的键: {len(unexpected_keys)} 个")
+                                    print(f"  ✓ 权重加载完成")
+                                    
+                                    # 保存完整的模型
+                                    temp_model.save(str(pt_path))
+                                    print(f"  ✓ 已保存完整模型: {pt_path}")
+                                except Exception as e:
+                                    print(f"  ⚠️  加载权重失败: {e}")
+                                    # 如果失败，直接保存 checkpoint
+                                    ckpt = checkpoint.copy()
+                                    torch.save(ckpt, str(pt_path))
+                            else:
+                                # 如果无法创建模型实例，直接保存（可能无法加载）
+                                print("  ⚠️  无法创建模型实例，直接保存权重")
+                                print("  ⚠️  警告：YOLO 可能无法直接加载此文件")
+                                ckpt = checkpoint.copy()
+                                torch.save(ckpt, str(pt_path))
+                        else:
+                            print(f"  ⚠️  'model' 类型未知: {type(model_obj)}")
+                            # 直接保存
+                            torch.save(checkpoint, str(pt_path))
                     else:
-                        # 如果没有 'model' 键，尝试添加
-                        print("  ℹ️  重组 checkpoint 格式...")
-                        # 提取权重
+                        # 没有 'model' 键，尝试提取权重
+                        print("  ℹ️  没有 'model' 键，尝试提取权重...")
                         if 'model_state_dict' in checkpoint:
                             state_dict = checkpoint['model_state_dict']
+                            print("  ✓ 找到 'model_state_dict'")
                         elif 'ema_state_dict' in checkpoint:
                             state_dict = checkpoint['ema_state_dict']
+                            print("  ✓ 找到 'ema_state_dict'")
                         elif 'state_dict' in checkpoint:
                             state_dict = checkpoint['state_dict']
+                            print("  ✓ 找到 'state_dict'")
                         else:
                             state_dict = checkpoint
+                            print("  ℹ️  使用整个 checkpoint 作为 state_dict")
                         
-                        # 保存为 YOLO 格式（只有权重，YOLO 需要从其他地方获取模型结构）
+                        # 保存为 YOLO 格式
                         ckpt = {
                             'epoch': checkpoint.get('epoch', -1),
                             'best_fitness': checkpoint.get('best_fitness', None),
-                            'model': state_dict,  # 保存权重
+                            'model': state_dict,
                             'optimizer': checkpoint.get('optimizer', None),
                             'ema': checkpoint.get('ema', None),
                         }
-                        # 保留其他可能有用的信息
+                        # 保留其他信息
                         for key in ['names', 'nc', 'hyp', 'task', 'yaml', 'args']:
                             if key in checkpoint:
                                 ckpt[key] = checkpoint[key]
                         torch.save(ckpt, str(pt_path))
                 else:
-                    # 如果 checkpoint 直接是模型对象或 state_dict
-                    print("  ℹ️  checkpoint 是直接的对象/权重，包装后保存")
+                    # checkpoint 直接是对象
+                    print(f"  ℹ️  checkpoint 类型: {type(checkpoint)}")
                     ckpt = {
                         'epoch': -1,
                         'best_fitness': None,
@@ -108,9 +196,6 @@ def load_model(checkpoint_path: str, device: str = "cuda", model_name: str = "yo
                 
                 print(f"  ✓ 已保存为: {pt_path}")
                 checkpoint_path = pt_path
-                
-                print(f"  ✓ 已转换并保存为: {pt_path}")
-                checkpoint_path = pt_path
             except Exception as e:
                 import traceback
                 print(f"  ⚠️  转换失败: {e}")
@@ -120,8 +205,25 @@ def load_model(checkpoint_path: str, device: str = "cuda", model_name: str = "yo
                 # 如果转换失败，尝试直接加载（可能会失败）
     
     # 加载模型
-    model = YOLO(str(checkpoint_path))
-    model.to(device)
+    # 如果文件是 .pth 格式，YOLO 可能无法直接加载，需要指定 task
+    try:
+        model = YOLO(str(checkpoint_path), task='detect')
+    except Exception as e:
+        print(f"  ⚠️  使用 task='detect' 加载失败: {e}")
+        # 尝试不使用 task 参数
+        try:
+            model = YOLO(str(checkpoint_path))
+        except Exception as e2:
+            raise RuntimeError(f"无法加载模型文件 {checkpoint_path}: {e2}\n"
+                             f"提示：如果这是 .pth 文件转换的，可能需要提供模型结构信息")
+    
+    # 移动到设备
+    try:
+        model.to(device)
+    except Exception as e:
+        print(f"  ⚠️  移动到设备失败: {e}")
+        print(f"  ℹ️  模型可能已经在正确的设备上，继续...")
+    
     model.eval()
     
     print(f"✓ 模型加载完成")
