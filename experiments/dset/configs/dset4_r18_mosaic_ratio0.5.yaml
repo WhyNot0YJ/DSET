@@ -65,3 +65,4 @@ data_augmentation:
   scales_step: 32
   max_size: 1280
   mixup: 0.1
+  close_mosaic_epochs: 20

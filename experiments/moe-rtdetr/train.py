@@ -329,6 +329,13 @@ class AdaptiveExpertTrainer:
             self.resume_from_checkpoint = self.config['checkpoint'].get('resume_from_checkpoint', None)
         
         self.clip_max_norm = self.config.get('training', {}).get('clip_max_norm', 10.0)
+
+        # [新增] 读取 close_mosaic_epochs 参数
+        # 优先从 data_augmentation 读取，兼容 augmentation
+        aug_config = self.config.get('data_augmentation', {})
+        if not aug_config:
+            aug_config = self.config.get('augmentation', {})
+        self.close_mosaic_epochs = aug_config.get('close_mosaic_epochs', 0)
         
         self._setup_logging()
         self.model = self._create_model()
@@ -1068,6 +1075,35 @@ class AdaptiveExpertTrainer:
         except Exception as e:
             self.logger.error(f"恢复检查点失败: {e}")
     
+    def _disable_mosaic_mixup(self):
+        """Disable Mosaic and Mixup for the last N epochs."""
+        self.logger.info(f"🛑 Reached final {self.close_mosaic_epochs} epochs. Disabling Mosaic & Mixup for finetuning!")
+        
+        count = 0
+        def _update_dataset(dataset):
+            nonlocal count
+            updated = False
+            # 直接修改 dataset 的属性
+            if hasattr(dataset, 'aug_mosaic_prob'):
+                dataset.aug_mosaic_prob = 0.0
+                updated = True
+            if hasattr(dataset, 'aug_mixup_prob'):
+                dataset.aug_mixup_prob = 0.0
+                updated = True
+            
+            if updated:
+                self.logger.info(f"  - Disabled Mosaic/Mixup for {type(dataset).__name__}")
+                count += 1
+            
+            # 递归处理 Subset 或其他 Wrapper
+            if hasattr(dataset, 'dataset'):
+                _update_dataset(dataset.dataset)
+                
+        _update_dataset(self.train_loader.dataset)
+        
+        if count == 0:
+            self.logger.warning("⚠️ Warning: No dataset with aug_mosaic_prob/aug_mixup_prob found! Mosaic/Mixup might not be disabled.")
+
     def train_epoch(self) -> Dict[str, float]:
         """训练一个epoch。"""
         self.model.train()
@@ -1606,6 +1642,10 @@ class AdaptiveExpertTrainer:
         for epoch in range(self.current_epoch, epochs):
             self.current_epoch = epoch
             
+            # [新增] Close Mosaic 策略 check
+            if self.close_mosaic_epochs > 0 and epoch == (epochs - self.close_mosaic_epochs):
+                self._disable_mosaic_mixup()
+
             # 训练
             train_metrics = self.train_epoch()
             
