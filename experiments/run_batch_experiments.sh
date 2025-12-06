@@ -94,6 +94,20 @@ declare -A DSET_CONFIGS=(
     ["dset6-r34"]="dset/configs/dset6_r34.yaml"
     ["dset48-r18"]="dset/configs/dset48_r18.yaml"
     ["dset48-r34"]="dset/configs/dset48_r34.yaml"
+    # Ratio 0.7 (Group A)
+    ["dset4-r18-k0.7"]="dset/configs/dset4_r18_mosaic_ratio0.7.yaml"
+    ["dset4-r34-k0.7"]="dset/configs/dset4_r34_mosaic_ratio0.7.yaml"
+    ["dset6-r18-k0.7"]="dset/configs/dset6_r18_mosaic_ratio0.7.yaml"
+    ["dset6-r34-k0.7"]="dset/configs/dset6_r34_mosaic_ratio0.7.yaml"
+    ["dset48-r18-k0.7"]="dset/configs/dset48_r18_mosaic_ratio0.7.yaml"
+    ["dset48-r34-k0.7"]="dset/configs/dset48_r34_mosaic_ratio0.7.yaml"
+    # Ratio 0.5 (Group B)
+    ["dset4-r18-k0.5"]="dset/configs/dset4_r18_mosaic_ratio0.5.yaml"
+    ["dset4-r34-k0.5"]="dset/configs/dset4_r34_mosaic_ratio0.5.yaml"
+    ["dset6-r18-k0.5"]="dset/configs/dset6_r18_mosaic_ratio0.5.yaml"
+    ["dset6-r34-k0.5"]="dset/configs/dset6_r34_mosaic_ratio0.5.yaml"
+    ["dset48-r18-k0.5"]="dset/configs/dset48_r18_mosaic_ratio0.5.yaml"
+    ["dset48-r34-k0.5"]="dset/configs/dset48_r34_mosaic_ratio0.5.yaml"
 )
 
 declare -A YOLOV8_CONFIGS=(
@@ -227,6 +241,8 @@ parse_arguments() {
     local has_r18=false
     local has_r34=false
     local has_r50=false
+    local has_k07=false
+    local has_k05=false
     local filtered_args=()
     
     for arg in "${args[@]}"; do
@@ -239,6 +255,10 @@ parse_arguments() {
             has_r34=true
         elif [ "$arg" == "--r50" ]; then
             has_r50=true
+        elif [ "$arg" == "--k0.7" ]; then
+            has_k07=true
+        elif [ "$arg" == "--k0.5" ]; then
+            has_k05=true
         else
             filtered_args+=("$arg")
         fi
@@ -259,27 +279,50 @@ parse_arguments() {
         backbone_filter=$(IFS='+'; echo "${selected_backbones[*]}")
         log_info "Backbone过滤: $backbone_filter"
     fi
+
+    if [ "$has_k07" = true ] || [ "$has_k05" = true ]; then
+        local selected_ratios=()
+        [ "$has_k07" = true ] && selected_ratios+=("Ratio 0.7")
+        [ "$has_k05" = true ] && selected_ratios+=("Ratio 0.5")
+        local ratio_filter=$(IFS='+'; echo "${selected_ratios[*]}")
+        log_info "Ratio过滤: $ratio_filter"
+    fi
     
     # 根据过滤后的参数决定运行哪些配置
     set -- "${filtered_args[@]}"
     
     # 过滤配置函数
-    filter_by_backbone() {
+    filter_config() {
         local config_path="$1"
-        if [ -z "$backbone_filter" ]; then
-            return 0  # 无过滤，全部通过
+        
+        # 1. Backbone Filter
+        if [ -n "$backbone_filter" ]; then
+            local match_backbone=false
+            if [ "$has_r18" = true ] && ([[ "$config_path" == *"r18"* ]] || [[ "$config_path" == *"presnet18"* ]]); then
+                match_backbone=true
+            fi
+            if [ "$has_r34" = true ] && ([[ "$config_path" == *"r34"* ]] || [[ "$config_path" == *"presnet34"* ]]); then
+                match_backbone=true
+            fi
+            if [ "$has_r50" = true ] && ([[ "$config_path" == *"r50"* ]] || [[ "$config_path" == *"presnet50"* ]]); then
+                match_backbone=true
+            fi
+            if [ "$match_backbone" = false ]; then return 1; fi
         fi
-        # 支持新格式 (r18/r34) 和旧格式 (presnet18/presnet34)
-        if [ "$has_r18" = true ] && ([[ "$config_path" == *"r18"* ]] || [[ "$config_path" == *"presnet18"* ]]); then
-            return 0
+        
+        # 2. Ratio Filter (k0.7 / k0.5)
+        if [ "$has_k07" = true ] || [ "$has_k05" = true ]; then
+            local match_ratio=false
+            if [ "$has_k07" = true ] && [[ "$config_path" == *"ratio0.7"* ]]; then
+                match_ratio=true
+            fi
+            if [ "$has_k05" = true ] && [[ "$config_path" == *"ratio0.5"* ]]; then
+                match_ratio=true
+            fi
+            if [ "$match_ratio" = false ]; then return 1; fi
         fi
-        if [ "$has_r34" = true ] && ([[ "$config_path" == *"r34"* ]] || [[ "$config_path" == *"presnet34"* ]]); then
-            return 0
-        fi
-        if [ "$has_r50" = true ] && ([[ "$config_path" == *"r50"* ]] || [[ "$config_path" == *"presnet50"* ]]); then
-            return 0
-        fi
-        return 1
+        
+        return 0
     }
     
     # 收集所有指定的实验类型（支持多个参数叠加）
@@ -329,7 +372,7 @@ parse_arguments() {
         if [ "$has_rt_detr" = true ]; then
             for key in $(printf '%s\n' "${!RT_DETR_CONFIGS[@]}" | sort); do
                 local p="${RT_DETR_CONFIGS[$key]}"
-                if filter_by_backbone "$p"; then
+                if filter_config "$p"; then
                     CONFIGS_TO_RUN+=("$p")
                 fi
             done
@@ -338,7 +381,7 @@ parse_arguments() {
         if [ "$has_moe_rtdetr" = true ]; then
             for key in $(printf '%s\n' "${!MOE_RTDETR_CONFIGS[@]}" | sort); do
                 local p="${MOE_RTDETR_CONFIGS[$key]}"
-                if filter_by_backbone "$p"; then
+                if filter_config "$p"; then
                     CONFIGS_TO_RUN+=("$p")
                 fi
             done
@@ -347,7 +390,7 @@ parse_arguments() {
         if [ "$has_dset" = true ]; then
             for key in $(printf '%s\n' "${!DSET_CONFIGS[@]}" | sort); do
                 local p="${DSET_CONFIGS[$key]}"
-                if filter_by_backbone "$p"; then
+                if filter_config "$p"; then
                     CONFIGS_TO_RUN+=("$p")
                 fi
             done
@@ -378,21 +421,21 @@ parse_arguments() {
         # RT-DETR实验（按字典序）
         for key in $(printf '%s\n' "${!RT_DETR_CONFIGS[@]}" | sort); do
             local p="${RT_DETR_CONFIGS[$key]}"
-            if filter_by_backbone "$p"; then
+            if filter_config "$p"; then
                 CONFIGS_TO_RUN+=("$p")
             fi
         done
         # MOE-RTDETR实验（按字典序：moe4→moe6→moe8）
         for key in $(printf '%s\n' "${!MOE_RTDETR_CONFIGS[@]}" | sort); do
             local p="${MOE_RTDETR_CONFIGS[$key]}"
-            if filter_by_backbone "$p"; then
+            if filter_config "$p"; then
                 CONFIGS_TO_RUN+=("$p")
             fi
         done
         # DSET实验（按字典序：dset4→dset48→dset6）
         for key in $(printf '%s\n' "${!DSET_CONFIGS[@]}" | sort); do
             local p="${DSET_CONFIGS[$key]}"
-            if filter_by_backbone "$p"; then
+            if filter_config "$p"; then
                 CONFIGS_TO_RUN+=("$p")
             fi
         done
@@ -483,6 +526,8 @@ parse_arguments() {
         echo "  ./run_batch_experiments.sh --r18                           # 只运行R18"
         echo "  ./run_batch_experiments.sh --r34                           # 只运行R34"
         echo "  ./run_batch_experiments.sh --r18 --r34                     # 运行R18+R34"
+        echo "  ./run_batch_experiments.sh --k0.7                          # 只运行 Keep Ratio 0.7 (Group A)"
+        echo "  ./run_batch_experiments.sh --k0.5                          # 只运行 Keep Ratio 0.5 (Group B)"
         echo "  ./run_batch_experiments.sh --custom cfg1.yaml cfg2.yaml    # 指定配置文件路径"
         echo "  ./run_batch_experiments.sh --keys rt-detr-r18 moe6-r34     # 通过键名选择"
         echo "  ./run_batch_experiments.sh --select                        # 交互式选择"
