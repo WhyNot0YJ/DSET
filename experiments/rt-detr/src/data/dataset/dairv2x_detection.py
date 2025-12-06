@@ -39,7 +39,9 @@ class DAIRV2XDetection(DetDataset):
                  train_scales_min: int = 480,
                  train_scales_max: int = 800,
                  train_scales_step: int = 32,
-                 train_max_size: int = 1333):
+                 train_max_size: int = 1333,
+                 aug_mosaic_prob: float = 0.0,
+                 aug_mixup_prob: float = 0.0):
         """
         初始化DAIR-V2X数据集
         
@@ -53,12 +55,18 @@ class DAIRV2XDetection(DetDataset):
             train_scales_max: Maximum short edge size for multi-scale training
             train_scales_step: Step size for generating scale options
             train_max_size: Maximum long edge size for multi-scale training
+            aug_mosaic_prob: Probability of applying Mosaic augmentation
+            aug_mixup_prob: Probability of applying Mixup augmentation
         """
         super().__init__()
         
         self.data_root = Path(data_root)
         self.split = split
         self.target_size = target_size
+        
+        # Store augmentation probabilities for use in __getitem__ or custom wrapper
+        self.aug_mosaic_prob = aug_mosaic_prob
+        self.aug_mixup_prob = aug_mixup_prob
         
         # DAIR-V2X类别定义（8类：前7类是交通参与者，Trafficcone是道路设施）
         self.class_names = [
@@ -102,6 +110,12 @@ class DAIRV2XDetection(DetDataset):
                     Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
                     ConvertBoxes(fmt='cxcywh', normalize=False)
                 ])
+                
+                # Initialize Mosaic/Mixup helpers if needed
+                if self.aug_mosaic_prob > 0:
+                    from ..transforms.mosaic import Mosaic
+                    # Initialize Mosaic helper
+                    self.mosaic_helper = Mosaic(size=train_scales_max)
             else:
                 # 验证/推理配置：矩形推理 (Rectangular Inference)
                 # Resize到720 (短边)，长边最大1280 (保持长宽比)
@@ -175,8 +189,11 @@ class DAIRV2XDetection(DetDataset):
     def __len__(self):
         return len(self.split_indices)
     
-    def __getitem__(self, idx):
-        """获取数据项 - 返回COCO格式的数据"""
+    def load_item(self, idx):
+        """Load a single item without transforms (for Mosaic/Mixup)"""
+        if idx >= len(self.split_indices):
+            idx = idx % len(self.split_indices)
+            
         actual_idx = self.split_indices[idx]
         
         # 加载图像 (PIL)
@@ -212,7 +229,23 @@ class DAIRV2XDetection(DetDataset):
             'orig_size': torch.tensor([h, w]), # H, W
         }
         
-        # 应用变换
+        return image, target
+
+    def __getitem__(self, idx):
+        """获取数据项 - 返回COCO格式的数据"""
+        # 1. Load Base Item
+        image, target = self.load_item(idx)
+        
+        # 2. Apply Mosaic / Mixup (if enabled and in training)
+        if self.split == 'train' and self.transforms is not None:
+            # Mosaic Augmentation
+            if hasattr(self, 'aug_mosaic_prob') and self.aug_mosaic_prob > 0:
+                import random
+                if random.random() < self.aug_mosaic_prob:
+                    if hasattr(self, 'mosaic_helper'):
+                         image, target, _ = self.mosaic_helper(image, target, self)
+
+        # 3. 应用标准变换
         if self.transforms is not None:
             image, target = self.transforms(image, target)
         

@@ -38,7 +38,9 @@ class DAIRV2XDetection(DetDataset):
                  train_scales_min: int = 480,
                  train_scales_max: int = 800,
                  train_scales_step: int = 32,
-                 train_max_size: int = 1333):
+                 train_max_size: int = 1333,
+                 aug_mosaic_prob: float = 0.0,
+                 aug_mixup_prob: float = 0.0):
         """
         Initialize DAIR-V2X Dataset
         
@@ -51,11 +53,17 @@ class DAIRV2XDetection(DetDataset):
             train_scales_max: Maximum short edge size for multi-scale training
             train_scales_step: Step size for generating scale options
             train_max_size: Maximum long edge size for multi-scale training
+            aug_mosaic_prob: Probability of applying Mosaic augmentation
+            aug_mixup_prob: Probability of applying Mixup augmentation
         """
         super().__init__()
         
         self.data_root = Path(data_root)
         self.split = split
+        
+        # Store augmentation probabilities for use in __getitem__ or custom wrapper
+        self.aug_mosaic_prob = aug_mosaic_prob
+        self.aug_mixup_prob = aug_mixup_prob
         
         # DAIR-V2X Class Definitions (8 classes: first 7 are traffic participants, Trafficcone is road facility)
         self.class_names = [
@@ -83,6 +91,9 @@ class DAIRV2XDetection(DetDataset):
         if transforms is None:
             scales = list(range(train_scales_min, train_scales_max + 1, train_scales_step))
             if split == 'train':
+                # Note: Mosaic and Mixup are handled in __getitem__ or separate wrapper because they need multiple images
+                # Here we only define the per-image transform pipeline
+                
                 self.transforms = T.Compose([
                     RandomPhotometricDistort(
                         brightness=(max(0, 1 - aug_brightness), 1 + aug_brightness), 
@@ -99,6 +110,13 @@ class DAIRV2XDetection(DetDataset):
                     Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
                     ConvertBoxes(fmt='cxcywh', normalize=False)
                 ])
+                
+                # Initialize Mosaic/Mixup helpers if needed
+                if self.aug_mosaic_prob > 0:
+                    from ..transforms.mosaic import Mosaic
+                    # Initialize Mosaic helper (not as a transform pipeline but as a helper object)
+                    self.mosaic_helper = Mosaic(size=train_scales_max) 
+                    
             else:
                 # Val/Inference Config: Rectangular Inference
                 # Resize to 720 (short edge), max 1280 (long edge, keep aspect ratio)
@@ -172,8 +190,11 @@ class DAIRV2XDetection(DetDataset):
     def __len__(self):
         return len(self.split_indices)
     
-    def __getitem__(self, idx):
-        """Get data item - returns COCO format data"""
+    def load_item(self, idx):
+        """Load a single item without transforms (for Mosaic/Mixup)"""
+        if idx >= len(self.split_indices):
+            idx = idx % len(self.split_indices)
+            
         actual_idx = self.split_indices[idx]
         
         # Load Image (PIL)
@@ -209,7 +230,29 @@ class DAIRV2XDetection(DetDataset):
             'orig_size': torch.tensor([h, w]), # H, W
         }
         
-        # Apply transforms
+        return image, target
+
+    def __getitem__(self, idx):
+        """Get data item - returns COCO format data"""
+        # 1. Load Base Item
+        image, target = self.load_item(idx)
+        
+        # 2. Apply Mosaic / Mixup (if enabled and in training)
+        if self.split == 'train' and self.transforms is not None:
+            # Mosaic Augmentation
+            if hasattr(self, 'aug_mosaic_prob') and self.aug_mosaic_prob > 0:
+                import random
+                if random.random() < self.aug_mosaic_prob:
+                    # Pass self (dataset) to mosaic helper to load other images
+                    # Note: self.mosaic_helper was initialized in __init__
+                    if hasattr(self, 'mosaic_helper'):
+                         image, target, _ = self.mosaic_helper(image, target, self)
+
+            # Mixup Augmentation (Future Work)
+            # if hasattr(self, 'aug_mixup_prob') and self.aug_mixup_prob > 0:
+            #     pass
+
+        # 3. Apply Standard Transforms
         if self.transforms is not None:
             image, target = self.transforms(image, target)
         

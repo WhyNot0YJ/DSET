@@ -561,6 +561,13 @@ class AdaptiveExpertTrainer:
         aug_crop_max = aug_config.get('crop_max', 1.0)
         aug_flip_prob = aug_config.get('flip_prob', 0.5)
         
+        # Mosaic 和 Mixup (新增)
+        aug_mosaic_prob = aug_config.get('mosaic', 0.0)
+        aug_mixup_prob = aug_config.get('mixup', 0.0)
+        
+        if aug_mosaic_prob > 0 or aug_mixup_prob > 0:
+            self.logger.info(f"🛠️  高级增强已启用: Mosaic={aug_mosaic_prob}, Mixup={aug_mixup_prob}")
+        
         # 读取多尺度训练配置
         train_scales_min = aug_config.get('scales_min', 480)
         train_scales_max = aug_config.get('scales_max', 800)
@@ -582,7 +589,9 @@ class AdaptiveExpertTrainer:
             train_scales_min=train_scales_min,
             train_scales_max=train_scales_max,
             train_scales_step=train_scales_step,
-            train_max_size=train_max_size
+            train_max_size=train_max_size,
+            aug_mosaic_prob=aug_mosaic_prob,
+            aug_mixup_prob=aug_mixup_prob
         )
         
         val_dataset = DAIRV2XDetection(
