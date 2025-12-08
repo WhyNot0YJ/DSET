@@ -1590,12 +1590,15 @@ class DSETTrainer:
         # 计算平均验证时的剪枝比例
         avg_val_pruning_ratio = sum(val_pruning_ratios) / len(val_pruning_ratios) if val_pruning_ratios else 0.0
         
-        # 打印验证时的剪枝状态（用于调试）
-        if self.current_epoch >= 10:  # 只在warmup后打印
-            if avg_val_pruning_ratio > 0.0:
-                self.logger.info(f"  ✓ 验证时Token Pruning生效: {avg_val_pruning_ratio:.2%} tokens被剪枝")
-            else:
+        # 打印验证时的剪枝状态（每次验证都打印，用于监控）
+        if avg_val_pruning_ratio > 0.0:
+            self.logger.info(f"  ✓ 验证时Token Pruning生效: {avg_val_pruning_ratio:.2%} tokens被剪枝")
+        else:
+            # Warmup期间pruning_ratio=0.0是正常的，只在warmup后警告
+            if self.current_epoch >= 10:
                 self.logger.warning(f"  ⚠ 验证时Token Pruning未生效 (pruning_ratio=0.0)! 可能EMA模型epoch未设置")
+            else:
+                self.logger.debug(f"  验证时Token Pruning: Warmup阶段 (epoch {self.current_epoch} < warmup_epochs), pruning_ratio=0.0 (正常)")
         
         # 计算mAP（不计算每个类别的mAP，只在best_model时计算）
         mAP_metrics = self._compute_map_metrics(all_predictions, all_targets, 
