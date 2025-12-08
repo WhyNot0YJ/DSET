@@ -74,8 +74,21 @@ log_warning() {
 
 # 定义所有可用的实验配置
 declare -A RT_DETR_CONFIGS=(
+    # 基线实验
     ["rt-detr-r18"]="rt-detr/configs/rtdetr_r18.yaml"
     ["rt-detr-r34"]="rt-detr/configs/rtdetr_r34.yaml"
+)
+
+# 核心实验配置（8个实验，按顺序）
+declare -a CORE_EXPERIMENTS=(
+    "rt-detr/configs/rtdetr_r18.yaml"           # 1. RT-DETR-R18 (Baseline)
+    "dset/configs/dset6_r18_ratio0.5.yaml"      # 2. DSET6-R18-0.5 (⭐⭐⭐ 最重要)
+    "rt-detr/configs/rtdetr_r34.yaml"           # 3. RT-DETR-R34 (Baseline)
+    "dset/configs/dset6_r34_ratio0.5.yaml"      # 4. DSET6-R34-0.5
+    "dset/configs/dset6_r18_ratio0.3.yaml"      # 5. DSET6-R18-0.3
+    "dset/configs/dset6_r18_ratio0.9.yaml"       # 6. DSET6-R18-0.9
+    "dset/configs/dset4_r18_ratio0.5.yaml"      # 7. DSET4-R18-0.5
+    "dset/configs/dset48_r18_ratio0.5.yaml"      # 8. DSET48-R18-0.5
 )
 
 declare -A MOE_RTDETR_CONFIGS=(
@@ -88,26 +101,19 @@ declare -A MOE_RTDETR_CONFIGS=(
 )
 
 declare -A DSET_CONFIGS=(
-    ["dset4-r18"]="dset/configs/dset4_r18.yaml"
-    ["dset4-r34"]="dset/configs/dset4_r34.yaml"
-    ["dset6-r18"]="dset/configs/dset6_r18.yaml"
-    ["dset6-r34"]="dset/configs/dset6_r34.yaml"
-    ["dset48-r18"]="dset/configs/dset48_r18.yaml"
-    ["dset48-r34"]="dset/configs/dset48_r34.yaml"
-    # Ratio 0.7 (Group A)
-    ["dset4-r18-k0.7"]="dset/configs/dset4_r18_ratio0.7.yaml"
-    ["dset4-r34-k0.7"]="dset/configs/dset4_r34_ratio0.7.yaml"
-    ["dset6-r18-k0.7"]="dset/configs/dset6_r18_ratio0.7.yaml"
-    ["dset6-r34-k0.7"]="dset/configs/dset6_r34_ratio0.7.yaml"
-    ["dset48-r18-k0.7"]="dset/configs/dset48_r18_ratio0.7.yaml"
-    ["dset48-r34-k0.7"]="dset/configs/dset48_r34_ratio0.7.yaml"
-    # Ratio 0.5 (Group B)
-    ["dset4-r18-k0.5"]="dset/configs/dset4_r18_ratio0.5.yaml"
-    ["dset4-r34-k0.5"]="dset/configs/dset4_r34_ratio0.5.yaml"
-    ["dset6-r18-k0.5"]="dset/configs/dset6_r18_ratio0.5.yaml"
-    ["dset6-r34-k0.5"]="dset/configs/dset6_r34_ratio0.5.yaml"
-    ["dset48-r18-k0.5"]="dset/configs/dset48_r18_ratio0.5.yaml"
-    ["dset48-r34-k0.5"]="dset/configs/dset48_r34_ratio0.5.yaml"
+    # 核心实验配置（按实验顺序）
+    # 1. DSET6-R18-0.5 (⭐⭐⭐ 最重要) - 核心模型
+    ["dset6-r18-0.5"]="dset/configs/dset6_r18_ratio0.5.yaml"
+    # 2. DSET6-R34-0.5 - 证明可扩展性
+    ["dset6-r34-0.5"]="dset/configs/dset6_r34_ratio0.5.yaml"
+    # 3. DSET6-R18-0.3 - 低bound (Fast)
+    ["dset6-r18-0.3"]="dset/configs/dset6_r18_ratio0.3.yaml"
+    # 4. DSET6-R18-0.9 - 高bound (Slow)
+    ["dset6-r18-0.9"]="dset/configs/dset6_r18_ratio0.9.yaml"
+    # 5. DSET4-R18-0.5 - 专家数量影响 (Lite)
+    ["dset4-r18-0.5"]="dset/configs/dset4_r18_ratio0.5.yaml"
+    # 6. DSET48-R18-0.5 - 专家数量影响 (Heavy)
+    ["dset48-r18-0.5"]="dset/configs/dset48_r18_ratio0.5.yaml"
 )
 
 declare -A YOLOV8_CONFIGS=(
@@ -241,8 +247,10 @@ parse_arguments() {
     local has_r18=false
     local has_r34=false
     local has_r50=false
-    local has_k07=false
+    local has_k03=false
     local has_k05=false
+    local has_k07=false
+    local has_k09=false
     local filtered_args=()
     
     for arg in "${args[@]}"; do
@@ -255,10 +263,14 @@ parse_arguments() {
             has_r34=true
         elif [ "$arg" == "--r50" ]; then
             has_r50=true
-        elif [ "$arg" == "--k0.7" ]; then
-            has_k07=true
+        elif [ "$arg" == "--k0.3" ]; then
+            has_k03=true
         elif [ "$arg" == "--k0.5" ]; then
             has_k05=true
+        elif [ "$arg" == "--k0.7" ]; then
+            has_k07=true
+        elif [ "$arg" == "--k0.9" ]; then
+            has_k09=true
         else
             filtered_args+=("$arg")
         fi
@@ -280,10 +292,12 @@ parse_arguments() {
         log_info "Backbone过滤: $backbone_filter"
     fi
 
-    if [ "$has_k07" = true ] || [ "$has_k05" = true ]; then
+    if [ "$has_k03" = true ] || [ "$has_k05" = true ] || [ "$has_k07" = true ] || [ "$has_k09" = true ]; then
         local selected_ratios=()
-        [ "$has_k07" = true ] && selected_ratios+=("Ratio 0.7")
+        [ "$has_k03" = true ] && selected_ratios+=("Ratio 0.3")
         [ "$has_k05" = true ] && selected_ratios+=("Ratio 0.5")
+        [ "$has_k07" = true ] && selected_ratios+=("Ratio 0.7")
+        [ "$has_k09" = true ] && selected_ratios+=("Ratio 0.9")
         local ratio_filter=$(IFS='+'; echo "${selected_ratios[*]}")
         log_info "Ratio过滤: $ratio_filter"
     fi
@@ -310,13 +324,19 @@ parse_arguments() {
             if [ "$match_backbone" = false ]; then return 1; fi
         fi
         
-        # 2. Ratio Filter (k0.7 / k0.5)
-        if [ "$has_k07" = true ] || [ "$has_k05" = true ]; then
+        # 2. Ratio Filter (k0.3 / k0.5 / k0.7 / k0.9)
+        if [ "$has_k03" = true ] || [ "$has_k05" = true ] || [ "$has_k07" = true ] || [ "$has_k09" = true ]; then
             local match_ratio=false
-            if [ "$has_k07" = true ] && [[ "$config_path" == *"ratio0.7"* ]]; then
+            if [ "$has_k03" = true ] && [[ "$config_path" == *"ratio0.3"* ]]; then
                 match_ratio=true
             fi
             if [ "$has_k05" = true ] && [[ "$config_path" == *"ratio0.5"* ]]; then
+                match_ratio=true
+            fi
+            if [ "$has_k07" = true ] && [[ "$config_path" == *"ratio0.7"* ]]; then
+                match_ratio=true
+            fi
+            if [ "$has_k09" = true ] && [[ "$config_path" == *"ratio0.9"* ]]; then
                 match_ratio=true
             fi
             if [ "$match_ratio" = false ]; then return 1; fi
@@ -324,6 +344,15 @@ parse_arguments() {
         
         return 0
     }
+    
+    # 检查是否有--core选项（优先处理）
+    for arg in "$@"; do
+        if [ "$arg" == "--core" ]; then
+            CONFIGS_TO_RUN=("${CORE_EXPERIMENTS[@]}")
+            log_info "运行8个核心实验（按顺序）"
+            return 0
+        fi
+    done
     
     # 收集所有指定的实验类型（支持多个参数叠加）
     local has_rt_detr=false
@@ -526,8 +555,11 @@ parse_arguments() {
         echo "  ./run_batch_experiments.sh --r18                           # 只运行R18"
         echo "  ./run_batch_experiments.sh --r34                           # 只运行R34"
         echo "  ./run_batch_experiments.sh --r18 --r34                     # 运行R18+R34"
-        echo "  ./run_batch_experiments.sh --k0.7                          # 只运行 Keep Ratio 0.7 (Group A)"
-        echo "  ./run_batch_experiments.sh --k0.5                          # 只运行 Keep Ratio 0.5 (Group B)"
+        echo "  ./run_batch_experiments.sh --k0.3                          # 只运行 Keep Ratio 0.3 (Fast)"
+        echo "  ./run_batch_experiments.sh --k0.5                          # 只运行 Keep Ratio 0.5 (Best/Default)"
+        echo "  ./run_batch_experiments.sh --k0.7                          # 只运行 Keep Ratio 0.7"
+        echo "  ./run_batch_experiments.sh --k0.9                          # 只运行 Keep Ratio 0.9 (Slow)"
+        echo "  ./run_batch_experiments.sh --core                          # 只运行8个核心实验（按顺序）"
         echo "  ./run_batch_experiments.sh --custom cfg1.yaml cfg2.yaml    # 指定配置文件路径"
         echo "  ./run_batch_experiments.sh --keys rt-detr-r18 moe6-r34     # 通过键名选择"
         echo "  ./run_batch_experiments.sh --select                        # 交互式选择"
