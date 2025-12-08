@@ -1207,12 +1207,16 @@ class AdaptiveExpertTrainer:
         all_targets = []
         total_raw_predictions = 0  # 原始query总数
         
+        # 初始化默认尺寸 (防止 val_loader 为空)
+        current_h, current_w = 736, 1280
+        
         # 前30个epoch只计算loss，不进行cocoEval评估
         
         with torch.no_grad():
             for batch_idx, (images, targets) in enumerate(self.val_loader):
                 # 动态获取 Tensor 尺寸
                 B, C, H_tensor, W_tensor = images.shape
+                current_h, current_w = H_tensor, W_tensor
 
                 images = images.to(self.device)
                 targets = [{k: v.to(self.device) if isinstance(v, torch.Tensor) else v 
@@ -1239,7 +1243,9 @@ class AdaptiveExpertTrainer:
         avg_loss = total_loss / len(self.val_loader)
         
         # 计算mAP（不计算每个类别的mAP，只在best_model时计算）
-        mAP_metrics = self._compute_map_metrics(all_predictions, all_targets, print_per_category=False)
+        mAP_metrics = self._compute_map_metrics(all_predictions, all_targets, 
+                                              img_h=current_h, img_w=current_w,
+                                              print_per_category=False)
         
         return {
             'total_loss': avg_loss,
@@ -1375,12 +1381,16 @@ class AdaptiveExpertTrainer:
         except Exception as e:
             self.logger.warning(f"打印best_model每类mAP失败: {e}")
     
-    def _compute_map_metrics(self, predictions: List[Dict], targets: List[Dict], print_per_category: bool = False) -> Dict[str, float]:
+    def _compute_map_metrics(self, predictions: List[Dict], targets: List[Dict], 
+                             img_h: int = 736, img_w: int = 1280,
+                             print_per_category: bool = False) -> Dict[str, float]:
         """计算mAP指标。
         
         Args:
             predictions: 预测结果列表
             targets: 真实标签列表
+            img_h: 图像高度 (Tensor Shape)
+            img_w: 图像宽度 (Tensor Shape)
             print_per_category: 是否打印每个类别的详细mAP（默认False，只在best_model时打印）
         """
         try:
@@ -1423,8 +1433,8 @@ class AdaptiveExpertTrainer:
             for img_id in image_ids:
                 coco_gt['images'].append({
                     'id': img_id, 
-                    'width': 1344,
-                    'height': 768
+                    'width': img_w,
+                    'height': img_h
                 })
             
             # 添加标注
