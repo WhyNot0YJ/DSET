@@ -95,19 +95,19 @@ declare -A DSET_CONFIGS=(
     ["dset48-r18"]="dset/configs/dset48_r18.yaml"
     ["dset48-r34"]="dset/configs/dset48_r34.yaml"
     # Ratio 0.7 (Group A)
-    ["dset4-r18-k0.7"]="dset/configs/dset4_r18_mosaic_ratio0.7.yaml"
-    ["dset4-r34-k0.7"]="dset/configs/dset4_r34_mosaic_ratio0.7.yaml"
-    ["dset6-r18-k0.7"]="dset/configs/dset6_r18_mosaic_ratio0.7.yaml"
-    ["dset6-r34-k0.7"]="dset/configs/dset6_r34_mosaic_ratio0.7.yaml"
-    ["dset48-r18-k0.7"]="dset/configs/dset48_r18_mosaic_ratio0.7.yaml"
-    ["dset48-r34-k0.7"]="dset/configs/dset48_r34_mosaic_ratio0.7.yaml"
+    ["dset4-r18-k0.7"]="dset/configs/dset4_r18_ratio0.7.yaml"
+    ["dset4-r34-k0.7"]="dset/configs/dset4_r34_ratio0.7.yaml"
+    ["dset6-r18-k0.7"]="dset/configs/dset6_r18_ratio0.7.yaml"
+    ["dset6-r34-k0.7"]="dset/configs/dset6_r34_ratio0.7.yaml"
+    ["dset48-r18-k0.7"]="dset/configs/dset48_r18_ratio0.7.yaml"
+    ["dset48-r34-k0.7"]="dset/configs/dset48_r34_ratio0.7.yaml"
     # Ratio 0.5 (Group B)
-    ["dset4-r18-k0.5"]="dset/configs/dset4_r18_mosaic_ratio0.5.yaml"
-    ["dset4-r34-k0.5"]="dset/configs/dset4_r34_mosaic_ratio0.5.yaml"
-    ["dset6-r18-k0.5"]="dset/configs/dset6_r18_mosaic_ratio0.5.yaml"
-    ["dset6-r34-k0.5"]="dset/configs/dset6_r34_mosaic_ratio0.5.yaml"
-    ["dset48-r18-k0.5"]="dset/configs/dset48_r18_mosaic_ratio0.5.yaml"
-    ["dset48-r34-k0.5"]="dset/configs/dset48_r34_mosaic_ratio0.5.yaml"
+    ["dset4-r18-k0.5"]="dset/configs/dset4_r18_ratio0.5.yaml"
+    ["dset4-r34-k0.5"]="dset/configs/dset4_r34_ratio0.5.yaml"
+    ["dset6-r18-k0.5"]="dset/configs/dset6_r18_ratio0.5.yaml"
+    ["dset6-r34-k0.5"]="dset/configs/dset6_r34_ratio0.5.yaml"
+    ["dset48-r18-k0.5"]="dset/configs/dset48_r18_ratio0.5.yaml"
+    ["dset48-r34-k0.5"]="dset/configs/dset48_r34_ratio0.5.yaml"
 )
 
 declare -A YOLOV8_CONFIGS=(

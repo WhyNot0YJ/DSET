@@ -43,8 +43,8 @@ data_augmentation:
   crop_min: 0.1
   crop_max: 1.0
   flip_prob: 0.5
-  mosaic: 1.0
-  mixup: 0.1
+  mosaic: 0.0
+  mixup: 0.0
   close_mosaic_epochs: 20
   scales_min: 480
   scales_max: 800
