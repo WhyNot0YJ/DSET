@@ -118,7 +118,17 @@ def load_model(config_path: str, checkpoint_path: str, device: str = "cuda"):
     model.eval()
     model = model.to(device)
     
-    num_queries = config.get('model', {}).get('num_queries', 300)
+    # Enable pruning during inference by setting epoch >= warmup_epochs
+    # This ensures pruning_enabled=True in PatchLevelPruner
+    if hasattr(model, 'encoder') and hasattr(model.encoder, 'set_epoch'):
+        # Get warmup_epochs from config (default: 10)
+        dset_config = config.get('dset', {})
+        warmup_epochs = dset_config.get('token_pruning_warmup_epochs', 10)
+        # Set epoch to enable pruning (epoch >= warmup_epochs)
+        model.encoder.set_epoch(warmup_epochs)
+        print(f"  ✓ Enabled token pruning for inference (epoch={warmup_epochs})")
+    
+    num_queries = config.get('model', {}).get('num_queries', 100)
     
     postprocessor = DetDETRPostProcessor(
         num_classes=8,

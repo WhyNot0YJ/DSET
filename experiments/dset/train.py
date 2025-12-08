@@ -1521,8 +1521,16 @@ class DSETTrainer:
         self.ema.module.eval()
         
         # 设置encoder的epoch（用于Token Pruning渐进式启用，验证时也需要）
+        # 1. 更新训练模型 (保持原样)
         if hasattr(self.model, 'encoder') and hasattr(self.model.encoder, 'set_epoch'):
             self.model.encoder.set_epoch(self.current_epoch)
+        
+        # =========================================================
+        # [修复] 必须同时更新 EMA 模型的 epoch，否则验证时不会剪枝！
+        # EMA模型是deepcopy的独立副本，需要单独设置epoch
+        # =========================================================
+        if hasattr(self.ema.module, 'encoder') and hasattr(self.ema.module.encoder, 'set_epoch'):
+            self.ema.module.encoder.set_epoch(self.current_epoch)
         
         total_loss = 0.0
         all_predictions = []
