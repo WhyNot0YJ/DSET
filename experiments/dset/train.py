@@ -1531,11 +1531,20 @@ class DSETTrainer:
         # =========================================================
         if hasattr(self.ema.module, 'encoder') and hasattr(self.ema.module.encoder, 'set_epoch'):
             self.ema.module.encoder.set_epoch(self.current_epoch)
+            # 调试：验证EMA模型的pruning_enabled状态
+            if hasattr(self.ema.module.encoder, 'token_pruners') and self.ema.module.encoder.token_pruners:
+                pruner = self.ema.module.encoder.token_pruners[0]
+                if self.current_epoch >= 10:  # 只在warmup后打印
+                    self.logger.debug(f"[验证] Epoch {self.current_epoch}: EMA pruner.pruning_enabled={pruner.pruning_enabled}, "
+                                   f"current_epoch={pruner.current_epoch}, warmup_epochs={pruner.warmup_epochs}")
         
         total_loss = 0.0
         all_predictions = []
         all_targets = []
         total_raw_predictions = 0  # 原始query总数
+        
+        # 统计验证时的剪枝比例
+        val_pruning_ratios = []
         
         # 初始化默认尺寸 (防止 val_loader 为空)
         current_h, current_w = 736, 1280
@@ -1552,6 +1561,13 @@ class DSETTrainer:
                            for k, v in t.items()} for t in targets]
                 
                 outputs = self.ema.module(images, targets)
+                
+                # 收集验证时的剪枝信息
+                if isinstance(outputs, dict) and 'encoder_info' in outputs:
+                    encoder_info = outputs['encoder_info']
+                    if 'token_pruning_ratios' in encoder_info and encoder_info['token_pruning_ratios']:
+                        avg_ratio = sum(encoder_info['token_pruning_ratios']) / len(encoder_info['token_pruning_ratios'])
+                        val_pruning_ratios.append(avg_ratio)
                 
                 if isinstance(outputs, dict):
                     if 'total_loss' in outputs:
@@ -1571,6 +1587,16 @@ class DSETTrainer:
         
         avg_loss = total_loss / len(self.val_loader)
         
+        # 计算平均验证时的剪枝比例
+        avg_val_pruning_ratio = sum(val_pruning_ratios) / len(val_pruning_ratios) if val_pruning_ratios else 0.0
+        
+        # 打印验证时的剪枝状态（用于调试）
+        if self.current_epoch >= 10:  # 只在warmup后打印
+            if avg_val_pruning_ratio > 0.0:
+                self.logger.info(f"  ✓ 验证时Token Pruning生效: {avg_val_pruning_ratio:.2%} tokens被剪枝")
+            else:
+                self.logger.warning(f"  ⚠ 验证时Token Pruning未生效 (pruning_ratio=0.0)! 可能EMA模型epoch未设置")
+        
         # 计算mAP（不计算每个类别的mAP，只在best_model时计算）
         mAP_metrics = self._compute_map_metrics(all_predictions, all_targets, 
                                               img_h=current_h, img_w=current_w,
@@ -1583,7 +1609,8 @@ class DSETTrainer:
             'mAP_0.5_0.95': mAP_metrics.get('mAP_0.5_0.95', 0.0),
             'num_predictions': len(all_predictions),
             'num_raw_predictions': total_raw_predictions,
-            'num_targets': len(all_targets)
+            'num_targets': len(all_targets),
+            'val_token_pruning_ratio': avg_val_pruning_ratio  # 添加验证时的剪枝比例
         }
     
     def _collect_predictions(self, outputs: Dict, targets: List[Dict], batch_idx: int,
