@@ -233,7 +233,7 @@ class HybridEncoder(nn.Module):
                  token_pruning_warmup_epochs=10,
                  patch_moe_num_experts=4,
                  patch_moe_top_k=2,
-                 patch_moe_patch_size=4):
+                 patch_moe_patch_size=1):
         """
         Args:
             token_keep_ratio: Patch retention ratio (0.5-0.7)
@@ -272,10 +272,6 @@ class HybridEncoder(nn.Module):
                 
             self.input_proj.append(proj)
 
-        # 根据模型结构自动计算每一层的 num_patches 和 min_patches
-        # 使用默认 640×640
-        image_h = image_w = 640  # 默认值
-        
         # [HSP 核心修改] Support hierarchical scale-aware pruning
         self.token_pruners = nn.ModuleList()
         for enc_ind in use_encoder_idx:
@@ -295,9 +291,7 @@ class HybridEncoder(nn.Module):
                 patch_size=patch_moe_patch_size,
                 keep_ratio=current_keep_ratio,  # Use layer-specific ratio
                 adaptive=True,
-                min_patches=self._calculate_min_patches_for_layer(
-                    enc_ind, feat_strides, image_h, image_w, patch_moe_patch_size
-                ),
+                min_patches=self._calculate_min_patches_for_layer(),
                 warmup_epochs=token_pruning_warmup_epochs,
                 prune_in_eval=True
             )
@@ -338,27 +332,14 @@ class HybridEncoder(nn.Module):
                 CSPRepLayer(hidden_dim * 2, hidden_dim, round(3 * depth_mult), act=act, expansion=expansion)
             )
     
-    def _calculate_min_patches_for_layer(self, enc_ind: int, feat_strides: list, 
-                                        image_h: int, image_w: int, patch_size: int) -> int:
-        """Calculate min_patches based on layer structure, aligning with PatchLevelPruner."""
-        # Get stride for current layer
-        stride = feat_strides[enc_ind] if enc_ind < len(feat_strides) else feat_strides[-1]
-        
-        # Calculate feature map size
-        feat_h = image_h // stride
-        feat_w = image_w // stride
-        
-        # Calculate num_patches
-        patch_h = min(patch_size, feat_h)
-        patch_w = min(patch_size, feat_w)
-        num_patches_h = (feat_h + patch_h - 1) // patch_h
-        num_patches_w = (feat_w + patch_w - 1) // patch_w
-        num_patches = num_patches_h * num_patches_w
-        
-        # Keep at least 1 patch
-        min_patches = max(1, int(num_patches * 0.75))
-        
-        return min_patches
+    def _calculate_min_patches_for_layer(self) -> int:
+        """
+        Calculate min_patches.
+        Returns a fixed safe minimum (16) to ensure code stability,
+        leaving the actual pruning ratio control entirely to `keep_ratio`.
+        """
+        # A small constant to prevent empty tensors/crashes (e.g. 4x4 region)
+        return 16
 
     @staticmethod
     def build_2d_sincos_position_embedding(w, h, embed_dim=256, temperature=10000.):
