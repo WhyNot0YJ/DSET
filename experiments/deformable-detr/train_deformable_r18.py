@@ -21,16 +21,16 @@ def check_and_install_dependencies():
             subprocess.check_call([sys.executable, "-m", "pip", "install", "-U", "openmim"])
             import mim
 
-        # [FIX] Set correct GPU architecture for RTX 5090 / CUDA 12.8
-        # This prevents the "unsupported gpu architecture 'compute_120'" error
-        # RTX 5090 (Blackwell) supports compute capabilities 9.0 (Hopper compatibility) and 10.0 (Blackwell)
-        # Without this, mmcv installation may incorrectly parse CUDA 12.8 as "compute_120" which doesn't exist
-        os.environ["TORCH_CUDA_ARCH_LIST"] = "9.0 10.0"
-        print("✓ Set TORCH_CUDA_ARCH_LIST=9.0 10.0 for RTX 5090 (Blackwell)")
+        # [FIX] Environment has CUDA 12.1 which supports max arch 9.0 (Hopper).
+        # RTX 5090 is backward compatible with 9.0.
+        # Do NOT use 10.0 as it crashes nvcc 12.1.
+        # This prevents the "unsupported gpu architecture 'compute_100'" error
+        os.environ["TORCH_CUDA_ARCH_LIST"] = "9.0"
+        print("✓ Set TORCH_CUDA_ARCH_LIST=9.0 for RTX 5090 (CUDA 12.1 compatible)")
 
-        print("Installing mmengine, mmcv, mmdet via mim (with Arch 9.0 10.0)...")
+        print("Installing mmengine, mmcv, mmdet via mim (Force Arch 9.0)...")
         # Install compatible versions. Adjust versions if needed.
-        # Note: For CUDA 12.8 / RTX 5090, ensure PyTorch >= 2.5.0
+        # Note: For CUDA 12.1 / RTX 5090, we use arch 9.0 (Hopper) for backward compatibility
         # -v flag for verbose output to see compilation progress
         subprocess.check_call(["mim", "install", "mmengine", "mmcv>=2.0.0", "mmdet>=3.0.0", "-v"])
 
