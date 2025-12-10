@@ -1,6 +1,8 @@
 import os
 import sys
 import subprocess
+import argparse
+import torch
 
 # --- Auto-Installation Block ---
 # 自动安装依赖模块 (如果缺失)
@@ -19,9 +21,18 @@ def check_and_install_dependencies():
             subprocess.check_call([sys.executable, "-m", "pip", "install", "-U", "openmim"])
             import mim
 
-        print("Installing mmengine, mmcv, mmdet via mim...")
+        # [FIX] Set correct GPU architecture for RTX 5090 / CUDA 12.8
+        # This prevents the "unsupported gpu architecture 'compute_120'" error
+        # RTX 5090 (Blackwell) supports compute capabilities 9.0 (Hopper compatibility) and 10.0 (Blackwell)
+        # Without this, mmcv installation may incorrectly parse CUDA 12.8 as "compute_120" which doesn't exist
+        os.environ["TORCH_CUDA_ARCH_LIST"] = "9.0 10.0"
+        print("✓ Set TORCH_CUDA_ARCH_LIST=9.0 10.0 for RTX 5090 (Blackwell)")
+
+        print("Installing mmengine, mmcv, mmdet via mim (with Arch 9.0 10.0)...")
         # Install compatible versions. Adjust versions if needed.
-        subprocess.check_call(["mim", "install", "mmengine", "mmcv>=2.0.0", "mmdet>=3.0.0"])
+        # Note: For CUDA 12.8 / RTX 5090, ensure PyTorch >= 2.5.0
+        # -v flag for verbose output to see compilation progress
+        subprocess.check_call(["mim", "install", "mmengine", "mmcv>=2.0.0", "mmdet>=3.0.0", "-v"])
 
 # Check dependencies before main imports if running in a fresh environment
 check_and_install_dependencies()
@@ -29,7 +40,48 @@ check_and_install_dependencies()
 from mmengine.config import Config
 from mmengine.runner import Runner
 
+def setup_gpu_optimizations():
+    """
+    配置 GPU 优化设置（RTX 5090 + CUDA 12.8 兼容）
+    Configure GPU optimizations for RTX 5090 with CUDA 12.8
+    """
+    if torch.cuda.is_available():
+        # 启用 cudnn benchmark 以加速卷积操作（输入尺寸固定时）
+        torch.backends.cudnn.benchmark = True
+        
+        # 启用 TensorFloat-32 (TF32) - RTX 5090 支持，可加速某些操作
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        
+        # 显示 GPU 信息
+        print(f"✓ GPU 优化已启用:")
+        print(f"  - Device: {torch.cuda.get_device_name(0)}")
+        print(f"  - CUDA Version: {torch.version.cuda}")
+        print(f"  - PyTorch Version: {torch.__version__}")
+        print(f"  - cudnn.benchmark: {torch.backends.cudnn.benchmark}")
+        print(f"  - TF32 (matmul): {torch.backends.cuda.matmul.allow_tf32}")
+        print(f"  - TF32 (cudnn): {torch.backends.cudnn.allow_tf32}")
+    else:
+        print("⚠ GPU 不可用，将使用 CPU 训练（速度会很慢）")
+
 def main():
+    # ==================================================================
+    # 0. Parse Arguments (命令行参数)
+    # ==================================================================
+    parser = argparse.ArgumentParser(description='Deformable DETR R18 Training')
+    parser.add_argument('--epochs', type=int, default=None,
+                        help='Override max_epochs (for test mode, use --epochs 2)')
+    parser.add_argument('--data_root', type=str, default=None,
+                        help='Override data root path (default: /root/autodl-tmp/datasets/DAIR-V2X/)')
+    parser.add_argument('--work_dir', type=str, default=None,
+                        help='Override work directory')
+    args = parser.parse_args()
+    
+    # ==================================================================
+    # 0.5. Setup GPU Optimizations (GPU 优化设置)
+    # ==================================================================
+    setup_gpu_optimizations()
+    
     # ==================================================================
     # 1. Base Config (基础配置)
     # ==================================================================
@@ -67,9 +119,29 @@ def main():
     # 3. Dataset Overrides (数据集配置)
     # ==================================================================
     # Dataset Root
-    # 设置数据根目录
-    data_root = '/root/autodl-tmp/datasets/DAIR-V2X/'
+    # 设置数据根目录（支持命令行参数覆盖）
+    if args.data_root:
+        data_root = args.data_root
+    else:
+        # 尝试自动检测数据路径
+        possible_paths = [
+            '/root/autodl-tmp/datasets/DAIR-V2X/',
+            '/home/yujie/proj/task-selective-det/data/DAIR-V2X/',
+            os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data/DAIR-V2X/'),
+        ]
+        data_root = None
+        for path in possible_paths:
+            if os.path.exists(path) and os.path.exists(os.path.join(path, 'annotations')):
+                data_root = path
+                break
+        if data_root is None:
+            # 使用默认路径（如果不存在会在运行时报错）
+            data_root = '/root/autodl-tmp/datasets/DAIR-V2X/'
+            print(f"⚠ Warning: Using default data root: {data_root}")
+            print(f"   If data is elsewhere, use --data_root to specify")
+    
     cfg.data_root = data_root
+    print(f"✓ Data root: {data_root}")
 
     # Class Names
     # 定义类别名称
@@ -157,9 +229,14 @@ def main():
     # ==================================================================
     # 4. Training Schedule (训练计划)
     # ==================================================================
-    # Set max epochs
-    # 设置最大训练轮数为 200
-    cfg.train_cfg.max_epochs = 200
+    # Set max epochs (支持命令行参数覆盖，用于测试模式)
+    # 设置最大训练轮数（默认 200，可通过 --epochs 覆盖）
+    if args.epochs is not None:
+        max_epochs = args.epochs
+        print(f"✓ Overriding max_epochs to {max_epochs} (from --epochs argument)")
+    else:
+        max_epochs = 200
+    cfg.train_cfg.max_epochs = max_epochs
     
     # Configure LR Scheduler (MultiStepLR for 200 epochs)
     # 重写学习率衰减策略
@@ -188,17 +265,26 @@ def main():
     # ==================================================================
     # 5. Work Directory (输出目录)
     # ==================================================================
-    # 设置工作目录
-    cfg.work_dir = 'experiments/Deformable_DETR/work_dirs/r18_baseline'
+    # 设置工作目录（支持命令行参数覆盖）
+    if args.work_dir:
+        cfg.work_dir = args.work_dir
+    else:
+        # 使用相对路径（从 experiments/deformable-detr/ 目录运行）
+        cfg.work_dir = 'work_dirs/r18_baseline'
+    print(f"✓ Work directory: {cfg.work_dir}")
 
     # ==================================================================
     # 6. Execution (执行训练)
     # ==================================================================
-    print(f"Starting training...")
+    print(f"\n{'='*60}")
+    print(f"Starting Deformable DETR R18 Training")
+    print(f"{'='*60}")
     print(f"Config path: {config_path}")
     print(f"Work dir: {cfg.work_dir}")
     print(f"Max Epochs: {cfg.train_cfg.max_epochs}")
     print(f"Batch Size: {cfg.train_dataloader.batch_size}")
+    print(f"Data Root: {data_root}")
+    print(f"{'='*60}\n")
     
     # Build Runner
     # 构建并启动 Runner

@@ -667,11 +667,12 @@ run_single_experiment() {
     
     # Deformable-DETR 使用 Python 脚本，不需要 --config 参数
     if [[ "$exp_dir" == *"deformable-detr"* ]]; then
-        # 如果是测试模式，需要修改脚本内的 max_epochs（暂时不支持，需要手动修改）
+        # 如果是测试模式，传递 --epochs 2 参数
         if [ "$TEST_MODE" = true ]; then
-            log_warning "Deformable-DETR 测试模式需要手动修改脚本中的 max_epochs"
+            python train_deformable_r18.py --epochs 2
+        else
+            python train_deformable_r18.py
         fi
-        python train_deformable_r18.py
     # 其他实验使用 YAML 配置文件
     elif [ "$TEST_MODE" = true ]; then
         python train.py --config "../$config_path" --epochs 2
