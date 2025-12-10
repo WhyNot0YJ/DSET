@@ -31,13 +31,41 @@ DSET Pruning Curve Benchmark Script
             --output results.png
 
 运行示例 (Example):
-    # 基本用法（从项目根目录运行）
+    # 1. 测试单个模型
     python benchmark_pruning_curve.py \
         --config experiments/dset/configs/dset6_r18_ratio0.5.yaml \
         --checkpoint experiments/dset/logs/dset6_r18_20251209_155547/best_model.pth \
         --name "DSET_r18_0.5"
     
-    # 指定设备
+    # 2. 测试多个模型（在一张图上）
+    # 首先创建 JSON 配置文件（例如 models.json）：
+    # {
+    #   "DSET_r18_0.3": {
+    #     "config": "experiments/dset/configs/dset6_r18_ratio0.3.yaml",
+    #     "checkpoint": "experiments/dset/logs/dset6_r18_20251209_155547/best_model.pth"
+    #   },
+    #   "DSET_r18_0.5": {
+    #     "config": "experiments/dset/configs/dset6_r18_ratio0.5.yaml",
+    #     "checkpoint": "experiments/dset/logs/dset6_r18_20251209_155547/best_model.pth"
+    #   },
+    #   "DSET_r18_0.9": {
+    #     "config": "experiments/dset/configs/dset6_r18_ratio0.9.yaml",
+    #     "checkpoint": "experiments/dset/logs/dset6_r18_20251209_155547/best_model.pth"
+    #   }
+    # }
+    # 然后运行：
+    python benchmark_pruning_curve.py \
+        --models_config models.json \
+        --output multi_model_comparison.png
+    
+    # 3. 自定义 keep_ratio 范围
+    python benchmark_pruning_curve.py \
+        --config config.yaml \
+        --checkpoint ckpt.pth \
+        --name "MyModel" \
+        --ratios 0.1 0.2 0.3 0.4 0.5
+    
+    # 4. 指定设备
     python benchmark_pruning_curve.py \
         --config config.yaml \
         --checkpoint ckpt.pth \
@@ -224,9 +252,9 @@ def plot_results(inference_ratios, results, output_path="pruning_tradeoff.png"):
                  linewidth=2, 
                  label=model_name)
         
-        # Add labels
+        # Add labels (保留四位小数)
         for x, y in zip(inference_ratios, mAPs):
-            plt.annotate(f"{y:.3f}", (x, y), textcoords="offset points", xytext=(0, 10), ha='center')
+            plt.annotate(f"{y:.4f}", (x, y), textcoords="offset points", xytext=(0, 10), ha='center', fontsize=8)
 
     plt.xlabel('Inference Keep Ratio')
     plt.ylabel('mAP (0.5:0.95)')
