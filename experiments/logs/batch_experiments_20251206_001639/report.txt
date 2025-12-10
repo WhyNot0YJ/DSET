@@ -2,8 +2,8 @@
 批量实验最终报告
 =========================================
 
-完成时间: 2025-12-05 18:57:47
-日志目录: /root/autodl-tmp/DSET/experiments/logs/batch_experiments_20251205_104929
+完成时间: 2025-12-06 04:13:01
+日志目录: /root/autodl-tmp/DSET/experiments/logs/batch_experiments_20251206_001639
 
 实验统计:
   总实验数:   1
@@ -12,8 +12,8 @@
   跳过:       0
 
 ✓ 成功的实验:
-  - rtdetr_r34 (耗时: 08:08:16)
+  - yolov10s_dairv2x (耗时: 03:56:21)
 
 
-CSV结果: /root/autodl-tmp/DSET/experiments/logs/batch_experiments_20251205_104929/results.csv
+CSV结果: /root/autodl-tmp/DSET/experiments/logs/batch_experiments_20251206_001639/results.csv
 =========================================

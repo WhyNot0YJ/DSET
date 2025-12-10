@@ -1,0 +1,16 @@
+{
+  "checkpoint": "logs/yolo_v10l_20251202_112836/best_model.pth",
+  "data_yaml": "/root/autodl-tmp/datasets/DAIR-V2X_YOLO/dairv2x.yaml",
+  "max_det": 100,
+  "conf_threshold": 0.001,
+  "iou_threshold": 0.6,
+  "imgsz": 1280,
+  "metrics": {
+    "mAP50": 0.9184167057545757,
+    "mAP50-95": 0.7386664046692349,
+    "precision": 0.8876347960929799,
+    "recall": 0.8721224937230471,
+    "max_det": 100
+  },
+  "timestamp": "2025-12-06T00:19:23.133723"
+}
