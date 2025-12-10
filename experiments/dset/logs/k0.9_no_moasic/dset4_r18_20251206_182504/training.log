@@ -1,0 +1,37 @@
+2025-12-06 18:25:04,175 - INFO - 从本地文件加载预训练权重: pretrained/rtdetrv2_r18vd_120e_coco_rerun_48.1.pth
+2025-12-06 18:25:04,232 - INFO - ✓ 检测到EMA checkpoint格式
+2025-12-06 18:25:04,243 - INFO - ✓ 成功加载预训练权重: 529/529 个参数
+2025-12-06 18:25:04,243 - INFO -   - 跳过类别相关参数: 9 个（COCO 80类 → DAIR-V2X 8类）
+2025-12-06 18:25:04,243 - INFO -   - Backbone: 138 个参数
+2025-12-06 18:25:04,243 - INFO -   - Encoder: 270 个参数
+2025-12-06 18:25:04,243 - INFO -   - Decoder: 121 个参数
+2025-12-06 18:25:04,244 - INFO -   - 模型新增参数: 18 个（将随机初始化）
+2025-12-06 18:25:04,434 - INFO - ✓ 已启用GPU优化: cudnn.benchmark=True, TF32=True
+2025-12-06 18:25:04,434 - INFO - ✓ 创建DSET RT-DETR模型
+2025-12-06 18:25:04,434 - INFO -   Decoder专家数量: 4
+2025-12-06 18:25:04,434 - INFO -   Backbone: presnet18
+2025-12-06 18:25:04,434 - INFO -   Encoder: in_channels=[128, 256, 512], expansion=0.5, num_layers=1
+2025-12-06 18:25:04,434 - INFO -   Encoder MoE设计: 层间共享
+2025-12-06 18:25:04,434 - INFO -   双稀疏配置（DSET核心特性，必然启用）:
+2025-12-06 18:25:04,434 - INFO -     - Patch-MoE: 启用 (experts=4, top_k=2, patch_size=1)
+2025-12-06 18:25:04,434 - INFO -     - Patch-level Pruning: 启用（与 Patch-MoE 兼容）
+2025-12-06 18:25:04,434 - INFO -       → keep_ratio={2: 0.5}, warmup=10
+2025-12-06 18:25:04,434 - INFO -   损失权重配置:
+2025-12-06 18:25:04,434 - INFO -     - Token Pruning Loss: True (weight=0.005)
+2025-12-06 18:25:04,435 - INFO -     - Decoder MoE: 0.05
+2025-12-06 18:25:04,435 - INFO -     - Encoder MoE: 0.02
+2025-12-06 18:25:04,507 - INFO - ✓ 创建数据加载器
+2025-12-06 18:25:04,507 - INFO -   训练集: 5042 | 验证集: 2016
+2025-12-06 18:25:04,507 - INFO -   数据加载配置: num_workers=16, prefetch_factor=4, pin_memory=True
+2025-12-06 18:25:04,508 - INFO - ✓ 预训练参数组: 162 个参数, lr=1e-05
+2025-12-06 18:25:04,509 - INFO - ✓ Norm层参数组: 116 个参数, lr=0.0001, wd=0
+2025-12-06 18:25:04,510 - INFO - ✓ 新参数组: 55 个参数, lr=0.0001
+2025-12-06 18:25:04,510 - INFO - ✓ 使用CosineAnnealingLR调度器 (eta_min=1e-06)
+2025-12-06 18:25:04,510 - INFO - ✓ 学习率预热 3 epochs
+2025-12-06 18:25:04,551 - INFO - ⏱️  Early Stopping: 启用 (patience=20, metric=mAP_0.5_0.95, mode=max)
+2025-12-06 18:25:04,551 - INFO - 推理输出目录: logs/dset4_r18_20251206_182504/inference_samples
+2025-12-06 18:25:04,552 - INFO - 开始训练 200 epochs
+2025-12-06 18:25:04,552 - INFO - ✓ 梯度裁剪: max_norm=10.0
+2025-12-06 18:25:20,511 - INFO - Epoch 0 | Batch 0 | Loss: 32.59 (Det: 32.50, MoE: 2.0818)
+2025-12-06 18:27:07,232 - INFO - Epoch 0 | Batch 100 | Loss: 19.42 (Det: 19.32, MoE: 2.0858)
+2025-12-06 18:27:51,795 - INFO - Epoch 0 | Batch 200 | Loss: 17.16 (Det: 17.07, MoE: 2.0522)
