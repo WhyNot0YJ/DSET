@@ -94,7 +94,11 @@ def setup_trainer(config_path, checkpoint_path, device='cuda'):
     
     # Load checkpoint
     print(f"Loading checkpoint from {checkpoint_path}...")
-    checkpoint = torch.load(checkpoint_path, map_location='cpu')
+    try:
+        checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+    except TypeError:
+        # Fallback for older PyTorch versions that don't support weights_only
+        checkpoint = torch.load(checkpoint_path, map_location='cpu')
     
     # Load weights into EMA model (which is used for validation)
     if hasattr(trainer, 'ema') and trainer.ema:
