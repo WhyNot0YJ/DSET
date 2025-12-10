@@ -93,12 +93,17 @@ def setup_trainer(config_path, checkpoint_path, device='cuda'):
     trainer = DSETTrainer(config)
     
     # Load checkpoint
-    print(f"Loading checkpoint from {checkpoint_path}...")
+    print(f"Loading checkpoint from {checkpoint_path_abs}...")
+    if not os.path.exists(checkpoint_path_abs):
+        raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_path_abs}")
+    
     try:
-        checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+        checkpoint = torch.load(checkpoint_path_abs, map_location='cpu', weights_only=False)
     except TypeError:
         # Fallback for older PyTorch versions that don't support weights_only
-        checkpoint = torch.load(checkpoint_path, map_location='cpu')
+        checkpoint = torch.load(checkpoint_path_abs, map_location='cpu')
+    except Exception as e:
+        raise RuntimeError(f"Failed to load checkpoint from {checkpoint_path_abs}: {e}")
     
     # Load weights into EMA model (which is used for validation)
     if hasattr(trainer, 'ema') and trainer.ema:
@@ -163,8 +168,13 @@ def benchmark_models(models_dict, inference_ratios, device='cuda'):
         
         try:
             trainer = setup_trainer(config_path, ckpt_path, device=device)
-        except FileNotFoundError:
-            print(f"Skipping {model_name}: Config or Checkpoint not found.")
+        except (FileNotFoundError, RuntimeError) as e:
+            print(f"Skipping {model_name}: {e}")
+            continue
+        except Exception as e:
+            print(f"Error setting up {model_name}: {e}")
+            import traceback
+            traceback.print_exc()
             continue
             
         mAPs = []
@@ -299,16 +309,20 @@ def main():
     
     print(f"Testing keep_ratios: {inference_ratios}")
     
-    # 3. Check if files exist
+    # 3. Check if files exist (resolve relative paths)
     valid_models = {}
     for name, (cfg, ckpt) in models.items():
-        if not os.path.exists(cfg):
-            print(f"Warning: Config not found for {name} at {cfg}")
+        # Resolve relative paths
+        cfg_abs = os.path.abspath(cfg) if not os.path.isabs(cfg) else cfg
+        ckpt_abs = os.path.abspath(ckpt) if not os.path.isabs(ckpt) else ckpt
+        
+        if not os.path.exists(cfg_abs):
+            print(f"Warning: Config not found for {name} at {cfg_abs}")
             continue
-        if not os.path.exists(ckpt):
-            print(f"Warning: Checkpoint not found for {name} at {ckpt}")
+        if not os.path.exists(ckpt_abs):
+            print(f"Warning: Checkpoint not found for {name} at {ckpt_abs}")
             continue
-        valid_models[name] = (cfg, ckpt)
+        valid_models[name] = (cfg_abs, ckpt_abs)
     
     if not valid_models:
         print("Error: No valid models found. Please check paths.")
