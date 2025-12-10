@@ -204,7 +204,35 @@ def run_visualization(model, image_path, device='cuda', output_dir=None, target_
 
     # (B) Get Importance Scores (if available, for heatmap mode)
     importance_scores_2d = None
-    if 'encoder_info' in outputs:
+    
+    # 尝试从 outputs 中提取 encoder_info (Training mode 返回 tuple)
+    if isinstance(outputs, tuple) and len(outputs) == 2:
+         _, encoder_info_out = outputs
+         if 'importance_scores_list' in encoder_info_out:
+             scores_list = encoder_info_out['importance_scores_list']
+             if scores_list:
+                scores = scores_list[0].cpu().numpy()
+                if scores.ndim == 2: scores = scores[0]
+                if pruning_hook.spatial_shape:
+                    H, W = pruning_hook.spatial_shape
+                    if len(scores) == H * W:
+                        importance_scores_2d = scores.reshape(H, W)
+    
+    # 尝试从 tensor 属性中提取 (Inference mode hack)
+    elif isinstance(outputs, list) and len(outputs) > 0 and hasattr(outputs[0], 'encoder_info'):
+        encoder_info_out = getattr(outputs[0], 'encoder_info')
+        if 'importance_scores_list' in encoder_info_out:
+             scores_list = encoder_info_out['importance_scores_list']
+             if scores_list:
+                scores = scores_list[0].cpu().numpy()
+                if scores.ndim == 2: scores = scores[0]
+                if pruning_hook.spatial_shape:
+                    H, W = pruning_hook.spatial_shape
+                    if len(scores) == H * W:
+                        importance_scores_2d = scores.reshape(H, W)
+    
+    # 原有逻辑：直接检查 'encoder_info' key (如果 outputs 是 dict)
+    elif isinstance(outputs, dict) and 'encoder_info' in outputs:
         scores_list = outputs['encoder_info'].get('importance_scores_list', [])
         if scores_list:
             scores = scores_list[0].cpu().numpy()

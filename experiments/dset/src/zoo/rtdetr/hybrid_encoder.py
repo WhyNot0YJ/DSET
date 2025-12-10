@@ -517,4 +517,12 @@ class HybridEncoder(nn.Module):
 
         if return_encoder_info:
             return outs, encoder_info
+        
+        # 即使 return_encoder_info=False，为了可视化也通过 hack 方式挂载
+        # 这是一个简单的 hack，用于在 inference mode 下让外部 hook 能够访问 encoder_info
+        if not self.training:
+            # 将 encoder_info 附加到输出张量列表的第一个元素上作为属性
+            if hasattr(outs, '__len__') and len(outs) > 0 and isinstance(outs[0], torch.Tensor):
+                setattr(outs[0], 'encoder_info', encoder_info)
+        
         return outs
