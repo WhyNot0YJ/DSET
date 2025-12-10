@@ -79,8 +79,15 @@ def setup_trainer(config_path, checkpoint_path, device='cuda'):
     初始化 DSETTrainer 并加载模型权重
     Initialize DSETTrainer and load model weights
     """
-    print(f"Loading config from {config_path}...")
-    with open(config_path, 'r', encoding='utf-8') as f:
+    # Resolve paths if relative
+    config_path_abs = os.path.abspath(config_path) if not os.path.isabs(config_path) else config_path
+    checkpoint_path_abs = os.path.abspath(checkpoint_path) if not os.path.isabs(checkpoint_path) else checkpoint_path
+    
+    print(f"Loading config from {config_path_abs}...")
+    if not os.path.exists(config_path_abs):
+        raise FileNotFoundError(f"Config file not found: {config_path_abs}")
+    
+    with open(config_path_abs, 'r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
     
     # Force device
