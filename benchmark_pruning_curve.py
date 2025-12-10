@@ -31,13 +31,41 @@ DSET Pruning Curve Benchmark Script
             --output results.png
 
 运行示例 (Example):
-    # 基本用法（从项目根目录运行）
+    # 1. 测试单个模型
     python benchmark_pruning_curve.py \
         --config experiments/dset/configs/dset6_r18_ratio0.5.yaml \
         --checkpoint experiments/dset/logs/dset6_r18_20251209_155547/best_model.pth \
         --name "DSET_r18_0.5"
     
-    # 指定设备
+    # 2. 测试多个模型（在一张图上）
+    # 首先创建 JSON 配置文件（例如 models.json）：
+    # {
+    #   "DSET_r18_0.3": {
+    #     "config": "experiments/dset/configs/dset6_r18_ratio0.3.yaml",
+    #     "checkpoint": "experiments/dset/logs/dset6_r18_20251209_155547/best_model.pth"
+    #   },
+    #   "DSET_r18_0.5": {
+    #     "config": "experiments/dset/configs/dset6_r18_ratio0.5.yaml",
+    #     "checkpoint": "experiments/dset/logs/dset6_r18_20251209_155547/best_model.pth"
+    #   },
+    #   "DSET_r18_0.9": {
+    #     "config": "experiments/dset/configs/dset6_r18_ratio0.9.yaml",
+    #     "checkpoint": "experiments/dset/logs/dset6_r18_20251209_155547/best_model.pth"
+    #   }
+    # }
+    # 然后运行：
+    python benchmark_pruning_curve.py \
+        --models_config models.json \
+        --output multi_model_comparison.png
+    
+    # 3. 自定义 keep_ratio 范围
+    python benchmark_pruning_curve.py \
+        --config config.yaml \
+        --checkpoint ckpt.pth \
+        --name "MyModel" \
+        --ratios 0.1 0.2 0.3 0.4 0.5
+    
+    # 4. 指定设备
     python benchmark_pruning_curve.py \
         --config config.yaml \
         --checkpoint ckpt.pth \
@@ -79,8 +107,15 @@ def setup_trainer(config_path, checkpoint_path, device='cuda'):
     初始化 DSETTrainer 并加载模型权重
     Initialize DSETTrainer and load model weights
     """
-    print(f"Loading config from {config_path}...")
-    with open(config_path, 'r', encoding='utf-8') as f:
+    # Resolve paths if relative
+    config_path_abs = os.path.abspath(config_path) if not os.path.isabs(config_path) else config_path
+    checkpoint_path_abs = os.path.abspath(checkpoint_path) if not os.path.isabs(checkpoint_path) else checkpoint_path
+    
+    print(f"Loading config from {config_path_abs}...")
+    if not os.path.exists(config_path_abs):
+        raise FileNotFoundError(f"Config file not found: {config_path_abs}")
+    
+    with open(config_path_abs, 'r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
     
     # Force device
@@ -93,12 +128,17 @@ def setup_trainer(config_path, checkpoint_path, device='cuda'):
     trainer = DSETTrainer(config)
     
     # Load checkpoint
-    print(f"Loading checkpoint from {checkpoint_path}...")
+    print(f"Loading checkpoint from {checkpoint_path_abs}...")
+    if not os.path.exists(checkpoint_path_abs):
+        raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_path_abs}")
+    
     try:
-        checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+        checkpoint = torch.load(checkpoint_path_abs, map_location='cpu', weights_only=False)
     except TypeError:
         # Fallback for older PyTorch versions that don't support weights_only
-        checkpoint = torch.load(checkpoint_path, map_location='cpu')
+        checkpoint = torch.load(checkpoint_path_abs, map_location='cpu')
+    except Exception as e:
+        raise RuntimeError(f"Failed to load checkpoint from {checkpoint_path_abs}: {e}")
     
     # Load weights into EMA model (which is used for validation)
     if hasattr(trainer, 'ema') and trainer.ema:
@@ -163,8 +203,13 @@ def benchmark_models(models_dict, inference_ratios, device='cuda'):
         
         try:
             trainer = setup_trainer(config_path, ckpt_path, device=device)
-        except FileNotFoundError:
-            print(f"Skipping {model_name}: Config or Checkpoint not found.")
+        except (FileNotFoundError, RuntimeError) as e:
+            print(f"Skipping {model_name}: {e}")
+            continue
+        except Exception as e:
+            print(f"Error setting up {model_name}: {e}")
+            import traceback
+            traceback.print_exc()
             continue
             
         mAPs = []
@@ -207,9 +252,9 @@ def plot_results(inference_ratios, results, output_path="pruning_tradeoff.png"):
                  linewidth=2, 
                  label=model_name)
         
-        # Add labels
+        # Add labels (保留四位小数)
         for x, y in zip(inference_ratios, mAPs):
-            plt.annotate(f"{y:.3f}", (x, y), textcoords="offset points", xytext=(0, 10), ha='center')
+            plt.annotate(f"{y:.4f}", (x, y), textcoords="offset points", xytext=(0, 10), ha='center', fontsize=8)
 
     plt.xlabel('Inference Keep Ratio')
     plt.ylabel('mAP (0.5:0.95)')
@@ -299,16 +344,20 @@ def main():
     
     print(f"Testing keep_ratios: {inference_ratios}")
     
-    # 3. Check if files exist
+    # 3. Check if files exist (resolve relative paths)
     valid_models = {}
     for name, (cfg, ckpt) in models.items():
-        if not os.path.exists(cfg):
-            print(f"Warning: Config not found for {name} at {cfg}")
+        # Resolve relative paths
+        cfg_abs = os.path.abspath(cfg) if not os.path.isabs(cfg) else cfg
+        ckpt_abs = os.path.abspath(ckpt) if not os.path.isabs(ckpt) else ckpt
+        
+        if not os.path.exists(cfg_abs):
+            print(f"Warning: Config not found for {name} at {cfg_abs}")
             continue
-        if not os.path.exists(ckpt):
-            print(f"Warning: Checkpoint not found for {name} at {ckpt}")
+        if not os.path.exists(ckpt_abs):
+            print(f"Warning: Checkpoint not found for {name} at {ckpt_abs}")
             continue
-        valid_models[name] = (cfg, ckpt)
+        valid_models[name] = (cfg_abs, ckpt_abs)
     
     if not valid_models:
         print("Error: No valid models found. Please check paths.")
