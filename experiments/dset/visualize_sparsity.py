@@ -41,12 +41,13 @@ except ImportError:
 
 class PruningHook:
     """
-    Hook to capture the pruning mask from the model's encoder.
+    Hook to capture the pruning mask AND importance scores from the model's encoder.
     """
     def __init__(self):
         self.mask = None
         self.spatial_shape = None
         self.kept_indices = None
+        self.scores = None
 
     def __call__(self, module, inputs, outputs):
         """
@@ -59,6 +60,10 @@ class PruningHook:
             _, kept_indices, info = outputs
         else:
             return
+
+        # Capture Importance Scores
+        if 'patch_importance_scores' in info:
+            self.scores = info['patch_importance_scores']
 
         # Get original feature map dimensions from info
         if 'original_spatial_shape' in info:
@@ -202,47 +207,58 @@ def run_visualization(model, image_path, device='cuda', output_dir=None, target_
 
     feature_mask_final = align_map_to_image(feature_mask)
 
-    # (B) Get Importance Scores (if available, for heatmap mode)
+    # (B) Get Importance Scores (UPDATED LOGIC)
     importance_scores_2d = None
     
-    # 尝试从 outputs 中提取 encoder_info (Training mode 返回 tuple)
-    if isinstance(outputs, tuple) and len(outputs) == 2:
-         _, encoder_info_out = outputs
-         if 'importance_scores_list' in encoder_info_out:
-             scores_list = encoder_info_out['importance_scores_list']
-             if scores_list:
+    # Priority 1: Get directly from Hook (Most reliable)
+    if pruning_hook.scores is not None:
+        scores = pruning_hook.scores.cpu().numpy()
+        if scores.ndim == 2: scores = scores[0] # Take batch 0
+        if pruning_hook.spatial_shape:
+            H, W = pruning_hook.spatial_shape
+            if len(scores) == H * W:
+                importance_scores_2d = scores.reshape(H, W)
+    
+    # Priority 2: Fallback to existing logic (Encoder Info)
+    if importance_scores_2d is None:
+        # 尝试从 outputs 中提取 encoder_info (Training mode 返回 tuple)
+        if isinstance(outputs, tuple) and len(outputs) == 2:
+             _, encoder_info_out = outputs
+             if 'importance_scores_list' in encoder_info_out:
+                 scores_list = encoder_info_out['importance_scores_list']
+                 if scores_list:
+                    scores = scores_list[0].cpu().numpy()
+                    if scores.ndim == 2: scores = scores[0]
+                    if pruning_hook.spatial_shape:
+                        H, W = pruning_hook.spatial_shape
+                        if len(scores) == H * W:
+                            importance_scores_2d = scores.reshape(H, W)
+        
+        # 尝试从 tensor 属性中提取 (Inference mode hack)
+        elif isinstance(outputs, list) and len(outputs) > 0 and hasattr(outputs[0], 'encoder_info'):
+            encoder_info_out = getattr(outputs[0], 'encoder_info')
+            if 'importance_scores_list' in encoder_info_out:
+                 scores_list = encoder_info_out['importance_scores_list']
+                 if scores_list:
+                    scores = scores_list[0].cpu().numpy()
+                    if scores.ndim == 2: scores = scores[0]
+                    if pruning_hook.spatial_shape:
+                        H, W = pruning_hook.spatial_shape
+                        if len(scores) == H * W:
+                            importance_scores_2d = scores.reshape(H, W)
+        
+        # 原有逻辑：直接检查 'encoder_info' key (如果 outputs 是 dict)
+        elif isinstance(outputs, dict) and 'encoder_info' in outputs:
+            scores_list = outputs['encoder_info'].get('importance_scores_list', [])
+            if scores_list:
                 scores = scores_list[0].cpu().numpy()
-                if scores.ndim == 2: scores = scores[0]
+                if scores.ndim == 2: scores = scores[0] # Take batch 0
+                
+                # Reshape scores to 2D
                 if pruning_hook.spatial_shape:
                     H, W = pruning_hook.spatial_shape
                     if len(scores) == H * W:
                         importance_scores_2d = scores.reshape(H, W)
-    
-    # 尝试从 tensor 属性中提取 (Inference mode hack)
-    elif isinstance(outputs, list) and len(outputs) > 0 and hasattr(outputs[0], 'encoder_info'):
-        encoder_info_out = getattr(outputs[0], 'encoder_info')
-        if 'importance_scores_list' in encoder_info_out:
-             scores_list = encoder_info_out['importance_scores_list']
-             if scores_list:
-                scores = scores_list[0].cpu().numpy()
-                if scores.ndim == 2: scores = scores[0]
-                if pruning_hook.spatial_shape:
-                    H, W = pruning_hook.spatial_shape
-                    if len(scores) == H * W:
-                        importance_scores_2d = scores.reshape(H, W)
-    
-    # 原有逻辑：直接检查 'encoder_info' key (如果 outputs 是 dict)
-    elif isinstance(outputs, dict) and 'encoder_info' in outputs:
-        scores_list = outputs['encoder_info'].get('importance_scores_list', [])
-        if scores_list:
-            scores = scores_list[0].cpu().numpy()
-            if scores.ndim == 2: scores = scores[0] # Take batch 0
-            
-            # Reshape scores to 2D
-            if pruning_hook.spatial_shape:
-                H, W = pruning_hook.spatial_shape
-                if len(scores) == H * W:
-                    importance_scores_2d = scores.reshape(H, W)
 
     # 4. Generate Visualization based on Mode
     
