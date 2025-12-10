@@ -18,11 +18,13 @@
 #   ./run_batch_experiments.sh --dset                          # 只运行DSET实验
 #   ./run_batch_experiments.sh --yolov8                        # 只运行YOLOv8实验
 #   ./run_batch_experiments.sh --yolov10                       # 只运行YOLOv10实验
+#   ./run_batch_experiments.sh --deformable-detr               # 只运行Deformable-DETR实验
 #   ./run_batch_experiments.sh --test --rt-detr                # 测试模式只运行RT-DETR
 #   ./run_batch_experiments.sh --test --moe-rtdetr             # 测试模式只运行MOE-RTDETR
 #   ./run_batch_experiments.sh --test --dset                   # 测试模式只运行DSET
 #   ./run_batch_experiments.sh --test --yolov8                 # 测试模式只运行YOLOv8
 #   ./run_batch_experiments.sh --test --yolov10                # 测试模式只运行YOLOv10
+#   ./run_batch_experiments.sh --test --deformable-detr        # 测试模式只运行Deformable-DETR
 #   ./run_batch_experiments.sh --r18                           # 只运行ResNet-18实验
 #   ./run_batch_experiments.sh --r34                           # 只运行ResNet-34实验
 #   ./run_batch_experiments.sh --r18 --r34                     # 运行R18和R34实验
@@ -126,6 +128,10 @@ declare -A YOLOV10_CONFIGS=(
     ["yolov10l"]="yolov10/configs/yolov10l_dairv2x.yaml"
 )
 
+declare -A DEFORMABLE_DETR_CONFIGS=(
+    ["deformable-detr-r18"]="deformable-detr/train_deformable_r18.py"
+)
+
 # 构建全部配置列表与名称映射
 all_configs_paths=()
 declare -A NAME_TO_PATH
@@ -170,6 +176,14 @@ build_all_configs() {
         all_configs_paths+=("$p")
         local b
         b=$(basename "$p" .yaml)
+        NAME_TO_PATH["$key"]="$p"
+        NAME_TO_PATH["$b"]="$p"
+    done
+    for key in "${!DEFORMABLE_DETR_CONFIGS[@]}"; do
+        local p="${DEFORMABLE_DETR_CONFIGS[$key]}"
+        all_configs_paths+=("$p")
+        local b
+        b=$(basename "$p" .py)
         NAME_TO_PATH["$key"]="$p"
         NAME_TO_PATH["$b"]="$p"
     done
@@ -360,6 +374,7 @@ parse_arguments() {
     local has_dset=false
     local has_yolov8=false
     local has_yolov10=false
+    local has_deformable_detr=false
     
     for arg in "$@"; do
         case "$arg" in
@@ -378,11 +393,14 @@ parse_arguments() {
             --yolov10)
                 has_yolov10=true
                 ;;
+            --deformable-detr)
+                has_deformable_detr=true
+                ;;
         esac
     done
     
     # 如果指定了实验类型，只运行指定的类型（支持多个）
-    if [ "$has_rt_detr" = true ] || [ "$has_moe_rtdetr" = true ] || [ "$has_dset" = true ] || [ "$has_yolov8" = true ] || [ "$has_yolov10" = true ]; then
+    if [ "$has_rt_detr" = true ] || [ "$has_moe_rtdetr" = true ] || [ "$has_dset" = true ] || [ "$has_yolov8" = true ] || [ "$has_yolov10" = true ] || [ "$has_deformable_detr" = true ]; then
         # 显示将要运行的类型
         local selected_types=()
         [ "$has_rt_detr" = true ] && selected_types+=("RT-DETR")
@@ -390,6 +408,7 @@ parse_arguments() {
         [ "$has_dset" = true ] && selected_types+=("DSET")
         [ "$has_yolov8" = true ] && selected_types+=("YOLOv8")
         [ "$has_yolov10" = true ] && selected_types+=("YOLOv10")
+        [ "$has_deformable_detr" = true ] && selected_types+=("Deformable-DETR")
         local types_str=$(IFS='+'; echo "${selected_types[*]}")
         if [ "$has_test" = true ]; then
             log_info "测试模式：运行指定实验类型（按字典序排序）: $types_str"
@@ -440,6 +459,15 @@ parse_arguments() {
                 CONFIGS_TO_RUN+=("$p")
             done
         fi
+
+        if [ "$has_deformable_detr" = true ]; then
+            for key in $(printf '%s\n' "${!DEFORMABLE_DETR_CONFIGS[@]}" | sort); do
+                local p="${DEFORMABLE_DETR_CONFIGS[$key]}"
+                if filter_config "$p"; then
+                    CONFIGS_TO_RUN+=("$p")
+                fi
+            done
+        fi
     elif [ $# -eq 0 ]; then
         # 默认：运行所有实验（按字典序排序）
         if [ "$has_test" = true ]; then
@@ -478,6 +506,13 @@ parse_arguments() {
         for key in $(printf '%s\n' "${!YOLOV10_CONFIGS[@]}" | sort); do
             local p="${YOLOV10_CONFIGS[$key]}"
             CONFIGS_TO_RUN+=("$p")
+        done
+        # Deformable-DETR实验
+        for key in $(printf '%s\n' "${!DEFORMABLE_DETR_CONFIGS[@]}" | sort); do
+            local p="${DEFORMABLE_DETR_CONFIGS[$key]}"
+            if filter_config "$p"; then
+                CONFIGS_TO_RUN+=("$p")
+            fi
         done
     elif [ "$1" == "--custom" ]; then
         log_info "使用自定义配置列表"
@@ -545,11 +580,13 @@ parse_arguments() {
         echo "  ./run_batch_experiments.sh --dset                          # 只运行DSET"
         echo "  ./run_batch_experiments.sh --yolov8                        # 只运行YOLOv8"
         echo "  ./run_batch_experiments.sh --yolov10                       # 只运行YOLOv10"
+        echo "  ./run_batch_experiments.sh --deformable-detr               # 只运行Deformable-DETR"
         echo "  ./run_batch_experiments.sh --test --rt-detr                # 测试模式只运行RT-DETR"
         echo "  ./run_batch_experiments.sh --test --moe-rtdetr             # 测试模式只运行MOE-RTDETR"
         echo "  ./run_batch_experiments.sh --test --dset                   # 测试模式只运行DSET"
         echo "  ./run_batch_experiments.sh --test --yolov8                 # 测试模式只运行YOLOv8"
         echo "  ./run_batch_experiments.sh --test --yolov10                # 测试模式只运行YOLOv10"
+        echo "  ./run_batch_experiments.sh --test --deformable-detr        # 测试模式只运行Deformable-DETR"
         echo "  ./run_batch_experiments.sh --rt-detr --moe-rtdetr --dset   # 运行多个实验类型（可叠加）"
         echo "  ./run_batch_experiments.sh --test --rt-detr --dset          # 测试模式运行多个类型"
         echo "  ./run_batch_experiments.sh --r18                           # 只运行R18"
@@ -582,9 +619,13 @@ run_single_experiment() {
     echo -e "${PURPLE}========================================${NC}"
     log_info "开始实验: $config_path"
     
-    # 检查配置文件是否存在
+    # 检查配置文件是否存在（Deformable-DETR 使用 Python 脚本）
     if [ ! -f "$config_path" ]; then
-        log_error "配置文件不存在: $config_path"
+        if [[ "$config_path" == *.py ]]; then
+            log_error "训练脚本不存在: $config_path"
+        else
+            log_error "配置文件不存在: $config_path"
+        fi
         SKIPPED_EXPERIMENTS=$((SKIPPED_EXPERIMENTS + 1))
         return 1
     fi
@@ -599,6 +640,10 @@ run_single_experiment() {
     elif [[ "$exp_dir" == *"dset"* ]]; then
         TRAIN_SCRIPT="dset/train.py"
         WORK_DIR="dset"
+    elif [[ "$exp_dir" == *"deformable-detr"* ]]; then
+        # Deformable-DETR 使用 Python 脚本而不是 YAML 配置
+        TRAIN_SCRIPT="deformable-detr/train_deformable_r18.py"
+        WORK_DIR="deformable-detr"
     elif [[ "$exp_dir" == *"rt-detr"* ]] && [[ "$exp_dir" != *"moe"* ]]; then
         TRAIN_SCRIPT="rt-detr/train.py"
         WORK_DIR="rt-detr"
@@ -620,8 +665,15 @@ run_single_experiment() {
     cd "$WORK_DIR"
     set +e  # 临时允许错误
     
-    # 如果是测试模式，传递--epochs 2参数
-    if [ "$TEST_MODE" = true ]; then
+    # Deformable-DETR 使用 Python 脚本，不需要 --config 参数
+    if [[ "$exp_dir" == *"deformable-detr"* ]]; then
+        # 如果是测试模式，需要修改脚本内的 max_epochs（暂时不支持，需要手动修改）
+        if [ "$TEST_MODE" = true ]; then
+            log_warning "Deformable-DETR 测试模式需要手动修改脚本中的 max_epochs"
+        fi
+        python train_deformable_r18.py
+    # 其他实验使用 YAML 配置文件
+    elif [ "$TEST_MODE" = true ]; then
         python train.py --config "../$config_path" --epochs 2
     else
         python train.py --config "../$config_path"
@@ -712,6 +764,7 @@ generate_report() {
     echo -e "${BLUE}      - DSET日志: dset/logs/${NC}"
     echo -e "${BLUE}      - YOLOv8日志: yolov8/logs/${NC}"
     echo -e "${BLUE}      - YOLOv10日志: yolov10/logs/${NC}"
+    echo -e "${BLUE}      - Deformable-DETR日志: deformable-detr/work_dirs/${NC}"
     echo ""
     echo -e "${BLUE}完整报告: $report_file${NC}"
     echo -e "${BLUE}CSV结果: $BATCH_LOG_DIR/results.csv${NC}"
