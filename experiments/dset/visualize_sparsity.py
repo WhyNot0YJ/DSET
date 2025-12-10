@@ -1,39 +1,29 @@
 #!/usr/bin/env python3
-"""Visualize Token Pruning Sparsity for DSET Paper Teaser Figure
+"""
+DSET Visualization Tool
+Supports multiple visualization modes for Token Pruning / Sparsity.
 
-This script generates visualization heatmaps showing token pruning sparsity patterns
-for DSET (Dual-Sparse Expert Transformer) compared to RT-DETR baseline.
+Modes:
+1. --mode teaser (Default): 
+   Generates the paper's Teaser Figure (Figure 1).
+   - RT-DETR: Dense Paradigm (Uniform Orange).
+   - DSET: Sparse Paradigm (Blue=Filtered/Background, Red=Focus/Foreground).
+   - Uses actual binary masks captured via Forward Hook.
 
-Usage Examples:
-
-1. Standard resolution (1280, default):
-   python visualize_sparsity.py \
-       --image /path/to/image.jpg \
-       --config config.yaml \
-       --checkpoint checkpoint.pth \
-       --target_size 1280
-
-2. Full-resolution input (1920x1080):
-   python visualize_sparsity.py \
-       --image /path/to/1920x1080_image.jpg \
-       --config config.yaml \
-       --checkpoint checkpoint.pth \
-       --target_size 1920
-
-Note: Input dimensions will be automatically padded to multiples of stride (32).
-      For 1920x1080 input, height will be padded to 1088 (1080 -> 1088, +8 rows).
+2. --mode heatmap:
+   Visualizes the continuous Importance Scores as a heatmap.
+   - Warmer colors (Red) = Higher Importance.
+   - Cooler colors (Blue) = Lower Importance.
+   - Useful for analyzing what the model considers "important" before pruning.
 """
 
 import sys
 import argparse
-import yaml
-import torch
-import torch.nn.functional as F
 import cv2
 import numpy as np
+import torch
+import torch.nn.functional as F
 from pathlib import Path
-from PIL import Image
-import torchvision.transforms as T
 
 # Setup paths
 project_root = Path(__file__).parent.resolve()
@@ -42,286 +32,267 @@ if str(project_root) not in sys.path:
 if str(project_root.parent) not in sys.path:
     sys.path.insert(0, str(project_root.parent))
 
-from batch_inference import load_model, preprocess_image
+# Import from batch_inference
+try:
+    from batch_inference import load_model, preprocess_image
+except ImportError:
+    from experiments.dset.batch_inference import load_model, preprocess_image
 
 
-def visualize_token_pruning(model, image_path, device='cuda', output_dir=None, patch_size=1, stride=32, target_size=1280):
+class PruningHook:
     """
-    Visualize token pruning importance scores.
+    Hook to capture the pruning mask from the model's encoder.
+    """
+    def __init__(self):
+        self.mask = None
+        self.spatial_shape = None
+        self.kept_indices = None
+
+    def __call__(self, module, inputs, outputs):
+        """
+        Hook function to intercept forward pass.
+        outputs: (pruned_tokens, kept_indices, info)
+        """
+        # Unpack outputs from PatchLevelPruner
+        # Note: HybridEncoder calls it with return_indices=True
+        if isinstance(outputs, tuple):
+            _, kept_indices, info = outputs
+        else:
+            return
+
+        # Get original feature map dimensions from info
+        if 'original_spatial_shape' in info:
+            H, W = info['original_spatial_shape']
+        else:
+            return
+
+        # Initialize binary mask (0 = Pruned/Background)
+        # Flattened size: H * W
+        total_tokens = H * W
+        mask_flat = np.zeros(total_tokens, dtype=np.float32)
+
+        if kept_indices is not None:
+            # DSET Sparse Mode
+            # Get indices for the first image in batch
+            indices = kept_indices[0].cpu().numpy()
+            # Handle -1 padding
+            indices = indices[indices >= 0]
+            # Set kept locations to 1 (Foreground)
+            mask_flat[indices] = 1.0
+        else:
+            # No pruning (Dense Mode or Warmup) - Set all to 1
+            mask_flat[:] = 1.0
+
+        # Reshape to 2D feature map
+        self.mask = mask_flat.reshape(H, W)
+        self.spatial_shape = (H, W)
+        self.kept_indices = kept_indices
+
+
+def apply_mask_overlay(image, mask, color, alpha):
+    """
+    Apply a colored overlay mask to an image.
+    image: BGR image
+    mask: Binary mask (0 or 1) of same size as image (or to be resized)
+    color: BGR tuple (e.g., (0, 0, 255) for Red)
+    alpha: Transparency (0.0 - 1.0)
+    """
+    H, W = image.shape[:2]
+    # Resize mask to match image size (Nearest Neighbor to keep blocky look for tokens)
+    mask_resized = cv2.resize(mask, (W, H), interpolation=cv2.INTER_NEAREST)
     
-    Args:
-        model: DSETRTDETR model instance
-        image_path: Path to input image
-        device: Device to run inference on
-        output_dir: Directory to save visualizations
-        patch_size: Patch size used in token pruning
-        stride: Feature map stride (default: 32)
-        target_size: Target size for longest edge (default: 1280). 
-                     Use 1920 for full-resolution input (e.g., 1920x1080)
+    # Create colored overlay
+    overlay = np.zeros_like(image)
+    overlay[:] = color
+    
+    # Mask for where to apply the color
+    mask_indices = mask_resized > 0.5
+    
+    # Apply alpha blending only on masked areas
+    output = image.copy()
+    roi = output[mask_indices]
+    
+    if roi.size > 0:
+        colored_roi = cv2.addWeighted(roi, 1 - alpha, overlay[mask_indices], alpha, 0)
+        output[mask_indices] = colored_roi
+    
+    return output
+
+
+def visualize_heatmap(image, scores, alpha=0.6):
     """
-    # 1. Preprocessing
+    Overlay a continuous heatmap on the image.
+    scores: 2D float array (importance scores)
+    """
+    H, W = image.shape[:2]
+    
+    # Normalize scores to 0-255
+    scores_norm = (scores - scores.min()) / (scores.max() - scores.min() + 1e-8)
+    scores_uint8 = (scores_norm * 255).astype(np.uint8)
+    
+    # Resize to image size
+    heatmap_resized = cv2.resize(scores_uint8, (W, H), interpolation=cv2.INTER_NEAREST)
+    
+    # Apply colormap (JET is standard for heatmaps)
+    heatmap_color = cv2.applyColorMap(heatmap_resized, cv2.COLORMAP_JET)
+    
+    # Overlay
+    output = cv2.addWeighted(image, 1 - alpha, heatmap_color, alpha, 0)
+    return output
+
+
+def run_visualization(model, image_path, device='cuda', output_dir=None, target_size=1280, mode='teaser'):
+    """
+    Main visualization routine.
+    """
+    # 1. Load and Preprocess Image
     print(f"Loading image: {image_path}")
-    try:
-        orig_image_bgr = cv2.imread(str(image_path))
-        if orig_image_bgr is None:
-            raise ValueError(f"Failed to read image: {image_path}")
-    except Exception as e:
-        raise ValueError(f"Error loading image: {e}")
+    orig_image = cv2.imread(str(image_path))
+    if orig_image is None:
+        raise ValueError(f"Failed to read image: {image_path}")
     
-    orig_h, orig_w = orig_image_bgr.shape[:2]
-    print(f"Original image size: {orig_w} x {orig_h}")
-    print(f"Target size (longest edge): {target_size}")
-    
-    # Preprocess
     img_tensor, _, meta = preprocess_image(str(image_path), target_size=target_size)
     img_tensor = img_tensor.to(device)
     
-    # Get dimensions for alignment
-    orig_h, orig_w = meta['orig_size'][0].tolist()  # 原始尺寸
-    padded_h, padded_w = meta['padded_h'], meta['padded_w']  # Pad 后的输入尺寸
+    # Dimensions for aligning mask back to original image (crop padding)
+    orig_h, orig_w = meta['orig_size'][0].tolist()
     scale = meta['scale']
-    
-    # Pad 之前的有效区域尺寸 (Valid Area)
     valid_h = int(round(orig_h * scale))
     valid_w = int(round(orig_w * scale))
+    padded_h, padded_w = meta['padded_h'], meta['padded_w']
+
+    # 2. Register Hook & Run Inference
+    hook_handle = None
+    pruning_hook = PruningHook()
     
-    # Print preprocessing info
-    print(f"Resized size (before padding): {valid_w} x {valid_h}")
-    print(f"Padded size (after padding to {stride} multiple): {padded_w} x {padded_h}")
-    print(f"Padding: +{padded_w - valid_w} width, +{padded_h - valid_h} height")
-    print(f"Scale factor: {scale:.4f}")
+    if hasattr(model, 'encoder') and hasattr(model.encoder, 'token_pruners'):
+        if len(model.encoder.token_pruners) > 0:
+            # Hook the first pruner layer
+            hook_handle = model.encoder.token_pruners[0].register_forward_hook(pruning_hook)
+        else:
+            print("⚠ No token pruners found.")
     
-    # 2. Model Inference
-    print("Running model inference...")
+    print("Running inference...")
     model.eval()
     
-    # Enable pruning during inference by setting epoch >= warmup_epochs
-    # This ensures pruning_enabled=True in PatchLevelPruner
+    # Force enable pruning (bypass warmup) for visualization
     if hasattr(model, 'encoder') and hasattr(model.encoder, 'set_epoch'):
-        # Set epoch to a value >= warmup_epochs to enable pruning
-        # Use a large epoch number to ensure full pruning (not gradual)
-        model.encoder.set_epoch(100)  # Large enough to bypass warmup
-        print("  ✓ Enabled token pruning for visualization")
+        model.encoder.set_epoch(100)
     
     with torch.no_grad():
         outputs = model(img_tensor)
-    
-    # 3. Extract Scores
-    if 'encoder_info' not in outputs:
-        raise ValueError("Model output missing 'encoder_info'.")
-    
-    encoder_info = outputs.get('encoder_info', {})
-    importance_scores_list = encoder_info.get('importance_scores_list', [])
-    token_pruning_ratios = encoder_info.get('token_pruning_ratios', [])
-    
-    if len(importance_scores_list) == 0:
-        raise ValueError("No importance scores found.")
-    
-    # Print pruning statistics
-    if token_pruning_ratios:
-        pruning_ratio = token_pruning_ratios[0]
-        print(f"Token pruning ratio: {pruning_ratio:.2%} ({(1-pruning_ratio)*100:.1f}% tokens pruned)")
-        if pruning_ratio == 0.0:
-            print("  ⚠ WARNING: Pruning ratio is 0.0! Pruning may not be enabled.")
-        else:
-            print(f"  ✓ Pruning is active: {pruning_ratio*100:.1f}% tokens kept")
-    
-    importance_scores = importance_scores_list[0] # [B, num_patches]
-    importance_scores = importance_scores.cpu().numpy()
-    if importance_scores.ndim == 2:
-        importance_scores = importance_scores[0]
         
-    print(f"Importance scores shape: {importance_scores.shape}")
+    if hook_handle:
+        hook_handle.remove()
+
+    # 3. Process Mask/Scores
     
-    # 4. Reshape Logic
-    feat_h = padded_h // stride
-    feat_w = padded_w // stride
-    
-    num_patches_h = (feat_h + patch_size - 1) // patch_size
-    num_patches_w = (feat_w + patch_size - 1) // patch_size
-    expected_num = num_patches_h * num_patches_w
-    
-    print(f"Feature map size: {feat_w} x {feat_h} (stride={stride})")
-    print(f"Patch grid size: {num_patches_w} x {num_patches_h} (patch_size={patch_size})")
-    print(f"Total patches: {expected_num}")
-    
-    # Pad/Crop scores if mismatch
-    if len(importance_scores) != expected_num:
-        if len(importance_scores) < expected_num:
-            importance_scores = np.pad(importance_scores, (0, expected_num - len(importance_scores)), 
-                                     mode='constant', constant_values=importance_scores.min())
-        else:
-            importance_scores = importance_scores[:expected_num]
+    # (A) Get Binary Mask from Hook (Actual Pruning Decision)
+    feature_mask = pruning_hook.mask
+    if feature_mask is None:
+        print("⚠ Failed to capture mask via hook. Falling back to all-ones.")
+        feature_mask = np.ones((padded_h // 32, padded_w // 32), dtype=np.float32)
+
+    # Align Mask: Resize to Padded -> Crop Valid -> Resize to Original
+    def align_map_to_image(map_2d):
+        map_padded = cv2.resize(map_2d, (padded_w, padded_h), interpolation=cv2.INTER_NEAREST)
+        map_valid = map_padded[:valid_h, :valid_w]
+        map_final = cv2.resize(map_valid, (orig_w, orig_h), interpolation=cv2.INTER_NEAREST)
+        return map_final
+
+    feature_mask_final = align_map_to_image(feature_mask)
+
+    # (B) Get Importance Scores (if available, for heatmap mode)
+    importance_scores_2d = None
+    if 'encoder_info' in outputs:
+        scores_list = outputs['encoder_info'].get('importance_scores_list', [])
+        if scores_list:
+            scores = scores_list[0].cpu().numpy()
+            if scores.ndim == 2: scores = scores[0] # Take batch 0
             
-    scores_2d = importance_scores.reshape(num_patches_h, num_patches_w)
+            # Reshape scores to 2D
+            if pruning_hook.spatial_shape:
+                H, W = pruning_hook.spatial_shape
+                if len(scores) == H * W:
+                    importance_scores_2d = scores.reshape(H, W)
+
+    # 4. Generate Visualization based on Mode
     
-    # 5. Generate Visualizations (Applying Alignment Fix)
-    
-    # (A) DSET
-    print("Generating DSET visualization...")
-    dset_vis = create_heatmap_visualization(
-        scores_2d, orig_image_bgr, 
-        valid_h, valid_w,      # 有效区域 (Resize后, Pad前)
-        padded_h, padded_w,    # Pad后的总尺寸 (用于计算比例)
-        title="DSET (Ours)"
-    )
-    
-    # (B) RT-DETR (Baseline) - Dense
-    print("Generating RT-DETR baseline visualization...")
-    dense_scores = np.ones_like(scores_2d)
-    rtdetr_vis = create_heatmap_visualization(
-        dense_scores, orig_image_bgr,
-        valid_h, valid_w,
-        padded_h, padded_w,
-        title="RT-DETR (Baseline)"
-    )
-    
-    # 6. Save
     if output_dir is None:
         output_dir = Path(image_path).parent
     else:
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
+    
+    stem = Path(image_path).stem
+    
+    if mode == 'teaser':
+        print("Generating Teaser Figure (Binary Masks)...")
+        # --- Figure (a): RT-DETR (Dense) ---
+        orange_color = (0, 128, 255) # BGR
+        full_mask = np.ones((orig_h, orig_w), dtype=np.float32)
+        fig_a = apply_mask_overlay(orig_image.copy(), full_mask, orange_color, alpha=0.3)
+        cv2.putText(fig_a, "RT-DETR: Dense Compute", (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 3)
+        cv2.putText(fig_a, "RT-DETR: Dense Compute", (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 0), 1)
+
+        # --- Figure (b): DSET (Sparse) ---
+        blue_color = (255, 0, 0)
+        red_color = (0, 0, 255)
+        bg_mask = 1.0 - feature_mask_final
         
-    image_stem = Path(image_path).stem
-    dset_path = output_dir / f"{image_stem}_dset.jpg"
-    rtdetr_path = output_dir / f"{image_stem}_rtdetr.jpg"
-    comp_path = output_dir / f"{image_stem}_compare.jpg"
-    
-    cv2.imwrite(str(dset_path), dset_vis)
-    cv2.imwrite(str(rtdetr_path), rtdetr_vis)
-    
-    # Comparison
-    comparison = cv2.hconcat([dset_vis, rtdetr_vis])
-    cv2.imwrite(str(comp_path), comparison)
-    
-    print(f"Saved to {output_dir}")
-    return str(dset_path), str(rtdetr_path), str(comp_path)
+        # Apply Background (Blue)
+        fig_b = apply_mask_overlay(orig_image.copy(), bg_mask, blue_color, alpha=0.3)
+        # Apply Foreground (Red)
+        fig_b = apply_mask_overlay(fig_b, feature_mask_final, red_color, alpha=0.5)
+        
+        cv2.putText(fig_b, "DSET (Ours): Sparse Focus", (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 3)
+        cv2.putText(fig_b, "DSET (Ours): Sparse Focus", (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 0), 1)
+        
+        # Save
+        path_a = output_dir / f"{stem}_teaser_a_rtdetr.jpg"
+        path_b = output_dir / f"{stem}_teaser_b_dset.jpg"
+        path_concat = output_dir / f"{stem}_teaser_combined.jpg"
+        
+        cv2.imwrite(str(path_a), fig_a)
+        cv2.imwrite(str(path_b), fig_b)
+        combined = cv2.hconcat([fig_a, fig_b])
+        cv2.imwrite(str(path_concat), combined)
+        print(f"Saved: {path_concat}")
 
+    elif mode == 'heatmap':
+        print("Generating Importance Heatmap...")
+        if importance_scores_2d is None:
+            print("Error: No importance scores found for heatmap mode.")
+            return
 
-def create_heatmap_visualization(scores_2d, orig_image, 
-                               valid_h, valid_w, 
-                               padded_h, padded_w, 
-                               title=""):
-    """
-    生成二值化的掩码可视化：
-    - 前景 (Top K%): 高亮 (红色/橙色)
-    - 背景 (Bottom): 变暗/变黑
-    
-    Args:
-        scores_2d: [Ph, Pw] Importance scores covering the PADDED area
-        orig_image: Original BGR Image
-        valid_h, valid_w: Dimensions of the valid image area (after resize, before pad)
-        padded_h, padded_w: Dimensions of the padded input tensor
-        title: Title text to add to image
-    """
-    
-    # ============================================================
-    # 1. 确定阈值 (Binary Thresholding)
-    # ============================================================
-    
-    if scores_2d.max() == scores_2d.min():
-        # RT-DETR (Baseline): 全 1 -> 全选
-        mask = np.ones_like(scores_2d, dtype=np.float32)
+        scores_final = align_map_to_image(importance_scores_2d)
+        fig_heatmap = visualize_heatmap(orig_image.copy(), scores_final)
+        
+        cv2.putText(fig_heatmap, "Token Importance Heatmap", (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
+        
+        path_heatmap = output_dir / f"{stem}_heatmap.jpg"
+        cv2.imwrite(str(path_heatmap), fig_heatmap)
+        print(f"Saved: {path_heatmap}")
+        
     else:
-        # DSET (Ours): 动态计算 Top-K 的分界线
-        # 建议设置 0.3 ~ 0.5 (即只展示分数最高的前 30%-50%)
-        # 这个比例可以根据视觉效果微调，不影响真实性，因为你是动态推理
-        vis_keep_ratio = 0.4 
-        
-        flattened = scores_2d.flatten()
-        k = int(len(flattened) * vis_keep_ratio)
-        
-        if k > 0:
-            # 使用 np.partition 快速找到第 k 大的数作为阈值
-            threshold = np.partition(flattened, -k)[-k]
-        else:
-            threshold = scores_2d.max()
-            
-        # 生成二值掩码：大于阈值=1，小于=0
-        mask = (scores_2d >= threshold).astype(np.float32)
-
-    # ============================================================
-    # 2. 对齐与缩放 (Alignment)
-    # ============================================================
-    
-    # 放大到 Padded 尺寸 (使用 NEAREST 保持"方块感"，看起来更像 Token)
-    mask_padded = cv2.resize(mask, (padded_w, padded_h), interpolation=cv2.INTER_NEAREST)
-    
-    # 切掉 Padding 黑边 (关键步骤！)
-    mask_valid = mask_padded[:valid_h, :valid_w]
-    
-    # 拉伸回原图尺寸
-    orig_h, orig_w = orig_image.shape[:2]
-    mask_final = cv2.resize(mask_valid, (orig_w, orig_h), interpolation=cv2.INTER_NEAREST)
-    
-    # ============================================================
-    # 3. 上色 (Color Overlay) - "高级感"配色方案
-    # ============================================================
-    
-    # 方案：前景用红色高亮，背景压暗 (Dimmed)
-    
-    # 扩展 Mask 维度以匹配图像通道 [H, W, 1]
-    mask_3d = mask_final[:, :, np.newaxis]
-    
-    # A. 处理前景 (保留区域)
-    # 创建一个纯红色的覆盖层
-    red_layer = np.zeros_like(orig_image)
-    red_layer[:] = (0, 0, 255) # BGR: 纯红
-    
-    # B. 处理背景 (被剪枝区域)
-    # 创建一个变暗的原图 (比如亮度降为原来的 30%)
-    # 这样背景里的路还能隐约看见，但明显是"不重要"的
-    dimmed_bg = (orig_image * 0.3).astype(np.uint8)
-    
-    # C. 融合
-    # 如果 mask=1，显示 (原图*0.7 + 红色*0.3)
-    # 如果 mask=0，显示 (变暗的背景)
-    
-    foreground_vis = cv2.addWeighted(orig_image, 0.7, red_layer, 0.3, 0) # 红色半透明覆盖
-    
-    # 根据 mask 组合：哪里是1用前景图，哪里是0用背景图
-    final_vis = np.where(mask_3d > 0.5, foreground_vis, dimmed_bg).astype(np.uint8)
-    
-    # ============================================================
-    # 4. 标题
-    # ============================================================
-    if title:
-        (text_w, text_h), _ = cv2.getTextSize(title, cv2.FONT_HERSHEY_SIMPLEX, 1.0, 2)
-        cv2.rectangle(final_vis, (10, 5), (10 + text_w, 30 + 5), (0, 0, 0), -1)
-        cv2.putText(final_vis, title, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
-        
-    return final_vis
+        print(f"Unknown mode: {mode}")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Visualize Token Pruning")
+    parser = argparse.ArgumentParser(description="DSET Sparsity Visualization")
     parser.add_argument("--image", type=str, required=True, help="Input image path")
-    parser.add_argument("--config", type=str, required=True, help="Model config YAML path")
-    parser.add_argument("--checkpoint", type=str, required=True, help="Model checkpoint path")
-    parser.add_argument("--output_dir", type=str, default=None, help="Output directory (default: same as image)")
+    parser.add_argument("--config", type=str, required=True, help="Model config YAML")
+    parser.add_argument("--checkpoint", type=str, required=True, help="Model checkpoint")
+    parser.add_argument("--mode", type=str, default="teaser", choices=["teaser", "heatmap"], 
+                        help="Visualization mode: 'teaser' (binary mask, 3-color) or 'heatmap' (continuous scores)")
+    parser.add_argument("--output_dir", type=str, default=None, help="Output directory")
     parser.add_argument("--device", type=str, default="cuda", help="Device (cuda/cpu)")
-    parser.add_argument("--patch_size", type=int, default=1, help="Patch size used in token pruning")
-    parser.add_argument("--stride", type=int, default=32, help="Feature map stride")
-    parser.add_argument("--target_size", type=int, default=1280, 
-                       help="Target size for longest edge (default: 1280). "
-                            "Use 1920 for full-resolution input (e.g., 1920x1080). "
-                            "Note: Input dimensions must be multiples of stride (32)")
+    parser.add_argument("--target_size", type=int, default=1280, help="Inference size")
+    
     args = parser.parse_args()
     
-    print(f"Loading model from {args.checkpoint}...")
+    print(f"Initializing model for mode: {args.mode}...")
     model, _ = load_model(args.config, args.checkpoint, args.device)
-    print("Model loaded successfully.")
     
-    try:
-        visualize_token_pruning(model, args.image, device=args.device, 
-                              output_dir=args.output_dir, 
-                              patch_size=args.patch_size, 
-                              stride=args.stride,
-                              target_size=args.target_size)
-        print("\n✓ Visualization completed successfully!")
-    except Exception as e:
-        print(f"\n✗ Error during visualization: {e}")
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
+    run_visualization(model, args.image, device=args.device, output_dir=args.output_dir, 
+                     target_size=args.target_size, mode=args.mode)
