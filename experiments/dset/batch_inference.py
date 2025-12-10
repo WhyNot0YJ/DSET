@@ -89,7 +89,7 @@ def load_model(config_path: str, checkpoint_path: str, device: str = "cuda"):
             def info(self, msg): pass
         trainer.logger = SimpleLogger()
     
-    model = trainer.create_model()
+    model = trainer._create_model()
     
     # Load checkpoint
     try:
