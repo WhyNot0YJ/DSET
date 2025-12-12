@@ -167,9 +167,9 @@ def main():
         dict(type='MinIoURandomCrop', min_crop_size=0.1),  
         dict(type='RandomFlip', prob=0.5),   
         dict(
-            type='RandomResize',
+            type='RandomChoiceResize',
             # [Fix 2] Change 1333 to 1280 to match DSET's 'max_size: 1280'
-            scale=[(1280, x) for x in range(480, 801, 32)],
+            scales=[(1280, x) for x in range(480, 801, 32)],
             keep_ratio=True),  
         dict(type='PackDetInputs')
     ]
@@ -216,7 +216,7 @@ def main():
     # 配置测试数据加载器
     cfg.test_dataloader.dataset.data_root = data_root
     cfg.test_dataloader.dataset.ann_file = 'annotations/instances_val.json'
-    cfg.test_dataloader.dataset.data_prefix = dict(img='val2017/')
+    cfg.test_dataloader.dataset.data_prefix = dict(img='')
     cfg.test_dataloader.dataset.metainfo = metainfo
     cfg.test_dataloader.dataset.pipeline = test_pipeline  # Apply new pipeline
     cfg.test_dataloader.batch_size = 16
