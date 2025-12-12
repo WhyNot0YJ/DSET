@@ -86,13 +86,14 @@ def main():
     # 1. Base Config (基础配置)
     # ==================================================================
     # Load the standard deformable-detr R50 config from mmdet model zoo
-    # 使用 mmdet:: 前缀从安装包中加载默认配置
+    # 使用绝对路径加载配置文件
     try:
-        config_path = 'mmdet::deformable_detr/deformable-detr_r50_16xb2-50e_coco.py'
+        config_path = '/root/miniconda3/lib/python3.10/site-packages/mmdet/.mim/configs/deformable_detr/deformable-detr_r50_16xb2-50e_coco.py'
+        if not os.path.exists(config_path):
+            raise FileNotFoundError(f"Config file not found at: {config_path}")
         cfg = Config.fromfile(config_path)
     except Exception as e:
         print(f"Error loading config: {e}")
-        print("Ensure mmdet is installed properly. You can try running: mim install mmdet")
         return
 
     # ==================================================================
