@@ -76,6 +76,8 @@ def main():
     # ResNet-18 outputs [64, 128, 256, 512], use last 3 stages -> [128, 256, 512]
     cfg.model.neck.in_channels = [128, 256, 512]
     cfg.model.bbox_head.num_classes = 8
+    # 🔥 核心修改：强制使用 100 Queries（与 RT-DETR 对齐，确保公平对比）
+    cfg.model.num_queries = 100
 
     # Dataset Configuration
     if args.data_root:
@@ -156,6 +158,11 @@ def main():
     # Evaluators
     cfg.val_evaluator.ann_file = os.path.join(data_root, 'annotations/instances_val.json')
     cfg.test_evaluator.ann_file = os.path.join(data_root, 'annotations/instances_val.json')
+    # 🔥 对齐评估指标：Recall @ 100（与 RT-DETR 输出范围一致）
+    cfg.val_evaluator.metric_items = ['mAP', 'mAP_50', 'mAP_75', 'mAP_s', 'mAP_m', 'mAP_l', 'AR@1', 'AR@10', 'AR@100']
+    cfg.val_evaluator.proposal_nums = (1, 10, 100)
+    cfg.test_evaluator.metric_items = ['mAP', 'mAP_50', 'mAP_75', 'mAP_s', 'mAP_m', 'mAP_l', 'AR@1', 'AR@10', 'AR@100']
+    cfg.test_evaluator.proposal_nums = (1, 10, 100)
 
     # Training Schedule
     if args.epochs is not None:
@@ -209,13 +216,14 @@ def main():
         cfg.default_hooks.checkpoint.save_best = 'coco/bbox_mAP'
         cfg.default_hooks.checkpoint.rule = 'greater'
         cfg.default_hooks.checkpoint.interval = 1  # 验证间隔
-        # cfg.default_hooks.checkpoint.max_keep_ckpts = 3  # 可选：只保留最好的3个
+        cfg.default_hooks.checkpoint.max_keep_ckpts = 1  # 🔥 只保留最新 1 个，节省硬盘空间
     else:
         cfg.default_hooks.checkpoint = dict(
             type='CheckpointHook', 
             interval=1, 
             save_best='coco/bbox_mAP',
-            rule='greater'
+            rule='greater',
+            max_keep_ckpts=1  # 🔥 只保留最新 1 个，节省硬盘空间
         )
     
     # 2. 配置 EarlyStoppingHook (放在 custom_hooks 中，符合 MMEngine 规范)
