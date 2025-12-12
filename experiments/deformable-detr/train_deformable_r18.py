@@ -196,7 +196,7 @@ def main():
 
     # Modify Batch Size and Num Workers
     # 设置 Batch Size 为 16，Num Workers 为 16
-    cfg.train_dataloader.batch_size = 16
+    cfg.train_dataloader.batch_size = 12
     cfg.train_dataloader.num_workers = 16
 
     # Val Dataloader
