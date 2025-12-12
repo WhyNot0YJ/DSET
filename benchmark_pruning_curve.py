@@ -252,9 +252,9 @@ def plot_results(inference_ratios, results, output_path="pruning_tradeoff.png"):
                  linewidth=2, 
                  label=model_name)
         
-        # Add labels (保留四位小数)
+        # Add labels (保留三位小数)
         for x, y in zip(inference_ratios, mAPs):
-            plt.annotate(f"{y:.4f}", (x, y), textcoords="offset points", xytext=(0, 10), ha='center', fontsize=8)
+            plt.annotate(f"{y:.3f}", (x, y), textcoords="offset points", xytext=(0, 10), ha='center', fontsize=8)
 
     plt.xlabel('Inference Keep Ratio')
     plt.ylabel('mAP (0.5:0.95)')
