@@ -195,6 +195,18 @@ def main():
     cfg.optim_wrapper.type = 'AmpOptimWrapper'
     cfg.optim_wrapper.loss_scale = 'dynamic'
     
+    # Early Stopping Configuration
+    if 'default_hooks' not in cfg:
+        cfg.default_hooks = {}
+    cfg.default_hooks.early_stop = dict(
+        type='EarlyStoppingHook',
+        monitor='coco/bbox_mAP',  # 监控的指标
+        patience=20,  # 容忍多少个epoch没有改善
+        min_delta=0.0001,  # 最小改善阈值
+        rule='greater'  # 'greater'表示越大越好，'less'表示越小越好
+    )
+    print(f"✓ Early Stopping: 启用 (patience=20, monitor=coco/bbox_mAP)")
+    
     print(f"\n{'='*60}")
     print(f"Starting Deformable DETR R18 Training")
     print(f"{'='*60}")
