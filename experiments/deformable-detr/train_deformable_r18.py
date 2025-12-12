@@ -195,17 +195,42 @@ def main():
     cfg.optim_wrapper.type = 'AmpOptimWrapper'
     cfg.optim_wrapper.loss_scale = 'dynamic'
     
-    # Early Stopping Configuration
+    # ==================================================================
+    # Early Stopping & Best Model Saving Configuration
+    # ==================================================================
+    
+    # 1. 配置 CheckpointHook 保存【最佳模型】
+    # (如果不加这一步，早停后你拿到的是最后一次迭代的模型，而不是分数最高的模型)
     if 'default_hooks' not in cfg:
         cfg.default_hooks = {}
-    cfg.default_hooks.early_stop = dict(
+    
+    # 确保 checkpoint hook 存在并设置 save_best
+    if hasattr(cfg.default_hooks, 'checkpoint'):
+        cfg.default_hooks.checkpoint.save_best = 'coco/bbox_mAP'
+        cfg.default_hooks.checkpoint.rule = 'greater'
+        cfg.default_hooks.checkpoint.interval = 1  # 验证间隔
+        # cfg.default_hooks.checkpoint.max_keep_ckpts = 3  # 可选：只保留最好的3个
+    else:
+        cfg.default_hooks.checkpoint = dict(
+            type='CheckpointHook', 
+            interval=1, 
+            save_best='coco/bbox_mAP',
+            rule='greater'
+        )
+    
+    # 2. 配置 EarlyStoppingHook (放在 custom_hooks 中，符合 MMEngine 规范)
+    if 'custom_hooks' not in cfg:
+        cfg.custom_hooks = []
+        
+    cfg.custom_hooks.append(dict(
         type='EarlyStoppingHook',
         monitor='coco/bbox_mAP',  # 监控的指标
         patience=20,  # 容忍多少个epoch没有改善
         min_delta=0.0001,  # 最小改善阈值
         rule='greater'  # 'greater'表示越大越好，'less'表示越小越好
-    )
-    print(f"✓ Early Stopping: 启用 (patience=20, monitor=coco/bbox_mAP)")
+    ))
+    
+    print(f"✓ Early Stopping & Save Best: 已启用 (patience=20, monitor=coco/bbox_mAP)")
     
     print(f"\n{'='*60}")
     print(f"Starting Deformable DETR R18 Training")
