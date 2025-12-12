@@ -335,11 +335,12 @@ class HybridEncoder(nn.Module):
     def _calculate_min_patches_for_layer(self) -> int:
         """
         Calculate min_patches.
-        Returns a fixed safe minimum (16) to ensure code stability,
+        Returns a fixed safe minimum (1) to ensure code stability,
         leaving the actual pruning ratio control entirely to `keep_ratio`.
         """
-        # A small constant to prevent empty tensors/crashes (e.g. 4x4 region)
-        return 16
+        # A small constant to prevent empty tensors/crashes
+        # Changed from 16 to 1 to allow extreme pruning (e.g. 98% pruned)
+        return 1
 
     @staticmethod
     def build_2d_sincos_position_embedding(w, h, embed_dim=256, temperature=10000.):
