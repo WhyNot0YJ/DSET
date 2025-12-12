@@ -190,7 +190,7 @@ def main():
     # 配置训练数据加载器
     cfg.train_dataloader.dataset.data_root = data_root
     cfg.train_dataloader.dataset.ann_file = 'annotations/instances_train.json'
-    cfg.train_dataloader.dataset.data_prefix = dict(img='/')
+    cfg.train_dataloader.dataset.data_prefix = dict(img='')
     cfg.train_dataloader.dataset.metainfo = metainfo
     cfg.train_dataloader.dataset.pipeline = train_pipeline  # Apply new pipeline
 
@@ -203,7 +203,7 @@ def main():
     # 配置验证数据加载器
     cfg.val_dataloader.dataset.data_root = data_root
     cfg.val_dataloader.dataset.ann_file = 'annotations/instances_val.json'
-    cfg.val_dataloader.dataset.data_prefix = dict(img='/')
+    cfg.val_dataloader.dataset.data_prefix = dict(img='')
     cfg.val_dataloader.dataset.metainfo = metainfo
     cfg.val_dataloader.dataset.pipeline = test_pipeline  # Apply new pipeline
     
