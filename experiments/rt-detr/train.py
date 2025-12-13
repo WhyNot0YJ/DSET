@@ -1419,7 +1419,6 @@ class RTDETRTrainer:
         total_loss = 0.0
         all_predictions = []
         all_targets = []
-        total_raw_predictions = 0  # 原始query总数
         
         # 初始化默认尺寸 (防止 val_loader 为空)
         current_h, current_w = 736, 1280
@@ -1448,12 +1447,6 @@ class RTDETRTrainer:
                     loss = sum(loss_dict.values())
                     total_loss += loss.item()
                 
-                # 统计原始预测数（所有queries，兼容两种键名）
-                if 'pred_logits' in outputs:
-                    total_raw_predictions += outputs['pred_logits'].shape[0] * outputs['pred_logits'].shape[1]
-                elif 'class_scores' in outputs:
-                    total_raw_predictions += outputs['class_scores'].shape[0] * outputs['class_scores'].shape[1]
-                
                 # 收集预测结果（只在需要计算mAP时收集，前30个epoch跳过）
                 # 兼容两种输出格式：pred_logits/pred_boxes 或 class_scores/bboxes
                 has_predictions = (
@@ -1478,10 +1471,7 @@ class RTDETRTrainer:
             'total_loss': avg_loss,
             'mAP_0.5': mAP_metrics.get('mAP_0.5', 0.0),
             'mAP_0.75': mAP_metrics.get('mAP_0.75', 0.0),
-            'mAP_0.5_0.95': mAP_metrics.get('mAP_0.5_0.95', 0.0),
-            'num_predictions': len(all_predictions),
-            'num_raw_predictions': total_raw_predictions,  # 所有原始queries数量（与moe-rtdetr保持一致）
-            'num_targets': len(all_targets)
+            'mAP_0.5_0.95': mAP_metrics.get('mAP_0.5_0.95', 0.0)
         }
     
     def _collect_predictions(self, outputs: Dict, targets: List[Dict], batch_idx: int,

@@ -1541,7 +1541,6 @@ class DSETTrainer:
         total_loss = 0.0
         all_predictions = []
         all_targets = []
-        total_raw_predictions = 0  # 原始query总数
         
         # 统计验证时的剪枝比例
         val_pruning_ratios = []
@@ -1572,10 +1571,6 @@ class DSETTrainer:
                 if isinstance(outputs, dict):
                     if 'total_loss' in outputs:
                         total_loss += outputs['total_loss'].item()
-                    
-                    # 统计原始预测数
-                    if 'class_scores' in outputs:
-                        total_raw_predictions += outputs['class_scores'].shape[0] * outputs['class_scores'].shape[1]
                     
                     # 收集预测结果（只在需要计算mAP时收集，前30个epoch跳过）
                     if 'class_scores' in outputs and 'bboxes' in outputs:
@@ -1610,9 +1605,9 @@ class DSETTrainer:
             'mAP_0.5': mAP_metrics.get('mAP_0.5', 0.0),
             'mAP_0.75': mAP_metrics.get('mAP_0.75', 0.0),
             'mAP_0.5_0.95': mAP_metrics.get('mAP_0.5_0.95', 0.0),
-            'num_predictions': len(all_predictions),
-            'num_raw_predictions': total_raw_predictions,
-            'num_targets': len(all_targets),
+            'mAP_s': mAP_metrics.get('mAP_s', 0.0),
+            'mAP_m': mAP_metrics.get('mAP_m', 0.0),
+            'mAP_l': mAP_metrics.get('mAP_l', 0.0),
             'val_token_pruning_ratio': avg_val_pruning_ratio  # 添加验证时的剪枝比例
         }
     
@@ -1757,7 +1752,10 @@ class DSETTrainer:
                 return {
                     'mAP_0.5': 0.0,
                     'mAP_0.75': 0.0,
-                    'mAP_0.5_0.95': 0.0
+                    'mAP_0.5_0.95': 0.0,
+                    'mAP_s': 0.0,
+                    'mAP_m': 0.0,
+                    'mAP_l': 0.0
                 }
             
             # 获取类别信息
@@ -1900,6 +1898,9 @@ class DSETTrainer:
                 'mAP_0.5': coco_eval.stats[1],
                 'mAP_0.75': coco_eval.stats[2],
                 'mAP_0.5_0.95': coco_eval.stats[0],
+                'mAP_s': coco_eval.stats[3] if len(coco_eval.stats) > 3 else 0.0,  # Small objects
+                'mAP_m': coco_eval.stats[4] if len(coco_eval.stats) > 4 else 0.0,  # Medium objects
+                'mAP_l': coco_eval.stats[5] if len(coco_eval.stats) > 5 else 0.0,  # Large objects
                 'per_category_map': per_category_map  # 保存每个类别的mAP
             }
             
@@ -1914,7 +1915,10 @@ class DSETTrainer:
             return {
                 'mAP_0.5': 0.0,
                 'mAP_0.75': 0.0,
-                'mAP_0.5_0.95': 0.0
+                'mAP_0.5_0.95': 0.0,
+                'mAP_s': 0.0,
+                'mAP_m': 0.0,
+                'mAP_l': 0.0
             }
     
     def _safe_save(self, checkpoint: Dict, path: Path, desc: str = "检查点") -> bool:
