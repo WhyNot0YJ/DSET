@@ -158,11 +158,13 @@ def main():
     # Evaluators
     cfg.val_evaluator.ann_file = os.path.join(data_root, 'annotations/instances_val.json')
     cfg.test_evaluator.ann_file = os.path.join(data_root, 'annotations/instances_val.json')
-    # 🔥 对齐评估指标：Recall @ 100（与 RT-DETR 输出范围一致）
-    cfg.val_evaluator.metric_items = ['mAP', 'mAP_50', 'mAP_75', 'mAP_s', 'mAP_m', 'mAP_l', 'AR@1', 'AR@10', 'AR@100']
+    # 🔥 关键点：proposal_nums 决定了"计算"哪些 AR
     cfg.val_evaluator.proposal_nums = (1, 10, 100)
-    cfg.test_evaluator.metric_items = ['mAP', 'mAP_50', 'mAP_75', 'mAP_s', 'mAP_m', 'mAP_l', 'AR@1', 'AR@10', 'AR@100']
     cfg.test_evaluator.proposal_nums = (1, 10, 100)
+    # 🔥 关键点：metric_items 决定了"在进度条最后打印"哪些 Key
+    # 这里不能写 AR，否则会报错。删掉 AR 后，完整的 AR 数据依然会在详细日志中打印出来。
+    cfg.val_evaluator.metric_items = ['mAP', 'mAP_50', 'mAP_75', 'mAP_s', 'mAP_m', 'mAP_l']
+    cfg.test_evaluator.metric_items = ['mAP', 'mAP_50', 'mAP_75', 'mAP_s', 'mAP_m', 'mAP_l']
 
     # Training Schedule
     if args.epochs is not None:
