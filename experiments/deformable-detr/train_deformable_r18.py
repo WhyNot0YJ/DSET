@@ -5,14 +5,39 @@ import argparse
 import torch
 
 # Fix PyTorch 2.6+ weights_only issue for MMEngine checkpoint loading
-# MMEngine checkpoints contain custom classes that need to be whitelisted
+# MMEngine checkpoints contain custom classes and numpy arrays that need to be whitelisted
+def patch_torch_load_for_mmengine():
+    """Patch torch.load to use weights_only=False for MMEngine compatibility"""
+    import torch
+    _original_torch_load = torch.load
+    def _patched_torch_load(*args, **kwargs):
+        if 'weights_only' not in kwargs:
+            kwargs['weights_only'] = False
+        return _original_torch_load(*args, **kwargs)
+    torch.load = _patched_torch_load
+    return True
+
 try:
-    # Add MMEngine classes to safe globals to allow loading checkpoints
+    # Method 1: Add safe globals for known classes
     from mmengine.logging.history_buffer import HistoryBuffer
+    import numpy as np
     torch.serialization.add_safe_globals([HistoryBuffer])
+    # Try to add numpy reconstruct function
+    try:
+        import numpy._core.multiarray as numpy_multiarray
+        torch.serialization.add_safe_globals([numpy_multiarray._reconstruct])
+    except (ImportError, AttributeError):
+        pass
+    try:
+        torch.serialization.add_safe_globals([np.ndarray, np.dtype])
+    except (TypeError, AttributeError):
+        pass
 except (ImportError, AttributeError):
-    # If HistoryBuffer is not available or add_safe_globals doesn't exist, continue
     pass
+
+# Method 2: Patch torch.load as fallback (more reliable)
+patch_torch_load_for_mmengine()
+print("✓ 已修补 torch.load 以兼容 MMEngine checkpoint (weights_only=False)")
 
 # Auto-Installation Block: Checks and installs openmim, mmengine, mmcv, mmdet if not present
 def check_and_install_dependencies():
@@ -39,26 +64,6 @@ def check_and_install_dependencies():
 # Check dependencies before main imports if running in a fresh environment
 check_and_install_dependencies()
 
-# Fix PyTorch 2.6+ weights_only issue for MMEngine checkpoint loading
-# MMEngine checkpoints contain custom classes (HistoryBuffer) that need to be whitelisted
-try:
-    from mmengine.logging.history_buffer import HistoryBuffer
-    torch.serialization.add_safe_globals([HistoryBuffer])
-    print("✓ 已添加 MMEngine HistoryBuffer 到 PyTorch safe globals")
-except (ImportError, AttributeError) as e:
-    # If HistoryBuffer is not available, continue
-    print(f"⚠ 无法设置 MMEngine checkpoint 加载修复: {e}")
-    # Still try to patch torch.load
-    try:
-        original_torch_load = torch.load
-        def patched_torch_load(*args, **kwargs):
-            if 'weights_only' not in kwargs:
-                kwargs['weights_only'] = False
-            return original_torch_load(*args, **kwargs)
-        torch.load = patched_torch_load
-        print("✓ 已修补 torch.load 以使用 weights_only=False")
-    except:
-        pass
 
 from mmengine.config import Config
 from mmengine.runner import Runner
