@@ -313,18 +313,45 @@ def main():
                         print(f"   尝试查找的文件: latest.pth, epoch_*.pth, best_*.pth")
         else:
             # 使用指定的 checkpoint 路径
-            if os.path.exists(args.resume):
-                resume_from = args.resume
+            # 尝试多个可能的路径位置（按优先级）
+            original_path = args.resume
+            possible_paths = []
+            
+            # 如果已经是绝对路径，直接使用
+            if os.path.isabs(original_path):
+                possible_paths.append(original_path)
+            else:
+                # 1. 相对于当前工作目录
+                possible_paths.append(os.path.abspath(original_path))
+                # 2. 相对于 work_dir
+                possible_paths.append(os.path.join(cfg.work_dir, original_path))
+                # 3. work_dir 下的文件名（去掉前面的目录部分）
+                possible_paths.append(os.path.join(cfg.work_dir, os.path.basename(original_path)))
+                # 4. 原始路径（保持原样，让后续处理）
+                possible_paths.append(original_path)
+            
+            resume_from = None
+            for path in possible_paths:
+                if os.path.exists(path):
+                    resume_from = os.path.abspath(path)  # 转换为绝对路径
+                    print(f"📦 找到 checkpoint: {resume_from}")
+                    break
+            
+            if resume_from:
                 # 读取 checkpoint 查看 epoch 信息
                 try:
                     import torch
                     ckpt = torch.load(resume_from, map_location='cpu', weights_only=False)
                     epoch = ckpt.get('meta', {}).get('epoch', ckpt.get('epoch', 'unknown'))
                     print(f"📦 使用指定的 checkpoint: {resume_from} (Epoch: {epoch})")
-                except:
-                    print(f"📦 使用指定的 checkpoint: {resume_from}")
+                except Exception as e:
+                    print(f"📦 使用指定的 checkpoint: {resume_from} (无法读取 epoch 信息: {e})")
             else:
-                print(f"⚠ Checkpoint 不存在: {args.resume}，将从 epoch 0 开始训练")
+                print(f"⚠ Checkpoint 不存在，尝试的路径:")
+                for path in possible_paths:
+                    exists = "✓" if os.path.exists(path) else "✗"
+                    print(f"   {exists} {path}")
+                print(f"   将从 epoch 0 开始训练")
     
     print(f"\n{'='*60}")
     print(f"Starting Deformable DETR R18 Training")
@@ -338,10 +365,62 @@ def main():
         print(f"Resume from: {resume_from}")
     print(f"{'='*60}\n")
     
-    # 配置 resume（MMEngine 使用 cfg.resume 而不是 runner.resume()）
+    # 配置 resume（MMEngine 的 resume 机制）
     if resume_from:
-        cfg.resume = resume_from
-        print(f"✓ 已配置从 checkpoint 恢复: {resume_from}")
+        # 确保 resume_from 是绝对路径
+        if not os.path.isabs(resume_from):
+            # 再次尝试解析路径（以防前面的解析失败）
+            possible_paths = [
+                os.path.abspath(resume_from),  # 相对于当前工作目录
+                os.path.join(cfg.work_dir, resume_from),  # 相对于 work_dir
+                os.path.join(cfg.work_dir, os.path.basename(resume_from)),  # work_dir 下的文件名
+            ]
+            
+            for path in possible_paths:
+                if os.path.exists(path):
+                    resume_from = os.path.abspath(path)
+                    break
+        
+        # 最终验证路径是否存在
+        if os.path.exists(resume_from):
+            resume_from = os.path.abspath(resume_from)  # 确保是绝对路径
+            
+            # MMEngine 的 resume 机制说明：
+            # - cfg.resume = True: 自动从 work_dir/latest.pth 恢复
+            # - cfg.resume = 'path/to/checkpoint.pth': 从指定路径恢复（字符串形式）
+            # - cfg.load_from = 'path': 只加载权重，不恢复训练状态
+            # 
+            # 对于 epoch_*.pth，应该使用字符串路径形式：
+            cfg.resume = resume_from  # ✅ 使用路径字符串，MMEngine 会自动恢复所有状态
+            
+            print(f"✓ 已配置从 checkpoint 恢复: {resume_from}")
+            print(f"   cfg.resume = {cfg.resume}")
+            
+            # 读取并显示 checkpoint 中的 epoch 信息
+            try:
+                import torch
+                ckpt = torch.load(resume_from, map_location='cpu', weights_only=False)
+                # MMEngine checkpoint 格式：meta.epoch 或直接是 epoch
+                epoch_info = ckpt.get('meta', {}).get('epoch', ckpt.get('epoch', 'unknown'))
+                print(f"   Checkpoint 中的 epoch: {epoch_info}")
+                if isinstance(epoch_info, int):
+                    print(f"   将从 epoch {epoch_info + 1} 继续训练")
+                else:
+                    print(f"   ⚠ 无法确定 epoch 信息，但会尝试恢复训练状态")
+            except Exception as e:
+                print(f"   ⚠ 无法读取 checkpoint 信息: {e}")
+                print(f"   但仍会尝试恢复训练")
+        else:
+            print(f"⚠ 错误: Checkpoint 文件不存在: {resume_from}")
+            print(f"   当前工作目录: {os.getcwd()}")
+            print(f"   Work dir: {cfg.work_dir}")
+            print(f"   尝试的路径:")
+            if 'possible_paths' in locals():
+                for path in possible_paths:
+                    exists = "✓" if os.path.exists(path) else "✗"
+                    print(f"     {exists} {path}")
+            print(f"   将从 epoch 0 开始训练（不使用 resume）")
+            cfg.resume = False
     
     runner = Runner.from_cfg(cfg)
     runner.train()
