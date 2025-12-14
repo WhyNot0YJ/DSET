@@ -416,20 +416,26 @@ def main():
                 print(f"   ⚠ 无法读取 checkpoint 信息: {e}")
                 print(f"   但仍会尝试恢复训练")
             
-            # 方法：直接将 epoch_130.pth 复制为 latest.pth
-            # MMEngine 的 resume 机制会查找 work_dir/latest.pth
-            # 复制文件时，文件内部的所有信息（包括 epoch 编号）都会被完整保留
+            # MMEngine 的 resume 机制：需要同时设置 load_from 和 resume
+            # 方法1：先尝试复制为 latest.pth，然后设置 resume = True
             latest_pth = os.path.join(cfg.work_dir, 'latest.pth')
             try:
                 import shutil
                 shutil.copy2(resume_checkpoint_path, latest_pth)
                 print(f"✓ 已复制 checkpoint 为 latest.pth: {latest_pth}")
                 print(f"   (文件内部的 epoch 信息已完整保留)")
-                cfg.resume = True  # 启用 resume，MMEngine 会从 latest.pth 恢复
+                
+                # MMEngine 的正确 resume 方式：同时设置 load_from 和 resume = True
+                cfg.load_from = latest_pth  # 指定 checkpoint 路径
+                cfg.resume = True  # 启用恢复训练状态
+                print(f"✓ 已设置 cfg.load_from = {latest_pth}")
+                print(f"✓ 已设置 cfg.resume = True")
             except Exception as e:
                 print(f"⚠ 无法复制 checkpoint: {e}")
-                print(f"   将尝试使用直接路径方式")
-                cfg.resume = resume_checkpoint_path  # 回退到直接路径
+                print(f"   将尝试直接使用 checkpoint 路径")
+                # 回退：直接使用 checkpoint 路径
+                cfg.load_from = resume_checkpoint_path
+                cfg.resume = True
         else:
             print(f"⚠ 错误: Checkpoint 文件不存在: {resume_from}")
             print(f"   当前工作目录: {os.getcwd()}")
@@ -442,36 +448,19 @@ def main():
             print(f"   将从 epoch 0 开始训练（不使用 resume）")
             cfg.resume = False
     
-    runner = Runner.from_cfg(cfg)
-    
-    # 如果设置了 resume，但 MMEngine 没有自动恢复，手动调用 resume
-    if resume_checkpoint_path and os.path.exists(resume_checkpoint_path):
+    # 在创建 Runner 之前，验证 resume 配置
+    if resume_checkpoint_path:
         latest_pth = os.path.join(cfg.work_dir, 'latest.pth')
-        # 确保 latest.pth 存在
-        if os.path.exists(latest_pth):
-            try:
-                # 手动调用 runner.resume() 方法
-                print(f"📦 手动恢复训练状态从: {latest_pth}")
-                runner.resume(latest_pth)
-                # 读取并显示恢复后的 epoch
-                try:
-                    import torch
-                    ckpt = torch.load(latest_pth, map_location='cpu', weights_only=False)
-                    epoch_info = ckpt.get('meta', {}).get('epoch', ckpt.get('epoch', 'unknown'))
-                    if isinstance(epoch_info, int):
-                        print(f"✓ 已成功恢复训练，将从 epoch {epoch_info + 1} 继续")
-                except:
-                    pass
-            except Exception as e:
-                print(f"⚠ 手动恢复失败: {e}")
-                print(f"   尝试直接使用 checkpoint 路径: {resume_checkpoint_path}")
-                try:
-                    runner.resume(resume_checkpoint_path)
-                    print(f"✓ 使用直接路径恢复成功")
-                except Exception as e2:
-                    print(f"⚠ 直接路径恢复也失败: {e2}")
-                    print(f"   将从 epoch 1 开始训练（未恢复）")
+        if cfg.resume and cfg.load_from:
+            if os.path.exists(cfg.load_from):
+                print(f"✓ Resume 配置已设置:")
+                print(f"   - cfg.load_from: {cfg.load_from}")
+                print(f"   - cfg.resume: {cfg.resume}")
+            else:
+                print(f"⚠ 警告: cfg.load_from 指定的文件不存在: {cfg.load_from}")
+                print(f"   将尝试从 latest.pth 恢复（如果存在）")
     
+    runner = Runner.from_cfg(cfg)
     runner.train()
 
 if __name__ == '__main__':
