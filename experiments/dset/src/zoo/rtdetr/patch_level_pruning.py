@@ -1,5 +1,6 @@
 """Patch-level Pruning Module for DSET - 与Patch-MoE兼容的patch级别剪枝"""
 
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -468,7 +469,10 @@ class PatchLevelPruner(nn.Module):
                     dist_to_core = torch.sqrt(torch.clamp(dist_x, min=0)**2 + torch.clamp(dist_y, min=0)**2)
                     
                     # Normalize by expansion distance
-                    expand_dist = torch.sqrt(expand_w**2 + expand_h**2) + 1e-6
+                    # Note: expand_w/expand_h may be tensors or floats depending on min_size path
+                    expand_w_val = expand_w.item() if isinstance(expand_w, torch.Tensor) else float(expand_w)
+                    expand_h_val = expand_h.item() if isinstance(expand_h, torch.Tensor) else float(expand_h)
+                    expand_dist = math.sqrt(expand_w_val**2 + expand_h_val**2) + 1e-6
                     normalized_dist = dist_to_core / expand_dist
                     
                     # Apply decay function
