@@ -2171,7 +2171,10 @@ class DSETTrainer:
                 self.logger.info(f"  Encoder Patch-MoE Balance损失: {train_metrics.get('encoder_moe_balance_loss', 0.0):.4f}")
                 self.logger.info(f"  Encoder Patch-MoE Entropy损失: {train_metrics.get('encoder_moe_entropy_loss', 0.0):.4f}")
                 self.logger.info(f"  Encoder MoE总损失: {train_metrics.get('encoder_moe_loss', 0.0):.4f}")
-                self.logger.info(f"  Token Pruning损失: {train_metrics.get('token_pruning_loss', 0.0):.6f}")
+                if self.model.use_token_pruning_loss:
+                    self.logger.info(f"  Token Pruning损失: {train_metrics.get('token_pruning_loss', 0.0):.6f}")
+                if self.model.use_cass:
+                    self.logger.info(f"  CASS Loss: {train_metrics.get('cass_loss', 0.0):.4f}")
                 self.logger.info(f"  MoE总损失: {train_metrics['moe_load_balance_loss']:.4f}")
                 # 显示专家使用率
                 usage_str = [f"{rate*100:.2f}%" for rate in train_metrics['expert_usage_rate']]
