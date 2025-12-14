@@ -223,6 +223,9 @@ class DSETRTDETR(nn.Module):
         # 设置专家数量
         self.num_experts = num_experts
         
+        # Current epoch for warmup control (Token Pruning Loss and CASS Loss)
+        self.current_epoch = 0
+        
         # ========== Shared Components ==========
         self.backbone = self._build_backbone()
         self.encoder = self._build_encoder()
@@ -252,6 +255,17 @@ class DSETRTDETR(nn.Module):
         
         # RT-DETR Loss
         self.detr_criterion = self._build_detr_criterion()
+    
+    def set_epoch(self, epoch: int):
+        """Set current epoch for warmup control.
+        
+        Args:
+            epoch: Current training epoch
+        """
+        self.current_epoch = epoch
+        # Also update encoder's epoch (for token pruning mechanism)
+        if hasattr(self, 'encoder') and hasattr(self.encoder, 'set_epoch'):
+            self.encoder.set_epoch(epoch)
         
     def _build_backbone(self) -> nn.Module:
         """Build backbone."""
@@ -396,7 +410,9 @@ class DSETRTDETR(nn.Module):
             
             # 3. Patch-level Pruning损失（可选，鼓励学习有效的剪枝策略）
             # ⚠️ Patch-level Pruning 必然启用（与 Patch-MoE 配套），但损失计算是可选的
-            if self.use_token_pruning_loss and self.training and encoder_info:
+            # ⚠️ 关键：Token Pruning Loss 必须在 Warmup 期间为 0，避免拟合随机初始化的噪声分数
+            if self.use_token_pruning_loss and self.training and encoder_info and \
+               self.current_epoch >= self.token_pruning_warmup_epochs:
                 importance_scores_list = encoder_info.get('importance_scores_list', [])
                 if importance_scores_list and hasattr(self.encoder, 'token_pruners') and self.encoder.token_pruners:
                     # 对所有encoder层的importance_scores计算损失并求平均
@@ -417,6 +433,7 @@ class DSETRTDETR(nn.Module):
                 else:
                     token_pruning_loss = torch.tensor(0.0, device=images.device)
             else:
+                # Warmup 期间：Token Pruning Loss 为 0
                 token_pruning_loss = torch.tensor(0.0, device=images.device)
             
             # Decoder MoE权重
@@ -451,7 +468,9 @@ class DSETRTDETR(nn.Module):
             
             # 4. CASS (Context-Aware Soft Supervision) Loss
             # Provides explicit supervision for token importance predictor using GT bboxes
-            if self.use_cass and self.training and encoder_info and targets is not None:
+            # ⚠️ 关键：CASS Loss 必须在 Warmup 期间为 0，避免拟合随机初始化的噪声分数
+            if self.use_cass and self.training and encoder_info and targets is not None and \
+               self.current_epoch >= self.token_pruning_warmup_epochs:
                 importance_scores_list = encoder_info.get('importance_scores_list', [])
                 feat_shapes_list = encoder_info.get('feat_shapes_list', [])
                 
@@ -508,6 +527,7 @@ class DSETRTDETR(nn.Module):
                 else:
                     cass_loss = torch.tensor(0.0, device=images.device)
             else:
+                # Warmup 期间或未启用 CASS：CASS Loss 为 0
                 cass_loss = torch.tensor(0.0, device=images.device)
             
             # CASS Loss weight
@@ -1436,12 +1456,13 @@ class DSETTrainer:
         """训练一个epoch（支持DSET渐进式训练）。"""
         self.model.train()
         
-        # 设置encoder的epoch（用于Token Pruning渐进式启用）
-        if hasattr(self.model, 'encoder') and hasattr(self.model.encoder, 'set_epoch'):
-            self.model.encoder.set_epoch(self.current_epoch)
+        # 设置模型的epoch（用于Token Pruning Loss和CASS Loss的Warmup控制）
+        # 这会同时更新encoder的epoch（在model.set_epoch内部调用）
+        if hasattr(self.model, 'set_epoch'):
+            self.model.set_epoch(self.current_epoch)
             # 调试：检查是否设置了epoch
             if self.current_epoch >= 10 and self.current_epoch % 5 == 0:  # 每5个epoch打印一次
-                if hasattr(self.model.encoder, 'token_pruners') and self.model.encoder.token_pruners:
+                if hasattr(self.model, 'encoder') and hasattr(self.model.encoder, 'token_pruners') and self.model.encoder.token_pruners:
                     pruner = self.model.encoder.token_pruners[0]
         
         total_loss = 0.0
@@ -1627,17 +1648,19 @@ class DSETTrainer:
         
         # 设置encoder的epoch（用于Token Pruning渐进式启用，验证时也需要）
         # 1. 更新训练模型 (保持原样)
-        if hasattr(self.model, 'encoder') and hasattr(self.model.encoder, 'set_epoch'):
-            self.model.encoder.set_epoch(self.current_epoch)
+        # 设置模型的epoch（用于Token Pruning Loss和CASS Loss的Warmup控制）
+        # 这会同时更新encoder的epoch（在model.set_epoch内部调用）
+        if hasattr(self.model, 'set_epoch'):
+            self.model.set_epoch(self.current_epoch)
         
         # =========================================================
         # [修复] 必须同时更新 EMA 模型的 epoch，否则验证时不会剪枝！
         # EMA模型是deepcopy的独立副本，需要单独设置epoch
         # =========================================================
-        if hasattr(self.ema.module, 'encoder') and hasattr(self.ema.module.encoder, 'set_epoch'):
-            self.ema.module.encoder.set_epoch(self.current_epoch)
+        if hasattr(self.ema.module, 'set_epoch'):
+            self.ema.module.set_epoch(self.current_epoch)
             # 调试：验证EMA模型的pruning_enabled状态
-            if hasattr(self.ema.module.encoder, 'token_pruners') and self.ema.module.encoder.token_pruners:
+            if hasattr(self.ema.module, 'encoder') and hasattr(self.ema.module.encoder, 'token_pruners') and self.ema.module.encoder.token_pruners:
                 pruner = self.ema.module.encoder.token_pruners[0]
                 if self.current_epoch >= 10:  # 只在warmup后打印
                     self.logger.debug(f"[验证] Epoch {self.current_epoch}: EMA pruner.pruning_enabled={pruner.pruning_enabled}, "
