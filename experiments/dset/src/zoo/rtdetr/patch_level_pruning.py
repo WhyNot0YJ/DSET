@@ -343,6 +343,8 @@ class PatchLevelPruner(nn.Module):
         """
         Generates a Gaussian-weighted dilated mask for CASS supervision.
         
+        OPTIMIZED: Fully vectorized over bounding boxes using PyTorch broadcasting.
+        
         Args:
             gt_bboxes: List of tensors [N, 4] in (x1, y1, x2, y2) format, original image scale.
                        Each tensor corresponds to one image in the batch.
@@ -375,18 +377,17 @@ class PatchLevelPruner(nn.Module):
         patch_w = min(self.patch_size, w)
         num_patches_h = (h + patch_h - 1) // patch_h
         num_patches_w = (w + patch_w - 1) // patch_w
-        num_patches = num_patches_h * num_patches_w
         
         # Initialize mask at patch level [B, num_patches_h, num_patches_w]
         target_mask_2d = torch.zeros((B, num_patches_h, num_patches_w), device=device, dtype=torch.float32)
         
-        # Create coordinate grid for patch centers (vectorized)
-        # Patch center coordinates in feature map space
+        # Create coordinate grid for patch centers [1, H, W] for broadcasting
         patch_center_y = (torch.arange(num_patches_h, device=device, dtype=torch.float32) + 0.5) * patch_h
         patch_center_x = (torch.arange(num_patches_w, device=device, dtype=torch.float32) + 0.5) * patch_w
-        
-        # Create meshgrid for patch centers [num_patches_h, num_patches_w]
         yy, xx = torch.meshgrid(patch_center_y, patch_center_x, indexing='ij')
+        # Reshape to [1, H, W] for broadcasting against [N, 1, 1]
+        yy = yy.unsqueeze(0)  # [1, num_patches_h, num_patches_w]
+        xx = xx.unsqueeze(0)  # [1, num_patches_h, num_patches_w]
         
         for b_idx in range(B):
             bboxes = gt_bboxes[b_idx]
@@ -397,100 +398,123 @@ class PatchLevelPruner(nn.Module):
             if bboxes.dim() == 1:
                 bboxes = bboxes.unsqueeze(0)
             
-            # Map boxes to feature map scale
-            # bboxes: [N, 4] in (x1, y1, x2, y2) format
+            N = bboxes.shape[0]
+            
+            # Map boxes to feature map scale: [N, 4]
             bboxes_feat = bboxes.clone().float().to(device)
             bboxes_feat[:, 0] = bboxes[:, 0] / stride_w  # x1
             bboxes_feat[:, 1] = bboxes[:, 1] / stride_h  # y1
             bboxes_feat[:, 2] = bboxes[:, 2] / stride_w  # x2
             bboxes_feat[:, 3] = bboxes[:, 3] / stride_h  # y2
             
-            # Process each box
-            for box_idx in range(bboxes_feat.shape[0]):
-                x1, y1, x2, y2 = bboxes_feat[box_idx]
-                
-                # Calculate box dimensions and enforce minimum size
-                box_w = x2 - x1
-                box_h = y2 - y1
-                
-                # Enforce minimum size (CRITICAL for small objects on S5)
-                if box_w < min_size:
-                    center_x = (x1 + x2) / 2
-                    x1 = center_x - min_size / 2
-                    x2 = center_x + min_size / 2
-                    box_w = min_size
-                
-                if box_h < min_size:
-                    center_y = (y1 + y2) / 2
-                    y1 = center_y - min_size / 2
-                    y2 = center_y + min_size / 2
-                    box_h = min_size
-                
-                # Calculate dilated box (context region)
-                expand_w = box_w * expansion_ratio
-                expand_h = box_h * expansion_ratio
-                
-                x1_dilated = x1 - expand_w
-                y1_dilated = y1 - expand_h
-                x2_dilated = x2 + expand_w
-                y2_dilated = y2 + expand_h
-                
-                # Clamp to feature map bounds
-                x1_core = torch.clamp(x1, 0, w - 1e-6)
-                y1_core = torch.clamp(y1, 0, h - 1e-6)
-                x2_core = torch.clamp(x2, 1e-6, w)
-                y2_core = torch.clamp(y2, 1e-6, h)
-                
-                x1_dilated = torch.clamp(x1_dilated, 0, w - 1e-6)
-                y1_dilated = torch.clamp(y1_dilated, 0, h - 1e-6)
-                x2_dilated = torch.clamp(x2_dilated, 1e-6, w)
-                y2_dilated = torch.clamp(y2_dilated, 1e-6, h)
-                
-                # Calculate mask values for each patch
-                # Core region mask: patches whose centers are inside the core box
-                in_core = (xx >= x1_core) & (xx <= x2_core) & (yy >= y1_core) & (yy <= y2_core)
-                
-                # Dilated region mask: patches in dilated box but not in core
-                in_dilated = (xx >= x1_dilated) & (xx <= x2_dilated) & (yy >= y1_dilated) & (yy <= y2_dilated)
-                in_context = in_dilated & ~in_core
-                
-                # Calculate distance-based decay for context region
-                if in_context.any():
-                    # Distance from patch center to core box edge (normalized)
-                    # For each patch, compute signed distance to core box
-                    dist_left = x1_core - xx
-                    dist_right = xx - x2_core
-                    dist_top = y1_core - yy
-                    dist_bottom = yy - y2_core
-                    
-                    # Distance to core box (positive = outside core)
-                    dist_x = torch.maximum(dist_left, dist_right)
-                    dist_y = torch.maximum(dist_top, dist_bottom)
-                    dist_to_core = torch.sqrt(torch.clamp(dist_x, min=0)**2 + torch.clamp(dist_y, min=0)**2)
-                    
-                    # Normalize by expansion distance
-                    # Note: expand_w/expand_h may be tensors or floats depending on min_size path
-                    expand_w_val = expand_w.item() if isinstance(expand_w, torch.Tensor) else float(expand_w)
-                    expand_h_val = expand_h.item() if isinstance(expand_h, torch.Tensor) else float(expand_h)
-                    expand_dist = math.sqrt(expand_w_val**2 + expand_h_val**2) + 1e-6
-                    normalized_dist = dist_to_core / expand_dist
-                    
-                    # Apply decay function
-                    if decay_type == 'gaussian':
-                        # Gaussian decay: exp(-d^2 / (2 * sigma^2)), sigma = 0.5
-                        sigma = 0.5
-                        decay_values = torch.exp(-normalized_dist**2 / (2 * sigma**2))
-                    else:  # linear
-                        # Linear decay: 1 - d (clamped to [0, 1])
-                        decay_values = torch.clamp(1.0 - normalized_dist, 0.0, 1.0)
-                    
-                    # Apply context values
-                    context_values = decay_values * in_context.float()
-                    target_mask_2d[b_idx] = torch.maximum(target_mask_2d[b_idx], context_values)
-                
-                # Apply core region (value = 1.0)
-                core_values = in_core.float()
-                target_mask_2d[b_idx] = torch.maximum(target_mask_2d[b_idx], core_values)
+            # Extract coordinates: [N]
+            x1 = bboxes_feat[:, 0]
+            y1 = bboxes_feat[:, 1]
+            x2 = bboxes_feat[:, 2]
+            y2 = bboxes_feat[:, 3]
+            
+            # Calculate box dimensions: [N]
+            box_w = x2 - x1
+            box_h = y2 - y1
+            
+            # ===== Vectorized min_size enforcement (Small Object Protection) =====
+            # For boxes smaller than min_size, expand from center
+            needs_expand_w = box_w < min_size
+            needs_expand_h = box_h < min_size
+            
+            center_x = (x1 + x2) / 2
+            center_y = (y1 + y2) / 2
+            
+            # Apply min_size where needed (vectorized conditional)
+            x1 = torch.where(needs_expand_w, center_x - min_size / 2, x1)
+            x2 = torch.where(needs_expand_w, center_x + min_size / 2, x2)
+            y1 = torch.where(needs_expand_h, center_y - min_size / 2, y1)
+            y2 = torch.where(needs_expand_h, center_y + min_size / 2, y2)
+            
+            # Recalculate box dimensions after min_size enforcement
+            box_w = x2 - x1  # [N]
+            box_h = y2 - y1  # [N]
+            
+            # ===== Calculate dilated box (context region) =====
+            expand_w = box_w * expansion_ratio  # [N]
+            expand_h = box_h * expansion_ratio  # [N]
+            
+            x1_dilated = x1 - expand_w
+            y1_dilated = y1 - expand_h
+            x2_dilated = x2 + expand_w
+            y2_dilated = y2 + expand_h
+            
+            # ===== Clamp to feature map bounds =====
+            x1_core = torch.clamp(x1, 0, w - 1e-6)
+            y1_core = torch.clamp(y1, 0, h - 1e-6)
+            x2_core = torch.clamp(x2, 1e-6, w)
+            y2_core = torch.clamp(y2, 1e-6, h)
+            
+            x1_dilated = torch.clamp(x1_dilated, 0, w - 1e-6)
+            y1_dilated = torch.clamp(y1_dilated, 0, h - 1e-6)
+            x2_dilated = torch.clamp(x2_dilated, 1e-6, w)
+            y2_dilated = torch.clamp(y2_dilated, 1e-6, h)
+            
+            # ===== Reshape for broadcasting: [N] -> [N, 1, 1] =====
+            x1_core = x1_core.view(N, 1, 1)
+            y1_core = y1_core.view(N, 1, 1)
+            x2_core = x2_core.view(N, 1, 1)
+            y2_core = y2_core.view(N, 1, 1)
+            x1_dilated = x1_dilated.view(N, 1, 1)
+            y1_dilated = y1_dilated.view(N, 1, 1)
+            x2_dilated = x2_dilated.view(N, 1, 1)
+            y2_dilated = y2_dilated.view(N, 1, 1)
+            expand_w = expand_w.view(N, 1, 1)
+            expand_h = expand_h.view(N, 1, 1)
+            
+            # ===== Compute masks for ALL boxes at once: [N, H, W] =====
+            # Core region: patches whose centers are inside the core box
+            in_core = (xx >= x1_core) & (xx <= x2_core) & (yy >= y1_core) & (yy <= y2_core)  # [N, H, W]
+            
+            # Dilated region: patches in dilated box but not in core
+            in_dilated = (xx >= x1_dilated) & (xx <= x2_dilated) & (yy >= y1_dilated) & (yy <= y2_dilated)  # [N, H, W]
+            in_context = in_dilated & ~in_core  # [N, H, W]
+            
+            # ===== Calculate distance-based decay for context region =====
+            # Distance from patch center to core box edge
+            dist_left = x1_core - xx    # [N, H, W]
+            dist_right = xx - x2_core   # [N, H, W]
+            dist_top = y1_core - yy     # [N, H, W]
+            dist_bottom = yy - y2_core  # [N, H, W]
+            
+            # Distance to core box (positive = outside core)
+            dist_x = torch.maximum(dist_left, dist_right)
+            dist_y = torch.maximum(dist_top, dist_bottom)
+            dist_to_core = torch.sqrt(torch.clamp(dist_x, min=0)**2 + torch.clamp(dist_y, min=0)**2)  # [N, H, W]
+            
+            # Normalize by expansion distance (vectorized)
+            expand_dist = torch.sqrt(expand_w**2 + expand_h**2) + 1e-6  # [N, 1, 1]
+            normalized_dist = dist_to_core / expand_dist  # [N, H, W]
+            
+            # Apply decay function
+            if decay_type == 'gaussian':
+                # Gaussian decay: exp(-d^2 / (2 * sigma^2)), sigma = 0.5
+                sigma = 0.5
+                decay_values = torch.exp(-normalized_dist**2 / (2 * sigma**2))  # [N, H, W]
+            else:  # linear
+                # Linear decay: 1 - d (clamped to [0, 1])
+                decay_values = torch.clamp(1.0 - normalized_dist, 0.0, 1.0)  # [N, H, W]
+            
+            # ===== Compute final mask values for all boxes =====
+            # Context region gets decay values, core region gets 1.0
+            # Start with core values (1.0 where in_core, 0.0 elsewhere)
+            box_masks = in_core.float()  # [N, H, W]
+            
+            # Add context values (only where in_context is True)
+            context_contribution = decay_values * in_context.float()  # [N, H, W]
+            box_masks = torch.maximum(box_masks, context_contribution)  # [N, H, W]
+            
+            # ===== Reduce across all boxes using max (overlap handling) =====
+            # Take max across N dimension to merge all boxes into single mask
+            merged_mask, _ = torch.max(box_masks, dim=0)  # [H, W]
+            
+            # Update target mask for this batch item
+            target_mask_2d[b_idx] = merged_mask
         
         # Flatten to [B, num_patches] to match patch_importance_scores shape
         target_mask = target_mask_2d.view(B, -1)
