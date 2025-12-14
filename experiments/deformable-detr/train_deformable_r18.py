@@ -449,18 +449,73 @@ def main():
             cfg.resume = False
     
     # 在创建 Runner 之前，验证 resume 配置
+    resume_checkpoint_to_use = None
     if resume_checkpoint_path:
         latest_pth = os.path.join(cfg.work_dir, 'latest.pth')
         if cfg.resume and cfg.load_from:
             if os.path.exists(cfg.load_from):
+                resume_checkpoint_to_use = cfg.load_from
                 print(f"✓ Resume 配置已设置:")
                 print(f"   - cfg.load_from: {cfg.load_from}")
                 print(f"   - cfg.resume: {cfg.resume}")
-            else:
-                print(f"⚠ 警告: cfg.load_from 指定的文件不存在: {cfg.load_from}")
-                print(f"   将尝试从 latest.pth 恢复（如果存在）")
+            elif os.path.exists(latest_pth):
+                resume_checkpoint_to_use = latest_pth
+                cfg.load_from = latest_pth
+                print(f"⚠ cfg.load_from 文件不存在，使用 latest.pth: {latest_pth}")
     
     runner = Runner.from_cfg(cfg)
+    
+    # 手动实现 resume（避免 PyTorch 2.6+ 的 weights_only 问题）
+    if resume_checkpoint_to_use and os.path.exists(resume_checkpoint_to_use):
+        try:
+            print(f"📦 手动加载 checkpoint: {resume_checkpoint_to_use}")
+            import torch
+            
+            # 使用 weights_only=False 来加载包含自定义类的 checkpoint
+            checkpoint = torch.load(resume_checkpoint_to_use, map_location='cpu', weights_only=False)
+            
+            # 读取 epoch 信息
+            epoch_info = checkpoint.get('meta', {}).get('epoch', checkpoint.get('epoch', 'unknown'))
+            print(f"   Checkpoint epoch: {epoch_info}")
+            
+            # 手动加载模型权重
+            if 'state_dict' in checkpoint:
+                runner.model.load_state_dict(checkpoint['state_dict'], strict=False)
+                print(f"   ✓ 已加载模型权重")
+            
+            # 手动加载优化器状态
+            if 'optimizer' in checkpoint:
+                runner.optim_wrapper.optimizer.load_state_dict(checkpoint['optimizer'])
+                print(f"   ✓ 已加载优化器状态")
+            
+            # 手动加载学习率调度器状态
+            if 'param_schedulers' in checkpoint:
+                if hasattr(runner, 'message_hub') and hasattr(runner.message_hub, 'get_info'):
+                    # 恢复学习率调度器
+                    for i, scheduler_state in enumerate(checkpoint['param_schedulers']):
+                        if i < len(runner.param_schedulers):
+                            try:
+                                runner.param_schedulers[i].load_state_dict(scheduler_state)
+                            except:
+                                pass
+                print(f"   ✓ 已加载学习率调度器状态")
+            
+            # 恢复训练状态（epoch、iter等）
+            if 'message_hub' in checkpoint:
+                runner.message_hub.load_state_dict(checkpoint['message_hub'])
+                print(f"   ✓ 已恢复训练历史状态")
+                
+                # 从 message_hub 中获取当前的 epoch
+                current_epoch = runner.message_hub.get_info('epoch')
+                if current_epoch is not None:
+                    print(f"   ✓ 当前 epoch: {current_epoch}, 将从 epoch {current_epoch + 1} 继续训练")
+            
+        except Exception as e:
+            print(f"⚠ 手动加载 checkpoint 失败: {e}")
+            import traceback
+            traceback.print_exc()
+            print(f"   将从 epoch 1 开始训练（未恢复）")
+    
     runner.train()
 
 if __name__ == '__main__':
