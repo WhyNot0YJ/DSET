@@ -57,6 +57,12 @@ def main():
                         help='Override data root path (default: /root/autodl-tmp/datasets/DAIR-V2X/)')
     parser.add_argument('--work_dir', type=str, default=None,
                         help='Override work directory')
+    parser.add_argument('--resume', type=str, default=None,
+                        help='Resume training from checkpoint (path to checkpoint file, or "auto" to resume from latest)')
+    parser.add_argument('--disable_early_stop', action='store_true',
+                        help='Disable early stopping (useful when resuming training)')
+    parser.add_argument('--early_stop_patience', type=int, default=None,
+                        help='Override early stopping patience (default: 20)')
     args = parser.parse_args()
     setup_gpu_optimizations()
     
@@ -231,16 +237,43 @@ def main():
     # 2. 配置 EarlyStoppingHook (放在 custom_hooks 中，符合 MMEngine 规范)
     if 'custom_hooks' not in cfg:
         cfg.custom_hooks = []
-        
-    cfg.custom_hooks.append(dict(
-        type='EarlyStoppingHook',
-        monitor='coco/bbox_mAP',  # 监控的指标
-        patience=20,  # 容忍多少个epoch没有改善
-        min_delta=0.0001,  # 最小改善阈值
-        rule='greater'  # 'greater'表示越大越好，'less'表示越小越好
-    ))
     
-    print(f"✓ Early Stopping & Save Best: 已启用 (patience=20, monitor=coco/bbox_mAP)")
+    # Early Stopping 配置（可通过参数禁用或调整）
+    if not args.disable_early_stop:
+        early_stop_patience = args.early_stop_patience if args.early_stop_patience is not None else 20
+        cfg.custom_hooks.append(dict(
+            type='EarlyStoppingHook',
+            monitor='coco/bbox_mAP',  # 监控的指标
+            patience=early_stop_patience,  # 容忍多少个epoch没有改善
+            min_delta=0.0001,  # 最小改善阈值
+            rule='greater'  # 'greater'表示越大越好，'less'表示越小越好
+        ))
+        print(f"✓ Early Stopping & Save Best: 已启用 (patience={early_stop_patience}, monitor=coco/bbox_mAP)")
+    else:
+        print(f"⚠ Early Stopping: 已禁用 (--disable_early_stop)")
+    
+    # Resume training configuration
+    resume_from = None
+    if args.resume:
+        if args.resume.lower() == 'auto':
+            # 自动查找最新的 checkpoint
+            import glob
+            checkpoint_pattern = os.path.join(cfg.work_dir, 'epoch_*.pth')
+            checkpoints = glob.glob(checkpoint_pattern)
+            if checkpoints:
+                # 按文件名中的 epoch 数字排序
+                checkpoints.sort(key=lambda x: int(os.path.basename(x).split('_')[1].split('.')[0]))
+                resume_from = checkpoints[-1]
+                print(f"📦 自动找到最新 checkpoint: {resume_from}")
+            else:
+                print(f"⚠ 未找到 checkpoint，将从 epoch 0 开始训练")
+        else:
+            # 使用指定的 checkpoint 路径
+            if os.path.exists(args.resume):
+                resume_from = args.resume
+                print(f"📦 使用指定的 checkpoint: {resume_from}")
+            else:
+                print(f"⚠ Checkpoint 不存在: {args.resume}，将从 epoch 0 开始训练")
     
     print(f"\n{'='*60}")
     print(f"Starting Deformable DETR R18 Training")
@@ -250,9 +283,13 @@ def main():
     print(f"Max Epochs: {cfg.train_cfg.max_epochs}")
     print(f"Batch Size: {cfg.train_dataloader.batch_size}")
     print(f"Data Root: {data_root}")
+    if resume_from:
+        print(f"Resume from: {resume_from}")
     print(f"{'='*60}\n")
     
     runner = Runner.from_cfg(cfg)
+    if resume_from:
+        runner.resume(checkpoint=resume_from)
     runner.train()
 
 if __name__ == '__main__':
