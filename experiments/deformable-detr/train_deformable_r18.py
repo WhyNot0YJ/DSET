@@ -366,6 +366,7 @@ def main():
     print(f"{'='*60}\n")
     
     # 配置 resume（MMEngine 的 resume 机制）
+    resume_checkpoint_path = None
     if resume_from:
         # 确保 resume_from 是绝对路径
         if not os.path.isabs(resume_from):
@@ -383,23 +384,14 @@ def main():
         
         # 最终验证路径是否存在
         if os.path.exists(resume_from):
-            resume_from = os.path.abspath(resume_from)  # 确保是绝对路径
+            resume_checkpoint_path = os.path.abspath(resume_from)  # 保存路径
             
-            # MMEngine 的 resume 机制说明：
-            # - cfg.resume = True: 自动从 work_dir/latest.pth 恢复
-            # - cfg.resume = 'path/to/checkpoint.pth': 从指定路径恢复（字符串形式）
-            # - cfg.load_from = 'path': 只加载权重，不恢复训练状态
-            # 
-            # 对于 epoch_*.pth，应该使用字符串路径形式：
-            cfg.resume = resume_from  # ✅ 使用路径字符串，MMEngine 会自动恢复所有状态
-            
-            print(f"✓ 已配置从 checkpoint 恢复: {resume_from}")
-            print(f"   cfg.resume = {cfg.resume}")
+            print(f"✓ 已找到 checkpoint: {resume_checkpoint_path}")
             
             # 读取并显示 checkpoint 中的 epoch 信息
             try:
                 import torch
-                ckpt = torch.load(resume_from, map_location='cpu', weights_only=False)
+                ckpt = torch.load(resume_checkpoint_path, map_location='cpu', weights_only=False)
                 # MMEngine checkpoint 格式：meta.epoch 或直接是 epoch
                 epoch_info = ckpt.get('meta', {}).get('epoch', ckpt.get('epoch', 'unknown'))
                 print(f"   Checkpoint 中的 epoch: {epoch_info}")
@@ -410,6 +402,19 @@ def main():
             except Exception as e:
                 print(f"   ⚠ 无法读取 checkpoint 信息: {e}")
                 print(f"   但仍会尝试恢复训练")
+            
+            # 方法：直接将 epoch_130.pth 复制为 latest.pth
+            # MMEngine 的 resume 机制会查找 work_dir/latest.pth
+            latest_pth = os.path.join(cfg.work_dir, 'latest.pth')
+            try:
+                import shutil
+                shutil.copy2(resume_checkpoint_path, latest_pth)
+                print(f"✓ 已复制 checkpoint 为 latest.pth: {latest_pth}")
+                cfg.resume = True  # 启用 resume，MMEngine 会从 latest.pth 恢复
+            except Exception as e:
+                print(f"⚠ 无法复制 checkpoint: {e}")
+                print(f"   将尝试使用直接路径方式")
+                cfg.resume = resume_checkpoint_path  # 回退到直接路径
         else:
             print(f"⚠ 错误: Checkpoint 文件不存在: {resume_from}")
             print(f"   当前工作目录: {os.getcwd()}")
