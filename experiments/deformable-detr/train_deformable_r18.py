@@ -4,6 +4,16 @@ import subprocess
 import argparse
 import torch
 
+# Fix PyTorch 2.6+ weights_only issue for MMEngine checkpoint loading
+# MMEngine checkpoints contain custom classes that need to be whitelisted
+try:
+    # Add MMEngine classes to safe globals to allow loading checkpoints
+    from mmengine.logging.history_buffer import HistoryBuffer
+    torch.serialization.add_safe_globals([HistoryBuffer])
+except (ImportError, AttributeError):
+    # If HistoryBuffer is not available or add_safe_globals doesn't exist, continue
+    pass
+
 # Auto-Installation Block: Checks and installs openmim, mmengine, mmcv, mmdet if not present
 def check_and_install_dependencies():
     try:
@@ -28,6 +38,16 @@ def check_and_install_dependencies():
 
 # Check dependencies before main imports if running in a fresh environment
 check_and_install_dependencies()
+
+# Fix PyTorch 2.6+ weights_only issue for MMEngine checkpoint loading
+# MMEngine checkpoints contain custom classes (HistoryBuffer) that need to be whitelisted
+try:
+    from mmengine.logging.history_buffer import HistoryBuffer
+    torch.serialization.add_safe_globals([HistoryBuffer])
+    print("✓ 已添加 MMEngine HistoryBuffer 到 PyTorch safe globals")
+except (ImportError, AttributeError) as e:
+    # If HistoryBuffer is not available or add_safe_globals doesn't exist, continue
+    print(f"⚠ 无法添加 HistoryBuffer 到 safe globals: {e}")
 
 from mmengine.config import Config
 from mmengine.runner import Runner
@@ -465,56 +485,11 @@ def main():
     
     runner = Runner.from_cfg(cfg)
     
-    # 手动实现 resume（避免 PyTorch 2.6+ 的 weights_only 问题）
-    if resume_checkpoint_to_use and os.path.exists(resume_checkpoint_to_use):
-        try:
-            print(f"📦 手动加载 checkpoint: {resume_checkpoint_to_use}")
-            import torch
-            
-            # 使用 weights_only=False 来加载包含自定义类的 checkpoint
-            checkpoint = torch.load(resume_checkpoint_to_use, map_location='cpu', weights_only=False)
-            
-            # 读取 epoch 信息
-            epoch_info = checkpoint.get('meta', {}).get('epoch', checkpoint.get('epoch', 'unknown'))
-            print(f"   Checkpoint epoch: {epoch_info}")
-            
-            # 手动加载模型权重
-            if 'state_dict' in checkpoint:
-                runner.model.load_state_dict(checkpoint['state_dict'], strict=False)
-                print(f"   ✓ 已加载模型权重")
-            
-            # 手动加载优化器状态
-            if 'optimizer' in checkpoint:
-                runner.optim_wrapper.optimizer.load_state_dict(checkpoint['optimizer'])
-                print(f"   ✓ 已加载优化器状态")
-            
-            # 手动加载学习率调度器状态
-            if 'param_schedulers' in checkpoint:
-                if hasattr(runner, 'message_hub') and hasattr(runner.message_hub, 'get_info'):
-                    # 恢复学习率调度器
-                    for i, scheduler_state in enumerate(checkpoint['param_schedulers']):
-                        if i < len(runner.param_schedulers):
-                            try:
-                                runner.param_schedulers[i].load_state_dict(scheduler_state)
-                            except:
-                                pass
-                print(f"   ✓ 已加载学习率调度器状态")
-            
-            # 恢复训练状态（epoch、iter等）
-            if 'message_hub' in checkpoint:
-                runner.message_hub.load_state_dict(checkpoint['message_hub'])
-                print(f"   ✓ 已恢复训练历史状态")
-                
-                # 从 message_hub 中获取当前的 epoch
-                current_epoch = runner.message_hub.get_info('epoch')
-                if current_epoch is not None:
-                    print(f"   ✓ 当前 epoch: {current_epoch}, 将从 epoch {current_epoch + 1} 继续训练")
-            
-        except Exception as e:
-            print(f"⚠ 手动加载 checkpoint 失败: {e}")
-            import traceback
-            traceback.print_exc()
-            print(f"   将从 epoch 1 开始训练（未恢复）")
+    # 注意：不再需要手动恢复，因为：
+    # 1. 我们已经设置了 cfg.load_from 和 cfg.resume = True
+    # 2. 已经在文件开头添加了 HistoryBuffer 到 safe globals
+    # 3. MMEngine 会在 runner.train() 时自动调用 resume()
+    # 如果 MMEngine 的自动 resume 失败，它会抛出异常，我们让异常传播
     
     runner.train()
 
