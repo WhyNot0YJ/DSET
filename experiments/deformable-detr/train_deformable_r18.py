@@ -204,6 +204,13 @@ def main():
         cfg.work_dir = args.work_dir
     else:
         cfg.work_dir = 'work_dirs/r18_baseline'
+    
+    # 确保 work_dir 是绝对路径（便于 checkpoint 查找）
+    if not os.path.isabs(cfg.work_dir):
+        # 如果 work_dir 是相对路径，尝试从当前工作目录或脚本所在目录解析
+        # 默认假设在项目根目录运行
+        cfg.work_dir = os.path.abspath(cfg.work_dir)
+    
     print(f"✓ Work directory: {cfg.work_dir}")
 
     # Enable AMP (Mixed Precision Training)
@@ -256,22 +263,66 @@ def main():
     resume_from = None
     if args.resume:
         if args.resume.lower() == 'auto':
-            # 自动查找最新的 checkpoint
+            # 自动查找最新的 checkpoint（按优先级）
             import glob
-            checkpoint_pattern = os.path.join(cfg.work_dir, 'epoch_*.pth')
-            checkpoints = glob.glob(checkpoint_pattern)
-            if checkpoints:
-                # 按文件名中的 epoch 数字排序
-                checkpoints.sort(key=lambda x: int(os.path.basename(x).split('_')[1].split('.')[0]))
-                resume_from = checkpoints[-1]
-                print(f"📦 自动找到最新 checkpoint: {resume_from}")
+            work_dir = cfg.work_dir
+            
+            # 优先级1: 查找 latest.pth（MMEngine 通常保存这个）
+            latest_checkpoint = os.path.join(work_dir, 'latest.pth')
+            if os.path.exists(latest_checkpoint):
+                resume_from = latest_checkpoint
+                # 读取 checkpoint 查看 epoch 信息
+                try:
+                    import torch
+                    ckpt = torch.load(latest_checkpoint, map_location='cpu', weights_only=False)
+                    epoch = ckpt.get('meta', {}).get('epoch', ckpt.get('epoch', 'unknown'))
+                    print(f"📦 自动找到 latest checkpoint: {resume_from} (Epoch: {epoch})")
+                except:
+                    print(f"📦 自动找到 latest checkpoint: {resume_from}")
             else:
-                print(f"⚠ 未找到 checkpoint，将从 epoch 0 开始训练")
+                # 优先级2: 查找 epoch_*.pth
+                checkpoint_pattern = os.path.join(work_dir, 'epoch_*.pth')
+                checkpoints = glob.glob(checkpoint_pattern)
+                if checkpoints:
+                    # 按文件名中的 epoch 数字排序
+                    checkpoints.sort(key=lambda x: int(os.path.basename(x).split('_')[1].split('.')[0]))
+                    resume_from = checkpoints[-1]
+                    try:
+                        import torch
+                        ckpt = torch.load(resume_from, map_location='cpu', weights_only=False)
+                        epoch = ckpt.get('meta', {}).get('epoch', ckpt.get('epoch', 'unknown'))
+                        print(f"📦 自动找到最新 epoch checkpoint: {resume_from} (Epoch: {epoch})")
+                    except:
+                        print(f"📦 自动找到最新 epoch checkpoint: {resume_from}")
+                else:
+                    # 优先级3: 查找 best_*.pth
+                    best_pattern = os.path.join(work_dir, 'best_*.pth')
+                    best_checkpoints = glob.glob(best_pattern)
+                    if best_checkpoints:
+                        resume_from = best_checkpoints[0]  # 通常只有一个 best
+                        try:
+                            import torch
+                            ckpt = torch.load(resume_from, map_location='cpu', weights_only=False)
+                            epoch = ckpt.get('meta', {}).get('epoch', ckpt.get('epoch', 'unknown'))
+                            print(f"📦 自动找到 best checkpoint: {resume_from} (Epoch: {epoch})")
+                        except:
+                            print(f"📦 自动找到 best checkpoint: {resume_from}")
+                    else:
+                        print(f"⚠ 未找到 checkpoint，将从 epoch 0 开始训练")
+                        print(f"   检查目录: {work_dir}")
+                        print(f"   尝试查找的文件: latest.pth, epoch_*.pth, best_*.pth")
         else:
             # 使用指定的 checkpoint 路径
             if os.path.exists(args.resume):
                 resume_from = args.resume
-                print(f"📦 使用指定的 checkpoint: {resume_from}")
+                # 读取 checkpoint 查看 epoch 信息
+                try:
+                    import torch
+                    ckpt = torch.load(resume_from, map_location='cpu', weights_only=False)
+                    epoch = ckpt.get('meta', {}).get('epoch', ckpt.get('epoch', 'unknown'))
+                    print(f"📦 使用指定的 checkpoint: {resume_from} (Epoch: {epoch})")
+                except:
+                    print(f"📦 使用指定的 checkpoint: {resume_from}")
             else:
                 print(f"⚠ Checkpoint 不存在: {args.resume}，将从 epoch 0 开始训练")
     
