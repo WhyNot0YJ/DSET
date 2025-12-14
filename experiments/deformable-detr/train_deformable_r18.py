@@ -443,6 +443,35 @@ def main():
             cfg.resume = False
     
     runner = Runner.from_cfg(cfg)
+    
+    # 如果设置了 resume，但 MMEngine 没有自动恢复，手动调用 resume
+    if resume_checkpoint_path and os.path.exists(resume_checkpoint_path):
+        latest_pth = os.path.join(cfg.work_dir, 'latest.pth')
+        # 确保 latest.pth 存在
+        if os.path.exists(latest_pth):
+            try:
+                # 手动调用 runner.resume() 方法
+                print(f"📦 手动恢复训练状态从: {latest_pth}")
+                runner.resume(latest_pth)
+                # 读取并显示恢复后的 epoch
+                try:
+                    import torch
+                    ckpt = torch.load(latest_pth, map_location='cpu', weights_only=False)
+                    epoch_info = ckpt.get('meta', {}).get('epoch', ckpt.get('epoch', 'unknown'))
+                    if isinstance(epoch_info, int):
+                        print(f"✓ 已成功恢复训练，将从 epoch {epoch_info + 1} 继续")
+                except:
+                    pass
+            except Exception as e:
+                print(f"⚠ 手动恢复失败: {e}")
+                print(f"   尝试直接使用 checkpoint 路径: {resume_checkpoint_path}")
+                try:
+                    runner.resume(resume_checkpoint_path)
+                    print(f"✓ 使用直接路径恢复成功")
+                except Exception as e2:
+                    print(f"⚠ 直接路径恢复也失败: {e2}")
+                    print(f"   将从 epoch 1 开始训练（未恢复）")
+    
     runner.train()
 
 if __name__ == '__main__':
