@@ -46,8 +46,19 @@ try:
     torch.serialization.add_safe_globals([HistoryBuffer])
     print("✓ 已添加 MMEngine HistoryBuffer 到 PyTorch safe globals")
 except (ImportError, AttributeError) as e:
-    # If HistoryBuffer is not available or add_safe_globals doesn't exist, continue
-    print(f"⚠ 无法添加 HistoryBuffer 到 safe globals: {e}")
+    # If HistoryBuffer is not available, continue
+    print(f"⚠ 无法设置 MMEngine checkpoint 加载修复: {e}")
+    # Still try to patch torch.load
+    try:
+        original_torch_load = torch.load
+        def patched_torch_load(*args, **kwargs):
+            if 'weights_only' not in kwargs:
+                kwargs['weights_only'] = False
+            return original_torch_load(*args, **kwargs)
+        torch.load = patched_torch_load
+        print("✓ 已修补 torch.load 以使用 weights_only=False")
+    except:
+        pass
 
 from mmengine.config import Config
 from mmengine.runner import Runner
