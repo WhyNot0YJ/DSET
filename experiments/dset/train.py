@@ -147,7 +147,12 @@ class DSETRTDETR(nn.Module):
                  decoder_moe_balance_weight: float = None,
                  encoder_moe_balance_weight: float = None,
                  use_token_pruning_loss: bool = False,
-                 token_pruning_loss_weight: float = 0.001):
+                 token_pruning_loss_weight: float = 0.001,
+                 # CASS (Context-Aware Soft Supervision) config
+                 use_cass: bool = False,
+                 cass_loss_weight: float = 0.01,
+                 cass_expansion_ratio: float = 0.3,
+                 cass_min_size: float = 1.0):
         """Initialize DSET RT-DETR model.
         
         Args:
@@ -170,6 +175,10 @@ class DSETRTDETR(nn.Module):
             encoder_moe_balance_weight: Encoder MoE balance loss weight
             use_token_pruning_loss: Whether to compute token pruning auxiliary loss
             token_pruning_loss_weight: Token pruning loss weight
+            use_cass: Whether to use Context-Aware Soft Supervision for token pruning
+            cass_loss_weight: CASS loss weight
+            cass_expansion_ratio: Context band expansion ratio (0.2-0.3)
+            cass_min_size: Minimum box size on feature map (protects small objects)
             
         Note:
             - Patch-MoE and Patch-level Pruning are always enabled (DSET core features)
@@ -196,6 +205,12 @@ class DSETRTDETR(nn.Module):
         self.patch_moe_top_k = patch_moe_top_k
         self.patch_moe_patch_size = patch_moe_patch_size
         self.use_token_pruning_loss = use_token_pruning_loss
+        
+        # CASS configuration
+        self.use_cass = use_cass
+        self.cass_loss_weight = cass_loss_weight
+        self.cass_expansion_ratio = cass_expansion_ratio
+        self.cass_min_size = cass_min_size
         
         # MoE和Token Pruning权重配置
         if decoder_moe_balance_weight is not None:
@@ -261,7 +276,12 @@ class DSETRTDETR(nn.Module):
             token_pruning_warmup_epochs=self.token_pruning_warmup_epochs,
             patch_moe_num_experts=self.patch_moe_num_experts,
             patch_moe_top_k=self.patch_moe_top_k,
-            patch_moe_patch_size=self.patch_moe_patch_size
+            patch_moe_patch_size=self.patch_moe_patch_size,
+            # CASS parameters
+            use_cass=self.use_cass,
+            cass_expansion_ratio=self.cass_expansion_ratio,
+            cass_min_size=self.cass_min_size,
+            cass_decay_type='gaussian'
         )
     
     def _build_detr_criterion(self) -> RTDETRCriterionv2:
@@ -429,12 +449,77 @@ class DSETRTDETR(nn.Module):
             else:
                 tp_weight = 0.001
             
-            # 总损失：L = L_task + λ1 * L_balance + λ2 * L_entropy + Decoder MoE损失 + Token Pruning损失
+            # 4. CASS (Context-Aware Soft Supervision) Loss
+            # Provides explicit supervision for token importance predictor using GT bboxes
+            if self.use_cass and self.training and encoder_info and targets is not None:
+                importance_scores_list = encoder_info.get('importance_scores_list', [])
+                feat_shapes_list = encoder_info.get('feat_shapes_list', [])
+                
+                if importance_scores_list and feat_shapes_list and \
+                   hasattr(self.encoder, 'token_pruners') and self.encoder.token_pruners:
+                    cass_loss = torch.tensor(0.0, device=images.device)
+                    
+                    # Get image shape (assuming all images in batch have same size)
+                    img_shape = (images.shape[2], images.shape[3])  # (H, W)
+                    
+                    # Extract gt_bboxes from targets
+                    gt_bboxes = []
+                    for t in targets:
+                        if t is not None and 'boxes' in t:
+                            boxes = t['boxes']
+                            # Check if boxes are normalized (0-1) and convert to absolute
+                            if boxes.numel() > 0:
+                                max_val = boxes.max().item() if boxes.numel() > 0 else 0
+                                if max_val <= 1.0 + 1e-6:
+                                    # Convert from normalized to absolute coordinates
+                                    boxes_abs = boxes.clone()
+                                    boxes_abs[:, 0] *= img_shape[1]  # x1
+                                    boxes_abs[:, 1] *= img_shape[0]  # y1
+                                    boxes_abs[:, 2] *= img_shape[1]  # x2
+                                    boxes_abs[:, 3] *= img_shape[0]  # y2
+                                    gt_bboxes.append(boxes_abs)
+                                else:
+                                    gt_bboxes.append(boxes)
+                            else:
+                                gt_bboxes.append(boxes)
+                        else:
+                            gt_bboxes.append(torch.empty(0, 4, device=images.device))
+                    
+                    # Compute CASS loss for each encoder layer
+                    num_valid_layers = 0
+                    for i, (scores, feat_shape) in enumerate(zip(importance_scores_list, feat_shapes_list)):
+                        if i < len(self.encoder.token_pruners):
+                            pruner = self.encoder.token_pruners[i]
+                            if pruner.use_cass:
+                                layer_cass_loss = pruner.compute_cass_loss_from_info(
+                                    info={'patch_importance_scores': scores},
+                                    gt_bboxes=gt_bboxes,
+                                    feat_shape=feat_shape,
+                                    img_shape=img_shape
+                                )
+                                if layer_cass_loss.device != images.device:
+                                    layer_cass_loss = layer_cass_loss.to(images.device)
+                                cass_loss = cass_loss + layer_cass_loss
+                                num_valid_layers += 1
+                    
+                    # Average over layers
+                    if num_valid_layers > 0:
+                        cass_loss = cass_loss / num_valid_layers
+                else:
+                    cass_loss = torch.tensor(0.0, device=images.device)
+            else:
+                cass_loss = torch.tensor(0.0, device=images.device)
+            
+            # CASS Loss weight
+            cass_weight = self.cass_loss_weight if hasattr(self, 'cass_loss_weight') else 0.01
+            
+            # 总损失：L = L_task + λ1 * L_balance + λ2 * L_entropy + Decoder MoE损失 + Token Pruning损失 + CASS损失
             total_loss = detection_loss + \
                         decoder_moe_weight * decoder_moe_loss + \
                         encoder_moe_balance_weight * encoder_moe_balance_loss + \
                         encoder_moe_entropy_weight * encoder_moe_entropy_loss + \
-                        tp_weight * token_pruning_loss
+                        tp_weight * token_pruning_loss + \
+                        cass_weight * cass_loss
             
             output['detection_loss'] = detection_loss
             output['decoder_moe_loss'] = decoder_moe_loss
@@ -442,6 +527,7 @@ class DSETRTDETR(nn.Module):
             output['encoder_moe_entropy_loss'] = encoder_moe_entropy_loss
             output['encoder_moe_loss'] = encoder_moe_balance_loss + encoder_moe_entropy_loss  # 总Encoder MoE损失（向后兼容）
             output['token_pruning_loss'] = token_pruning_loss
+            output['cass_loss'] = cass_loss
             output['moe_load_balance_loss'] = decoder_moe_loss + encoder_moe_balance_loss  # 保持向后兼容
             output['total_loss'] = total_loss
             output['loss_dict'] = detection_loss_dict
@@ -450,6 +536,7 @@ class DSETRTDETR(nn.Module):
             output['encoder_moe_balance_weight'] = encoder_moe_balance_weight  # λ1
             output['encoder_moe_entropy_weight'] = encoder_moe_entropy_weight  # λ2
             output['token_pruning_weight'] = tp_weight
+            output['cass_weight'] = cass_weight
             
             # 添加encoder info到输出（用于监控）
             if encoder_info:
@@ -627,6 +714,12 @@ class DSETTrainer:
         use_token_pruning_loss = dset_config.get('use_token_pruning_loss', False)
         token_pruning_loss_weight = dset_config.get('token_pruning_loss_weight', 0.001)
         
+        # CASS (Context-Aware Soft Supervision) 配置
+        use_cass = dset_config.get('use_cass', False)
+        cass_loss_weight = dset_config.get('cass_loss_weight', 0.01)
+        cass_expansion_ratio = dset_config.get('cass_expansion_ratio', 0.3)
+        cass_min_size = dset_config.get('cass_min_size', 1.0)
+        
         # 从配置文件读取MoE权重
         decoder_moe_balance_weight = self.config.get('training', {}).get('decoder_moe_balance_weight', None)
         encoder_moe_balance_weight = self.config.get('training', {}).get('encoder_moe_balance_weight', None)
@@ -655,7 +748,12 @@ class DSETTrainer:
             token_pruning_loss_weight=token_pruning_loss_weight,
             # MoE权重配置
             decoder_moe_balance_weight=decoder_moe_balance_weight,
-            encoder_moe_balance_weight=encoder_moe_balance_weight
+            encoder_moe_balance_weight=encoder_moe_balance_weight,
+            # CASS配置
+            use_cass=use_cass,
+            cass_loss_weight=cass_loss_weight,
+            cass_expansion_ratio=cass_expansion_ratio,
+            cass_min_size=cass_min_size
         )
         
         # 加载预训练权重
@@ -688,6 +786,7 @@ class DSETTrainer:
         self.logger.info(f"      → keep_ratio={token_keep_ratio}, warmup={token_pruning_warmup_epochs}")
         self.logger.info(f"  损失权重配置:")
         self.logger.info(f"    - Token Pruning Loss: {use_token_pruning_loss} (weight={token_pruning_loss_weight})")
+        self.logger.info(f"    - CASS Supervision: {use_cass} (weight={cass_loss_weight}, expansion={cass_expansion_ratio}, min_size={cass_min_size})")
         self.logger.info(f"    - Decoder MoE: {decoder_moe_balance_weight if decoder_moe_balance_weight else 'auto'}")
         self.logger.info(f"    - Encoder MoE: {encoder_moe_balance_weight if encoder_moe_balance_weight else 'auto'}")
         
@@ -1351,6 +1450,7 @@ class DSETTrainer:
         encoder_moe_balance_loss_sum = 0.0  # Encoder Patch-MoE balance loss (λ1)
         encoder_moe_entropy_loss_sum = 0.0  # Encoder Patch-MoE entropy loss (λ2)
         token_pruning_loss_sum = 0.0  # Token pruning loss
+        cass_loss_sum = 0.0  # CASS supervision loss
         
         # 统计细粒度MoE的专家使用率（跨所有Decoder层聚合）
         expert_usage_count = [0] * self.model.num_experts
@@ -1407,6 +1507,9 @@ class DSETTrainer:
                 if 'token_pruning_loss' in outputs:
                     tp_loss_val = outputs['token_pruning_loss']
                     token_pruning_loss_sum += tp_loss_val.item() if isinstance(tp_loss_val, torch.Tensor) else float(tp_loss_val)
+                if 'cass_loss' in outputs:
+                    cass_loss_val = outputs['cass_loss']
+                    cass_loss_sum += cass_loss_val.item() if isinstance(cass_loss_val, torch.Tensor) else float(cass_loss_val)
             
             # 收集Token Pruning信息（从outputs中获取encoder_info）
             if isinstance(outputs, dict) and 'encoder_info' in outputs:
@@ -1483,6 +1586,7 @@ class DSETTrainer:
         avg_encoder_moe_entropy_loss = encoder_moe_entropy_loss_sum / num_batches
         avg_encoder_moe_lb_loss = avg_encoder_moe_balance_loss + avg_encoder_moe_entropy_loss  # 总Encoder MoE损失（向后兼容）
         avg_token_pruning_loss = token_pruning_loss_sum / num_batches
+        avg_cass_loss = cass_loss_sum / num_batches
         
         # 计算Decoder专家使用率
         expert_usage_rate = []
@@ -1509,6 +1613,7 @@ class DSETTrainer:
             'encoder_moe_entropy_loss': avg_encoder_moe_entropy_loss,  # Patch-MoE entropy loss (λ2)
             'encoder_moe_loss': avg_encoder_moe_lb_loss,  # 总Encoder MoE损失（向后兼容）
             'token_pruning_loss': avg_token_pruning_loss,
+            'cass_loss': avg_cass_loss,  # CASS supervision loss
             'token_pruning_ratio': avg_token_pruning_ratio,
             'moe_load_balance_loss': avg_decoder_moe_lb_loss + avg_encoder_moe_balance_loss,  # 总MoE损失（向后兼容）
             'expert_usage': expert_usage_count,

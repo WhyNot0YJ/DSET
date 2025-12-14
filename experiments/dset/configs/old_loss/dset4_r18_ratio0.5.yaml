@@ -1,6 +1,6 @@
 model:
-  num_experts: 6
-  top_k: 3
+  num_experts: 4
+  top_k: 2
   backbone: presnet18
   encoder:
     use_encoder_idx:
@@ -17,17 +17,13 @@ model:
   num_queries: 100
   dset:
     token_keep_ratio:
-      2: 0.9
+      2: 0.5
     token_pruning_warmup_epochs: 10
-    patch_moe_num_experts: 6
-    patch_moe_top_k: 3
+    patch_moe_num_experts: 4
+    patch_moe_top_k: 2
     patch_moe_patch_size: 1
-    use_token_pruning_loss: false
+    use_token_pruning_loss: true
     token_pruning_loss_weight: 0.005
-    use_cass: true
-    cass_loss_weight: 0.01
-    cass_expansion_ratio: 0.3
-    cass_min_size: 1.0
 training:
   epochs: 200
   batch_size: 24
@@ -70,4 +66,3 @@ data_augmentation:
   max_size: 1280
   mixup: 0.0
   close_mosaic_epochs: 20
-

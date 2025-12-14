@@ -233,7 +233,12 @@ class HybridEncoder(nn.Module):
                  token_pruning_warmup_epochs=10,
                  patch_moe_num_experts=4,
                  patch_moe_top_k=2,
-                 patch_moe_patch_size=1):
+                 patch_moe_patch_size=1,
+                 # CASS (Context-Aware Soft Supervision) 参数
+                 use_cass=False,
+                 cass_expansion_ratio=0.3,
+                 cass_min_size=1.0,
+                 cass_decay_type='gaussian'):
         """
         Args:
             token_keep_ratio: Patch retention ratio (0.5-0.7)
@@ -241,6 +246,10 @@ class HybridEncoder(nn.Module):
             patch_moe_num_experts: Number of experts for MoE
             patch_moe_top_k: Top-K experts for MoE
             patch_moe_patch_size: Patch size for pruning (MoE is now token-level, patch_size=1)
+            use_cass: Whether to use Context-Aware Soft Supervision
+            cass_expansion_ratio: Context band expansion ratio (0.2-0.3)
+            cass_min_size: Minimum box size on feature map (protects small objects)
+            cass_decay_type: Decay type for context band ('gaussian' or 'linear')
         """
         super().__init__()
         self.in_channels = in_channels
@@ -285,7 +294,7 @@ class HybridEncoder(nn.Module):
 
             # 2. Log HSP strategy (optional)
             
-            # 3. Create pruner
+            # 3. Create pruner with CASS support
             pruner = PatchLevelPruner(
                 input_dim=hidden_dim,
                 patch_size=patch_moe_patch_size,
@@ -293,7 +302,12 @@ class HybridEncoder(nn.Module):
                 adaptive=True,
                 min_patches=self._calculate_min_patches_for_layer(),
                 warmup_epochs=token_pruning_warmup_epochs,
-                prune_in_eval=True
+                prune_in_eval=True,
+                # CASS parameters
+                use_cass=use_cass,
+                cass_expansion_ratio=cass_expansion_ratio,
+                cass_min_size=cass_min_size,
+                cass_decay_type=cass_decay_type
             )
             self.token_pruners.append(pruner)
         
@@ -394,6 +408,7 @@ class HybridEncoder(nn.Module):
         encoder_info = {
             'token_pruning_ratios': [],
             'importance_scores_list': [],
+            'feat_shapes_list': [],  # Store feature map shapes for CASS
             'moe_router_logits': [],
             'moe_expert_indices': []
         }
@@ -420,6 +435,7 @@ class HybridEncoder(nn.Module):
                 
                 if 'patch_importance_scores' in prune_info:
                     encoder_info['importance_scores_list'].append(prune_info['patch_importance_scores'])
+                    encoder_info['feat_shapes_list'].append((h, w))  # Store corresponding feature shape
                 
                 # 3. 使用 Gather 提取对应的 PosEmbed
                 # kept_indices: [B, N_kept] (可能包含 -1 作为填充值)

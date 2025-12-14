@@ -3,12 +3,15 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Tuple, Optional
+from typing import Tuple, Optional, List, Dict
 from .token_pruning import LearnableImportancePredictor
 
 
 class PatchLevelPruner(nn.Module):
-    """Patch级别剪枝器，与Patch-MoE兼容，保持规则2D结构"""
+    """Patch级别剪枝器，与Patch-MoE兼容，保持规则2D结构
+    
+    支持Context-Aware Soft Supervision (CASS) 机制进行显式监督学习。
+    """
     
     def __init__(self, 
                  input_dim: int,
@@ -17,7 +20,12 @@ class PatchLevelPruner(nn.Module):
                  adaptive: bool = True,
                  min_patches: int = 10,
                  warmup_epochs: int = 10,
-                 prune_in_eval: bool = True):
+                 prune_in_eval: bool = True,
+                 # CASS parameters
+                 use_cass: bool = False,
+                 cass_expansion_ratio: float = 0.3,
+                 cass_min_size: float = 1.0,
+                 cass_decay_type: str = 'gaussian'):
         """
         Args:
             input_dim: Input feature dimension
@@ -27,6 +35,10 @@ class PatchLevelPruner(nn.Module):
             min_patches: Minimum patches to keep
             warmup_epochs: Warmup epochs
             prune_in_eval: Whether to prune during evaluation
+            use_cass: Whether to use Context-Aware Soft Supervision
+            cass_expansion_ratio: Expansion ratio for context band (0.2-0.3)
+            cass_min_size: Minimum box size on feature map (pixels)
+            cass_decay_type: Decay type for context band ('gaussian' or 'linear')
         """
         super().__init__()
         self.input_dim = input_dim
@@ -36,6 +48,12 @@ class PatchLevelPruner(nn.Module):
         self.min_patches = min_patches
         self.warmup_epochs = warmup_epochs
         self.prune_in_eval = prune_in_eval
+        
+        # CASS parameters
+        self.use_cass = use_cass
+        self.cass_expansion_ratio = cass_expansion_ratio
+        self.cass_min_size = cass_min_size
+        self.cass_decay_type = cass_decay_type
         
         self.importance_predictor = LearnableImportancePredictor(input_dim)
         self.current_epoch = 0
@@ -308,4 +326,330 @@ class PatchLevelPruner(nn.Module):
         max_entropy = torch.log(torch.tensor(num_patches, dtype=torch.float32, device=patch_importance_scores.device))
         normalized_entropy = entropy / max_entropy
         return 1.0 - normalized_entropy
+
+    # ==================== CASS (Context-Aware Soft Supervision) ====================
+    
+    def generate_soft_target_mask(
+        self,
+        gt_bboxes: List[torch.Tensor],
+        feat_shape: Tuple[int, int],
+        img_shape: Tuple[int, int],
+        device: torch.device,
+        expansion_ratio: Optional[float] = None,
+        min_size: Optional[float] = None,
+        decay_type: Optional[str] = None
+    ) -> torch.Tensor:
+        """
+        Generates a Gaussian-weighted dilated mask for CASS supervision.
+        
+        Args:
+            gt_bboxes: List of tensors [N, 4] in (x1, y1, x2, y2) format, original image scale.
+                       Each tensor corresponds to one image in the batch.
+            feat_shape: (h, w) of the S5 feature map.
+            img_shape: (H, W) of the original image.
+            device: Target device for the mask tensor.
+            expansion_ratio: Override for self.cass_expansion_ratio
+            min_size: Override for self.cass_min_size
+            decay_type: Override for self.cass_decay_type ('gaussian' or 'linear')
+        
+        Returns:
+            target_mask: Tensor [B, num_patches] with values 0.0 to 1.0.
+                         Matches the shape of patch_importance_scores.
+        """
+        B = len(gt_bboxes)
+        h, w = feat_shape
+        ImgH, ImgW = img_shape
+        
+        # Use instance params or overrides
+        expansion_ratio = expansion_ratio if expansion_ratio is not None else self.cass_expansion_ratio
+        min_size = min_size if min_size is not None else self.cass_min_size
+        decay_type = decay_type if decay_type is not None else self.cass_decay_type
+        
+        # Calculate stride for coordinate mapping
+        stride_h = ImgH / h
+        stride_w = ImgW / w
+        
+        # Calculate patch grid dimensions
+        patch_h = min(self.patch_size, h)
+        patch_w = min(self.patch_size, w)
+        num_patches_h = (h + patch_h - 1) // patch_h
+        num_patches_w = (w + patch_w - 1) // patch_w
+        num_patches = num_patches_h * num_patches_w
+        
+        # Initialize mask at patch level [B, num_patches_h, num_patches_w]
+        target_mask_2d = torch.zeros((B, num_patches_h, num_patches_w), device=device, dtype=torch.float32)
+        
+        # Create coordinate grid for patch centers (vectorized)
+        # Patch center coordinates in feature map space
+        patch_center_y = (torch.arange(num_patches_h, device=device, dtype=torch.float32) + 0.5) * patch_h
+        patch_center_x = (torch.arange(num_patches_w, device=device, dtype=torch.float32) + 0.5) * patch_w
+        
+        # Create meshgrid for patch centers [num_patches_h, num_patches_w]
+        yy, xx = torch.meshgrid(patch_center_y, patch_center_x, indexing='ij')
+        
+        for b_idx in range(B):
+            bboxes = gt_bboxes[b_idx]
+            if bboxes is None or len(bboxes) == 0:
+                continue
+            
+            # Ensure bboxes is 2D [N, 4]
+            if bboxes.dim() == 1:
+                bboxes = bboxes.unsqueeze(0)
+            
+            # Map boxes to feature map scale
+            # bboxes: [N, 4] in (x1, y1, x2, y2) format
+            bboxes_feat = bboxes.clone().float().to(device)
+            bboxes_feat[:, 0] = bboxes[:, 0] / stride_w  # x1
+            bboxes_feat[:, 1] = bboxes[:, 1] / stride_h  # y1
+            bboxes_feat[:, 2] = bboxes[:, 2] / stride_w  # x2
+            bboxes_feat[:, 3] = bboxes[:, 3] / stride_h  # y2
+            
+            # Process each box
+            for box_idx in range(bboxes_feat.shape[0]):
+                x1, y1, x2, y2 = bboxes_feat[box_idx]
+                
+                # Calculate box dimensions and enforce minimum size
+                box_w = x2 - x1
+                box_h = y2 - y1
+                
+                # Enforce minimum size (CRITICAL for small objects on S5)
+                if box_w < min_size:
+                    center_x = (x1 + x2) / 2
+                    x1 = center_x - min_size / 2
+                    x2 = center_x + min_size / 2
+                    box_w = min_size
+                
+                if box_h < min_size:
+                    center_y = (y1 + y2) / 2
+                    y1 = center_y - min_size / 2
+                    y2 = center_y + min_size / 2
+                    box_h = min_size
+                
+                # Calculate dilated box (context region)
+                expand_w = box_w * expansion_ratio
+                expand_h = box_h * expansion_ratio
+                
+                x1_dilated = x1 - expand_w
+                y1_dilated = y1 - expand_h
+                x2_dilated = x2 + expand_w
+                y2_dilated = y2 + expand_h
+                
+                # Clamp to feature map bounds
+                x1_core = torch.clamp(x1, 0, w - 1e-6)
+                y1_core = torch.clamp(y1, 0, h - 1e-6)
+                x2_core = torch.clamp(x2, 1e-6, w)
+                y2_core = torch.clamp(y2, 1e-6, h)
+                
+                x1_dilated = torch.clamp(x1_dilated, 0, w - 1e-6)
+                y1_dilated = torch.clamp(y1_dilated, 0, h - 1e-6)
+                x2_dilated = torch.clamp(x2_dilated, 1e-6, w)
+                y2_dilated = torch.clamp(y2_dilated, 1e-6, h)
+                
+                # Calculate mask values for each patch
+                # Core region mask: patches whose centers are inside the core box
+                in_core = (xx >= x1_core) & (xx <= x2_core) & (yy >= y1_core) & (yy <= y2_core)
+                
+                # Dilated region mask: patches in dilated box but not in core
+                in_dilated = (xx >= x1_dilated) & (xx <= x2_dilated) & (yy >= y1_dilated) & (yy <= y2_dilated)
+                in_context = in_dilated & ~in_core
+                
+                # Calculate distance-based decay for context region
+                if in_context.any():
+                    # Distance from patch center to core box edge (normalized)
+                    # For each patch, compute signed distance to core box
+                    dist_left = x1_core - xx
+                    dist_right = xx - x2_core
+                    dist_top = y1_core - yy
+                    dist_bottom = yy - y2_core
+                    
+                    # Distance to core box (positive = outside core)
+                    dist_x = torch.maximum(dist_left, dist_right)
+                    dist_y = torch.maximum(dist_top, dist_bottom)
+                    dist_to_core = torch.sqrt(torch.clamp(dist_x, min=0)**2 + torch.clamp(dist_y, min=0)**2)
+                    
+                    # Normalize by expansion distance
+                    expand_dist = torch.sqrt(expand_w**2 + expand_h**2) + 1e-6
+                    normalized_dist = dist_to_core / expand_dist
+                    
+                    # Apply decay function
+                    if decay_type == 'gaussian':
+                        # Gaussian decay: exp(-d^2 / (2 * sigma^2)), sigma = 0.5
+                        sigma = 0.5
+                        decay_values = torch.exp(-normalized_dist**2 / (2 * sigma**2))
+                    else:  # linear
+                        # Linear decay: 1 - d (clamped to [0, 1])
+                        decay_values = torch.clamp(1.0 - normalized_dist, 0.0, 1.0)
+                    
+                    # Apply context values
+                    context_values = decay_values * in_context.float()
+                    target_mask_2d[b_idx] = torch.maximum(target_mask_2d[b_idx], context_values)
+                
+                # Apply core region (value = 1.0)
+                core_values = in_core.float()
+                target_mask_2d[b_idx] = torch.maximum(target_mask_2d[b_idx], core_values)
+        
+        # Flatten to [B, num_patches] to match patch_importance_scores shape
+        target_mask = target_mask_2d.view(B, -1)
+        
+        return target_mask
+    
+    def compute_cass_loss(
+        self,
+        pred_scores: torch.Tensor,
+        target_mask: torch.Tensor,
+        reduction: str = 'mean'
+    ) -> torch.Tensor:
+        """
+        Computes the CASS supervision loss using MSE.
+        
+        Args:
+            pred_scores: Predicted importance logits [B, num_patches] (before sigmoid)
+            target_mask: Target soft mask [B, num_patches] with values 0.0 to 1.0
+            reduction: Loss reduction method ('mean', 'sum', 'none')
+        
+        Returns:
+            loss: Scalar loss tensor (if reduction != 'none')
+        """
+        # ============ DEBUG: Visualize target_mask (TEMPORARY) ============
+        if self.training:
+            import random
+            if random.random() < 0.05:  # 5% probability
+                self._debug_visualize_mask(target_mask, pred_scores)
+        # ===================================================================
+        
+        # Apply sigmoid to convert logits to probabilities
+        pred_probs = torch.sigmoid(pred_scores)
+        
+        # Compute MSE loss
+        loss = F.mse_loss(pred_probs, target_mask, reduction=reduction)
+        
+        return loss
+    
+    def _debug_visualize_mask(self, target_mask: torch.Tensor, pred_scores: torch.Tensor):
+        """
+        Debug helper: Visualize the target mask and predicted scores as heatmaps.
+        Saves to ./debug_cass_vis/ folder.
+        """
+        import os
+        import time
+        import numpy as np
+        
+        try:
+            import cv2
+        except ImportError:
+            print("[CASS Debug] cv2 not available, skipping visualization")
+            return
+        
+        # Create output directory
+        debug_dir = "./debug_cass_vis"
+        os.makedirs(debug_dir, exist_ok=True)
+        
+        # Get first sample from batch
+        target_np = target_mask[0].detach().cpu().numpy()  # [num_patches]
+        pred_np = torch.sigmoid(pred_scores[0]).detach().cpu().numpy()  # [num_patches]
+        
+        # Reshape to 2D grid if possible
+        num_patches = target_np.shape[0]
+        
+        # Try to find a reasonable 2D shape
+        # Assume roughly square or use patch grid dimensions
+        patch_h = min(self.patch_size, 23)  # Typical S5 height for 736 input
+        patch_w = min(self.patch_size, 40)  # Typical S5 width for 1280 input
+        
+        # Calculate grid dimensions based on patch_size
+        # For patch_size=1, num_patches = h * w directly
+        side = int(np.sqrt(num_patches))
+        if side * side == num_patches:
+            grid_h, grid_w = side, side
+        else:
+            # Try common aspect ratios (16:9 ≈ 1.78, typical for driving data)
+            # For S5 with 1280x736 input: 40x23 = 920 patches (if patch_size=1)
+            # Try to find factors
+            for h in range(int(np.sqrt(num_patches)), 0, -1):
+                if num_patches % h == 0:
+                    grid_h = h
+                    grid_w = num_patches // h
+                    break
+            else:
+                grid_h = 1
+                grid_w = num_patches
+        
+        # Reshape to 2D
+        target_2d = target_np.reshape(grid_h, grid_w)
+        pred_2d = pred_np.reshape(grid_h, grid_w)
+        
+        # Scale to 0-255 for visualization
+        target_vis = (target_2d * 255).astype(np.uint8)
+        pred_vis = (pred_2d * 255).astype(np.uint8)
+        
+        # Apply colormap (JET: blue=0, red=1)
+        target_heatmap = cv2.applyColorMap(target_vis, cv2.COLORMAP_JET)
+        pred_heatmap = cv2.applyColorMap(pred_vis, cv2.COLORMAP_JET)
+        
+        # Resize for better visibility (scale up by 10x)
+        scale = 10
+        target_heatmap = cv2.resize(target_heatmap, (grid_w * scale, grid_h * scale), 
+                                     interpolation=cv2.INTER_NEAREST)
+        pred_heatmap = cv2.resize(pred_heatmap, (grid_w * scale, grid_h * scale), 
+                                   interpolation=cv2.INTER_NEAREST)
+        
+        # Create side-by-side comparison
+        combined = np.hstack([target_heatmap, pred_heatmap])
+        
+        # Add labels
+        cv2.putText(combined, "Target Mask (GT)", (10, 25), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        cv2.putText(combined, "Pred Scores (sigmoid)", (grid_w * scale + 10, 25), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        
+        # Save with timestamp
+        timestamp = int(time.time() * 1000) % 1000000
+        filename = f"{debug_dir}/cass_mask_{timestamp}.png"
+        cv2.imwrite(filename, combined)
+        
+        # Print debug info
+        print(f"[CASS Debug] Saved: {filename}")
+        print(f"  Grid shape: {grid_h}x{grid_w} = {num_patches} patches")
+        print(f"  Target mask: min={target_np.min():.3f}, max={target_np.max():.3f}, "
+              f"mean={target_np.mean():.3f}, nonzero={np.sum(target_np > 0)}")
+        print(f"  Pred scores: min={pred_np.min():.3f}, max={pred_np.max():.3f}, "
+              f"mean={pred_np.mean():.3f}")
+    
+    def compute_cass_loss_from_info(
+        self,
+        info: Dict,
+        gt_bboxes: List[torch.Tensor],
+        feat_shape: Tuple[int, int],
+        img_shape: Tuple[int, int]
+    ) -> torch.Tensor:
+        """
+        Convenience method to compute CASS loss directly from pruner info dict.
+        
+        Args:
+            info: Info dict from forward() containing 'patch_importance_scores'
+            gt_bboxes: List of ground truth boxes [N, 4] in (x1, y1, x2, y2) format
+            feat_shape: (h, w) of the feature map
+            img_shape: (H, W) of the original image
+        
+        Returns:
+            loss: CASS supervision loss
+        """
+        if 'patch_importance_scores' not in info or info['patch_importance_scores'] is None:
+            return torch.tensor(0.0, requires_grad=False)
+        
+        pred_scores = info['patch_importance_scores']
+        device = pred_scores.device
+        
+        # Generate soft target mask
+        target_mask = self.generate_soft_target_mask(
+            gt_bboxes=gt_bboxes,
+            feat_shape=feat_shape,
+            img_shape=img_shape,
+            device=device
+        )
+        
+        # Compute CASS loss
+        loss = self.compute_cass_loss(pred_scores, target_mask)
+        
+        return loss
 

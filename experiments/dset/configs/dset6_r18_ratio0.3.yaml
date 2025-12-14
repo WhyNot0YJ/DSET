@@ -22,8 +22,12 @@ model:
     patch_moe_num_experts: 6
     patch_moe_top_k: 3
     patch_moe_patch_size: 1
-    use_token_pruning_loss: true
+    use_token_pruning_loss: false
     token_pruning_loss_weight: 0.005
+    use_cass: true
+    cass_loss_weight: 0.01
+    cass_expansion_ratio: 0.3
+    cass_min_size: 1.0
 training:
   epochs: 200
   batch_size: 24
