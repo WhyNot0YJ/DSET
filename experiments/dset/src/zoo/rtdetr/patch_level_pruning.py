@@ -515,10 +515,11 @@ class PatchLevelPruner(nn.Module):
             loss: Scalar loss tensor (if reduction != 'none')
         """
         # ============ DEBUG: Visualize target_mask (TEMPORARY) ============
-        if self.training:
-            import random
-            if random.random() < 0.05:  # 5% probability
-                self._debug_visualize_mask(target_mask, pred_scores)
+        # Uncomment the following block to enable debug visualization:
+        # if self.training:
+        #     import random
+        #     if random.random() < 0.05:  # 5% probability
+        #         self._debug_visualize_mask(target_mask, pred_scores)
         # ===================================================================
         
         # Apply sigmoid to convert logits to probabilities
