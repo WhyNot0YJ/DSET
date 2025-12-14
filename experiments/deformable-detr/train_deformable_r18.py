@@ -338,9 +338,12 @@ def main():
         print(f"Resume from: {resume_from}")
     print(f"{'='*60}\n")
     
-    runner = Runner.from_cfg(cfg)
+    # 配置 resume（MMEngine 使用 cfg.resume 而不是 runner.resume()）
     if resume_from:
-        runner.resume(checkpoint=resume_from)
+        cfg.resume = resume_from
+        print(f"✓ 已配置从 checkpoint 恢复: {resume_from}")
+    
+    runner = Runner.from_cfg(cfg)
     runner.train()
 
 if __name__ == '__main__':
