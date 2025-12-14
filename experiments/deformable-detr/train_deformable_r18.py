@@ -389,14 +389,27 @@ def main():
             print(f"✓ 已找到 checkpoint: {resume_checkpoint_path}")
             
             # 读取并显示 checkpoint 中的 epoch 信息
+            # MMEngine checkpoint 文件结构：
+            # {
+            #     'epoch': 130,                    # ← 这里记录了是第几个 epoch
+            #     'meta': {'epoch': 130, ...},    # ← 或者在这里
+            #     'optimizer_state_dict': {...},  # 优化器状态
+            #     'message_hub': {...},           # 训练历史状态
+            #     'state_dict': {...},            # 模型权重
+            #     ...
+            # }
+            # 当我们复制文件时，文件内部的所有数据（包括 epoch 编号）都会被完整复制
             try:
                 import torch
                 ckpt = torch.load(resume_checkpoint_path, map_location='cpu', weights_only=False)
                 # MMEngine checkpoint 格式：meta.epoch 或直接是 epoch
                 epoch_info = ckpt.get('meta', {}).get('epoch', ckpt.get('epoch', 'unknown'))
-                print(f"   Checkpoint 中的 epoch: {epoch_info}")
+                print(f"   Checkpoint 文件内部信息:")
+                print(f"     - epoch: {epoch_info}")
+                print(f"     - 包含的键: {list(ckpt.keys())[:5]}...")  # 显示前5个键
                 if isinstance(epoch_info, int):
-                    print(f"   将从 epoch {epoch_info + 1} 继续训练")
+                    print(f"     ✓ 将从 epoch {epoch_info + 1} 继续训练")
+                    print(f"     (MMEngine 会读取文件中的 epoch={epoch_info}，然后从 {epoch_info + 1} 继续)")
                 else:
                     print(f"   ⚠ 无法确定 epoch 信息，但会尝试恢复训练状态")
             except Exception as e:
@@ -405,11 +418,13 @@ def main():
             
             # 方法：直接将 epoch_130.pth 复制为 latest.pth
             # MMEngine 的 resume 机制会查找 work_dir/latest.pth
+            # 复制文件时，文件内部的所有信息（包括 epoch 编号）都会被完整保留
             latest_pth = os.path.join(cfg.work_dir, 'latest.pth')
             try:
                 import shutil
                 shutil.copy2(resume_checkpoint_path, latest_pth)
                 print(f"✓ 已复制 checkpoint 为 latest.pth: {latest_pth}")
+                print(f"   (文件内部的 epoch 信息已完整保留)")
                 cfg.resume = True  # 启用 resume，MMEngine 会从 latest.pth 恢复
             except Exception as e:
                 print(f"⚠ 无法复制 checkpoint: {e}")
