@@ -477,17 +477,22 @@ class PatchLevelPruner(nn.Module):
             
             # ===== Calculate distance-based decay for context region =====
             # Distance from patch center to core box edge
-            dist_left = x1_core - xx    # [N, H, W]
-            dist_right = xx - x2_core   # [N, H, W]
-            dist_top = y1_core - yy     # [N, H, W]
-            dist_bottom = yy - y2_core  # [N, H, W]
+            # [OPTIMIZED] Use torch.where for clearer logic: 0 if inside, >0 if outside
+            # x-axis distance: positive if patch is left or right of core box, 0 if inside
+            dist_x = torch.where(xx < x1_core, x1_core - xx,  # Left: positive distance
+                        torch.where(xx > x2_core, xx - x2_core,  # Right: positive distance
+                                    torch.zeros_like(xx)))  # Inside: 0
             
-            # Distance to core box (positive = outside core)
-            dist_x = torch.maximum(dist_left, dist_right)
-            dist_y = torch.maximum(dist_top, dist_bottom)
-            dist_to_core = torch.sqrt(torch.clamp(dist_x, min=0)**2 + torch.clamp(dist_y, min=0)**2)  # [N, H, W]
+            # y-axis distance: positive if patch is above or below core box, 0 if inside
+            dist_y = torch.where(yy < y1_core, y1_core - yy,  # Above: positive distance
+                        torch.where(yy > y2_core, yy - y2_core,  # Below: positive distance
+                                    torch.zeros_like(yy)))  # Inside: 0
+            
+            # Euclidean distance to core box (0 if inside, >0 if outside)
+            dist_to_core = torch.sqrt(dist_x**2 + dist_y**2)  # [N, H, W]
             
             # Normalize by expansion distance (vectorized)
+            # [DEFENSIVE] Ensure expand_dist is never 0 (add 1e-6 to prevent division by zero)
             expand_dist = torch.sqrt(expand_w**2 + expand_h**2) + 1e-6  # [N, 1, 1]
             normalized_dist = dist_to_core / expand_dist  # [N, H, W]
             
@@ -496,8 +501,12 @@ class PatchLevelPruner(nn.Module):
                 # Gaussian decay: exp(-d^2 / (2 * sigma^2)), sigma = 0.5
                 sigma = 0.5
                 decay_values = torch.exp(-normalized_dist**2 / (2 * sigma**2))  # [N, H, W]
+                # [BUG FIX #1] Hard truncate: set decay to 0 outside expansion region (normalized_dist >= 1.0)
+                # This ensures numerical stability and prevents long-tail issues when expansion_ratio is large
+                decay_values = torch.where(normalized_dist < 1.0, decay_values, torch.zeros_like(decay_values))
             else:  # linear
                 # Linear decay: 1 - d (clamped to [0, 1])
+                # Linear decay already handles normalized_dist >= 1.0 via clamp, no need for additional truncation
                 decay_values = torch.clamp(1.0 - normalized_dist, 0.0, 1.0)  # [N, H, W]
             
             # ===== Compute final mask values for all boxes =====
