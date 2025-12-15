@@ -9,7 +9,6 @@ import torch.nn as nn
 import torch.nn.functional as F 
 
 from .utils import get_activation
-from .token_pruning import TokenPruner, SpatialTokenPruner
 from .patch_level_pruning import PatchLevelPruner
 from .moe_components import MoELayer
 

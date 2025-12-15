@@ -14,5 +14,4 @@ from .rtdetrv2_criterion import RTDETRCriterionv2
 from .moe_components import SpecialistNetwork, MoELayer, compute_expert_balance_loss
 
 # Token Pruning Components (DSET)
-from .token_pruning import TokenPruner, SpatialTokenPruner, LearnableImportancePredictor
-from .patch_level_pruning import PatchLevelPruner
+from .patch_level_pruning import PatchLevelPruner, LearnableImportancePredictor
