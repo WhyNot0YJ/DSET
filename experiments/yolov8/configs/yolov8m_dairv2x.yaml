@@ -4,7 +4,7 @@ model:
 
 training:
   epochs: 200
-  batch_size: 32
+  batch_size: 24
   imgsz: 1280
   optimizer: "auto"   # 回归官方默认 (SGD)，避免 AdamW + 0.01 lr 的风险
   lr0: 0.01           # SGD 标准学习率
