@@ -1341,11 +1341,12 @@ class DSETTrainer:
             if hasattr(self, 'ema') and hasattr(self.ema, 'module'):
                 self.ema.module.train()
     
-    def _run_inference_on_best_model(self, best_ema_state=None):
+    def _run_inference_on_best_model(self, best_ema_state=None, best_epoch=None):
         """使用best_model运行推理，输出5张验证图像的推理结果
         
         Args:
             best_ema_state: best_model的EMA模型state_dict，如果提供则使用它进行推理
+            best_epoch: best_model保存时的epoch，用于文件名
         """
         try:
             # 保存当前EMA模型状态（推理后恢复）
@@ -1364,12 +1365,14 @@ class DSETTrainer:
             # 打印前5张推理结果
             batch_size = len(inference_targets)
             num_inference_images = min(5, batch_size)
-            self.logger.info(f"  生成best_model推理结果（前{num_inference_images}张）...")
+            # 使用best_epoch作为文件名，如果没有提供则使用current_epoch（向后兼容）
+            epoch_for_filename = best_epoch if best_epoch is not None else self.current_epoch
+            self.logger.info(f"  生成best_model推理结果（前{num_inference_images}张，epoch={epoch_for_filename}）...")
             
             for img_idx in range(num_inference_images):
                 self._inference_single_image_from_batch(
                     inference_images, inference_targets, 0, image_idx=img_idx,
-                    suffix=f"best_model_epoch_{self.current_epoch}"
+                    suffix=f"best_model_epoch_{epoch_for_filename}"
                 )
             
             self.logger.info(f"  ✓ 推理结果已保存到: {self.inference_output_dir}")
@@ -2291,9 +2294,10 @@ class DSETTrainer:
                 # 加载best_model的checkpoint
                 checkpoint = torch.load(best_model_path, map_location=self.device, weights_only=False)
                 best_ema_state = checkpoint.get('ema_state_dict', None)
+                best_epoch = checkpoint.get('epoch', None)  # 获取best_model保存时的epoch
                 
-                # 使用best_model进行推理
-                self._run_inference_on_best_model(best_ema_state)
+                # 使用best_model进行推理（传入best_epoch用于文件名）
+                self._run_inference_on_best_model(best_ema_state, best_epoch=best_epoch)
             else:
                 self.logger.warning("未找到best_model.pth，跳过推理")
         except Exception as e:
