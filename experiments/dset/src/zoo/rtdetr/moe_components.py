@@ -114,23 +114,36 @@ class MoELayer(nn.Module):
 def compute_patch_moe_balance_loss(router_logits_list: List[torch.Tensor],
                                    num_experts: int,
                                    expert_indices_list: List[torch.Tensor] = None) -> torch.Tensor:
-    """Compute MoE balance loss (Variance-based, encouraging uniform usage)."""
+    """Compute MoE balance loss (Standard Switch Transformer style, same as decoder)."""
     if len(router_logits_list) == 0: 
         return torch.tensor(0.0, device='cuda' if torch.cuda.is_available() else 'cpu')
     
     total_loss = 0.0
-    for logits in router_logits_list:
+    num_layers = 0
+    
+    for i, logits in enumerate(router_logits_list):
         if logits is None or logits.numel() == 0:
             continue
+        
         probs = F.softmax(logits, dim=-1)
-        N = logits.shape[0]
-        expert_counts = probs.sum(dim=0)
-        expert_ratio = expert_counts / (N + 1e-9)
-        uniform_ratio = 1.0 / num_experts
-        loss = torch.sum((expert_ratio - uniform_ratio) ** 2) * num_experts
+        expert_probs = probs.mean(dim=0)
+        
+        if expert_indices_list is not None and i < len(expert_indices_list) and expert_indices_list[i] is not None:
+            indices = expert_indices_list[i]
+            expert_usage = torch.zeros(num_experts, device=logits.device)
+            for expert_id in range(num_experts):
+                mask = (indices == expert_id).any(dim=-1)
+                expert_usage[expert_id] = mask.float().mean()
+        else:
+            expert_usage = expert_probs
+        
+        # Loss = num_experts * sum(f_i * P_i) (same as decoder)
+        loss = num_experts * torch.sum(expert_usage * expert_probs)
+        
         total_loss += loss
+        num_layers += 1
     
-    return total_loss / len(router_logits_list) if len(router_logits_list) > 0 else torch.tensor(0.0)
+    return total_loss / num_layers if num_layers > 0 else torch.tensor(0.0)
 
 def compute_patch_moe_entropy_loss(router_logits_list: List[torch.Tensor]) -> torch.Tensor:
     """Compute MoE entropy loss (Maximizing entropy)."""
