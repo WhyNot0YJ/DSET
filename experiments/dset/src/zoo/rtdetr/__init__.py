@@ -11,7 +11,7 @@ from .rtdetrv2_decoder import RTDETRTransformerv2
 from .rtdetrv2_criterion import RTDETRCriterionv2
 
 # Adaptive Expert Components (Fine-grained MoE)
-from .moe_components import SpecialistNetwork, MoELayer, compute_expert_balance_loss
+from .moe_components import SpecialistNetwork, MoELayer, compute_moe_balance_loss
 
 # Token Pruning Components (DSET)
 from .patch_level_pruning import PatchLevelPruner, LearnableImportancePredictor

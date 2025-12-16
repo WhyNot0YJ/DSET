@@ -15,7 +15,7 @@ from typing import List
 from .denoising import get_contrastive_denoising_training_group
 from .utils import deformable_attention_core_func_v2, get_activation, inverse_sigmoid
 from .utils import bias_init_with_prob
-from .moe_components import MoELayer, compute_expert_balance_loss
+from .moe_components import MoELayer, compute_moe_balance_loss
 
 from ...core import register
 
@@ -670,4 +670,4 @@ class RTDETRTransformerv2(nn.Module):
                         else:
                             expert_indices_list.append(None)
         
-        return compute_expert_balance_loss(router_logits_list, self.num_experts, expert_indices_list)
+        return compute_moe_balance_loss(router_logits_list, self.num_experts, expert_indices_list)

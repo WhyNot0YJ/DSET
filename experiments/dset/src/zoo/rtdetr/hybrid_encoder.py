@@ -380,9 +380,9 @@ class HybridEncoder(nn.Module):
                 pruner.set_epoch(epoch)
     
     def get_encoder_moe_loss(self, encoder_info: dict) -> Dict[str, torch.Tensor]:
-        """Compute Encoder Patch-MoE loss (balance loss + entropy loss)."""
+        """Compute Encoder Patch-MoE balance loss."""
         # Patch-MoE is always enabled
-        from .moe_components import compute_patch_moe_balance_loss, compute_patch_moe_entropy_loss
+        from .moe_components import compute_moe_balance_loss
         
         router_logits_list = encoder_info.get('moe_router_logits', [])
         expert_indices_list = encoder_info.get('moe_expert_indices', [])
@@ -392,13 +392,12 @@ class HybridEncoder(nn.Module):
             if 'moe_expert_indices' in encoder_info and len(encoder_info['moe_expert_indices']) > 0:
                 device = encoder_info['moe_expert_indices'][0].device
             zero_tensor = torch.tensor(0.0, device=device) if device is not None else torch.tensor(0.0)
-            return {'balance_loss': zero_tensor, 'entropy_loss': zero_tensor}
+            return {'balance_loss': zero_tensor}
         
         num_experts = router_logits_list[0].shape[-1] if len(router_logits_list) > 0 else 4
-        balance_loss = compute_patch_moe_balance_loss(router_logits_list, num_experts, expert_indices_list)
-        entropy_loss = compute_patch_moe_entropy_loss(router_logits_list)
+        balance_loss = compute_moe_balance_loss(router_logits_list, num_experts, expert_indices_list)
         
-        return {'balance_loss': balance_loss, 'entropy_loss': entropy_loss}
+        return {'balance_loss': balance_loss}
 
     def forward(self, feats, return_encoder_info=False):
         assert len(feats) == len(self.in_channels)

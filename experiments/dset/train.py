@@ -394,19 +394,15 @@ class DSETRTDETR(nn.Module):
             else:
                 decoder_moe_loss = torch.tensor(0.0, device=images.device)
             
-            # 2. Encoder Patch-MoE损失（仅训练时）- 包含负载均衡损失和熵正则项
+            # 2. Encoder Patch-MoE损失（仅训练时）- 负载均衡损失
             # ⚠️ Patch-MoE 默认启用，DSET核心特性
             if self.training:
                 encoder_moe_loss_dict = self.encoder.get_encoder_moe_loss(encoder_info)
-                encoder_moe_balance_loss = encoder_moe_loss_dict['balance_loss']
-                encoder_moe_entropy_loss = encoder_moe_loss_dict['entropy_loss']
-                if encoder_moe_balance_loss.device != images.device:
-                    encoder_moe_balance_loss = encoder_moe_balance_loss.to(images.device)
-                if encoder_moe_entropy_loss.device != images.device:
-                    encoder_moe_entropy_loss = encoder_moe_entropy_loss.to(images.device)
+                encoder_moe_loss = encoder_moe_loss_dict['balance_loss']
+                if encoder_moe_loss.device != images.device:
+                    encoder_moe_loss = encoder_moe_loss.to(images.device)
             else:
-                encoder_moe_balance_loss = torch.tensor(0.0, device=images.device)
-                encoder_moe_entropy_loss = torch.tensor(0.0, device=images.device)
+                encoder_moe_loss = torch.tensor(0.0, device=images.device)
             
             # 3. Patch-level Pruning损失（可选，鼓励学习有效的剪枝策略）
             # ⚠️ Patch-level Pruning 必然启用（与 Patch-MoE 配套），但损失计算是可选的
@@ -446,19 +442,12 @@ class DSETRTDETR(nn.Module):
                 else:
                     decoder_moe_weight = 0.05
             
-            # Encoder Patch-MoE权重（λ1: balance_loss, λ2: entropy_loss）
-            # 根据文档：λ1 通常在 0.01-0.1, λ2 通常在 0.001-0.01
+            # Encoder Patch-MoE权重
             if hasattr(self, 'encoder_moe_balance_weight'):
-                encoder_moe_balance_weight = self.encoder_moe_balance_weight  # λ1
+                encoder_moe_balance_weight = self.encoder_moe_balance_weight
             else:
-                # 默认值：λ1 = 0.05（中等值）
+                # 默认值：0.05（中等值）
                 encoder_moe_balance_weight = 0.05
-            
-            if hasattr(self, 'encoder_moe_entropy_weight'):
-                encoder_moe_entropy_weight = self.encoder_moe_entropy_weight  # λ2
-            else:
-                # 默认值：λ2 = 0.005（中等值）
-                encoder_moe_entropy_weight = 0.005
             
             # Token Pruning Loss权重
             if hasattr(self, 'token_pruning_loss_weight'):
@@ -533,28 +522,24 @@ class DSETRTDETR(nn.Module):
             # CASS Loss weight
             cass_weight = self.cass_loss_weight if hasattr(self, 'cass_loss_weight') else 0.01
             
-            # 总损失：L = L_task + λ1 * L_balance + λ2 * L_entropy + Decoder MoE损失 + Token Pruning损失 + CASS损失
+            # 总损失：L = L_task + Decoder MoE损失 + Encoder MoE损失 + Token Pruning损失 + CASS损失
             total_loss = detection_loss + \
                         decoder_moe_weight * decoder_moe_loss + \
-                        encoder_moe_balance_weight * encoder_moe_balance_loss + \
-                        encoder_moe_entropy_weight * encoder_moe_entropy_loss + \
+                        encoder_moe_balance_weight * encoder_moe_loss + \
                         tp_weight * token_pruning_loss + \
                         cass_weight * cass_loss
             
             output['detection_loss'] = detection_loss
             output['decoder_moe_loss'] = decoder_moe_loss
-            output['encoder_moe_balance_loss'] = encoder_moe_balance_loss
-            output['encoder_moe_entropy_loss'] = encoder_moe_entropy_loss
-            output['encoder_moe_loss'] = encoder_moe_balance_loss + encoder_moe_entropy_loss  # 总Encoder MoE损失（向后兼容）
+            output['encoder_moe_loss'] = encoder_moe_loss
             output['token_pruning_loss'] = token_pruning_loss
             output['cass_loss'] = cass_loss
-            output['moe_load_balance_loss'] = decoder_moe_loss + encoder_moe_balance_loss  # 保持向后兼容
+            output['moe_load_balance_loss'] = decoder_moe_loss + encoder_moe_loss  # 保持向后兼容
             output['total_loss'] = total_loss
             output['loss_dict'] = detection_loss_dict
             
             output['decoder_moe_weight'] = decoder_moe_weight
-            output['encoder_moe_balance_weight'] = encoder_moe_balance_weight  # λ1
-            output['encoder_moe_entropy_weight'] = encoder_moe_entropy_weight  # λ2
+            output['encoder_moe_balance_weight'] = encoder_moe_balance_weight
             output['token_pruning_weight'] = tp_weight
             output['cass_weight'] = cass_weight
             
@@ -1471,8 +1456,7 @@ class DSETTrainer:
         total_loss = 0.0
         detection_loss = 0.0
         moe_lb_loss = 0.0  # MoE load balance loss
-        encoder_moe_balance_loss_sum = 0.0  # Encoder Patch-MoE balance loss (λ1)
-        encoder_moe_entropy_loss_sum = 0.0  # Encoder Patch-MoE entropy loss (λ2)
+        encoder_moe_loss_sum = 0.0  # Encoder Patch-MoE loss
         token_pruning_loss_sum = 0.0  # Token pruning loss
         cass_loss_sum = 0.0  # CASS supervision loss
         
@@ -1522,12 +1506,9 @@ class DSETTrainer:
                 if 'decoder_moe_loss' in outputs:
                     moe_loss_val = outputs['decoder_moe_loss']
                     moe_lb_loss += moe_loss_val.item() if isinstance(moe_loss_val, torch.Tensor) else float(moe_loss_val)
-                if 'encoder_moe_balance_loss' in outputs:
-                    enc_bal_loss_val = outputs['encoder_moe_balance_loss']
-                    encoder_moe_balance_loss_sum += enc_bal_loss_val.item() if isinstance(enc_bal_loss_val, torch.Tensor) else float(enc_bal_loss_val)
-                if 'encoder_moe_entropy_loss' in outputs:
-                    enc_ent_loss_val = outputs['encoder_moe_entropy_loss']
-                    encoder_moe_entropy_loss_sum += enc_ent_loss_val.item() if isinstance(enc_ent_loss_val, torch.Tensor) else float(enc_ent_loss_val)
+                if 'encoder_moe_loss' in outputs:
+                    enc_moe_loss_val = outputs['encoder_moe_loss']
+                    encoder_moe_loss_sum += enc_moe_loss_val.item() if isinstance(enc_moe_loss_val, torch.Tensor) else float(enc_moe_loss_val)
                 if 'token_pruning_loss' in outputs:
                     tp_loss_val = outputs['token_pruning_loss']
                     token_pruning_loss_sum += tp_loss_val.item() if isinstance(tp_loss_val, torch.Tensor) else float(tp_loss_val)
@@ -1606,9 +1587,7 @@ class DSETTrainer:
         avg_loss = total_loss / num_batches
         avg_detection_loss = detection_loss / num_batches
         avg_decoder_moe_lb_loss = moe_lb_loss / num_batches
-        avg_encoder_moe_balance_loss = encoder_moe_balance_loss_sum / num_batches
-        avg_encoder_moe_entropy_loss = encoder_moe_entropy_loss_sum / num_batches
-        avg_encoder_moe_lb_loss = avg_encoder_moe_balance_loss + avg_encoder_moe_entropy_loss  # 总Encoder MoE损失（向后兼容）
+        avg_encoder_moe_loss = encoder_moe_loss_sum / num_batches
         avg_token_pruning_loss = token_pruning_loss_sum / num_batches
         avg_cass_loss = cass_loss_sum / num_batches
         
@@ -1633,13 +1612,11 @@ class DSETTrainer:
             'total_loss': avg_loss,
             'detection_loss': avg_detection_loss,
             'decoder_moe_loss': avg_decoder_moe_lb_loss,
-            'encoder_moe_balance_loss': avg_encoder_moe_balance_loss,  # Patch-MoE balance loss (λ1)
-            'encoder_moe_entropy_loss': avg_encoder_moe_entropy_loss,  # Patch-MoE entropy loss (λ2)
-            'encoder_moe_loss': avg_encoder_moe_lb_loss,  # 总Encoder MoE损失（向后兼容）
+            'encoder_moe_loss': avg_encoder_moe_loss,  # Encoder Patch-MoE loss
             'token_pruning_loss': avg_token_pruning_loss,
             'cass_loss': avg_cass_loss,  # CASS supervision loss
             'token_pruning_ratio': avg_token_pruning_ratio,
-            'moe_load_balance_loss': avg_decoder_moe_lb_loss + avg_encoder_moe_balance_loss,  # 总MoE损失（向后兼容）
+            'moe_load_balance_loss': avg_decoder_moe_lb_loss + avg_encoder_moe_loss,  # 总MoE损失（向后兼容）
             'expert_usage': expert_usage_count,
             'expert_usage_rate': expert_usage_rate,
             'encoder_expert_usage_rate': encoder_expert_usage_rate
@@ -2194,9 +2171,7 @@ class DSETTrainer:
             if should_show_details:
                 self.logger.info(f"  检测损失: {train_metrics['detection_loss']:.2f}")
                 self.logger.info(f"  Decoder MoE损失: {train_metrics.get('decoder_moe_loss', 0.0):.4f}")
-                self.logger.info(f"  Encoder Patch-MoE Balance损失: {train_metrics.get('encoder_moe_balance_loss', 0.0):.4f}")
-                self.logger.info(f"  Encoder Patch-MoE Entropy损失: {train_metrics.get('encoder_moe_entropy_loss', 0.0):.4f}")
-                self.logger.info(f"  Encoder MoE总损失: {train_metrics.get('encoder_moe_loss', 0.0):.4f}")
+                self.logger.info(f"  Encoder MoE损失: {train_metrics.get('encoder_moe_loss', 0.0):.4f}")
                 if self.model.use_token_pruning_loss:
                     self.logger.info(f"  Token Pruning损失: {train_metrics.get('token_pruning_loss', 0.0):.6f}")
                 if self.model.use_cass:
@@ -2218,7 +2193,7 @@ class DSETTrainer:
                 learning_rate=current_lr,
                 # DSET特有的可视化参数
                 detection_loss=train_metrics.get('detection_loss', 0.0),
-                encoder_moe_loss=train_metrics.get('encoder_moe_loss', 0.0),  # 总损失（balance + entropy）
+                encoder_moe_loss=train_metrics.get('encoder_moe_loss', 0.0),  # Encoder Patch-MoE loss
                 decoder_moe_loss=train_metrics.get('decoder_moe_loss', 0.0),
                 token_pruning_loss=train_metrics.get('token_pruning_loss', 0.0),
                 token_pruning_ratio=train_metrics.get('token_pruning_ratio', 0.0),
