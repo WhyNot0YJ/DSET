@@ -480,6 +480,17 @@ class DetectionValidator(BaseValidator):
                     # update mAP50-95 and mAP50
                     stats[f"metrics/mAP50({suffix[i][0]})"] = val.stats_as_dict["AP_50"]
                     stats[f"metrics/mAP50-95({suffix[i][0]})"] = val.stats_as_dict["AP_all"]
+                    
+                    # Add mAP by object size (small/medium/large) if available
+                    # COCO standard: stats[3]=AP_small, stats[4]=AP_medium, stats[5]=AP_large
+                    if hasattr(val, 'stats') and len(val.stats) > 5:
+                        stats[f"metrics/mAP50-95_small({suffix[i][0]})"] = float(val.stats[3])
+                        stats[f"metrics/mAP50-95_medium({suffix[i][0]})"] = float(val.stats[4])
+                        stats[f"metrics/mAP50-95_large({suffix[i][0]})"] = float(val.stats[5])
+                    elif "AP_small" in val.stats_as_dict:
+                        stats[f"metrics/mAP50-95_small({suffix[i][0]})"] = val.stats_as_dict["AP_small"]
+                        stats[f"metrics/mAP50-95_medium({suffix[i][0]})"] = val.stats_as_dict.get("AP_medium", 0.0)
+                        stats[f"metrics/mAP50-95_large({suffix[i][0]})"] = val.stats_as_dict.get("AP_large", 0.0)
 
                     if self.is_lvis:
                         stats[f"metrics/APr({suffix[i][0]})"] = val.stats_as_dict["APr"]
