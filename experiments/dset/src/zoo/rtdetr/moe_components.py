@@ -40,17 +40,14 @@ class MoELayer(nn.Module):
         self.num_experts = num_experts
         self.top_k = min(top_k, num_experts)
         
-        # Token-Level Router: 使用 Linear 投影，不使用 Conv2d
         self.router = nn.Linear(d_model, num_experts, bias=False)
-        nn.init.normal_(self.router.weight, mean=0.0, std=0.01)
+        nn.init.normal_(self.router.weight, mean=0.0, std=0.02)
         
-        # 专家网络组
         self.experts = nn.ModuleList([
             SpecialistNetwork(d_model, dim_feedforward, dropout, activation)
             for _ in range(num_experts)
         ])
         
-        # 缓存用于负载均衡损失
         self.router_logits_cache = None
         self.expert_indices_cache = None
     
@@ -65,44 +62,30 @@ class MoELayer(nn.Module):
         """
         B, N, C = x.shape
         
-        # 路由决策：Token-Level
-        # x: [B, N, C] -> router_logits: [B, N, num_experts]
-        router_logits = self.router(x)  # [B, N, num_experts]
+        router_logits = self.router(x)
         router_probs = F.softmax(router_logits, dim=-1)
-        expert_weights, expert_indices = torch.topk(router_probs, self.top_k, dim=-1)  # [B, N, K]
+        expert_weights, expert_indices = torch.topk(router_probs, self.top_k, dim=-1)
         
-        # 归一化权重
         expert_weights = expert_weights / (expert_weights.sum(dim=-1, keepdim=True) + 1e-9)
         
-        # 缓存用于损失计算
-        self.router_logits_cache = router_logits.reshape(-1, self.num_experts)  # [B*N, num_experts]
-        self.expert_indices_cache = expert_indices.reshape(-1, self.top_k)  # [B*N, K]
+        self.router_logits_cache = router_logits.reshape(-1, self.num_experts)
+        self.expert_indices_cache = expert_indices.reshape(-1, self.top_k)
         
-        # Vectorized Top-K Masking 机制
-        x_flat = x.reshape(-1, C)  # [B*N, C]
-        output_flat = torch.zeros_like(x_flat)  # [B*N, C]
+        x_flat = x.reshape(-1, C)
+        output_flat = torch.zeros_like(x_flat)
+        expert_weights_flat = expert_weights.reshape(-1, self.top_k)
+        expert_indices_flat = expert_indices.reshape(-1, self.top_k)
         
-        expert_weights_flat = expert_weights.reshape(-1, self.top_k)  # [B*N, K]
-        expert_indices_flat = expert_indices.reshape(-1, self.top_k)  # [B*N, K]
-        
-        # 对每个专家进行向量化计算
         for expert_id in range(self.num_experts):
             for k in range(self.top_k):
-                # 找到分配给当前专家的token
-                mask = (expert_indices_flat[:, k] == expert_id)  # [B*N]
+                mask = (expert_indices_flat[:, k] == expert_id)
                 
                 if mask.any():
-                    # 提取对应的token和权重
-                    selected_tokens = x_flat[mask]  # [M, C]
-                    selected_weights = expert_weights_flat[mask, k:k+1]  # [M, 1]
-                    
-                    # 专家处理
-                    expert_out = self.experts[expert_id](selected_tokens)  # [M, C]
-                    
-                    # 加权累加
+                    selected_tokens = x_flat[mask]
+                    selected_weights = expert_weights_flat[mask, k:k+1]
+                    expert_out = self.experts[expert_id](selected_tokens)
                     output_flat[mask] += expert_out * selected_weights
         
-        # 恢复形状
         output = output_flat.reshape(B, N, C)
         
         return output
@@ -143,20 +126,17 @@ def compute_moe_balance_loss(router_logits_list: List[torch.Tensor],
             continue
         
         probs = F.softmax(logits, dim=-1)
-        expert_probs = probs.mean(dim=0)  # Average router probability per expert
+        expert_probs = probs.mean(dim=0)
         
-        # Compute expert usage: either from actual indices or use probabilities
         if expert_indices_list is not None and i < len(expert_indices_list) and expert_indices_list[i] is not None:
             indices = expert_indices_list[i]
-            expert_usage = torch.zeros(num_experts, device=logits.device)
-            for expert_id in range(num_experts):
-                mask = (indices == expert_id).any(dim=-1)
-                expert_usage[expert_id] = mask.float().mean()
+            flat_indices = indices.view(-1)
+            usage_counts = torch.bincount(flat_indices, minlength=num_experts).float()
+            total_dispatches = flat_indices.size(0)
+            expert_usage = usage_counts / total_dispatches
         else:
             expert_usage = expert_probs
         
-        # Switch Transformer load balancing loss
-        # Encourages uniform expert usage
         loss = num_experts * torch.sum(expert_usage * expert_probs)
         
         total_loss += loss
