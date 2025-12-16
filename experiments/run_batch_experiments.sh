@@ -120,12 +120,12 @@ declare -A DSET_CONFIGS=(
 
 declare -A YOLOV8_CONFIGS=(
     ["yolov8s"]="yolov8/configs/yolov8s_dairv2x.yaml"
-    ["yolov8l"]="yolov8/configs/yolov8l_dairv2x.yaml"
+    ["yolov8m"]="yolov8/configs/yolov8m_dairv2x.yaml"
 )
 
 declare -A YOLOV10_CONFIGS=(
     ["yolov10s"]="yolov10/configs/yolov10s_dairv2x.yaml"
-    ["yolov10l"]="yolov10/configs/yolov10l_dairv2x.yaml"
+    ["yolov10m"]="yolov10/configs/yolov10m_dairv2x.yaml"
 )
 
 declare -A DEFORMABLE_DETR_CONFIGS=(
@@ -496,7 +496,7 @@ parse_arguments() {
                 CONFIGS_TO_RUN+=("$p")
             fi
         done
-        # YOLOv8实验（按字典序：yolov8l→yolov8m→yolov8s）
+        # YOLOv8实验（按字典序：yolov8m→yolov8s）
         for key in $(printf '%s\n' "${!YOLOV8_CONFIGS[@]}" | sort); do
             local p="${YOLOV8_CONFIGS[$key]}"
             # YOLOv8不使用backbone过滤（它有自己的模型大小）
