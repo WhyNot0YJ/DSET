@@ -18,6 +18,11 @@ CLASS_NAMES = [
 ]
 CLASS_TO_ID = {name: i for i, name in enumerate(CLASS_NAMES)}
 
+# 类别合并映射：Barrowlist -> Cyclist (ID=5)
+CLASS_MERGE_MAP = {
+    "Barrowlist": 5,  # Cyclist 的 ID
+}
+
 # Ignore类别（训练时过滤）
 IGNORE_CLASSES = [
     "PedestrianIgnore", "CarIgnore", "OtherIgnore", 
@@ -144,11 +149,14 @@ def convert_dairv2x_to_yolo(data_root: str, output_dir: str, split: str = "train
             if class_name in IGNORE_CLASSES:
                 continue
             
-            # 检查是否是有效类别
-            if class_name not in CLASS_TO_ID:
+            # 处理类别合并：Barrowlist -> Cyclist
+            if class_name in CLASS_MERGE_MAP:
+                class_id = CLASS_MERGE_MAP[class_name]
+            elif class_name in CLASS_TO_ID:
+                class_id = CLASS_TO_ID[class_name]
+            else:
+                # 如果不在合并映射和有效类别中，跳过
                 continue
-            
-            class_id = CLASS_TO_ID[class_name]
             bbox_2d = ann["2d_box"]
             
             # 转换为YOLO格式
