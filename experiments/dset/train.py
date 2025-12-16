@@ -436,18 +436,13 @@ class DSETRTDETR(nn.Module):
             if hasattr(self, 'decoder_moe_balance_weight'):
                 decoder_moe_weight = self.decoder_moe_balance_weight
             else:
-                # 动态调整（top_k=1时需要更强的约束）
-                if hasattr(self.decoder, 'moe_top_k') and self.decoder.moe_top_k == 1:
-                    decoder_moe_weight = 0.1
-                else:
-                    decoder_moe_weight = 0.05
-            
+                decoder_moe_weight = 0.05
             # Encoder Patch-MoE权重
             if hasattr(self, 'encoder_moe_balance_weight'):
-                encoder_moe_balance_weight = self.encoder_moe_balance_weight
+                encoder_moe_weight = self.encoder_moe_balance_weight
             else:
                 # 默认值：0.05（中等值）
-                encoder_moe_balance_weight = 0.05
+                encoder_moe_weight = 0.05
             
             # Token Pruning Loss权重
             if hasattr(self, 'token_pruning_loss_weight'):
@@ -525,7 +520,7 @@ class DSETRTDETR(nn.Module):
             # 总损失：L = L_task + Decoder MoE损失 + Encoder MoE损失 + Token Pruning损失 + CASS损失
             total_loss = detection_loss + \
                         decoder_moe_weight * decoder_moe_loss + \
-                        encoder_moe_balance_weight * encoder_moe_loss + \
+                        encoder_moe_weight * encoder_moe_loss + \
                         tp_weight * token_pruning_loss + \
                         cass_weight * cass_loss
             
@@ -539,7 +534,7 @@ class DSETRTDETR(nn.Module):
             output['loss_dict'] = detection_loss_dict
             
             output['decoder_moe_weight'] = decoder_moe_weight
-            output['encoder_moe_balance_weight'] = encoder_moe_balance_weight
+            output['encoder_moe_balance_weight'] = encoder_moe_weight
             output['token_pruning_weight'] = tp_weight
             output['cass_weight'] = cass_weight
             
