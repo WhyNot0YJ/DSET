@@ -110,11 +110,13 @@ declare -A DSET_CONFIGS=(
     ["dset6-r34-0.5"]="dset/configs/dset6_r34_ratio0.5.yaml"
     # 3. DSET6-R18-0.3 - 低bound (Fast)
     ["dset6-r18-0.3"]="dset/configs/dset6_r18_ratio0.3.yaml"
-    # 4. DSET6-R18-0.9 - 高bound (Slow)
+    # 4. DSET6-R18-0.7 - 中等bound
+    ["dset6-r18-0.7"]="dset/configs/dset6_r18_ratio0.7.yaml"
+    # 5. DSET6-R18-0.9 - 高bound (Slow)
     ["dset6-r18-0.9"]="dset/configs/dset6_r18_ratio0.9.yaml"
-    # 5. DSET4-R18-0.5 - 专家数量影响 (Lite)
+    # 6. DSET4-R18-0.5 - 专家数量影响 (Lite)
     ["dset4-r18-0.5"]="dset/configs/dset4_r18_ratio0.5.yaml"
-    # 6. DSET48-R18-0.5 - 专家数量影响 (Heavy)
+    # 7. DSET48-R18-0.5 - 专家数量影响 (Heavy)
     ["dset48-r18-0.5"]="dset/configs/dset48_r18_ratio0.5.yaml"
 )
 
