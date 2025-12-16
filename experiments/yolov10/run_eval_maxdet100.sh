@@ -8,7 +8,7 @@
 #   ./run_eval_maxdet100.sh --checkpoint logs/xxx/weights/best.pt --data_yaml /path/to/data.yaml --max_det 100 --output results_maxdet100.json
 
 # 默认参数
-DEFAULT_CHECKPOINT=${CHECKPOINT:-logs/yolo_v10l_20251202_112836/best_model.pth}
+DEFAULT_CHECKPOINT=${CHECKPOINT:-logs/yolo_v10s_20251202_112836/best_model.pth}
 DEFAULT_DATA_YAML=${DATA_YAML:-/root/autodl-tmp/datasets/DAIR-V2X_YOLO/dairv2x.yaml}
 DEFAULT_MAX_DET=${MAX_DET:-100}
 DEFAULT_CONF=${CONF:-0.001}
@@ -16,7 +16,7 @@ DEFAULT_IOU=${IOU:-0.6}
 DEFAULT_IMGSZ=${IMGSZ:-1280}
 DEFAULT_DEVICE=${DEVICE:-cuda}
 DEFAULT_SPLIT=${SPLIT:-val}
-DEFAULT_OUTPUT=${OUTPUT:-results_yolo_v10l_20251202_112836_maxdet100.json}
+DEFAULT_OUTPUT=${OUTPUT:-results_yolo_v10s_20251202_112836_maxdet100.json}
 
 # 解析命令行参数
 CHECKPOINT_FILE=$DEFAULT_CHECKPOINT

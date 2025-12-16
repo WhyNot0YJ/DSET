@@ -4,14 +4,14 @@
 # 使用方法: ./run_training.sh [config_file] [override_params...]
 # 
 # 示例:
-#   ./run_training.sh configs/yolov8n_dairv2x.yaml
-#   ./run_training.sh configs/yolov8n_dairv2x.yaml --epochs 100
-#   ./run_training.sh configs/yolov8n_dairv2x.yaml --batch_size 48
-#   ./run_training.sh configs/yolov8n_dairv2x.yaml --resume  # 自动从最新检查点恢复
-#   ./run_training.sh configs/yolov8n_dairv2x.yaml --resume_from_checkpoint logs/yolo_v8n_20240101_120000/weights/best.pt
+#   ./run_training.sh configs/yolov8s_dairv2x.yaml
+#   ./run_training.sh configs/yolov8s_dairv2x.yaml --epochs 100
+#   ./run_training.sh configs/yolov8s_dairv2x.yaml --batch_size 48
+#   ./run_training.sh configs/yolov8s_dairv2x.yaml --resume  # 自动从最新检查点恢复
+#   ./run_training.sh configs/yolov8s_dairv2x.yaml --resume_from_checkpoint logs/yolo_v8s_20240101_120000/weights/best.pt
 
 # 默认配置文件
-CONFIG_FILE=${1:-configs/yolov8n_dairv2x.yaml}
+CONFIG_FILE=${1:-configs/yolov8s_dairv2x.yaml}
 
 # 检查配置文件是否存在
 if [ ! -f "$CONFIG_FILE" ]; then

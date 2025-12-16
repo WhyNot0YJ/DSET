@@ -30,7 +30,7 @@ except ImportError:
     from ultralytics import YOLO
 
 
-def load_model(checkpoint_path: str, device: str = "cuda", model_name: str = "yolov10l.pt"):
+def load_model(checkpoint_path: str, device: str = "cuda", model_name: str = "yolov10s.pt"):
     """加载YOLO模型，支持 .pth 和 .pt 格式"""
     print(f"📦 加载模型: {checkpoint_path}")
     
@@ -103,7 +103,7 @@ def load_model(checkpoint_path: str, device: str = "cuda", model_name: str = "yo
                                 import yaml
                                 with open(config_file, 'r') as f:
                                     config = yaml.safe_load(f)
-                                model_name_from_config = config.get('model', {}).get('model_name', 'yolov10l.pt')
+                                model_name_from_config = config.get('model', {}).get('model_name', 'yolov10s.pt')
                                 print(f"  ✓ 从配置文件读取模型类型: {model_name_from_config}")
                                 model_type = model_name_from_config
                             except Exception as e:
@@ -126,9 +126,7 @@ def load_model(checkpoint_path: str, device: str = "cuda", model_name: str = "yo
                         # 2. 如果还没有，尝试使用本地预训练权重
                         if temp_model is None:
                             pretrained_paths = [
-                                'pretrained/yolov10l.pt',
                                 'pretrained/yolov10s.pt',
-                                str(Path(__file__).parent / 'pretrained' / 'yolov10l.pt'),
                                 str(Path(__file__).parent / 'pretrained' / 'yolov10s.pt'),
                             ]
                             for pretrained_path in pretrained_paths:
@@ -371,8 +369,8 @@ def main():
     parser = argparse.ArgumentParser(description='YOLOv10评估脚本 - 限制最大检测框数量为100')
     parser.add_argument('--checkpoint', type=str, required=True,
                        help='模型检查点路径（支持 .pt 和 .pth 文件）')
-    parser.add_argument('--model_name', type=str, default='yolov10l.pt',
-                       help='YOLO 模型名称（用于 .pth 转换，默认: yolov10l.pt）')
+    parser.add_argument('--model_name', type=str, default='yolov10s.pt',
+                       help='YOLO 模型名称（用于 .pth 转换，默认: yolov10s.pt）')
     parser.add_argument('--data_yaml', type=str, required=True,
                        help='数据集配置文件路径（YAML格式）')
     parser.add_argument('--max_det', type=int, default=100,
