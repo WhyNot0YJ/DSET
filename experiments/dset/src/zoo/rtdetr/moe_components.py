@@ -63,6 +63,12 @@ class MoELayer(nn.Module):
         B, N, C = x.shape
         
         router_logits = self.router(x)
+        
+        # Noisy Gating: 在训练时添加噪声以提升探索和负载均衡
+        if self.training:
+            noise_std = 0.1  # 噪声标准差（可调整为 1.0/num_experts 或其他值）
+            router_logits = router_logits + torch.randn_like(router_logits) * noise_std
+        
         router_probs = F.softmax(router_logits, dim=-1)
         expert_weights, expert_indices = torch.topk(router_probs, self.top_k, dim=-1)
         
