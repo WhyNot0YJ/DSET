@@ -173,7 +173,8 @@ class TransformerDecoderLayer(nn.Module):
                  cross_attn_method='default',
                  use_moe=False,
                  num_experts=6,
-                 moe_top_k=2):
+                 moe_top_k=2,
+                 moe_noise_std=0.1):
         super(TransformerDecoderLayer, self).__init__()
 
         # self attention
@@ -196,7 +197,8 @@ class TransformerDecoderLayer(nn.Module):
                 num_experts=num_experts,
                 top_k=moe_top_k,
                 dropout=dropout,
-                activation=activation
+                activation=activation,
+                noise_std=moe_noise_std
             )
         else:
             # Standard FFN
@@ -334,7 +336,8 @@ class RTDETRTransformerv2(nn.Module):
                  query_select_method='default',
                  use_moe=False,
                  num_experts=6,
-                 moe_top_k=2):
+                 moe_top_k=2,
+                 moe_noise_std=0.1):
         super().__init__()
         assert len(feat_channels) <= num_levels
         assert len(feat_strides) == len(feat_channels)
@@ -357,6 +360,7 @@ class RTDETRTransformerv2(nn.Module):
         self.use_moe = use_moe
         self.num_experts = num_experts
         self.moe_top_k = moe_top_k
+        self.moe_noise_std = moe_noise_std
 
         assert query_select_method in ('default', 'one2many', 'agnostic'), ''
         assert cross_attn_method in ('default', 'discrete'), ''
@@ -373,7 +377,8 @@ class RTDETRTransformerv2(nn.Module):
             cross_attn_method=cross_attn_method,
             use_moe=use_moe,
             num_experts=num_experts,
-            moe_top_k=moe_top_k
+            moe_top_k=moe_top_k,
+            moe_noise_std=moe_noise_std
         )
         self.decoder = TransformerDecoder(hidden_dim, decoder_layer, num_layers, eval_idx)
 

@@ -152,7 +152,9 @@ class DSETRTDETR(nn.Module):
                  use_cass: bool = False,
                  cass_loss_weight: float = 0.01,
                  cass_expansion_ratio: float = 0.3,
-                 cass_min_size: float = 1.0):
+                 cass_min_size: float = 1.0,
+                 # MoE noise_std config
+                 moe_noise_std: float = 0.1):
         """Initialize DSET RT-DETR model.
         
         Args:
@@ -212,6 +214,9 @@ class DSETRTDETR(nn.Module):
         self.cass_expansion_ratio = cass_expansion_ratio
         self.cass_min_size = cass_min_size
         
+        # MoE noise_std configuration
+        self.moe_noise_std = moe_noise_std
+        
         # MoE和Token Pruning权重配置
         if decoder_moe_balance_weight is not None:
             self.decoder_moe_balance_weight = decoder_moe_balance_weight
@@ -248,7 +253,8 @@ class DSETRTDETR(nn.Module):
             # Fine-grained MoE config
             use_moe=True,
             num_experts=self.num_experts,
-            moe_top_k=top_k
+            moe_top_k=top_k,
+            moe_noise_std=self.moe_noise_std
         )
         
         print(f"✓ MoE Decoder config: {num_decoder_layers} layers, {self.num_experts} experts, top_k={top_k}")
@@ -295,7 +301,9 @@ class DSETRTDETR(nn.Module):
             use_cass=self.use_cass,
             cass_expansion_ratio=self.cass_expansion_ratio,
             cass_min_size=self.cass_min_size,
-            cass_decay_type='gaussian'
+            cass_decay_type='gaussian',
+            # MoE noise_std parameter
+            moe_noise_std=self.moe_noise_std
         )
     
     def _build_detr_criterion(self) -> RTDETRCriterionv2:
@@ -703,6 +711,9 @@ class DSETTrainer:
         # 从配置文件读取专家数量
         num_experts = self.config['model'].get('num_experts', 6)
         
+        # 从配置文件读取 MoE noise_std
+        moe_noise_std = self.config['model'].get('moe_noise_std', 0.1)
+        
         # DSET双稀疏配置
         dset_config = self.config['model'].get('dset', {})
         # ⚠️ 注意：Patch-MoE 和 Patch-level Pruning 必然启用（DSET核心特性），无需配置
@@ -753,7 +764,9 @@ class DSETTrainer:
             use_cass=use_cass,
             cass_loss_weight=cass_loss_weight,
             cass_expansion_ratio=cass_expansion_ratio,
-            cass_min_size=cass_min_size
+            cass_min_size=cass_min_size,
+            # MoE noise_std 配置
+            moe_noise_std=moe_noise_std
         )
         
         # 加载预训练权重

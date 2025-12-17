@@ -126,7 +126,8 @@ class TransformerEncoderLayer(nn.Module):
                  use_moe=False,
                  num_experts=4,
                  moe_top_k=2,
-                 patch_size=4):
+                 patch_size=4,
+                 moe_noise_std=0.1):
         super().__init__()
         self.normalize_before = normalize_before
         self.use_moe = use_moe
@@ -142,7 +143,8 @@ class TransformerEncoderLayer(nn.Module):
                 num_experts=num_experts,
                 top_k=moe_top_k,
                 dropout=dropout,
-                activation=activation
+                activation=activation,
+                noise_std=moe_noise_std
             )
         else:
             # 标准FFN
@@ -237,7 +239,9 @@ class HybridEncoder(nn.Module):
                  use_cass=False,
                  cass_expansion_ratio=0.3,
                  cass_min_size=1.0,
-                 cass_decay_type='gaussian'):
+                 cass_decay_type='gaussian',
+                 # MoE noise_std parameter
+                 moe_noise_std=0.1):
         """
         Args:
             token_keep_ratio: Patch retention ratio (0.5-0.7)
@@ -319,7 +323,8 @@ class HybridEncoder(nn.Module):
             use_moe=True,
             num_experts=patch_moe_num_experts,
             moe_top_k=patch_moe_top_k,
-            patch_size=1)  # MoE现在是token-level，patch_size固定为1
+            patch_size=1,  # MoE现在是token-level，patch_size固定为1
+            moe_noise_std=moe_noise_std)
 
         self.encoder = nn.ModuleList([
             TransformerEncoder(encoder_layer, num_encoder_layers) for _ in range(len(use_encoder_idx))

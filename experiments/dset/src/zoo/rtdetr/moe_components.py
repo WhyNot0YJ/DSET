@@ -33,12 +33,14 @@ class MoELayer(nn.Module):
     """
     
     def __init__(self, d_model: int, dim_feedforward: int, num_experts: int = 4, 
-                 top_k: int = 2, dropout: float = 0.1, activation: str = 'gelu'):
+                 top_k: int = 2, dropout: float = 0.1, activation: str = 'gelu', 
+                 noise_std: float = 0.1):
         super().__init__()
         self.d_model = d_model
         self.dim_feedforward = dim_feedforward
         self.num_experts = num_experts
         self.top_k = min(top_k, num_experts)
+        self.noise_std = noise_std
         
         self.router = nn.Linear(d_model, num_experts, bias=False)
         nn.init.normal_(self.router.weight, mean=0.0, std=0.02)
@@ -66,8 +68,7 @@ class MoELayer(nn.Module):
         
         # Noisy Gating: 在训练时添加噪声以提升探索和负载均衡
         if self.training:
-            noise_std = 0.1  # 噪声标准差（可调整为 1.0/num_experts 或其他值）
-            router_logits = router_logits + torch.randn_like(router_logits) * noise_std
+            router_logits = router_logits + torch.randn_like(router_logits) * self.noise_std
         
         router_probs = F.softmax(router_logits, dim=-1)
         expert_weights, expert_indices = torch.topk(router_probs, self.top_k, dim=-1)
