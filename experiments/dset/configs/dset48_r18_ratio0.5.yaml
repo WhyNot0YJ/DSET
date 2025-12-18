@@ -1,7 +1,7 @@
 model:
   num_experts: 8
   top_k: 4
-  moe_noise_std: 0.1
+  moe_noise_std: 0.05
   backbone: presnet18
   encoder:
     use_encoder_idx:
@@ -45,7 +45,7 @@ training:
   seed: 42
   deterministic: false
   decoder_moe_balance_weight: 0.01
-  encoder_moe_balance_weight: 0.001
+  encoder_moe_balance_weight: 0.0005
 data:
   data_root: /root/autodl-tmp/datasets/DAIR-V2X
 checkpoint:
