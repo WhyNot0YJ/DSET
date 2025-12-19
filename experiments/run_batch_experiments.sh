@@ -106,18 +106,18 @@ declare -A DSET_CONFIGS=(
     # 核心实验配置（按实验顺序）
     # 1. DSET6-R18-0.5 (⭐⭐⭐ 最重要) - 核心模型
     ["dset6-r18-0.5"]="dset/configs/dset6_r18_ratio0.5.yaml"
-    # 2. DSET6-R34-0.5 - 证明可扩展性
-    ["dset6-r34-0.5"]="dset/configs/dset6_r34_ratio0.5.yaml"
+    # 2. DSET6-R34-0.3 - 证明可扩展性
+    ["dset6-r34-0.3"]="dset/configs/dset6_r34_ratio0.3.yaml"
     # 3. DSET6-R18-0.3 - 低bound (Fast)
     ["dset6-r18-0.3"]="dset/configs/dset6_r18_ratio0.3.yaml"
     # 4. DSET6-R18-0.7 - 中等bound
     ["dset6-r18-0.7"]="dset/configs/dset6_r18_ratio0.7.yaml"
     # 5. DSET6-R18-0.9 - 高bound (Slow)
     ["dset6-r18-0.9"]="dset/configs/dset6_r18_ratio0.9.yaml"
-    # 6. DSET4-R18-0.5 - 专家数量影响 (Lite)
-    ["dset4-r18-0.5"]="dset/configs/dset4_r18_ratio0.5.yaml"
-    # 7. DSET48-R18-0.5 - 专家数量影响 (Heavy)
-    ["dset48-r18-0.5"]="dset/configs/dset48_r18_ratio0.5.yaml"
+    # 6. DSET4-R18-0.3 - 专家数量影响 (Lite)
+    ["dset4-r18-0.3"]="dset/configs/dset4_r18_ratio0.3.yaml"
+    # 7. DSET48-R18-0.3 - 专家数量影响 (Heavy)
+    ["dset48-r18-0.3"]="dset/configs/dset48_r18_ratio0.3.yaml"
 )
 
 declare -A YOLOV8_CONFIGS=(
