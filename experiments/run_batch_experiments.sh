@@ -86,11 +86,11 @@ declare -a CORE_EXPERIMENTS=(
     "rt-detr/configs/rtdetr_r18.yaml"           # 1. RT-DETR-R18 (Baseline)
     "dset/configs/dset6_r18_ratio0.5.yaml"      # 2. DSET6-R18-0.5 (⭐⭐⭐ 最重要)
     "rt-detr/configs/rtdetr_r34.yaml"           # 3. RT-DETR-R34 (Baseline)
-    "dset/configs/dset6_r34_ratio0.5.yaml"      # 4. DSET6-R34-0.5
+    "dset/configs/dset6_r34_ratio0.3.yaml"      # 4. DSET6-R34-0.3
     "dset/configs/dset6_r18_ratio0.3.yaml"      # 5. DSET6-R18-0.3
     "dset/configs/dset6_r18_ratio0.9.yaml"       # 6. DSET6-R18-0.9
-    "dset/configs/dset4_r18_ratio0.5.yaml"      # 7. DSET4-R18-0.5
-    "dset/configs/dset48_r18_ratio0.5.yaml"      # 8. DSET48-R18-0.5
+    "dset/configs/dset4_r18_ratio0.3.yaml"      # 7. DSET4-R18-0.3
+    "dset/configs/dset48_r18_ratio0.3.yaml"      # 8. DSET48-R18-0.3
 )
 
 declare -A MOE_RTDETR_CONFIGS=(
