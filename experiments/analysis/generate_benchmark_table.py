@@ -54,9 +54,11 @@
 - 脚本会自动适配不同的列名格式（mAP_s, mAP_small, metrics/mAP50-95(B) 等）
 - 如果 mAP 值 > 1.0，会自动归一化（除以 100）为标准格式
 - 需要安装 thop 库来计算 FLOPs: pip install thop
-- YOLO 模型的 FLOPs 计算包含 NMS 的估算值（基于输入尺寸和典型检测数量）
+- FLOPs 计算仅反映模型网络结构的计算量（MACs），不包含 NMS 等后处理操作
 - YOLO 模型的 FPS 测量包含完整的推理流程（前向传播 + NMS）
 - DSET 模型会自动启用 token pruning（设置 epoch >= warmup_epochs）
+- 默认输入尺寸为 720x1280（对应 1280x720 缩放后尺寸）
+- FPS 测量使用 CUDA Events 进行精确计时（如果使用 CUDA）
 """
 
 import os
@@ -85,20 +87,20 @@ except ImportError:
     print("警告: thop 未安装，将无法计算 FLOPs。请运行: pip install thop")
 
 
-def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 640, 640), is_yolo: bool = False) -> Tuple[float, float]:
+def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 720, 1280), is_yolo: bool = False) -> Tuple[float, float]:
     """
     计算模型的参数量和 FLOPs
     
-    注意：对于 YOLO 模型，FLOPs 计算包含 NMS 的估算值
+    注意：FLOPs 仅反映模型网络结构的计算量，不包含 NMS 等后处理操作
     
     Args:
         model: PyTorch 模型或 YOLO 模型
-        input_size: 输入尺寸 (batch, channels, height, width)
-        is_yolo: 是否为 YOLO 模型（如果是，会计算包含 NMS 的 FLOPs）
+        input_size: 输入尺寸 (batch, channels, height, width)，默认 (1, 3, 720, 1280)
+        is_yolo: 是否为 YOLO 模型
     
     Returns:
         (params_in_millions, flops_in_giga)
-        - 对于 YOLO 模型，flops_in_giga 包含基础模型 FLOPs + NMS FLOPs 估算
+        - flops_in_giga 仅包含模型本身的 FLOPs（MACs），符合主流学术论文统计口径
     """
     # 计算参数量
     if is_yolo:
@@ -116,9 +118,9 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 640, 64
     # 计算 FLOPs
     flops_g = 0.0
     if is_yolo:
-        # YOLO 模型：使用 ultralytics 的方法计算 FLOPs（包含 NMS）
-        # 注意：FLOPs 计算使用实际输入尺寸（720x1280），不考虑 Letterbox 填充
-        # 因为 FLOPs 反映的是模型本身的计算量，而不是预处理开销
+        # YOLO 模型：使用 ultralytics 的方法计算 FLOPs
+        # 注意：FLOPs 计算使用实际输入尺寸，不考虑 Letterbox 填充
+        # FLOPs 仅反映模型本身的计算量，不包含 NMS 等后处理操作
         try:
             # 方法1：尝试使用 ultralytics 内置的 get_flops 函数
             from copy import deepcopy
@@ -132,7 +134,7 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 640, 64
                 try:
                     from ultralytics.utils.torch_utils import get_flops
                     flops_g = get_flops(pytorch_model, imgsz=imgsz)
-                    print(f"  ✓ 使用 ultralytics.get_flops 计算 FLOPs")
+                    print(f"  ✓ 使用 ultralytics.get_flops 计算 FLOPs: {flops_g:.2f} G")
                 except (ImportError, AttributeError):
                     # 方法2：使用 thop 直接计算
                     if HAS_THOP:
@@ -140,32 +142,9 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 640, 64
                         device = next(pytorch_model.parameters()).device
                         dummy_input = torch.randn(input_size).to(device)
                         flops, _ = profile(deepcopy(pytorch_model), inputs=(dummy_input,), verbose=False)
-                        flops_g = flops / 1e9 * 2  # thop 返回的是 MACs，需要 *2 得到 FLOPs
-                        print(f"  ✓ 使用 thop 计算基础 FLOPs: {flops_g:.2f} G")
-                        
-                        # 估算 NMS 的 FLOPs（基于输入尺寸和典型的检测数量）
-                        # NMS 主要包括：
-                        # 1. IoU 计算：对于 n 个框，需要计算 n*(n-1)/2 次 IoU
-                        # 2. 排序操作：O(n log n)
-                        # 3. 过滤操作：O(n)
-                        # 
-                        # 典型的 YOLO 模型在 640x640 输入下会产生约 8400 个候选框（3个尺度）
-                        # 经过置信度过滤后，通常剩余 100-1000 个框
-                        # 假设平均 300 个框进行 NMS：
-                        #   - IoU 计算：300*299/2 * 4 ops ≈ 180K FLOPs ≈ 0.00018 GFLOPs
-                        #   - 排序：300*log2(300) ≈ 2400 ops ≈ 0.000002 GFLOPs
-                        #   总计约 0.0002 GFLOPs，但实际实现可能有额外开销
-                        # 
-                        # 我们使用基于输入尺寸的估算：
-                        # 基准：640x640 输入，假设 300 个候选框，NMS FLOPs ≈ 0.01 GFLOPs
-                        # 缩放：根据输入尺寸比例调整候选框数量
-                        base_size = 640
-                        scale_factor = (h * w) / (base_size * base_size)
-                        # 候选框数量与特征图大小成正比，特征图大小与输入尺寸成正比
-                        # 所以候选框数量与输入尺寸的平方成正比
-                        nms_flops_estimate = 0.01 * scale_factor  # 基准 0.01 GFLOPs at 640x640
-                        flops_g += nms_flops_estimate
-                        print(f"  ✓ 估算 NMS FLOPs: {nms_flops_estimate:.4f} G (总 FLOPs: {flops_g:.2f} G)")
+                        # thop 返回的是 MACs，在主流学术论文中 MACs = FLOPs（不需要 *2）
+                        flops_g = flops / 1e9
+                        print(f"  ✓ 使用 thop 计算 FLOPs: {flops_g:.2f} G (MACs)")
                     else:
                         print(f"  ⚠ thop 未安装，无法计算 FLOPs")
             else:
@@ -195,21 +174,22 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 640, 64
 
 
 def measure_fps(model, 
-                input_size: Tuple[int, int, int, int] = (1, 3, 640, 640),
+                input_size: Tuple[int, int, int, int] = (1, 3, 720, 1280),
                 num_iter: int = 100,
-                warmup_iter: int = 10,
+                warmup_iter: int = 20,
                 device: str = "cuda",
                 is_yolo: bool = False) -> float:
     """
     测量模型的 FPS (Frames Per Second)
     
-    注意：对于 YOLO 模型，FPS 测量包含完整的推理流程（前向传播 + NMS）
+    使用 CUDA Events 进行精确计时（如果使用 CUDA），确保获取真实的 GPU 硬件执行耗时。
+    对于 YOLO 模型，FPS 测量包含完整的推理流程（前向传播 + NMS）
     
     Args:
         model: PyTorch 模型或 YOLO 模型
-        input_size: 输入尺寸 (batch, channels, height, width)
+        input_size: 输入尺寸 (batch, channels, height, width)，默认 (1, 3, 720, 1280)
         num_iter: 测试迭代次数
-        warmup_iter: 预热迭代次数
+        warmup_iter: 预热迭代次数（默认 20，确保模型充分预热）
         device: 设备 ('cuda' 或 'cpu')
         is_yolo: 是否为 YOLO 模型（使用不同的输入格式，且包含 NMS）
     
@@ -217,6 +197,9 @@ def measure_fps(model,
         FPS 值（对于 YOLO 模型，包含 NMS 的完整推理时间）
     """
     model.eval()
+    
+    # 使用 CUDA Events 进行精确计时（如果使用 CUDA）
+    use_cuda_events = (device == "cuda" and torch.cuda.is_available())
     
     if is_yolo:
         # YOLO 模型使用 numpy/PIL 图像格式
@@ -226,7 +209,7 @@ def measure_fps(model,
         
         import numpy as np
         # YOLO 通常需要正方形输入，使用 Letterbox 填充
-        # 为了包含填充开销，使用 1280x1280 进行测速
+        # 为了包含填充开销，使用最大边作为正方形边长进行测速
         # 注意：实际输入可能是 720x1280，但 YOLO 会填充到 1280x1280
         yolo_size = max(input_size[2], input_size[3])  # 使用最大边作为正方形边长
         dummy_image = np.random.randint(0, 255, (yolo_size, yolo_size, 3), dtype=np.uint8)
@@ -234,19 +217,33 @@ def measure_fps(model,
         # Warmup（包含 NMS）
         for _ in range(warmup_iter):
             _ = model(dummy_image, verbose=False)  # 这会执行完整的推理流程，包括 NMS
+            if use_cuda_events:
+                torch.cuda.synchronize()
         
         # 同步（如果是 CUDA）
-        if device == "cuda" and torch.cuda.is_available():
+        if use_cuda_events:
             torch.cuda.synchronize()
         
         # 实际测试（包含 NMS）
-        start_time = time.time()
+        if use_cuda_events:
+            starter = torch.cuda.Event(enable_timing=True)
+            ender = torch.cuda.Event(enable_timing=True)
+            starter.record()
+        else:
+            start_time = time.time()
+        
         for _ in range(num_iter):
             _ = model(dummy_image, verbose=False)  # 包含 NMS 的完整推理
-            if device == "cuda" and torch.cuda.is_available():
-                torch.cuda.synchronize()
+            if use_cuda_events:
+                torch.cuda.synchronize()  # 每轮都同步，确保精确计时
         
-        end_time = time.time()
+        if use_cuda_events:
+            ender.record()
+            torch.cuda.synchronize()
+            elapsed_time = starter.elapsed_time(ender) / 1000.0  # 转换为秒
+        else:
+            end_time = time.time()
+            elapsed_time = end_time - start_time
     else:
         # 标准 PyTorch 模型使用 tensor
         model = model.to(device)
@@ -256,22 +253,35 @@ def measure_fps(model,
         with torch.no_grad():
             for _ in range(warmup_iter):
                 _ = model(dummy_input)
+                if use_cuda_events:
+                    torch.cuda.synchronize()
         
         # 同步（如果是 CUDA）
-        if device == "cuda" and torch.cuda.is_available():
+        if use_cuda_events:
             torch.cuda.synchronize()
         
         # 实际测试
-        start_time = time.time()
+        if use_cuda_events:
+            starter = torch.cuda.Event(enable_timing=True)
+            ender = torch.cuda.Event(enable_timing=True)
+            starter.record()
+        else:
+            start_time = time.time()
+        
         with torch.no_grad():
             for _ in range(num_iter):
                 _ = model(dummy_input)
-                if device == "cuda" and torch.cuda.is_available():
-                    torch.cuda.synchronize()
+                if use_cuda_events:
+                    torch.cuda.synchronize()  # 每轮都同步，确保精确计时
         
-        end_time = time.time()
+        if use_cuda_events:
+            ender.record()
+            torch.cuda.synchronize()
+            elapsed_time = starter.elapsed_time(ender) / 1000.0  # 转换为秒
+        else:
+            end_time = time.time()
+            elapsed_time = end_time - start_time
     
-    elapsed_time = end_time - start_time
     fps = num_iter / elapsed_time if elapsed_time > 0 else 0.0
     
     return fps
@@ -762,8 +772,8 @@ def main():
                        help='设备 (cuda 或 cpu)')
     parser.add_argument('--fps_iter', type=int, default=100,
                        help='FPS 测试迭代次数')
-    parser.add_argument('--warmup_iter', type=int, default=10,
-                       help='FPS 测试预热迭代次数')
+    parser.add_argument('--warmup_iter', type=int, default=20,
+                       help='FPS 测试预热迭代次数（默认 20，确保模型充分预热）')
     parser.add_argument('--skip_fps', action='store_true',
                        help='跳过 FPS 测试（仅使用已有数据）')
     parser.add_argument('--model_type', type=str, default='dset',
@@ -835,12 +845,26 @@ def main():
         return
     
     # 3. 计算参数量和 FLOPs
-    # 注意：对于 YOLO 模型，FLOPs 计算使用实际输入尺寸（720x1280）
-    # 但 FPS 测速会使用 1280x1280（包含 Letterbox 填充开销）
+    # 注意：对于 DSET 模型，需要先激活 token pruning 才能正确计算 FLOPs
     input_size = (1, 3, args.input_size[0], args.input_size[1])
     print(f"\n计算模型信息 (输入尺寸: {input_size[2]}x{input_size[3]})...")
+    
+    # 对于 DSET 模型，确保在计算 FLOPs 之前激活 token pruning
+    if args.model_type == "dset" and hasattr(model, 'encoder') and hasattr(model.encoder, 'set_epoch'):
+        # 从配置中获取 warmup_epochs
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config = yaml.safe_load(f)
+            dset_config = config.get('model', {}).get('dset', {})
+            warmup_epochs = dset_config.get('token_pruning_warmup_epochs', 10)
+            model.encoder.set_epoch(warmup_epochs)
+            print(f"  ✓ 已激活 DSET token pruning (epoch={warmup_epochs}) 以正确计算 FLOPs")
+        except Exception as e:
+            print(f"  ⚠ 无法读取配置以激活 token pruning: {e}")
+    
     if is_yolo_model:
-        print(f"  注意: YOLO 模型 FPS 测速将使用 1280x1280 以包含 Letterbox 填充开销")
+        print(f"  注意: YOLO 模型 FPS 测速将使用 {max(args.input_size)}x{max(args.input_size)} 以包含 Letterbox 填充开销")
+    
     params_m, flops_g = get_model_info(model, input_size, is_yolo=is_yolo_model)
     print(f"✓ 参数量: {params_m:.2f} M")
     if flops_g > 0:
@@ -880,8 +904,9 @@ def main():
     # 6. 输出评估结果
     # 确定实际测试分辨率（YOLO 使用填充后的尺寸）
     if is_yolo_model:
-        test_resolution = "1280 x 1280"
-        resolution_note = " (YOLO 使用 Letterbox 填充到 1280x1280)"
+        yolo_test_size = max(args.input_size)
+        test_resolution = f"{yolo_test_size} x {yolo_test_size}"
+        resolution_note = f" (YOLO 使用 Letterbox 填充到 {yolo_test_size}x{yolo_test_size})"
     else:
         test_resolution = f"{args.input_size[1]} x {args.input_size[0]}"
         resolution_note = ""
