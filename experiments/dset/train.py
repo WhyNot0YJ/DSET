@@ -2140,13 +2140,13 @@ class DSETTrainer:
             
             # 验证策略：
             # - 前100 epoch：每10轮验证一次
-            # - 100-160 epoch：每5轮验证一次
-            # - 160 epoch以后：每轮验证
+            # - 100-140 epoch：每5轮验证一次
+            # - 140 epoch以后：每轮验证
             should_validate = False
             if epoch < 100:
                 if (epoch + 1) % 10 == 0:
                     should_validate = True
-            elif epoch < 160:
+            elif epoch < 140:
                 if (epoch + 1) % 5 == 0:
                     should_validate = True
             else:
