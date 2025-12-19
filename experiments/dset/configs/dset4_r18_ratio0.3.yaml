@@ -18,7 +18,7 @@ model:
   num_queries: 100
   dset:
     token_keep_ratio:
-      2: 0.5
+      2: 0.3
     token_pruning_warmup_epochs: 10
     patch_moe_num_experts: 4
     patch_moe_top_k: 2
@@ -44,7 +44,7 @@ training:
   early_stopping_metric: mAP_0.5_0.95
   seed: 42
   deterministic: false
-  decoder_moe_balance_weight: 0.001
+  decoder_moe_balance_weight: 0.01
   encoder_moe_balance_weight: 0.001
 data:
   data_root: /root/autodl-tmp/datasets/DAIR-V2X

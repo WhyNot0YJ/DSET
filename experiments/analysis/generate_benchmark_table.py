@@ -651,18 +651,20 @@ def evaluate_accuracy(model, config_path: str, device: str = "cuda", model_type:
             TrainerClass = DSETTrainer
         elif model_type == "rtdetr":
             # 导入 RTDETRTrainer 以创建数据加载器
+            # 注意：目录名是 rt-detr（带连字符），无法作为 Python 模块导入
+            # 因此直接从目录导入
+            # config_path 通常是 experiments/rt-detr/configs/xxx.yaml
+            # parent.parent 就是 experiments/rt-detr/，这是包含 train.py 的目录
+            rtdetr_dir = Path(config_path).parent.parent
+            if str(rtdetr_dir) not in sys.path:
+                sys.path.insert(0, str(rtdetr_dir))
+            print(f"DEBUG: 正在尝试从 {rtdetr_dir} 加载 RTDETRTrainer")
             try:
-                from experiments.rt_detr.train import RTDETRTrainer
+                from train import RTDETRTrainer
             except ImportError:
-                # 回退：尝试从 rt-detr 目录直接导入
-                # config_path 通常是 experiments/rt-detr/configs/xxx.yaml
-                # parent.parent 就是 experiments/rt-detr/，这是包含 train.py 的目录
-                rtdetr_dir = Path(config_path).parent.parent
-                if str(rtdetr_dir) not in sys.path:
-                    sys.path.insert(0, str(rtdetr_dir))
-                print(f"DEBUG: 正在尝试从 {rtdetr_dir} 加载 RTDETRTrainer")
+                # 尝试使用项目根目录导入（如果目录被重命名为 rt_detr）
                 try:
-                    from train import RTDETRTrainer
+                    from experiments.rt_detr.train import RTDETRTrainer
                 except ImportError:
                     raise ImportError(f"无法导入 RTDETRTrainer。请确保项目根目录正确设置: {project_root}")
             TrainerClass = RTDETRTrainer
@@ -681,9 +683,13 @@ def evaluate_accuracy(model, config_path: str, device: str = "cuda", model_type:
         # 创建 trainer 以获取数据加载器（使用与训练相同的配置）
         if model_type == "dset":
             trainer = TrainerClass(config, config_file_path=str(config_path))
+            _, val_loader = trainer._create_data_loaders()
         else:
+            # RT-DETRv2 需要手动调用这些 create 方法
             trainer = TrainerClass(config)
-        _, val_loader = trainer._create_data_loaders()
+            trainer.model = model  # 传入已加载权重的模型
+            trainer.criterion = trainer.create_criterion()
+            train_loader, val_loader = trainer.create_datasets()  # 获取验证集加载器
         
         print(f"  ✓ 创建验证集 DataLoader (样本数: {len(val_loader.dataset)})")
         print(f"  ✓ 使用与训练相同的图像缩放逻辑 (max_size=1280, 保持宽高比 → 1280x720)")
@@ -712,7 +718,14 @@ def evaluate_accuracy(model, config_path: str, device: str = "cuda", model_type:
                 outputs = model(images, targets)
                 
                 # 收集预测结果
-                if isinstance(outputs, dict) and 'class_scores' in outputs and 'bboxes' in outputs:
+                # RT-DETR 和 DSET 都支持两种输出格式：pred_logits/pred_boxes 或 class_scores/bboxes
+                has_predictions = (
+                    isinstance(outputs, dict) and (
+                        ('class_scores' in outputs and 'bboxes' in outputs) or
+                        ('pred_logits' in outputs and 'pred_boxes' in outputs)
+                    )
+                )
+                if has_predictions:
                     _collect_predictions_for_coco(
                         outputs, targets, batch_idx, all_predictions, all_targets,
                         W_tensor, H_tensor, config.get('training', {}).get('batch_size', 1)
@@ -738,14 +751,32 @@ def evaluate_accuracy(model, config_path: str, device: str = "cuda", model_type:
 def _collect_predictions_for_coco(outputs: Dict, targets: List[Dict], batch_idx: int,
                                   all_predictions: List, all_targets: List,
                                   img_w: int, img_h: int, batch_size: int) -> None:
-    """收集预测结果用于 COCO 评估"""
-    pred_logits = outputs['class_scores']  # [B, Q, C]
-    pred_boxes = outputs['bboxes']  # [B, Q, 4]
+    """收集预测结果用于 COCO 评估
+    
+    兼容两种输出格式：
+    - DSET: class_scores/bboxes (使用 softmax)
+    - RT-DETR: pred_logits/pred_boxes 或 class_scores/bboxes (使用 sigmoid)
+    """
+    # 兼容两种输出格式：pred_logits/pred_boxes 或 class_scores/bboxes
+    if 'pred_logits' in outputs:
+        pred_logits = outputs['pred_logits']  # [B, Q, C]
+        pred_boxes = outputs['pred_boxes']    # [B, Q, 4]
+        use_sigmoid = True  # RT-DETR 使用 sigmoid
+    elif 'class_scores' in outputs:
+        pred_logits = outputs['class_scores']  # [B, Q, C]
+        pred_boxes = outputs['bboxes']        # [B, Q, 4]
+        use_sigmoid = False  # DSET 使用 softmax
+    else:
+        return  # 没有有效的预测输出
     
     batch_size_actual = pred_logits.shape[0]
     
     for i in range(batch_size_actual):
-        pred_scores = torch.softmax(pred_logits[i], dim=-1)  # [Q, C]
+        # RT-DETR 使用 sigmoid，DSET 使用 softmax
+        if use_sigmoid:
+            pred_scores = torch.sigmoid(pred_logits[i])  # [Q, C]
+        else:
+            pred_scores = torch.softmax(pred_logits[i], dim=-1)  # [Q, C]
         max_scores, pred_classes = torch.max(pred_scores, dim=-1)  # [Q]
         
         # 过滤无效框（padding框）
@@ -883,15 +914,16 @@ def _compute_coco_metrics(predictions: List[Dict], targets: List[Dict],
             sys.stdout = old_stdout
         
         # 从 COCOeval.stats 中提取指标
-        # stats[0] = mAP@0.5:0.95
-        # stats[1] = mAP@0.5 (AP50)
-        # stats[3] = mAP_s (Small objects)
+        # 注意：COCOeval.stats 返回的值已经是 0-1 范围（如 0.65），不需要除以 100
+        # stats[0] = mAP@0.5:0.95 (已经是 0-1 范围)
+        # stats[1] = mAP@0.5 (AP50) (已经是 0-1 范围)
+        # stats[3] = mAP_s (Small objects) (已经是 0-1 范围)
         stats = coco_eval.stats
         
         metrics = {
-            'mAP': float(stats[0]) / 100.0 if len(stats) > 0 else 0.0,  # 转换为 0-1 范围
-            'AP50': float(stats[1]) / 100.0 if len(stats) > 1 else 0.0,
-            'APS': float(stats[3]) / 100.0 if len(stats) > 3 else 0.0
+            'mAP': float(stats[0]) if len(stats) > 0 else 0.0,  # 已经是 0-1 范围，不需要除以 100
+            'AP50': float(stats[1]) if len(stats) > 1 else 0.0,  # 已经是 0-1 范围
+            'APS': float(stats[3]) if len(stats) > 3 else 0.0  # 已经是 0-1 范围
         }
         
         return metrics
@@ -1104,6 +1136,14 @@ def main():
         print("\n警告: 未支持的模型类型，mAP 指标将使用默认值 0.0")
     
     # 6. 输出标准化评估结果（学术论文格式）
+    # 动态检测 GPU 模型
+    if torch.cuda.is_available():
+        try:
+            gpu_name = torch.cuda.get_device_name(0)
+        except Exception:
+            gpu_name = "GPU"
+    else:
+        gpu_name = "CPU"
     
     # 格式化并输出标准化评估结果（学术论文格式）
     _format_evaluation_results(
@@ -1113,13 +1153,14 @@ def main():
         fps=fps,
         metrics=metrics,
         input_resolution=(args.input_size[1], args.input_size[0]),
-        is_yolo=is_yolo_model
+        is_yolo=is_yolo_model,
+        gpu_name=gpu_name
     )
 
 
 def _format_evaluation_results(model_type: str, params_m: float, flops_g: float, fps: float,
                                metrics: Dict[str, float], input_resolution: Tuple[int, int],
-                               is_yolo: bool = False) -> None:
+                               is_yolo: bool = False, gpu_name: str = "GPU") -> None:
     """
     格式化并输出标准化的评估结果（学术论文格式）
     
@@ -1163,7 +1204,8 @@ def _format_evaluation_results(model_type: str, params_m: float, flops_g: float,
     flops_str = f"{flops_g:.2f} G" if flops_g > 0 else "N/A"
     fps_str = f"{fps:.1f}" if fps > 0 else "N/A"
     
-    print(f"Params: {params_str} | FLOPs: {flops_str} | FPS (RTX 3090): {fps_str}")
+    # 使用传入的 gpu_name（已在 main 函数中动态检测）
+    print(f"Params: {params_str} | FLOPs: {flops_str} | FPS ({gpu_name}): {fps_str}")
     
     # 精度指标
     map_str = f"{metrics['mAP']:.4f}" if metrics['mAP'] > 0 else "N/A"
