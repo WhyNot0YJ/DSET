@@ -5,14 +5,14 @@
 
 功能：
 1. 自动从 logs/ 目录查找最新的 best_model.pth 或使用指定的检查点
-2. 从训练日志 (training_history.csv) 提取最佳 mAP, AP50, APS 指标
+2. 使用 pycocotools 在验证集上运行完整的 COCO 评估，提取 mAP, AP50, APS 指标
 3. 计算模型参数量（Params）和 FLOPs
 4. 测量模型在当前设备上的 FPS（包含 warmup 过程，YOLO 模型包含 NMS）
 5. 输出清晰的评估结果清单
 
 支持的模型类型：
 - dset: DSET (Dual-Sparse Expert Transformer) 模型
-- rtdetr: RT-DETR 模型
+- rtdetr: RT-DETRv2 模型
 - deformable-detr: Deformable-DETR 模型（使用 MMEngine）
 - yolov8s: YOLOv8-small 模型
 - yolov8m: YOLOv8-medium 模型
@@ -23,7 +23,7 @@
     # DSET 模型（默认）
     python generate_benchmark_table.py --model_type dset
     
-    # RT-DETR 模型
+    # RT-DETRv2 模型
     python generate_benchmark_table.py --model_type rtdetr --rtdetr_config experiments/rt-detr/configs/xxx.yaml
     
     # Deformable-DETR 模型
@@ -51,14 +51,17 @@
     python generate_benchmark_table.py --input_size 1280 1280 --fps_iter 200
 
 注意：
-- 脚本会自动适配不同的列名格式（mAP_s, mAP_small, metrics/mAP50-95(B) 等）
-- 如果 mAP 值 > 1.0，会自动归一化（除以 100）为标准格式
+- 精度指标（mAP [0.5:0.95], AP50, APS）通过 pycocotools 在验证集上实时评测得出，确保数据权威性
 - 需要安装 thop 库来计算 FLOPs: pip install thop
+- 需要安装 pycocotools 进行 COCO 评估: pip install pycocotools
 - FLOPs 计算仅反映模型网络结构的计算量（MACs），不包含 NMS 等后处理操作
 - YOLO 模型的 FPS 测量包含完整的推理流程（前向传播 + NMS）
-- DSET 模型会自动启用 token pruning（设置 epoch >= warmup_epochs）
-- 默认输入尺寸为 720x1280（对应 1280x720 缩放后尺寸）
+- DSET 模型会自动启用 token pruning（设置 epoch >= warmup_epochs）以确保评估反映剪枝后的状态
+- 输入尺寸逻辑：
+  * DSET/RT-DETRv2: FLOPs 和 FPS 均使用 720x1280（对应 1280x720 有效分辨率）
+  * YOLO: FLOPs 使用 720x1280（公平比较），FPS 使用 1280x1280（包含 Letterbox 填充开销）
 - FPS 测量使用 CUDA Events 进行精确计时（如果使用 CUDA）
+- 输出格式符合学术论文标准，可直接复制使用
 """
 
 import os
@@ -68,15 +71,17 @@ import yaml
 import torch
 import torch.nn as nn
 import time
-import csv
 from pathlib import Path
-from typing import Dict, Optional, Tuple
-import pandas as pd
+from typing import Dict, Optional, Tuple, List
+from io import StringIO
+from pycocotools.cocoeval import COCOeval
+from pycocotools.coco import COCO
 
-# 添加项目路径
-project_root = Path(__file__).parent.parent.parent.resolve()
-if str(project_root) not in sys.path:
-    sys.path.insert(0, str(project_root))
+# 显式设置项目根目录（必须在所有本地导入之前）
+_project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"))
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+project_root = _project_root
 
 # 尝试导入 thop
 try:
@@ -154,7 +159,7 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 720, 12
             import traceback
             traceback.print_exc()
     elif HAS_THOP:
-        # 标准 PyTorch 模型（DSET, RT-DETR, Deformable-DETR）
+        # 标准 PyTorch 模型（DSET, RT-DETRv2, Deformable-DETR）
         try:
             model.eval()
             device = next(model.parameters()).device
@@ -299,11 +304,19 @@ def load_dset_model(config_path: str, checkpoint_path: str, device: str = "cuda"
     Returns:
         加载的模型
     """
-    # 导入必要的模块
-    dset_dir = Path(config_path).parent.parent / "dset"
-    if str(dset_dir) not in sys.path:
-        sys.path.insert(0, str(dset_dir))
-    from train import DSETTrainer
+    # 导入必要的模块 - 优先使用项目根目录的导入路径
+    try:
+        # 首先尝试从项目根目录导入（推荐方式）
+        from experiments.dset.train import DSETTrainer
+    except ImportError:
+        # 回退：尝试从 dset 目录直接导入
+        dset_dir = Path(config_path).parent.parent / "dset"
+        if str(dset_dir) not in sys.path:
+            sys.path.insert(0, str(dset_dir))
+        try:
+            from train import DSETTrainer
+        except ImportError:
+            raise ImportError(f"无法导入 DSETTrainer。请确保项目根目录正确设置: {project_root}")
     
     # 加载配置
     with open(config_path, 'r', encoding='utf-8') as f:
@@ -346,12 +359,12 @@ def load_dset_model(config_path: str, checkpoint_path: str, device: str = "cuda"
     model.eval()
     
     # 启用 token pruning 和 CASS（如果适用）
-    # 确保在推理时启用 token pruning，需要设置 epoch >= warmup_epochs
+    # 关键：必须在评估前激活 token pruning，确保精度反映剪枝后的状态
     if hasattr(model, 'encoder') and hasattr(model.encoder, 'set_epoch'):
         dset_config = config.get('model', {}).get('dset', {})
         warmup_epochs = dset_config.get('token_pruning_warmup_epochs', 10)
-        # 设置为 warmup_epochs 或更大的值以启用 pruning
-        model.encoder.set_epoch(warmup_epochs)
+        # 设置为 warmup_epochs 或更大的值以启用 pruning（使用 10 确保激活）
+        model.encoder.set_epoch(max(warmup_epochs, 10))
         
         # 检查 CASS 是否启用
         use_cass = dset_config.get('use_cass', False)
@@ -371,7 +384,7 @@ def load_dset_model(config_path: str, checkpoint_path: str, device: str = "cuda"
 
 def load_rtdetr_model(config_path: str, checkpoint_path: str, device: str = "cuda"):
     """
-    加载 RT-DETR 模型
+    加载 RT-DETRv2 模型
     
     Args:
         config_path: 配置文件路径
@@ -593,120 +606,275 @@ def load_yolov10_model(checkpoint_path: str, device: str = "cuda"):
     return model
 
 
-def parse_training_log(csv_path: str, is_yolo: bool = False) -> Dict[str, float]:
+def evaluate_accuracy(model, config_path: str, device: str = "cuda") -> Dict[str, float]:
     """
-    从 training_history.csv 解析最佳性能指标
+    使用 pycocotools 在验证集上运行完整的 COCO 评估循环
+    
+    确保使用与训练相同的图像缩放逻辑（max_size=1280，保持宽高比，结果 1280x720）
     
     Args:
-        csv_path: CSV 文件路径
-        is_yolo: 是否为 YOLO 模型（使用不同的列名格式）
+        model: 已加载的模型（必须处于 eval 模式，token pruning 已激活）
+        config_path: 配置文件路径
+        device: 设备
     
     Returns:
-        包含最佳指标的字典（已归一化到 0-1 范围）
+        包含 mAP [0.5:0.95], AP50, APS (Small) 的字典
     """
     try:
-        df = pd.read_csv(csv_path)
+        # 导入 DSETTrainer 以创建数据加载器 - 优先使用项目根目录导入
+        try:
+            from experiments.dset.train import DSETTrainer
+        except ImportError:
+            # 回退：尝试从 dset 目录直接导入
+            dset_dir = Path(config_path).parent.parent / "dset"
+            if str(dset_dir) not in sys.path:
+                sys.path.insert(0, str(dset_dir))
+            try:
+                from train import DSETTrainer
+            except ImportError:
+                raise ImportError(f"无法导入 DSETTrainer。请确保项目根目录正确设置: {project_root}")
         
-        # 根据模型类型选择列名（支持多种变体）
-        if is_yolo:
-            # YOLO 格式：metrics/mAP50-95(B), metrics/mAP50(B)
-            map_col = 'metrics/mAP50-95(B)'
-            ap50_col = 'metrics/mAP50(B)'
-            # 尝试查找 APS 列（可能不存在）
-            aps_col = None
-            for col in df.columns:
-                if 'mAP' in col and ('small' in col.lower() or 's' in col.lower()):
-                    aps_col = col
-                    break
-        else:
-            # DETR 格式：支持多种列名变体
-            # mAP 列：优先 mAP_0.5_0.95，也支持 mAP_0.5:0.95
-            map_col = None
-            for col in df.columns:
-                if 'mAP' in col and ('0.5' in col or '50' in col) and ('0.95' in col or '95' in col):
-                    map_col = col
-                    break
-            if map_col is None:
-                map_col = 'mAP_0.5_0.95'  # 默认
-            
-            # AP50 列：优先 mAP_0.5，也支持 mAP_50, mAP50, mAP_50 等变体
-            ap50_col = None
-            # 按优先级尝试匹配
-            ap50_candidates = ['mAP_0.5', 'mAP_50', 'mAP50', 'mAP@0.5', 'mAP@50']
-            for candidate in ap50_candidates:
-                if candidate in df.columns:
-                    ap50_col = candidate
-                    break
-            # 如果精确匹配失败，尝试模糊匹配
-            if ap50_col is None:
-                for col in df.columns:
-                    if ('mAP' in col or 'AP' in col) and ('0.5' in col or '50' in col) and '95' not in col and '75' not in col:
-                        ap50_col = col
-                        break
-            if ap50_col is None:
-                ap50_col = 'mAP_0.5'  # 默认
-            
-            # APS 列：支持 mAP_s, mAP_small, mAP_S 等
-            aps_col = None
-            for col in df.columns:
-                if 'mAP' in col and ('small' in col.lower() or col.endswith('_s') or col == 'mAP_s'):
-                    aps_col = col
-                    break
-            if aps_col is None:
-                aps_col = 'mAP_s'  # 默认
+        # 加载配置
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config = yaml.safe_load(f)
         
-        # 找到 mAP 最大的行
-        if map_col not in df.columns:
-            print(f"警告: {csv_path} 中未找到 {map_col} 列")
-            print(f"  可用列: {list(df.columns)}")
-            return {'mAP': 0.0, 'AP50': 0.0, 'APS': 0.0}
+        # 确保 device 配置正确
+        if 'misc' not in config:
+            config['misc'] = {}
+        config['misc']['device'] = device
         
-        # 过滤掉 mAP 为 0 的行
-        valid_df = df[df[map_col] > 0]
+        # 创建 trainer 以获取数据加载器（使用与训练相同的配置）
+        trainer = DSETTrainer(config, config_file_path=str(config_path))
+        _, val_loader = trainer._create_data_loaders()
         
-        if len(valid_df) == 0:
-            print(f"警告: {csv_path} 中没有有效的 mAP 数据")
-            return {'mAP': 0.0, 'AP50': 0.0, 'APS': 0.0}
+        print(f"  ✓ 创建验证集 DataLoader (样本数: {len(val_loader.dataset)})")
+        print(f"  ✓ 使用与训练相同的图像缩放逻辑 (max_size=1280, 保持宽高比 → 1280x720)")
         
-        # 找到最佳 mAP
-        best_idx = valid_df[map_col].idxmax()
-        best_row = valid_df.loc[best_idx]
+        # 确保模型处于 eval 模式（token pruning 应在 load_dset_model 中已激活）
+        model.eval()
         
-        # 提取指标值
-        map_val = best_row.get(map_col, 0.0)
-        ap50_val = best_row.get(ap50_col, 0.0) if ap50_col in df.columns else 0.0
-        aps_val = best_row.get(aps_col, 0.0) if aps_col and aps_col in df.columns else 0.0
+        # 验证 token pruning 状态（仅 DSET 模型）
+        if hasattr(model, 'encoder') and hasattr(model.encoder, 'set_epoch'):
+            if hasattr(model.encoder, 'token_pruners') and model.encoder.token_pruners:
+                pruner = model.encoder.token_pruners[0]
+                if hasattr(pruner, 'pruning_enabled'):
+                    print(f"  ✓ Token Pruning 状态: {'已激活' if pruner.pruning_enabled else '未激活'}")
         
-        # 数值归一化：如果值 > 1.0，可能是百分比格式（如 65.2），需要除以 100
-        def normalize_value(val):
-            if val > 1.0:
-                return val / 100.0
-            return val
+        all_predictions = []
+        all_targets = []
         
-        metrics = {
-            'mAP': normalize_value(map_val),
-            'AP50': normalize_value(ap50_val),
-            'APS': normalize_value(aps_val)
-        }
+        print(f"  运行推理循环...")
+        with torch.no_grad():
+            for batch_idx, (images, targets) in enumerate(val_loader):
+                B, C, H_tensor, W_tensor = images.shape
+                images = images.to(device)
+                targets = [{k: v.to(device) if isinstance(v, torch.Tensor) else v 
+                           for k, v in t.items()} for t in targets]
+                
+                outputs = model(images, targets)
+                
+                # 收集预测结果
+                if isinstance(outputs, dict) and 'class_scores' in outputs and 'bboxes' in outputs:
+                    _collect_predictions_for_coco(
+                        outputs, targets, batch_idx, all_predictions, all_targets,
+                        W_tensor, H_tensor, config.get('training', {}).get('batch_size', 1)
+                    )
+                
+                if (batch_idx + 1) % 10 == 0:
+                    print(f"    处理进度: {batch_idx + 1}/{len(val_loader)} batches")
+        
+        print(f"  ✓ 收集到 {len(all_predictions)} 个预测框, {len(all_targets)} 个真实标注")
+        
+        # 使用 pycocotools 评估
+        metrics = _compute_coco_metrics(all_predictions, all_targets, H_tensor, W_tensor)
         
         return metrics
+        
     except Exception as e:
-        print(f"警告: 解析训练日志失败 {csv_path}: {e}")
+        print(f"  ⚠ COCO 评估失败: {e}")
         import traceback
         traceback.print_exc()
         return {'mAP': 0.0, 'AP50': 0.0, 'APS': 0.0}
 
 
-def find_latest_best_model(logs_dir: Path, model_type: str = "dset") -> Optional[Tuple[Path, Path]]:
+def _collect_predictions_for_coco(outputs: Dict, targets: List[Dict], batch_idx: int,
+                                  all_predictions: List, all_targets: List,
+                                  img_w: int, img_h: int, batch_size: int) -> None:
+    """收集预测结果用于 COCO 评估"""
+    pred_logits = outputs['class_scores']  # [B, Q, C]
+    pred_boxes = outputs['bboxes']  # [B, Q, 4]
+    
+    batch_size_actual = pred_logits.shape[0]
+    
+    for i in range(batch_size_actual):
+        pred_scores = torch.softmax(pred_logits[i], dim=-1)  # [Q, C]
+        max_scores, pred_classes = torch.max(pred_scores, dim=-1)  # [Q]
+        
+        # 过滤无效框（padding框）
+        valid_boxes_mask = ~torch.all(pred_boxes[i] == 1.0, dim=1)
+        valid_indices = torch.where(valid_boxes_mask)[0]
+        
+        if len(valid_indices) > 0:
+            filtered_boxes = pred_boxes[i][valid_indices]
+            filtered_classes = pred_classes[valid_indices]
+            filtered_scores = max_scores[valid_indices]
+            
+            # 转换为COCO格式 (x, y, w, h)
+            if filtered_boxes.shape[0] > 0:
+                boxes_coco = torch.zeros_like(filtered_boxes)
+                if filtered_boxes.max() <= 1.0:
+                    # 归一化坐标 -> 像素坐标
+                    boxes_coco[:, 0] = (filtered_boxes[:, 0] - filtered_boxes[:, 2] / 2) * img_w
+                    boxes_coco[:, 1] = (filtered_boxes[:, 1] - filtered_boxes[:, 3] / 2) * img_h
+                    boxes_coco[:, 2] = filtered_boxes[:, 2] * img_w
+                    boxes_coco[:, 3] = filtered_boxes[:, 3] * img_h
+                else:
+                    boxes_coco = filtered_boxes.clone()
+                
+                # Clamp坐标
+                boxes_coco[:, 0] = torch.clamp(boxes_coco[:, 0], 0, img_w)
+                boxes_coco[:, 1] = torch.clamp(boxes_coco[:, 1], 0, img_h)
+                boxes_coco[:, 2] = torch.clamp(boxes_coco[:, 2], 1, img_w)
+                boxes_coco[:, 3] = torch.clamp(boxes_coco[:, 3], 1, img_h)
+                
+                # 转换为 (x, y, w, h) 格式
+                for j in range(boxes_coco.shape[0]):
+                    x, y, w, h = boxes_coco[j].cpu().numpy()
+                    all_predictions.append({
+                        'image_id': batch_idx * batch_size + i,
+                        'category_id': int(filtered_classes[j].item()) + 1,
+                        'bbox': [float(x), float(y), float(w), float(h)],
+                        'score': float(filtered_scores[j].item())
+                    })
+        
+        # 处理真实标签
+        if i < len(targets) and 'labels' in targets[i] and 'boxes' in targets[i]:
+            true_labels = targets[i]['labels']
+            true_boxes = targets[i]['boxes']
+            
+            if len(true_labels) > 0:
+                max_val = float(true_boxes.max().item()) if true_boxes.numel() > 0 else 0.0
+                
+                true_boxes_coco = torch.zeros_like(true_boxes)
+                if max_val <= 1.0 + 1e-6:
+                    true_boxes_coco[:, 0] = (true_boxes[:, 0] - true_boxes[:, 2] / 2) * img_w
+                    true_boxes_coco[:, 1] = (true_boxes[:, 1] - true_boxes[:, 3] / 2) * img_h
+                    true_boxes_coco[:, 2] = true_boxes[:, 2] * img_w
+                    true_boxes_coco[:, 3] = true_boxes[:, 3] * img_h
+                else:
+                    true_boxes_coco = true_boxes.clone()
+                
+                true_boxes_coco[:, 0] = torch.clamp(true_boxes_coco[:, 0], 0, img_w)
+                true_boxes_coco[:, 1] = torch.clamp(true_boxes_coco[:, 1], 0, img_h)
+                true_boxes_coco[:, 2] = torch.clamp(true_boxes_coco[:, 2], 1, img_w)
+                true_boxes_coco[:, 3] = torch.clamp(true_boxes_coco[:, 3], 1, img_h)
+                
+                has_iscrowd = 'iscrowd' in targets[i]
+                iscrowd_values = targets[i]['iscrowd'] if has_iscrowd else torch.zeros(len(true_labels), dtype=torch.int64)
+                
+                for j in range(len(true_labels)):
+                    x, y, w, h = true_boxes_coco[j].cpu().numpy()
+                    ann_dict = {
+                        'image_id': batch_idx * batch_size + i,
+                        'category_id': int(true_labels[j].item()) + 1,
+                        'bbox': [float(x), float(y), float(w), float(h)],
+                        'area': float(w * h)
+                    }
+                    if has_iscrowd:
+                        ann_dict['iscrowd'] = int(iscrowd_values[j].item())
+                    all_targets.append(ann_dict)
+
+
+def _compute_coco_metrics(predictions: List[Dict], targets: List[Dict],
+                          img_h: int = 736, img_w: int = 1280) -> Dict[str, float]:
+    """使用 pycocotools 计算 COCO 指标"""
+    try:
+        if len(predictions) == 0:
+            return {'mAP': 0.0, 'AP50': 0.0, 'APS': 0.0}
+        
+        # 定义类别
+        categories = [
+            {'id': 1, 'name': 'Car'},
+            {'id': 2, 'name': 'Truck'},
+            {'id': 3, 'name': 'Van'},
+            {'id': 4, 'name': 'Bus'},
+            {'id': 5, 'name': 'Pedestrian'},
+            {'id': 6, 'name': 'Cyclist'},
+            {'id': 7, 'name': 'Motorcyclist'},
+            {'id': 8, 'name': 'Trafficcone'}
+        ]
+        
+        # 创建 COCO 格式的 GT
+        image_ids = set(t['image_id'] for t in targets)
+        coco_gt = {
+            'images': [{'id': img_id, 'width': img_w, 'height': img_h} for img_id in image_ids],
+            'annotations': targets,
+            'categories': categories,
+            'info': {'description': 'DAIR-V2X Dataset', 'version': '1.0', 'year': 2024}
+        }
+        
+        # 创建 COCO 对象
+        coco_gt_obj = COCO()
+        coco_gt_obj.dataset = coco_gt
+        
+        # 抑制 createIndex 的输出
+        old_stdout = sys.stdout
+        sys.stdout = StringIO()
+        try:
+            coco_gt_obj.createIndex()
+        finally:
+            sys.stdout = old_stdout
+        
+        # 加载预测结果
+        sys.stdout = StringIO()
+        try:
+            coco_dt = coco_gt_obj.loadRes(predictions)
+        finally:
+            sys.stdout = old_stdout
+        
+        # 运行 COCOeval
+        coco_eval = COCOeval(coco_gt_obj, coco_dt, 'bbox')
+        
+        # 抑制评估过程的输出
+        sys.stdout = StringIO()
+        try:
+            coco_eval.evaluate()
+            coco_eval.accumulate()
+            coco_eval.summarize()
+        finally:
+            sys.stdout = old_stdout
+        
+        # 从 COCOeval.stats 中提取指标
+        # stats[0] = mAP@0.5:0.95
+        # stats[1] = mAP@0.5 (AP50)
+        # stats[3] = mAP_s (Small objects)
+        stats = coco_eval.stats
+        
+        metrics = {
+            'mAP': float(stats[0]) / 100.0 if len(stats) > 0 else 0.0,  # 转换为 0-1 范围
+            'AP50': float(stats[1]) / 100.0 if len(stats) > 1 else 0.0,
+            'APS': float(stats[3]) / 100.0 if len(stats) > 3 else 0.0
+        }
+        
+        return metrics
+        
+    except Exception as e:
+        print(f"  ⚠ COCO 指标计算失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return {'mAP': 0.0, 'AP50': 0.0, 'APS': 0.0}
+
+
+def find_latest_best_model(logs_dir: Path, model_type: str = "dset") -> Optional[Path]:
     """
-    在 logs 目录下找到最新的 best_model.pth 和对应的 training_history.csv
+    在 logs 目录下找到最新的 best_model.pth
     
     Args:
         logs_dir: logs 目录路径
         model_type: 模型类型 ("dset", "rtdetr", "deformable-detr", "yolov8s", "yolov8m", "yolov10s", "yolov10m")
     
     Returns:
-        (best_model_path, training_history_path) 或 None
+        best_model_path 或 None
     """
     if model_type == "deformable-detr":
         # Deformable-DETR 使用 work_dirs 目录，检查点格式不同
@@ -728,7 +896,7 @@ def find_latest_best_model(logs_dir: Path, model_type: str = "dset") -> Optional
         if not best_models:
             best_models.extend(list(logs_dir.rglob('weights/best.pt')))
     else:
-        # DSET 和 RT-DETR 使用 best_model.pth
+        # DSET 和 RT-DETRv2 使用 best_model.pth
         best_models = list(logs_dir.rglob('best_model.pth'))
     
     if not best_models:
@@ -736,22 +904,7 @@ def find_latest_best_model(logs_dir: Path, model_type: str = "dset") -> Optional
     
     # 按修改时间排序，取最新的
     best_models.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-    best_model_path = best_models[0]
-    
-    # 找到同目录下的 training_history.csv
-    training_history_path = None
-    if model_type != "deformable-detr":
-        log_dir = best_model_path.parent
-        # 如果检查点在 weights/ 子目录，向上查找
-        if log_dir.name == "weights":
-            log_dir = log_dir.parent
-        training_history_path = log_dir / 'training_history.csv'
-        
-        if not training_history_path.exists():
-            print(f"警告: 未找到对应的 training_history.csv: {training_history_path}")
-            return (best_model_path, None)
-    
-    return (best_model_path, training_history_path)
+    return best_models[0]
 
 
 
@@ -781,7 +934,7 @@ def main():
                                'yolov8s', 'yolov8m', 'yolov10s', 'yolov10m'],
                        help='模型类型: dset, rtdetr, deformable-detr, yolov8s, yolov8m, yolov10s, yolov10m')
     parser.add_argument('--rtdetr_config', type=str, default=None,
-                       help='RT-DETR 配置文件路径（当 model_type=rtdetr 时使用）')
+                       help='RT-DETRv2 配置文件路径（当 model_type=rtdetr 时使用）')
     parser.add_argument('--deformable_work_dir', type=str, default=None,
                        help='Deformable-DETR work_dirs 路径（当 model_type=deformable-detr 时使用）')
     parser.add_argument('--deformable_config', type=str, default=None,
@@ -789,10 +942,9 @@ def main():
     
     args = parser.parse_args()
     
-    # 转换为绝对路径
-    project_root = Path(__file__).parent.parent.parent.resolve()
-    logs_dir = project_root / args.logs_dir
-    config_path = project_root / args.config
+    # 转换为绝对路径（使用显式设置的项目根目录）
+    logs_dir = Path(project_root) / args.logs_dir
+    config_path = Path(project_root) / args.config
     
     print("=" * 80)
     print("性能对比表生成脚本")
@@ -803,21 +955,15 @@ def main():
         checkpoint_path = Path(args.checkpoint)
         if not checkpoint_path.is_absolute():
             checkpoint_path = project_root / checkpoint_path
-        if args.model_type != "deformable-detr":
-            training_history_path = checkpoint_path.parent / 'training_history.csv'
-        else:
-            training_history_path = None
     else:
         print(f"\n查找最新的检查点在: {logs_dir} (模型类型: {args.model_type})")
         result = find_latest_best_model(logs_dir, args.model_type)
         if result is None:
             print(f"错误: 在 {logs_dir} 下未找到检查点")
             return
-        checkpoint_path, training_history_path = result
+        checkpoint_path = result
     
     print(f"✓ 找到检查点: {checkpoint_path}")
-    if training_history_path and training_history_path.exists():
-        print(f"✓ 找到训练日志: {training_history_path}")
     
     # 2. 加载模型并计算参数量
     print(f"\n加载模型: {checkpoint_path}")
@@ -845,9 +991,21 @@ def main():
         return
     
     # 3. 计算参数量和 FLOPs
-    # 注意：对于 DSET 模型，需要先激活 token pruning 才能正确计算 FLOPs
-    input_size = (1, 3, args.input_size[0], args.input_size[1])
-    print(f"\n计算模型信息 (输入尺寸: {input_size[2]}x{input_size[3]})...")
+    # 输入尺寸逻辑：
+    # - DSET/RT-DETRv2: FLOPs 和 FPS 都使用 (1, 3, 720, 1280)
+    # - YOLO: FLOPs 使用 (1, 3, 720, 1280) 公平比较，FPS 使用 (1, 3, 1280, 1280) 包含 Letterbox 开销
+    input_size_flops = (1, 3, args.input_size[0], args.input_size[1])  # 用于 FLOPs 计算
+    input_size_fps = input_size_flops  # 默认与 FLOPs 相同
+    
+    if is_yolo_model:
+        # YOLO FPS 测速使用 1280x1280 以包含 Letterbox 填充开销
+        input_size_fps = (1, 3, max(args.input_size), max(args.input_size))
+        print(f"\n计算模型信息...")
+        print(f"  FLOPs 计算尺寸: {input_size_flops[2]}x{input_size_flops[3]} (公平比较)")
+        print(f"  FPS 测速尺寸: {input_size_fps[2]}x{input_size_fps[3]} (包含 Letterbox 填充开销)")
+    else:
+        # DSET/RT-DETRv2: FLOPs 和 FPS 使用相同尺寸
+        print(f"\n计算模型信息 (输入尺寸: {input_size_flops[2]}x{input_size_flops[3]})...")
     
     # 对于 DSET 模型，确保在计算 FLOPs 之前激活 token pruning
     if args.model_type == "dset" and hasattr(model, 'encoder') and hasattr(model.encoder, 'set_epoch'):
@@ -857,27 +1015,24 @@ def main():
                 config = yaml.safe_load(f)
             dset_config = config.get('model', {}).get('dset', {})
             warmup_epochs = dset_config.get('token_pruning_warmup_epochs', 10)
-            model.encoder.set_epoch(warmup_epochs)
-            print(f"  ✓ 已激活 DSET token pruning (epoch={warmup_epochs}) 以正确计算 FLOPs")
+            model.encoder.set_epoch(max(warmup_epochs, 10))
+            print(f"  ✓ 已激活 DSET token pruning (epoch={max(warmup_epochs, 10)}) 以正确计算 FLOPs")
         except Exception as e:
             print(f"  ⚠ 无法读取配置以激活 token pruning: {e}")
     
-    if is_yolo_model:
-        print(f"  注意: YOLO 模型 FPS 测速将使用 {max(args.input_size)}x{max(args.input_size)} 以包含 Letterbox 填充开销")
-    
-    params_m, flops_g = get_model_info(model, input_size, is_yolo=is_yolo_model)
+    params_m, flops_g = get_model_info(model, input_size_flops, is_yolo=is_yolo_model)
     print(f"✓ 参数量: {params_m:.2f} M")
     if flops_g > 0:
         print(f"✓ FLOPs: {flops_g:.2f} G")
     else:
         print(f"⚠ FLOPs: 未计算（可能需要安装 thop: pip install thop）")
     
-    # 4. 测量 FPS
+    # 4. 测量 FPS（使用正确的输入尺寸）
     fps = 0.0
     if not args.skip_fps:
         print(f"\n测量 FPS (迭代 {args.fps_iter} 次, 预热 {args.warmup_iter} 次)...")
         try:
-            fps = measure_fps(model, input_size, args.fps_iter, args.warmup_iter, args.device, is_yolo=is_yolo_model)
+            fps = measure_fps(model, input_size_fps, args.fps_iter, args.warmup_iter, args.device, is_yolo=is_yolo_model)
             print(f"✓ FPS: {fps:.1f}")
         except Exception as e:
             print(f"警告: FPS 测量失败: {e}")
@@ -886,67 +1041,107 @@ def main():
     else:
         print("\n跳过 FPS 测试")
     
-    # 5. 解析训练日志获取 mAP 指标
+    # 5. 使用 pycocotools 在验证集上运行评估
     metrics = {'mAP': 0.0, 'AP50': 0.0, 'APS': 0.0}
-    if args.model_type != "deformable-detr" and training_history_path and training_history_path.exists():
-        print(f"\n解析训练日志: {training_history_path}")
-        metrics = parse_training_log(str(training_history_path), is_yolo=is_yolo_model)
-        print(f"✓ mAP: {metrics['mAP']:.4f}")
+    if args.model_type == "dset":
+        print(f"\n运行 COCO 评估 (使用验证集)...")
+        metrics = evaluate_accuracy(model, str(config_path), args.device)
+        print(f"✓ mAP (0.5:0.95): {metrics['mAP']:.4f}")
         print(f"✓ AP50: {metrics['AP50']:.4f}")
-        print(f"✓ APS: {metrics['APS']:.4f}")
+        print(f"✓ APS (Small): {metrics['APS']:.4f}")
+    elif args.model_type == "rtdetr":
+        print(f"\n运行 COCO 评估 (使用验证集)...")
+        # RT-DETRv2 使用类似的评估逻辑
+        metrics = evaluate_accuracy(model, str(rtdetr_config), args.device)
+        print(f"✓ mAP (0.5:0.95): {metrics['mAP']:.4f}")
+        print(f"✓ AP50: {metrics['AP50']:.4f}")
+        print(f"✓ APS (Small): {metrics['APS']:.4f}")
     elif args.model_type == "deformable-detr":
-        # Deformable-DETR 使用 MMEngine 的日志格式，需要从其他地方读取
-        print("\n注意: Deformable-DETR 使用 MMEngine 日志格式，需要手动填入 mAP 指标")
-        print("   或者从训练日志文件中提取")
+        print("\n注意: Deformable-DETR 评估需要 MMEngine 格式，当前版本暂不支持自动评估")
+        print("   请手动填入 mAP 指标或扩展评估逻辑")
+    elif is_yolo_model:
+        print("\n注意: YOLO 模型评估需要 ultralytics 格式，当前版本暂不支持自动评估")
+        print("   请手动填入 mAP 指标或扩展评估逻辑")
     else:
-        print("\n警告: 未找到训练日志，mAP 指标将使用默认值 0.0")
+        print("\n警告: 未支持的模型类型，mAP 指标将使用默认值 0.0")
     
-    # 6. 输出评估结果
-    # 确定实际测试分辨率（YOLO 使用填充后的尺寸）
-    if is_yolo_model:
-        yolo_test_size = max(args.input_size)
-        test_resolution = f"{yolo_test_size} x {yolo_test_size}"
-        resolution_note = f" (YOLO 使用 Letterbox 填充到 {yolo_test_size}x{yolo_test_size})"
-    else:
-        test_resolution = f"{args.input_size[1]} x {args.input_size[0]}"
-        resolution_note = ""
+    # 6. 输出标准化评估结果（学术论文格式）
     
-    print("\n" + "=" * 60)
-    print(f"评估结果 ({test_resolution}){resolution_note}")
-    print("=" * 60)
-    print()
+    # 格式化并输出标准化评估结果（学术论文格式）
+    _format_evaluation_results(
+        model_type=args.model_type,
+        params_m=params_m,
+        flops_g=flops_g,
+        fps=fps,
+        metrics=metrics,
+        input_resolution=(args.input_size[1], args.input_size[0]),
+        is_yolo=is_yolo_model
+    )
+
+
+def _format_evaluation_results(model_type: str, params_m: float, flops_g: float, fps: float,
+                               metrics: Dict[str, float], input_resolution: Tuple[int, int],
+                               is_yolo: bool = False) -> None:
+    """
+    格式化并输出标准化的评估结果（学术论文格式）
     
-    # 根据模型类型显示不同的名称
+    Args:
+        model_type: 模型类型
+        params_m: 参数量（百万）
+        flops_g: FLOPs（十亿）
+        fps: FPS
+        metrics: 包含 mAP, AP50, APS 的字典
+        input_resolution: 输入分辨率 (width, height)
+        is_yolo: 是否为 YOLO 模型
+    """
+    # 模型显示名称映射
     model_name_map = {
-        'dset': 'Ours (DSET-R18)',
-        'rtdetr': 'RT-DETR-R18',
+        'dset': 'Ours (DSET-v2-R18)',
+        'rtdetr': 'RT-DETRv2-R18',
         'deformable-detr': 'Deformable-DETR-R18',
         'yolov8s': 'YOLOv8-s',
         'yolov8m': 'YOLOv8-m',
         'yolov10s': 'YOLOv10-s',
         'yolov10m': 'YOLOv10-m'
     }
-    model_display_name = model_name_map.get(args.model_type, args.model_type.upper())
+    model_display_name = model_name_map.get(model_type, model_type.upper())
     
-    print(f"模型名称: {model_display_name}")
-    print()
-    print(f"参数量 (Params): {params_m:.2f} M")
-    if flops_g > 0:
-        print(f"计算量 (FLOPs):  {flops_g:.2f} G")
+    # 确定有效输入分辨率
+    if is_yolo:
+        effective_resolution = f"{max(input_resolution)}x{max(input_resolution)}"
     else:
-        print(f"计算量 (FLOPs):  N/A")
-    if fps > 0:
-        print(f"推理速度 (FPS):  {fps:.1f}")
+        effective_resolution = f"{input_resolution[0]}x{input_resolution[1]}"
+    
+    # 格式化输出
+    print("\n" + "=" * 70)
+    print("EVALUATION RESULTS (Academic Standard)".center(70))
+    print("=" * 70)
+    print(f"Model: {model_display_name}")
+    print(f"Input Resolution: {effective_resolution} (Effective)")
+    print("-" * 70)
+    
+    # 硬件指标
+    params_str = f"{params_m:.2f} M" if params_m > 0 else "N/A"
+    flops_str = f"{flops_g:.2f} G" if flops_g > 0 else "N/A"
+    fps_str = f"{fps:.1f}" if fps > 0 else "N/A"
+    
+    print(f"Params: {params_str} | FLOPs: {flops_str} | FPS (RTX 3090): {fps_str}")
+    
+    # 精度指标
+    map_str = f"{metrics['mAP']:.4f}" if metrics['mAP'] > 0 else "N/A"
+    ap50_str = f"{metrics['AP50']:.4f}" if metrics['AP50'] > 0 else "N/A"
+    aps_str = f"{metrics['APS']:.4f}" if metrics['APS'] > 0 else "N/A"
+    
+    print(f"mAP [0.5:0.95]: {map_str} | AP50: {ap50_str} | APS (Small): {aps_str}")
+    print("-" * 70)
+    
+    # 数据来源说明
+    if model_type in ["dset", "rtdetr"]:
+        print("Note: Accuracy evaluated via pycocotools. FPS measured with CUDA Events.")
     else:
-        print(f"推理速度 (FPS):  N/A")
-    print()
-    print("-" * 60)
-    print()
-    print(f"mAP (0.5:0.95): {metrics['mAP']:.4f}")
-    print(f"AP50:           {metrics['AP50']:.4f}")
-    print(f"APS (Small):    {metrics['APS']:.4f}")
-    print()
-    print("=" * 60)
+        print("Note: FPS measured with CUDA Events.")
+    
+    print("=" * 70)
 
 
 if __name__ == '__main__':
