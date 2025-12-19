@@ -58,8 +58,8 @@
 - YOLO 模型的 FPS 测量包含完整的推理流程（前向传播 + NMS）
 - DSET 模型会自动启用 token pruning（设置 epoch >= warmup_epochs）以确保评估反映剪枝后的状态
 - 输入尺寸逻辑：
-  * DSET/RT-DETRv2: FLOPs 和 FPS 均使用 720x1280（对应 1280x720 有效分辨率）
-  * YOLO: FLOPs 使用 720x1280（公平比较），FPS 使用 1280x1280（包含 Letterbox 填充开销）
+  * DSET/RT-DETRv2: FLOPs 和 FPS 均使用 736x1280（对应 1280x720 有效分辨率，736 是 32 的倍数）
+  * YOLO: FLOPs 使用 736x1280（公平比较），FPS 使用 1280x1280（包含 Letterbox 填充开销）
 - FPS 测量使用 CUDA Events 进行精确计时（如果使用 CUDA）
 - 输出格式符合学术论文标准，可直接复制使用
 """
@@ -92,7 +92,7 @@ except ImportError:
     print("警告: thop 未安装，将无法计算 FLOPs。请运行: pip install thop")
 
 
-def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 720, 1280), is_yolo: bool = False) -> Tuple[float, float]:
+def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 1280), is_yolo: bool = False) -> Tuple[float, float]:
     """
     计算模型的参数量和 FLOPs
     
@@ -100,7 +100,7 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 720, 12
     
     Args:
         model: PyTorch 模型或 YOLO 模型
-        input_size: 输入尺寸 (batch, channels, height, width)，默认 (1, 3, 720, 1280)
+        input_size: 输入尺寸 (batch, channels, height, width)，默认 (1, 3, 736, 1280)
         is_yolo: 是否为 YOLO 模型
     
     Returns:
@@ -179,7 +179,7 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 720, 12
 
 
 def measure_fps(model, 
-                input_size: Tuple[int, int, int, int] = (1, 3, 720, 1280),
+                input_size: Tuple[int, int, int, int] = (1, 3, 736, 1280),
                 num_iter: int = 100,
                 warmup_iter: int = 20,
                 device: str = "cuda",
@@ -192,7 +192,7 @@ def measure_fps(model,
     
     Args:
         model: PyTorch 模型或 YOLO 模型
-        input_size: 输入尺寸 (batch, channels, height, width)，默认 (1, 3, 720, 1280)
+        input_size: 输入尺寸 (batch, channels, height, width)，默认 (1, 3, 736, 1280)
         num_iter: 测试迭代次数
         warmup_iter: 预热迭代次数（默认 20，确保模型充分预热）
         device: 设备 ('cuda' 或 'cpu')
@@ -215,7 +215,7 @@ def measure_fps(model,
         import numpy as np
         # YOLO 通常需要正方形输入，使用 Letterbox 填充
         # 为了包含填充开销，使用最大边作为正方形边长进行测速
-        # 注意：实际输入可能是 720x1280，但 YOLO 会填充到 1280x1280
+        # 注意：实际输入可能是 736x1280，但 YOLO 会填充到 1280x1280
         yolo_size = max(input_size[2], input_size[3])  # 使用最大边作为正方形边长
         dummy_image = np.random.randint(0, 255, (yolo_size, yolo_size, 3), dtype=np.uint8)
         
@@ -251,8 +251,11 @@ def measure_fps(model,
             elapsed_time = end_time - start_time
     else:
         # 标准 PyTorch 模型使用 tensor
+        # 显式确保模型和输入都在正确的设备上
         model = model.to(device)
         dummy_input = torch.randn(input_size).to(device)
+        # 再次确保设备一致性（防止 thop 计算后的残留状态）
+        model = model.to(device)
         
         # Warmup
         with torch.no_grad():
@@ -612,7 +615,7 @@ def load_yolov10_model(checkpoint_path: str, device: str = "cuda"):
     return model
 
 
-def evaluate_accuracy(model, config_path: str, device: str = "cuda") -> Dict[str, float]:
+def evaluate_accuracy(model, config_path: str, device: str = "cuda", model_type: str = "dset") -> Dict[str, float]:
     """
     使用 pycocotools 在验证集上运行完整的 COCO 评估循环
     
@@ -622,26 +625,49 @@ def evaluate_accuracy(model, config_path: str, device: str = "cuda") -> Dict[str
         model: 已加载的模型（必须处于 eval 模式，token pruning 已激活）
         config_path: 配置文件路径
         device: 设备
+        model_type: 模型类型 ("dset" 或 "rtdetr")
     
     Returns:
         包含 mAP [0.5:0.95], AP50, APS (Small) 的字典
     """
     try:
-        # 导入 DSETTrainer 以创建数据加载器 - 优先使用项目根目录导入
-        try:
-            from experiments.dset.train import DSETTrainer
-        except ImportError:
-            # 回退：尝试从 dset 目录直接导入
-            # config_path 通常是 experiments/dset/configs/xxx.yaml
-            # parent.parent 就是 experiments/dset/，这是包含 train.py 的目录
-            dset_dir = Path(config_path).parent.parent
-            if str(dset_dir) not in sys.path:
-                sys.path.insert(0, str(dset_dir))
-            print(f"DEBUG: 正在尝试从 {dset_dir} 加载 DSETTrainer")
+        # 根据模型类型选择正确的 trainer
+        if model_type == "dset":
+            # 导入 DSETTrainer 以创建数据加载器 - 优先使用项目根目录导入
             try:
-                from train import DSETTrainer
+                from experiments.dset.train import DSETTrainer
             except ImportError:
-                raise ImportError(f"无法导入 DSETTrainer。请确保项目根目录正确设置: {project_root}")
+                # 回退：尝试从 dset 目录直接导入
+                # config_path 通常是 experiments/dset/configs/xxx.yaml
+                # parent.parent 就是 experiments/dset/，这是包含 train.py 的目录
+                dset_dir = Path(config_path).parent.parent
+                if str(dset_dir) not in sys.path:
+                    sys.path.insert(0, str(dset_dir))
+                print(f"DEBUG: 正在尝试从 {dset_dir} 加载 DSETTrainer")
+                try:
+                    from train import DSETTrainer
+                except ImportError:
+                    raise ImportError(f"无法导入 DSETTrainer。请确保项目根目录正确设置: {project_root}")
+            TrainerClass = DSETTrainer
+        elif model_type == "rtdetr":
+            # 导入 RTDETRTrainer 以创建数据加载器
+            try:
+                from experiments.rt_detr.train import RTDETRTrainer
+            except ImportError:
+                # 回退：尝试从 rt-detr 目录直接导入
+                # config_path 通常是 experiments/rt-detr/configs/xxx.yaml
+                # parent.parent 就是 experiments/rt-detr/，这是包含 train.py 的目录
+                rtdetr_dir = Path(config_path).parent.parent
+                if str(rtdetr_dir) not in sys.path:
+                    sys.path.insert(0, str(rtdetr_dir))
+                print(f"DEBUG: 正在尝试从 {rtdetr_dir} 加载 RTDETRTrainer")
+                try:
+                    from train import RTDETRTrainer
+                except ImportError:
+                    raise ImportError(f"无法导入 RTDETRTrainer。请确保项目根目录正确设置: {project_root}")
+            TrainerClass = RTDETRTrainer
+        else:
+            raise ValueError(f"不支持的模型类型: {model_type}，仅支持 'dset' 或 'rtdetr'")
         
         # 加载配置
         with open(config_path, 'r', encoding='utf-8') as f:
@@ -653,7 +679,10 @@ def evaluate_accuracy(model, config_path: str, device: str = "cuda") -> Dict[str
         config['misc']['device'] = device
         
         # 创建 trainer 以获取数据加载器（使用与训练相同的配置）
-        trainer = DSETTrainer(config, config_file_path=str(config_path))
+        if model_type == "dset":
+            trainer = TrainerClass(config, config_file_path=str(config_path))
+        else:
+            trainer = TrainerClass(config)
         _, val_loader = trainer._create_data_loaders()
         
         print(f"  ✓ 创建验证集 DataLoader (样本数: {len(val_loader.dataset)})")
@@ -928,8 +957,8 @@ def main():
                        help='DSET 配置文件路径')
     parser.add_argument('--checkpoint', type=str, default=None,
                        help='指定检查点路径（如果未指定，将自动查找最新的）')
-    parser.add_argument('--input_size', type=int, nargs=2, default=[720, 1280],
-                       help='输入图像尺寸 [height, width] (默认: 720 1280，对应 1280x720 缩放后尺寸)')
+    parser.add_argument('--input_size', type=int, nargs=2, default=[736, 1280],
+                       help='输入图像尺寸 [height, width] (默认: 736 1280，对应 1280x720 缩放后尺寸，736 是 32 的倍数)')
     parser.add_argument('--device', type=str, default='cuda',
                        help='设备 (cuda 或 cpu)')
     parser.add_argument('--fps_iter', type=int, default=100,
@@ -1001,8 +1030,8 @@ def main():
     
     # 3. 计算参数量和 FLOPs
     # 输入尺寸逻辑：
-    # - DSET/RT-DETRv2: FLOPs 和 FPS 都使用 (1, 3, 720, 1280)
-    # - YOLO: FLOPs 使用 (1, 3, 720, 1280) 公平比较，FPS 使用 (1, 3, 1280, 1280) 包含 Letterbox 开销
+    # - DSET/RT-DETRv2: FLOPs 和 FPS 都使用 (1, 3, 736, 1280)
+    # - YOLO: FLOPs 使用 (1, 3, 736, 1280) 公平比较，FPS 使用 (1, 3, 1280, 1280) 包含 Letterbox 开销
     input_size_flops = (1, 3, args.input_size[0], args.input_size[1])  # 用于 FLOPs 计算
     input_size_fps = input_size_flops  # 默认与 FLOPs 相同
     
@@ -1054,14 +1083,14 @@ def main():
     metrics = {'mAP': 0.0, 'AP50': 0.0, 'APS': 0.0}
     if args.model_type == "dset":
         print(f"\n运行 COCO 评估 (使用验证集)...")
-        metrics = evaluate_accuracy(model, str(config_path), args.device)
+        metrics = evaluate_accuracy(model, str(config_path), args.device, model_type="dset")
         print(f"✓ mAP (0.5:0.95): {metrics['mAP']:.4f}")
         print(f"✓ AP50: {metrics['AP50']:.4f}")
         print(f"✓ APS (Small): {metrics['APS']:.4f}")
     elif args.model_type == "rtdetr":
         print(f"\n运行 COCO 评估 (使用验证集)...")
-        # RT-DETRv2 使用类似的评估逻辑
-        metrics = evaluate_accuracy(model, str(rtdetr_config), args.device)
+        # RT-DETRv2 使用 RTDETRTrainer 进行评估
+        metrics = evaluate_accuracy(model, str(rtdetr_config), args.device, model_type="rtdetr")
         print(f"✓ mAP (0.5:0.95): {metrics['mAP']:.4f}")
         print(f"✓ AP50: {metrics['AP50']:.4f}")
         print(f"✓ APS (Small): {metrics['APS']:.4f}")
