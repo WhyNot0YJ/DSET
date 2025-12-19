@@ -310,9 +310,12 @@ def load_dset_model(config_path: str, checkpoint_path: str, device: str = "cuda"
         from experiments.dset.train import DSETTrainer
     except ImportError:
         # 回退：尝试从 dset 目录直接导入
-        dset_dir = Path(config_path).parent.parent / "dset"
+        # config_path 通常是 experiments/dset/configs/xxx.yaml
+        # parent.parent 就是 experiments/dset/，这是包含 train.py 的目录
+        dset_dir = Path(config_path).parent.parent
         if str(dset_dir) not in sys.path:
             sys.path.insert(0, str(dset_dir))
+        print(f"DEBUG: 正在尝试从 {dset_dir} 加载 DSETTrainer")
         try:
             from train import DSETTrainer
         except ImportError:
@@ -395,9 +398,12 @@ def load_rtdetr_model(config_path: str, checkpoint_path: str, device: str = "cud
         加载的模型
     """
     # 导入必要的模块
-    rtdetr_dir = Path(config_path).parent.parent / "rt-detr"
+    # config_path 通常是 experiments/rt-detr/configs/xxx.yaml
+    # parent.parent 就是 experiments/rt-detr/，这是包含 train.py 的目录
+    rtdetr_dir = Path(config_path).parent.parent
     if str(rtdetr_dir) not in sys.path:
         sys.path.insert(0, str(rtdetr_dir))
+    print(f"DEBUG: 正在尝试从 {rtdetr_dir} 加载 RTDETRTrainer")
     from train import RTDETRTrainer
     
     # 加载配置
@@ -626,9 +632,12 @@ def evaluate_accuracy(model, config_path: str, device: str = "cuda") -> Dict[str
             from experiments.dset.train import DSETTrainer
         except ImportError:
             # 回退：尝试从 dset 目录直接导入
-            dset_dir = Path(config_path).parent.parent / "dset"
+            # config_path 通常是 experiments/dset/configs/xxx.yaml
+            # parent.parent 就是 experiments/dset/，这是包含 train.py 的目录
+            dset_dir = Path(config_path).parent.parent
             if str(dset_dir) not in sys.path:
                 sys.path.insert(0, str(dset_dir))
+            print(f"DEBUG: 正在尝试从 {dset_dir} 加载 DSETTrainer")
             try:
                 from train import DSETTrainer
             except ImportError:
