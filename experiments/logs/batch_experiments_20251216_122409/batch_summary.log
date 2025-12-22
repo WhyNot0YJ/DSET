@@ -1,0 +1,6 @@
+[0;34m[INFO][0m 运行指定实验类型（按字典序排序）: YOLOv8+YOLOv10
+[0;34m[INFO][0m 开始实验: yolov8/configs/yolov8m_dairv2x.yaml
+[0;32m[SUCCESS][0m ✓ 实验完成: yolov8m_dairv2x (耗时: 01:46:10)
+[0;34m[INFO][0m 开始实验: yolov8/configs/yolov8s_dairv2x.yaml
+[0;32m[SUCCESS][0m ✓ 实验完成: yolov8s_dairv2x (耗时: 00:52:42)
+[0;34m[INFO][0m 开始实验: yolov10/configs/yolov10m_dairv2x.yaml
