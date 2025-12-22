@@ -26,9 +26,13 @@ model:
     use_token_pruning_loss: false
     token_pruning_loss_weight: 0.005
     use_cass: true
-    cass_loss_weight: 0.01
-    cass_expansion_ratio: 1.2
+    cass_loss_weight: 0.05
+    cass_expansion_ratio: 0.8
     cass_min_size: 2.0
+    use_subpixel_offset: true
+    use_focal_loss: true
+    cass_focal_alpha: 2.0
+    cass_focal_beta: 4.0
 training:
   epochs: 200
   batch_size: 16

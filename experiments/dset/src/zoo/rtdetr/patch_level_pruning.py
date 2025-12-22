@@ -60,7 +60,11 @@ class PatchLevelPruner(nn.Module):
                  use_cass: bool = False,
                  cass_expansion_ratio: float = 0.3,
                  cass_min_size: float = 1.0,
-                 cass_decay_type: str = 'gaussian'):
+                 cass_decay_type: str = 'gaussian',
+                 use_subpixel_offset: bool = True,
+                 use_focal_loss: bool = True,
+                 cass_focal_alpha: float = 2.0,
+                 cass_focal_beta: float = 4.0):
         """
         Args:
             input_dim: Input feature dimension
@@ -74,6 +78,10 @@ class PatchLevelPruner(nn.Module):
             cass_expansion_ratio: Expansion ratio for context band (0.2-0.3)
             cass_min_size: Minimum box size on feature map (pixels)
             cass_decay_type: Decay type for context band ('gaussian' or 'linear')
+            use_subpixel_offset: Whether to use sub-pixel offset compensation
+            use_focal_loss: Whether to use Focal Loss instead of MSE
+            cass_focal_alpha: Focal Loss alpha parameter
+            cass_focal_beta: Focal Loss beta parameter
         """
         super().__init__()
         self.input_dim = input_dim
@@ -89,6 +97,10 @@ class PatchLevelPruner(nn.Module):
         self.cass_expansion_ratio = cass_expansion_ratio
         self.cass_min_size = cass_min_size
         self.cass_decay_type = cass_decay_type
+        self.use_subpixel_offset = use_subpixel_offset
+        self.use_focal_loss = use_focal_loss
+        self.cass_focal_alpha = cass_focal_alpha
+        self.cass_focal_beta = cass_focal_beta
         
         self.importance_predictor = LearnableImportancePredictor(input_dim)
         self.current_epoch = 0
@@ -430,14 +442,32 @@ class PatchLevelPruner(nn.Module):
             expand_w = expand_w.view(N, 1, 1)
             expand_h = expand_h.view(N, 1, 1)
             
+            # Reshape center and box dimensions for broadcasting
+            center_x_view = center_x.view(N, 1, 1)
+            center_y_view = center_y.view(N, 1, 1)
+            box_w_view = box_w.view(N, 1, 1)
+            box_h_view = box_h.view(N, 1, 1)
+            
             in_core = (xx >= x1_core) & (xx <= x2_core) & (yy >= y1_core) & (yy <= y2_core)
             in_dilated = (xx >= x1_dilated) & (xx <= x2_dilated) & (yy >= y1_dilated) & (yy <= y2_dilated)
             in_context = in_dilated & ~in_core
             
-            dist_x = torch.where(xx < x1_core, x1_core - xx,
-                        torch.where(xx > x2_core, xx - x2_core, torch.zeros_like(xx)))
-            dist_y = torch.where(yy < y1_core, y1_core - yy,
-                        torch.where(yy > y2_core, yy - y2_core, torch.zeros_like(yy)))
+            # Sub-pixel offset compensation
+            if self.use_subpixel_offset:
+                # Use true floating-point center to compute distance
+                dist_x_abs = torch.abs(xx - center_x_view)
+                dist_y_abs = torch.abs(yy - center_y_view)
+                # Compute distance to boundary
+                dist_x = torch.maximum(dist_x_abs - box_w_view / 2, torch.zeros_like(dist_x_abs))
+                dist_y = torch.maximum(dist_y_abs - box_h_view / 2, torch.zeros_like(dist_y_abs))
+            else:
+                # Original implementation: use boundary distance
+                dist_x = torch.where(xx < x1_core, x1_core - xx,
+                            torch.where(xx > x2_core, xx - x2_core, torch.zeros_like(xx)))
+                dist_y = torch.where(yy < y1_core, y1_core - yy,
+                            torch.where(yy > y2_core, yy - y2_core, torch.zeros_like(yy)))
+            
+            # Keep circular symmetric Gaussian
             dist_to_core = torch.sqrt(dist_x**2 + dist_y**2)
             # Fix: Ensure expand_dist has a minimum value to prevent extremely small radius
             # for thin objects (e.g., traffic cones) which would cause zero decay values
@@ -462,14 +492,20 @@ class PatchLevelPruner(nn.Module):
         
         return target_mask
     
-    def compute_cass_loss(
+    def _compute_focal_loss(
         self,
         pred_scores: torch.Tensor,
         target_mask: torch.Tensor,
         reduction: str = 'mean'
     ) -> torch.Tensor:
         """
-        Computes the CASS supervision loss using MSE.
+        Modified Focal Loss (reference: CornerNet/CenterNet)
+        
+        Formula:
+        - Positive samples: (1 - p)^alpha * log(p) * y
+        - Negative samples: p^beta * log(1 - p) * (1 - y)
+        
+        where p = sigmoid(pred_scores), y = target_mask
         
         Args:
             pred_scores: Predicted importance logits [B, num_patches] (before sigmoid)
@@ -480,9 +516,48 @@ class PatchLevelPruner(nn.Module):
             loss: Scalar loss tensor (if reduction != 'none')
         """
         pred_probs = torch.sigmoid(pred_scores)
-        loss = F.mse_loss(pred_probs, target_mask, reduction=reduction)
         
-        return loss
+        # Positive sample loss: (1 - p)^alpha * log(p) * y
+        pos_loss = -torch.pow(1 - pred_probs, self.cass_focal_alpha) * \
+                   torch.log(pred_probs + 1e-8) * target_mask
+        
+        # Negative sample loss: p^beta * log(1 - p) * (1 - y)
+        neg_loss = -torch.pow(pred_probs, self.cass_focal_beta) * \
+                   torch.log(1 - pred_probs + 1e-8) * (1 - target_mask)
+        
+        loss = pos_loss + neg_loss
+        
+        if reduction == 'mean':
+            return loss.mean()
+        elif reduction == 'sum':
+            return loss.sum()
+        else:
+            return loss
+    
+    def compute_cass_loss(
+        self,
+        pred_scores: torch.Tensor,
+        target_mask: torch.Tensor,
+        reduction: str = 'mean'
+    ) -> torch.Tensor:
+        """
+        Computes the CASS supervision loss using MSE or Focal Loss.
+        
+        Args:
+            pred_scores: Predicted importance logits [B, num_patches] (before sigmoid)
+            target_mask: Target soft mask [B, num_patches] with values 0.0 to 1.0
+            reduction: Loss reduction method ('mean', 'sum', 'none')
+        
+        Returns:
+            loss: Scalar loss tensor (if reduction != 'none')
+        """
+        if self.use_focal_loss:
+            return self._compute_focal_loss(pred_scores, target_mask, reduction)
+        else:
+            # Original MSE implementation
+            pred_probs = torch.sigmoid(pred_scores)
+            loss = F.mse_loss(pred_probs, target_mask, reduction=reduction)
+            return loss
     
     def _debug_visualize_mask(self, target_mask: torch.Tensor, pred_scores: torch.Tensor):
         """Debug helper: Visualize the target mask and predicted scores as heatmaps."""
