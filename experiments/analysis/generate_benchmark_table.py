@@ -951,7 +951,9 @@ def _collect_predictions_for_coco(outputs: Dict, targets: List[Dict], batch_idx:
                 
                 for j in range(len(true_labels)):
                     x, y, w, h = true_boxes_coco[j].cpu().numpy()
+                    # pycocotools 要求每个 annotation 必须有唯一的 id 字段
                     ann_dict = {
+                        'id': len(all_targets),  # 使用当前列表长度作为唯一 ID
                         'image_id': batch_idx * batch_size + i,
                         'category_id': int(true_labels[j].item()) + 1,
                         'bbox': [float(x), float(y), float(w), float(h)],
