@@ -264,6 +264,22 @@ class HybridEncoder(nn.Module):
         self.out_channels = [hidden_dim for _ in range(len(in_channels))]
         self.out_strides = feat_strides
         
+        # DSET dual-sparse parameters - 保存参数以便后续使用
+        self.token_keep_ratio = token_keep_ratio
+        self.token_pruning_warmup_epochs = token_pruning_warmup_epochs
+        self.patch_moe_num_experts = patch_moe_num_experts
+        self.patch_moe_top_k = patch_moe_top_k
+        self.patch_moe_patch_size = patch_moe_patch_size
+        
+        # CASS parameters - 保存参数以便后续使用
+        self.use_cass = use_cass
+        self.cass_expansion_ratio = cass_expansion_ratio
+        self.cass_min_size = cass_min_size
+        self.cass_decay_type = cass_decay_type
+        
+        # MoE noise_std parameter
+        self.moe_noise_std = moe_noise_std
+        
         self.use_patch_moe = True
         self.use_token_pruning = True
         self.use_patch_level_pruning = True
