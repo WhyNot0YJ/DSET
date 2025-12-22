@@ -99,8 +99,13 @@ def main():
                         help='Disable early stopping (useful when resuming training)')
     parser.add_argument('--early_stop_patience', type=int, default=None,
                         help='Override early stopping patience (default: 20)')
+    parser.add_argument('--config-only', action='store_true',
+                        help='Only generate and save config file, do not run training')
     args = parser.parse_args()
-    setup_gpu_optimizations()
+    
+    # 只在非 config-only 模式下初始化 GPU（生成配置不需要 GPU）
+    if not args.config_only:
+        setup_gpu_optimizations()
     
     # Load Base Config
     try:
@@ -400,6 +405,39 @@ def main():
     if resume_from:
         print(f"Resume from: {resume_from}")
     print(f"{'='*60}\n")
+    
+    # 保存配置文件到 work_dir（仅新训练时，避免覆盖已有配置）
+    os.makedirs(cfg.work_dir, exist_ok=True)
+    config_save_path = os.path.join(cfg.work_dir, 'config.yaml')
+    if not resume_from or not os.path.exists(config_save_path):
+        # 新训练或配置不存在时，保存配置
+        try:
+            cfg.dump(config_save_path)
+            print(f"✓ 配置已保存到: {config_save_path}")
+        except Exception as e:
+            print(f"⚠ 保存配置失败: {e}")
+            # 如果 dump() 方法不可用，尝试使用 pickle 或其他方式
+            try:
+                import yaml
+                # 将 Config 对象转换为字典
+                cfg_dict = cfg._cfg_dict if hasattr(cfg, '_cfg_dict') else dict(cfg)
+                with open(config_save_path, 'w', encoding='utf-8') as f:
+                    yaml.dump(cfg_dict, f, default_flow_style=False, allow_unicode=True)
+                print(f"✓ 配置已保存到: {config_save_path} (使用 yaml.dump)")
+            except Exception as e2:
+                print(f"⚠ 使用 yaml.dump 保存配置也失败: {e2}")
+    else:
+        print(f"✓ 使用已有配置: {config_save_path} (恢复训练)")
+    
+    # 如果只是生成配置，则退出
+    if args.config_only:
+        print(f"\n{'='*60}")
+        print(f"✓ 配置已生成完成（--config-only 模式）")
+        print(f"✓ 配置文件路径: {config_save_path}")
+        print(f"✓ 工作目录: {cfg.work_dir}")
+        print(f"{'='*60}\n")
+        print("提示: 要开始训练，请运行相同的命令但不加 --config-only 参数")
+        return
     
     # 配置 resume（MMEngine 的 resume 机制）
     resume_checkpoint_path = None
