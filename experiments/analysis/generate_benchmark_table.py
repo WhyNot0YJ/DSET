@@ -469,6 +469,9 @@ def load_rtdetr_model(config_path: str, checkpoint_path: str, device: str = "cud
     model.load_state_dict(state_dict, strict=False)
     model.eval()
     
+    # 确保模型在正确的设备上
+    model = model.to(device)
+    
     return model
 
 
@@ -939,6 +942,9 @@ def evaluate_accuracy(model, config_path: str, device: str = "cuda", model_type:
         
         # 确保模型处于 eval 模式（token pruning 应在 load_dset_model 中已激活）
         model.eval()
+        
+        # 确保模型在正确的设备上
+        model = model.to(device)
         
         # 验证 token pruning 状态（仅 DSET 模型）
         if hasattr(model, 'encoder') and hasattr(model.encoder, 'set_epoch'):
