@@ -499,7 +499,7 @@ class PatchLevelPruner(nn.Module):
         reduction: str = 'mean'
     ) -> torch.Tensor:
         """
-        Modified Focal Loss (reference: CornerNet/CenterNet)
+        Modified Focal Loss (reference: CornerNet/CenterNet) - 优化版本
         
         Formula:
         - Positive samples: (1 - p)^alpha * log(p) * y
@@ -517,13 +517,32 @@ class PatchLevelPruner(nn.Module):
         """
         pred_probs = torch.sigmoid(pred_scores)
         
+        # 预计算常用中间值
+        one_minus_p = 1 - pred_probs
+        log_p = torch.log(pred_probs + 1e-8)
+        log_one_minus_p = torch.log(one_minus_p + 1e-8)
+        
+        # 优化的幂运算：避免使用 torch.pow()
+        # alpha=2.0: (1-p)^2 = (1-p) * (1-p)
+        # beta=4.0: p^4 = (p*p) * (p*p)
+        if self.cass_focal_alpha == 2.0:
+            focal_weight_pos = one_minus_p * one_minus_p
+        else:
+            focal_weight_pos = torch.pow(one_minus_p, self.cass_focal_alpha)
+        
+        if self.cass_focal_beta == 4.0:
+            p_sq = pred_probs * pred_probs
+            focal_weight_neg = p_sq * p_sq
+        elif self.cass_focal_beta == 2.0:
+            focal_weight_neg = pred_probs * pred_probs
+        else:
+            focal_weight_neg = torch.pow(pred_probs, self.cass_focal_beta)
+        
         # Positive sample loss: (1 - p)^alpha * log(p) * y
-        pos_loss = -torch.pow(1 - pred_probs, self.cass_focal_alpha) * \
-                   torch.log(pred_probs + 1e-8) * target_mask
+        pos_loss = -focal_weight_pos * log_p * target_mask
         
         # Negative sample loss: p^beta * log(1 - p) * (1 - y)
-        neg_loss = -torch.pow(pred_probs, self.cass_focal_beta) * \
-                   torch.log(1 - pred_probs + 1e-8) * (1 - target_mask)
+        neg_loss = -focal_weight_neg * log_one_minus_p * (1 - target_mask)
         
         loss = pos_loss + neg_loss
         
