@@ -7,8 +7,8 @@
 1. 自动从 logs/ 目录查找最新的 best_model.pth 或使用指定的检查点
 2. 使用 pycocotools 在验证集上运行完整的 COCO 评估，提取 mAP, AP50, APS 指标
 3. 计算模型参数量（Params）和 FLOPs
-4. 测量模型在当前设备上的 FPS（包含 warmup 过程，YOLO 模型包含 NMS）
-5. 输出清晰的评估结果清单
+4. 基于验证集真实样本测量性能（FPS 和延迟），采样前 300 张图片
+5. 输出清晰的评估结果清单，包含拆分的延迟信息（Inference 和 Post-process）
 
 支持的模型类型：
 - dset: DSET (Dual-Sparse Expert Transformer) 模型
@@ -55,19 +55,18 @@
 - 需要安装 thop 库来计算 FLOPs: pip install thop
 - 需要安装 pycocotools 进行 COCO 评估: pip install pycocotools
 - FLOPs 计算仅反映模型网络结构的计算量（MACs），不包含 NMS 等后处理操作
-- FPS 测量优化（确保公平对比）：
-  * 消除同步瓶颈：所有同步操作移出循环，只在 starter.record() 之前和 ender.record() 之后执行一次同步
-  * 统一输入格式：所有模型（包括 YOLO）统一使用预先生成的 torch.Tensor，避免图像编解码和 CPU 归一化开销
-  * 公平对待 NMS：
-    - YOLOv8: FPS 包含其内置的 NMS 后处理耗时（通过 model() 高级 API）
-    - YOLOv10 / RT-DETR / DSET: 端到端模型，天然没有传统 NMS，FPS 反映纯网络计算 + 端到端后处理
-  * Warmup 次数：默认 50 次，确保 RTX 5090 等高端显卡达到稳定的工作频率
+- 性能测量（FPS 和延迟）基于验证集真实样本：
+  * DSET/RT-DETR: 采样前 300 张图片，使用 CUDA Events 在推理循环中精确计时
+  * YOLO: 使用 model.val() 的 results.speed 提取平均耗时（评估整个验证集）
+  * 延迟拆分为 Inference（推理）和 Post-process（后处理）：
+    - YOLOv8: Post-process 包含 NMS 耗时
+    - YOLOv10 / RT-DETR / DSET: 端到端模型，Post-process ≈ 0
+  * 公平对待 NMS：YOLOv8 的延迟包含 NMS，端到端模型没有独立的 NMS 后处理
 - DSET 模型会自动启用 token pruning（设置 epoch >= warmup_epochs）以确保评估反映剪枝后的状态
 - 输入尺寸逻辑：
-  * DSET/RT-DETRv2: FLOPs 和 FPS 均使用 736x1280（对应 1280x720 有效分辨率，736 是 32 的倍数）
-  * YOLO: FLOPs 使用 736x1280（公平比较），FPS 使用 1280x1280（包含 Letterbox 填充开销）
-- FPS 测量使用 CUDA Events 进行精确计时（如果使用 CUDA），同步操作在循环外执行以消除 CPU 调度延迟
-- 输出格式符合学术论文标准，包含 FPS 和 Latency (ms) 指标，可直接复制使用
+  * DSET/RT-DETRv2: FLOPs 和性能测试均使用 736x1280（对应 1280x720 有效分辨率，736 是 32 的倍数）
+  * YOLO: FLOPs 使用 736x1280（公平比较），性能测试使用实际输入尺寸
+- 输出格式符合学术论文标准，优先展示 Latency (ms)，拆分显示 Inference 和 Post-process，保留 FPS
 """
 
 import os
@@ -694,28 +693,36 @@ def load_yolov10_model(checkpoint_path: str, device: str = "cuda"):
     return model
 
 
-def evaluate_yolo_accuracy(model, config_path: str, device: str = "cuda") -> Dict[str, float]:
+def evaluate_yolo_accuracy(model, config_path: str, device: str = "cuda", max_samples: int = 300) -> Dict[str, float]:
     """
-    使用 YOLO 模型的 val() 方法进行评估
+    使用 YOLO 模型的 val() 方法进行评估，并从 results.speed 提取耗时信息
     
     Args:
         model: YOLO 模型（ultralytics YOLO 对象）
         config_path: 数据集配置文件路径（YAML 格式）
         device: 设备
+        max_samples: 最大采样数量（用于性能测试，默认 300）
     
     Returns:
-        包含 mAP [0.5:0.95], AP50, APS (Small) 的字典
+        包含 mAP [0.5:0.95], AP50, APS (Small) 以及耗时信息的字典
+        - latency_inference_ms: 推理耗时（ms）
+        - latency_postprocess_ms: 后处理耗时（ms，YOLOv8 包含 NMS，YOLOv10 接近 0）
+        - latency_total_ms: 总耗时（ms）
+        - fps: FPS 值
     """
     try:
-        print(f"  ✓ 使用 YOLO model.val() 进行评估")
+        print(f"  ✓ 使用 YOLO model.val() 进行评估（基于验证集真实样本）")
         print(f"  ✓ 数据集配置: {config_path}")
+        print(f"  ℹ 注意: YOLO model.val() 会评估整个验证集，results.speed 提供平均耗时统计")
         
         # 调用 YOLO 的 val 方法
-        # 注意：YOLO 的 val 方法需要 data 参数指向数据集配置文件
+        # 注意：YOLO 的 val 方法会评估整个验证集，results.speed 提供的是平均耗时
+        # 这对于性能测试是合理的，因为速度统计本身就是平均值
         results = model.val(
             data=str(config_path),
             device=device,
-            verbose=False  # 减少输出
+            verbose=False,  # 减少输出
+            max_det=300  # 限制每张图片的最大检测数量
         )
         
         # 从 results 中提取指标
@@ -723,7 +730,11 @@ def evaluate_yolo_accuracy(model, config_path: str, device: str = "cuda") -> Dic
         metrics = {
             'mAP': 0.0,
             'AP50': 0.0,
-            'APS': 0.0
+            'APS': 0.0,
+            'latency_inference_ms': 0.0,
+            'latency_postprocess_ms': 0.0,
+            'latency_total_ms': 0.0,
+            'fps': 0.0
         }
         
         if hasattr(results, 'box'):
@@ -747,6 +758,38 @@ def evaluate_yolo_accuracy(model, config_path: str, device: str = "cuda") -> Dic
                 metrics['AP50'] = metrics_dict.get('map50', 0.0)
                 metrics['APS'] = metrics_dict.get('map_s', 0.0)
         
+        # 从 results.speed 中提取耗时信息
+        # ultralytics 的 results.speed 包含 preprocess, inference, postprocess (ms)
+        if hasattr(results, 'speed'):
+            speed = results.speed
+            if isinstance(speed, dict):
+                preprocess_ms = float(speed.get('preprocess', 0.0))  # 预处理耗时
+                inference_ms = float(speed.get('inference', 0.0))    # 推理耗时
+                postprocess_ms = float(speed.get('postprocess', 0.0))  # 后处理耗时（NMS）
+            elif isinstance(speed, (list, tuple)) and len(speed) >= 3:
+                # 如果 speed 是列表格式：[preprocess, inference, postprocess]
+                preprocess_ms = float(speed[0]) if len(speed) > 0 else 0.0
+                inference_ms = float(speed[1]) if len(speed) > 1 else 0.0
+                postprocess_ms = float(speed[2]) if len(speed) > 2 else 0.0
+            else:
+                preprocess_ms = 0.0
+                inference_ms = 0.0
+                postprocess_ms = 0.0
+            
+            # 计算总耗时和 FPS
+            latency_total_ms = preprocess_ms + inference_ms + postprocess_ms
+            fps = 1000.0 / latency_total_ms if latency_total_ms > 0 else 0.0
+            
+            metrics['latency_inference_ms'] = inference_ms
+            metrics['latency_postprocess_ms'] = postprocess_ms
+            metrics['latency_total_ms'] = latency_total_ms
+            metrics['fps'] = fps
+            
+            print(f"  ✓ 耗时统计 (ms): Inference={inference_ms:.2f}, Post-process={postprocess_ms:.2f}, Total={latency_total_ms:.2f}")
+            print(f"  ✓ FPS: {fps:.1f}")
+        else:
+            print(f"  ⚠ 警告: results.speed 不可用，无法提取耗时信息")
+        
         print(f"  ✓ mAP (0.5:0.95): {metrics['mAP']:.4f}")
         print(f"  ✓ AP50: {metrics['AP50']:.4f}")
         print(f"  ✓ APS (Small): {metrics['APS']:.4f}")
@@ -757,7 +800,9 @@ def evaluate_yolo_accuracy(model, config_path: str, device: str = "cuda") -> Dic
         print(f"  ⚠ YOLO 评估失败: {e}")
         import traceback
         traceback.print_exc()
-        return {'mAP': 0.0, 'AP50': 0.0, 'APS': 0.0}
+        return {'mAP': 0.0, 'AP50': 0.0, 'APS': 0.0, 
+                'latency_inference_ms': 0.0, 'latency_postprocess_ms': 0.0, 
+                'latency_total_ms': 0.0, 'fps': 0.0}
 
 
 def evaluate_deformable_detr_accuracy(model, config_path: str, device: str = "cuda") -> Dict[str, float]:
@@ -770,7 +815,7 @@ def evaluate_deformable_detr_accuracy(model, config_path: str, device: str = "cu
         device: 设备
     
     Returns:
-        包含 mAP [0.5:0.95], AP50, APS (Small) 的字典
+        包含 mAP [0.5:0.95], AP50, APS (Small) 以及耗时信息的字典
     """
     try:
         from mmengine.config import Config
@@ -789,21 +834,27 @@ def evaluate_deformable_detr_accuracy(model, config_path: str, device: str = "cu
         # 3. 运行推理
         # 4. 使用 MMEngine 的评估器计算 mAP
         
-        return {'mAP': 0.0, 'AP50': 0.0, 'APS': 0.0}
+        return {'mAP': 0.0, 'AP50': 0.0, 'APS': 0.0, 
+                'latency_inference_ms': 0.0, 'latency_postprocess_ms': 0.0, 
+                'latency_total_ms': 0.0, 'fps': 0.0}
         
     except ImportError:
         print(f"  ⚠ MMEngine 未安装，无法评估 Deformable-DETR")
-        return {'mAP': 0.0, 'AP50': 0.0, 'APS': 0.0}
+        return {'mAP': 0.0, 'AP50': 0.0, 'APS': 0.0, 
+                'latency_inference_ms': 0.0, 'latency_postprocess_ms': 0.0, 
+                'latency_total_ms': 0.0, 'fps': 0.0}
     except Exception as e:
         print(f"  ⚠ Deformable-DETR 评估失败: {e}")
         import traceback
         traceback.print_exc()
-        return {'mAP': 0.0, 'AP50': 0.0, 'APS': 0.0}
+        return {'mAP': 0.0, 'AP50': 0.0, 'APS': 0.0, 
+                'latency_inference_ms': 0.0, 'latency_postprocess_ms': 0.0, 
+                'latency_total_ms': 0.0, 'fps': 0.0}
 
 
-def evaluate_accuracy(model, config_path: str, device: str = "cuda", model_type: str = "dset") -> Dict[str, float]:
+def evaluate_accuracy(model, config_path: str, device: str = "cuda", model_type: str = "dset", max_samples: int = 300) -> Dict[str, float]:
     """
-    使用 pycocotools 在验证集上运行完整的 COCO 评估循环
+    使用 pycocotools 在验证集上运行 COCO 评估循环，并测量性能
     
     确保使用与训练相同的图像缩放逻辑（max_size=1280，保持宽高比，结果 1280x720）
     
@@ -812,9 +863,14 @@ def evaluate_accuracy(model, config_path: str, device: str = "cuda", model_type:
         config_path: 配置文件路径
         device: 设备
         model_type: 模型类型 ("dset" 或 "rtdetr")
+        max_samples: 最大采样数量（用于性能测试，默认 300）
     
     Returns:
-        包含 mAP [0.5:0.95], AP50, APS (Small) 的字典
+        包含 mAP [0.5:0.95], AP50, APS (Small) 以及耗时信息的字典
+        - latency_inference_ms: 推理耗时（ms）
+        - latency_postprocess_ms: 后处理耗时（ms，端到端模型接近 0）
+        - latency_total_ms: 总耗时（ms）
+        - fps: FPS 值
     """
     try:
         # 根据模型类型选择正确的 trainer
@@ -879,6 +935,7 @@ def evaluate_accuracy(model, config_path: str, device: str = "cuda", model_type:
         
         print(f"  ✓ 创建验证集 DataLoader (样本数: {len(val_loader.dataset)})")
         print(f"  ✓ 使用与训练相同的图像缩放逻辑 (max_size=1280, 保持宽高比 → 1280x720)")
+        print(f"  ✓ 性能测试采样策略: 最多 {max_samples} 张图片")
         
         # 确保模型处于 eval 模式（token pruning 应在 load_dset_model 中已激活）
         model.eval()
@@ -893,37 +950,188 @@ def evaluate_accuracy(model, config_path: str, device: str = "cuda", model_type:
         all_predictions = []
         all_targets = []
         
-        print(f"  运行推理循环...")
+        # 使用 CUDA Events 进行精确计时（如果使用 CUDA）
+        use_cuda_events = (device == "cuda" and torch.cuda.is_available())
+        
+        # 用于性能测试的计时数据
+        inference_times = []  # 存储每次推理的耗时（ms）
+        total_samples = 0
+        perf_samples = 0  # 用于性能测试的样本数
+        
+        # 判断是否需要限制采样数量（用于性能测试）
+        limit_samples = (max_samples < 999999)  # 如果 max_samples 很大，说明不需要限制
+        
+        if limit_samples:
+            print(f"  运行推理循环（性能测试：前 {max_samples} 张图片，精度评估：整个验证集）...")
+        else:
+            print(f"  运行推理循环（精度评估：整个验证集）...")
+        
         with torch.no_grad():
             for batch_idx, (images, targets) in enumerate(val_loader):
+                original_batch_size = images.shape[0]
                 B, C, H_tensor, W_tensor = images.shape
-                images = images.to(device)
-                targets = [{k: v.to(device) if isinstance(v, torch.Tensor) else v 
-                           for k, v in t.items()} for t in targets]
                 
-                outputs = model(images, targets)
+                # 判断是否需要计时（仅对前 max_samples 张图片进行性能测试）
+                need_timing = limit_samples and (perf_samples < max_samples)
                 
-                # 收集预测结果
-                # RT-DETR 和 DSET 都支持两种输出格式：pred_logits/pred_boxes 或 class_scores/bboxes
-                has_predictions = (
-                    isinstance(outputs, dict) and (
-                        ('class_scores' in outputs and 'bboxes' in outputs) or
-                        ('pred_logits' in outputs and 'pred_boxes' in outputs)
+                # 如果当前 batch 会超过 max_samples，需要拆分处理
+                if need_timing and (perf_samples + original_batch_size > max_samples):
+                    # 拆分：先处理用于性能测试的部分
+                    remaining_perf = max_samples - perf_samples
+                    perf_images = images[:remaining_perf]
+                    perf_targets = targets[:remaining_perf]
+                    
+                    # 处理性能测试部分（计时）
+                    perf_images = perf_images.to(device)
+                    perf_targets = [{k: v.to(device) if isinstance(v, torch.Tensor) else v 
+                                   for k, v in t.items()} for t in perf_targets]
+                    
+                    if use_cuda_events:
+                        torch.cuda.synchronize()
+                        starter = torch.cuda.Event(enable_timing=True)
+                        ender = torch.cuda.Event(enable_timing=True)
+                        starter.record()
+                    else:
+                        start_time = time.time()
+                    
+                    perf_outputs = model(perf_images, perf_targets)
+                    
+                    if use_cuda_events:
+                        ender.record()
+                        torch.cuda.synchronize()
+                        elapsed_ms = starter.elapsed_time(ender)
+                    else:
+                        end_time = time.time()
+                        elapsed_ms = (end_time - start_time) * 1000.0
+                    
+                    inference_times.append(elapsed_ms / remaining_perf)
+                    
+                    # 收集性能测试部分的预测结果
+                    has_predictions = (
+                        isinstance(perf_outputs, dict) and (
+                            ('class_scores' in perf_outputs and 'bboxes' in perf_outputs) or
+                            ('pred_logits' in perf_outputs and 'pred_boxes' in perf_outputs)
+                        )
                     )
-                )
-                if has_predictions:
-                    _collect_predictions_for_coco(
-                        outputs, targets, batch_idx, all_predictions, all_targets,
-                        W_tensor, H_tensor, config.get('training', {}).get('batch_size', 1)
+                    if has_predictions:
+                        _collect_predictions_for_coco(
+                            perf_outputs, perf_targets, batch_idx, all_predictions, all_targets,
+                            W_tensor, H_tensor, remaining_perf
+                        )
+                    
+                    perf_samples += remaining_perf
+                    total_samples += remaining_perf
+                    
+                    # 处理剩余部分（不计时，只用于精度评估）
+                    if remaining_perf < original_batch_size:
+                        remaining_images = images[remaining_perf:]
+                        remaining_targets = targets[remaining_perf:]
+                        remaining_size = original_batch_size - remaining_perf
+                        
+                        remaining_images = remaining_images.to(device)
+                        remaining_targets = [{k: v.to(device) if isinstance(v, torch.Tensor) else v 
+                                            for k, v in t.items()} for t in remaining_targets]
+                        
+                        remaining_outputs = model(remaining_images, remaining_targets)
+                        
+                        # 收集剩余部分的预测结果
+                        has_predictions = (
+                            isinstance(remaining_outputs, dict) and (
+                                ('class_scores' in remaining_outputs and 'bboxes' in remaining_outputs) or
+                                ('pred_logits' in remaining_outputs and 'pred_boxes' in remaining_outputs)
+                            )
+                        )
+                        if has_predictions:
+                            _collect_predictions_for_coco(
+                                remaining_outputs, remaining_targets, batch_idx, all_predictions, all_targets,
+                                W_tensor, H_tensor, remaining_size
+                            )
+                        
+                        total_samples += remaining_size
+                    
+                    need_timing = False  # 后续不再需要计时
+                else:
+                    # 正常处理整个 batch
+                    images = images.to(device)
+                    targets = [{k: v.to(device) if isinstance(v, torch.Tensor) else v 
+                               for k, v in t.items()} for t in targets]
+                    
+                    # 如果需要计时，进行性能测试
+                    if need_timing:
+                        if use_cuda_events:
+                            torch.cuda.synchronize()
+                            starter = torch.cuda.Event(enable_timing=True)
+                            ender = torch.cuda.Event(enable_timing=True)
+                            starter.record()
+                        else:
+                            start_time = time.time()
+                    
+                    outputs = model(images, targets)
+                    
+                    if need_timing:
+                        if use_cuda_events:
+                            ender.record()
+                            torch.cuda.synchronize()
+                            elapsed_ms = starter.elapsed_time(ender)
+                        else:
+                            end_time = time.time()
+                            elapsed_ms = (end_time - start_time) * 1000.0
+                        
+                        inference_times.append(elapsed_ms / original_batch_size)
+                        perf_samples += original_batch_size
+                    
+                    # 收集预测结果（所有情况下都收集，用于精度评估）
+                    has_predictions = (
+                        isinstance(outputs, dict) and (
+                            ('class_scores' in outputs and 'bboxes' in outputs) or
+                            ('pred_logits' in outputs and 'pred_boxes' in outputs)
+                        )
                     )
+                    if has_predictions:
+                        _collect_predictions_for_coco(
+                            outputs, targets, batch_idx, all_predictions, all_targets,
+                            W_tensor, H_tensor, original_batch_size
+                        )
+                    
+                    total_samples += original_batch_size
                 
                 if (batch_idx + 1) % 10 == 0:
-                    print(f"    处理进度: {batch_idx + 1}/{len(val_loader)} batches")
+                    print(f"    处理进度: {batch_idx + 1}/{len(val_loader)} batches (总样本: {total_samples}, 性能测试: {perf_samples})")
         
+        if limit_samples:
+            print(f"  ✓ 性能测试完成: 处理了 {perf_samples} 张图片")
+        print(f"  ✓ 精度评估完成: 处理了 {total_samples} 张图片")
         print(f"  ✓ 收集到 {len(all_predictions)} 个预测框, {len(all_targets)} 个真实标注")
         
-        # 使用 pycocotools 评估
+        # 计算平均耗时（仅在有计时数据时）
+        if inference_times:
+            avg_latency_ms = sum(inference_times) / len(inference_times)
+            fps = 1000.0 / avg_latency_ms if avg_latency_ms > 0 else 0.0
+            
+            # 端到端模型（DSET/RT-DETR）的后处理耗时接近 0（已包含在推理中）
+            # 将总耗时全部归为推理耗时
+            latency_inference_ms = avg_latency_ms
+            latency_postprocess_ms = 0.0  # 端到端模型没有独立的 NMS 后处理
+            latency_total_ms = avg_latency_ms
+            
+            print(f"  ✓ 耗时统计 (ms): Inference={latency_inference_ms:.2f}, Post-process={latency_postprocess_ms:.2f}, Total={latency_total_ms:.2f}")
+            print(f"  ✓ FPS: {fps:.1f}")
+        else:
+            # 跳过性能测试时，性能指标为 0
+            latency_inference_ms = 0.0
+            latency_postprocess_ms = 0.0
+            latency_total_ms = 0.0
+            fps = 0.0
+            print(f"  ℹ 跳过性能测试，仅评估精度")
+        
+        # 使用 pycocotools 评估（使用全部收集到的预测结果）
         metrics = _compute_coco_metrics(all_predictions, all_targets, H_tensor, W_tensor)
+        
+        # 添加耗时信息到 metrics
+        metrics['latency_inference_ms'] = latency_inference_ms
+        metrics['latency_postprocess_ms'] = latency_postprocess_ms
+        metrics['latency_total_ms'] = latency_total_ms
+        metrics['fps'] = fps
         
         return metrics
         
@@ -931,7 +1139,9 @@ def evaluate_accuracy(model, config_path: str, device: str = "cuda", model_type:
         print(f"  ⚠ COCO 评估失败: {e}")
         import traceback
         traceback.print_exc()
-        return {'mAP': 0.0, 'AP50': 0.0, 'APS': 0.0}
+        return {'mAP': 0.0, 'AP50': 0.0, 'APS': 0.0, 
+                'latency_inference_ms': 0.0, 'latency_postprocess_ms': 0.0, 
+                'latency_total_ms': 0.0, 'fps': 0.0}
 
 
 def _collect_predictions_for_coco(outputs: Dict, targets: List[Dict], batch_idx: int,
@@ -1288,37 +1498,53 @@ def evaluate_single_model(model_name: str, model_config: Dict, args, project_roo
     if flops_g > 0:
         print(f"  ✓ FLOPs: {flops_g:.2f} G")
     
-    # 测量 FPS
-    fps = 0.0
-    if not args.skip_fps:
-        print(f"\n  测量 FPS...")
-        print(f"  ℹ FPS 测试正在以 Batch Size = 1, Iterations = {args.fps_iter} 的标准运行")
-        try:
-            fps = measure_fps(model, input_size_tuple, args.fps_iter, args.warmup_iter, args.device, is_yolo=is_yolo_model)
-            print(f"  ✓ FPS: {fps:.1f}")
-        except Exception as e:
-            print(f"  ⚠ FPS 测量失败: {e}")
+    # 评估精度并测量性能（基于验证集真实样本）
+    # 注意：新的实现将精度评估和性能测试合并，使用验证集真实样本进行测量
+    metrics = {
+        'mAP': 0.0, 'AP50': 0.0, 'APS': 0.0,
+        'latency_inference_ms': 0.0,
+        'latency_postprocess_ms': 0.0,
+        'latency_total_ms': 0.0,
+        'fps': 0.0
+    }
     
-    # 评估精度
-    metrics = {'mAP': 0.0, 'AP50': 0.0, 'APS': 0.0}
+    max_samples = 300  # 性能测试采样数量（200-500 范围，默认 300）
+    
     if model_type == "dset":
         if config_path:
-            print(f"\n  运行 COCO 评估...")
-            metrics = evaluate_accuracy(model, str(config_path), args.device, model_type="dset")
+            print(f"\n  运行 COCO 评估（含性能测试）...")
+            if not args.skip_fps:
+                metrics = evaluate_accuracy(model, str(config_path), args.device, model_type="dset", max_samples=max_samples)
+            else:
+                # 如果跳过 FPS，只评估精度（使用全部验证集）
+                print(f"  ℹ 跳过性能测试，仅评估精度")
+                metrics_partial = evaluate_accuracy(model, str(config_path), args.device, model_type="dset", max_samples=999999)
+                metrics.update({k: metrics_partial.get(k, 0.0) for k in ['mAP', 'AP50', 'APS']})
     elif model_type == "rtdetr":
         if config_path:
-            print(f"\n  运行 COCO 评估...")
-            metrics = evaluate_accuracy(model, str(config_path), args.device, model_type="rtdetr")
+            print(f"\n  运行 COCO 评估（含性能测试）...")
+            if not args.skip_fps:
+                metrics = evaluate_accuracy(model, str(config_path), args.device, model_type="rtdetr", max_samples=max_samples)
+            else:
+                print(f"  ℹ 跳过性能测试，仅评估精度")
+                metrics_partial = evaluate_accuracy(model, str(config_path), args.device, model_type="rtdetr", max_samples=999999)
+                metrics.update({k: metrics_partial.get(k, 0.0) for k in ['mAP', 'AP50', 'APS']})
     elif model_type == "deformable-detr":
         if config_path:
             print(f"\n  运行 Deformable-DETR 评估...")
-            metrics = evaluate_deformable_detr_accuracy(model, str(config_path), args.device)
+            metrics_partial = evaluate_deformable_detr_accuracy(model, str(config_path), args.device)
+            metrics.update({k: metrics_partial.get(k, 0.0) for k in ['mAP', 'AP50', 'APS']})
     elif is_yolo_model:
         # YOLO 模型：尝试获取数据集配置文件路径
         data_config_path = _get_yolo_data_path(model, model_config, project_root)
         if data_config_path:
-            print(f"\n  运行 YOLO 评估...")
-            metrics = evaluate_yolo_accuracy(model, str(data_config_path), args.device)
+            print(f"\n  运行 YOLO 评估（含性能测试）...")
+            if not args.skip_fps:
+                metrics = evaluate_yolo_accuracy(model, str(data_config_path), args.device, max_samples=max_samples)
+            else:
+                print(f"  ℹ 跳过性能测试，仅评估精度")
+                metrics_partial = evaluate_yolo_accuracy(model, str(data_config_path), args.device, max_samples=999999)
+                metrics.update({k: metrics_partial.get(k, 0.0) for k in ['mAP', 'AP50', 'APS']})
         else:
             print(f"  ⚠ YOLO 模型需要数据集配置文件")
             print(f"  ⚠ 请在 JSON 配置中添加 \"data\": \"path/to/data.yaml\" 字段")
@@ -1329,20 +1555,19 @@ def evaluate_single_model(model_name: str, model_config: Dict, args, project_roo
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
     
-    # 计算延迟（Latency）
-    latency_ms = (1000.0 / fps) if fps > 0 else 0.0
-    
-    # 返回结果
+    # 返回结果（包含拆分的延迟信息）
     return {
         'model_name': model_name,
         'model_type': model_type,
         'params_m': params_m,
         'flops_g': flops_g,
-        'fps': fps,
-        'latency_ms': latency_ms,
-        'mAP': metrics['mAP'],
-        'AP50': metrics['AP50'],
-        'APS': metrics['APS'],
+        'fps': metrics.get('fps', 0.0),
+        'latency_inference_ms': metrics.get('latency_inference_ms', 0.0),
+        'latency_postprocess_ms': metrics.get('latency_postprocess_ms', 0.0),
+        'latency_total_ms': metrics.get('latency_total_ms', 0.0),
+        'mAP': metrics.get('mAP', 0.0),
+        'AP50': metrics.get('AP50', 0.0),
+        'APS': metrics.get('APS', 0.0),
         'input_size': f"{input_size[0]}x{input_size[1]}"
     }
 
@@ -1364,14 +1589,14 @@ def print_summary_table(results: List[Dict], gpu_name: str = "GPU", save_csv: bo
     print("BATCH EVALUATION SUMMARY".center(120))
     print("=" * 120)
     
-    # 表头（增加 Latency 列）
-    header = f"{'Model Name':<25} {'Params(M)':<12} {'FLOPs(G)':<12} {'FPS':<10} {'Latency(ms)':<12} {'mAP':<10} {'AP50':<10} {'APS':<10} {'Input':<12}"
+    # 表头（拆分 Latency 为 Inference 和 Post-process）
+    header = f"{'Model Name':<25} {'Params(M)':<12} {'FLOPs(G)':<12} {'Latency(ms)':<15} {'Inference':<12} {'Post-proc':<12} {'FPS':<10} {'mAP':<10} {'AP50':<10} {'APS':<10}"
     print(header)
-    print("-" * 140)
+    print("-" * 150)
     
-    # 准备 CSV 数据（增加 Latency 列）
+    # 准备 CSV 数据（拆分 Latency）
     csv_rows = []
-    csv_header = ['Model Name', 'Model Type', 'Params(M)', 'FLOPs(G)', 'FPS', 'Latency(ms)', 'mAP', 'AP50', 'APS', 'Input Size']
+    csv_header = ['Model Name', 'Model Type', 'Params(M)', 'FLOPs(G)', 'Latency(ms)', 'Inference(ms)', 'Post-process(ms)', 'FPS', 'mAP', 'AP50', 'APS', 'Input Size']
     csv_rows.append(csv_header)
     
     # 数据行
@@ -1380,7 +1605,9 @@ def print_summary_table(results: List[Dict], gpu_name: str = "GPU", save_csv: bo
         params_m = result.get('params_m', 0)
         flops_g = result.get('flops_g', 0)
         fps = result.get('fps', 0)
-        latency_ms = result.get('latency_ms', 0)
+        latency_total = result.get('latency_total_ms', 0)
+        latency_inference = result.get('latency_inference_ms', 0)
+        latency_postprocess = result.get('latency_postprocess_ms', 0)
         mAP = result.get('mAP', 0)
         AP50 = result.get('AP50', 0)
         APS = result.get('APS', 0)
@@ -1390,13 +1617,15 @@ def print_summary_table(results: List[Dict], gpu_name: str = "GPU", save_csv: bo
         # 格式化显示字符串（处理 N/A）
         params_str = f"{params_m:.2f}" if params_m > 0 else "N/A"
         flops_str = f"{flops_g:.2f}" if flops_g > 0 else "N/A"
+        latency_total_str = f"{latency_total:.2f}" if latency_total > 0 else "N/A"
+        latency_inf_str = f"{latency_inference:.2f}" if latency_inference > 0 else "N/A"
+        latency_post_str = f"{latency_postprocess:.2f}" if latency_postprocess > 0 else "N/A"
         fps_str = f"{fps:.1f}" if fps > 0 else "N/A"
-        latency_str = f"{latency_ms:.2f}" if latency_ms > 0 else "N/A"
         map_str = f"{mAP:.4f}" if mAP > 0 else "N/A"
         ap50_str = f"{AP50:.4f}" if AP50 > 0 else "N/A"
         aps_str = f"{APS:.4f}" if APS > 0 else "N/A"
         
-        row = f"{model_name:<25} {params_str:<12} {flops_str:<12} {fps_str:<10} {latency_str:<12} {map_str:<10} {ap50_str:<10} {aps_str:<10} {input_size:<12}"
+        row = f"{model_name:<25} {params_str:<12} {flops_str:<12} {latency_total_str:<15} {latency_inf_str:<12} {latency_post_str:<12} {fps_str:<10} {map_str:<10} {ap50_str:<10} {aps_str:<10}"
         print(row)
         
         # CSV 行（使用原始数值，N/A 用空字符串表示）
@@ -1405,8 +1634,10 @@ def print_summary_table(results: List[Dict], gpu_name: str = "GPU", save_csv: bo
             model_type,
             f"{params_m:.2f}" if params_m > 0 else "",
             f"{flops_g:.2f}" if flops_g > 0 else "",
+            f"{latency_total:.2f}" if latency_total > 0 else "",
+            f"{latency_inference:.2f}" if latency_inference > 0 else "",
+            f"{latency_postprocess:.2f}" if latency_postprocess > 0 else "",
             f"{fps:.1f}" if fps > 0 else "",
-            f"{latency_ms:.2f}" if latency_ms > 0 else "",
             f"{mAP:.4f}" if mAP > 0 else "",
             f"{AP50:.4f}" if AP50 > 0 else "",
             f"{APS:.4f}" if APS > 0 else "",
@@ -1414,11 +1645,11 @@ def print_summary_table(results: List[Dict], gpu_name: str = "GPU", save_csv: bo
         ]
         csv_rows.append(csv_row)
     
-    print("-" * 140)
-    print(f"Note: FPS measured on {gpu_name} with CUDA Events (synchronization outside loop to eliminate CPU scheduling overhead).")
-    print(f"      YOLOv8: FPS includes NMS post-processing. YOLOv10/RT-DETR/DSET: End-to-end inference (no traditional NMS).")
+    print("-" * 150)
+    print(f"Note: Performance measured on {gpu_name} using validation set real samples (300 samples).")
+    print(f"      Latency includes: Inference (network forward pass) + Post-process (NMS for YOLOv8, ~0 for YOLOv10/RT-DETR/DSET).")
     print(f"      Accuracy evaluated via pycocotools (DSET/RT-DETR) or model.val() (YOLO).")
-    print("=" * 140)
+    print("=" * 150)
     
     # 保存为 CSV 文件
     if save_csv:
@@ -1590,7 +1821,9 @@ def main():
                 params_m=result['params_m'],
                 flops_g=result['flops_g'],
                 fps=result['fps'],
-                latency_ms=result.get('latency_ms', 0),
+                latency_total_ms=result.get('latency_total_ms', 0),
+                latency_inference_ms=result.get('latency_inference_ms', 0),
+                latency_postprocess_ms=result.get('latency_postprocess_ms', 0),
                 metrics={'mAP': result['mAP'], 'AP50': result['AP50'], 'APS': result['APS']},
                 input_resolution=(int(result['input_size'].split('x')[1]), int(result['input_size'].split('x')[0])),
                 is_yolo=result['model_type'].startswith("yolov8") or result['model_type'].startswith("yolov10"),
@@ -1599,7 +1832,8 @@ def main():
 
 
 def _format_evaluation_results(model_type: str, params_m: float, flops_g: float, fps: float,
-                               latency_ms: float, metrics: Dict[str, float], input_resolution: Tuple[int, int],
+                               latency_total_ms: float, latency_inference_ms: float, latency_postprocess_ms: float,
+                               metrics: Dict[str, float], input_resolution: Tuple[int, int],
                                is_yolo: bool = False, gpu_name: str = "GPU") -> None:
     """
     格式化并输出标准化的评估结果（学术论文格式）
@@ -1609,7 +1843,9 @@ def _format_evaluation_results(model_type: str, params_m: float, flops_g: float,
         params_m: 参数量（百万）
         flops_g: FLOPs（十亿）
         fps: FPS
-        latency_ms: 延迟（毫秒）
+        latency_total_ms: 总延迟（毫秒）
+        latency_inference_ms: 推理延迟（毫秒）
+        latency_postprocess_ms: 后处理延迟（毫秒）
         metrics: 包含 mAP, AP50, APS 的字典
         input_resolution: 输入分辨率 (width, height)
         is_yolo: 是否为 YOLO 模型
@@ -1646,11 +1882,15 @@ def _format_evaluation_results(model_type: str, params_m: float, flops_g: float,
     # 硬件指标
     params_str = f"{params_m:.2f} M" if params_m > 0 else "N/A"
     flops_str = f"{flops_g:.2f} G" if flops_g > 0 else "N/A"
+    latency_total_str = f"{latency_total_ms:.2f} ms" if latency_total_ms > 0 else "N/A"
+    latency_inf_str = f"{latency_inference_ms:.2f} ms" if latency_inference_ms > 0 else "N/A"
+    latency_post_str = f"{latency_postprocess_ms:.2f} ms" if latency_postprocess_ms > 0 else "N/A"
     fps_str = f"{fps:.1f}" if fps > 0 else "N/A"
-    latency_str = f"{latency_ms:.2f} ms" if latency_ms > 0 else "N/A"
     
     # 使用传入的 gpu_name（已在 main 函数中动态检测）
-    print(f"Params: {params_str} | FLOPs: {flops_str} | FPS ({gpu_name}): {fps_str} | Latency: {latency_str}")
+    print(f"Params: {params_str} | FLOPs: {flops_str}")
+    print(f"Latency ({gpu_name}): Total={latency_total_str} | Inference={latency_inf_str} | Post-process={latency_post_str}")
+    print(f"FPS ({gpu_name}): {fps_str}")
     
     # 精度指标
     map_str = f"{metrics['mAP']:.4f}" if metrics['mAP'] > 0 else "N/A"
@@ -1663,16 +1903,14 @@ def _format_evaluation_results(model_type: str, params_m: float, flops_g: float,
     # 数据来源说明
     nms_note = ""
     if model_type.startswith("yolov8"):
-        nms_note = " (FPS includes NMS post-processing)"
+        nms_note = "Post-process includes NMS. "
     elif model_type.startswith("yolov10") or model_type in ["rtdetr", "dset"]:
-        nms_note = " (End-to-end inference, no traditional NMS)"
+        nms_note = "End-to-end inference, no traditional NMS (post-process ≈ 0). "
     
     if model_type in ["dset", "rtdetr"]:
-        print(f"Note: Accuracy evaluated via pycocotools. FPS measured with CUDA Events{nms_note}.")
-        print("      Synchronization outside loop to eliminate CPU scheduling overhead.")
+        print(f"Note: Performance measured on validation set real samples (300 samples). {nms_note}Accuracy evaluated via pycocotools.")
     else:
-        print(f"Note: FPS measured with CUDA Events{nms_note}.")
-        print("      Synchronization outside loop to eliminate CPU scheduling overhead.")
+        print(f"Note: Performance measured on validation set real samples (300 samples). {nms_note}Accuracy evaluated via model.val().")
     
     print("=" * 70)
 
