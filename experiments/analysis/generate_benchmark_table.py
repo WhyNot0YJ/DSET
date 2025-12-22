@@ -566,6 +566,62 @@ def load_deformable_detr_model(checkpoint_path: str, device: str = "cuda", confi
     return model
 
 
+def _ensure_yolo_checkpoint_path(checkpoint_path: str) -> str:
+    """
+    确保 YOLO 检查点路径使用 .pt 后缀（Ultralytics 要求）
+    
+    如果传入的是 .pth 文件：
+    1. 首先检查同目录下是否存在同名的 .pt 文件
+    2. 如果不存在，创建一个指向 .pth 文件的 .pt 软链接
+    
+    Args:
+        checkpoint_path: 检查点路径（可能是 .pth 或 .pt）
+    
+    Returns:
+        修正后的检查点路径（确保是 .pt 后缀）
+    """
+    checkpoint_path_obj = Path(checkpoint_path)
+    
+    # 如果已经是 .pt 后缀，直接返回
+    if checkpoint_path_obj.suffix.lower() == '.pt':
+        return str(checkpoint_path_obj)
+    
+    # 如果是 .pth 后缀，需要处理
+    if checkpoint_path_obj.suffix.lower() == '.pth':
+        # 构造对应的 .pt 路径
+        pt_path = checkpoint_path_obj.with_suffix('.pt')
+        
+        # 检查 .pt 文件是否已存在
+        if pt_path.exists():
+            print(f"  ✓ 找到已存在的 .pt 文件: {pt_path}")
+            return str(pt_path)
+        
+        # 检查原始 .pth 文件是否存在
+        if not checkpoint_path_obj.exists():
+            raise FileNotFoundError(f"检查点文件不存在: {checkpoint_path_obj}")
+        
+        # 创建软链接
+        try:
+            pt_path.symlink_to(checkpoint_path_obj)
+            print(f"  ✓ 已创建软链接: {pt_path} -> {checkpoint_path_obj}")
+            return str(pt_path)
+        except OSError as e:
+            # 如果创建软链接失败（例如在 Windows 上需要管理员权限），尝试复制文件
+            import shutil
+            try:
+                shutil.copy2(checkpoint_path_obj, pt_path)
+                print(f"  ✓ 已复制文件: {checkpoint_path_obj} -> {pt_path} (软链接创建失败，使用文件复制)")
+                return str(pt_path)
+            except Exception as copy_error:
+                raise RuntimeError(
+                    f"无法创建 .pt 文件或软链接: {e}。"
+                    f"请手动将 {checkpoint_path_obj} 重命名为 {pt_path} 或创建软链接。"
+                ) from copy_error
+    
+    # 其他后缀，直接返回（让 YOLO 自己处理错误）
+    return str(checkpoint_path_obj)
+
+
 def load_yolov8_model(checkpoint_path: str, device: str = "cuda"):
     """
     加载 YOLOv8 模型
@@ -586,8 +642,11 @@ def load_yolov8_model(checkpoint_path: str, device: str = "cuda"):
     except ImportError:
         raise ImportError("需要安装 ultralytics 或确保 yolov8/ultralytics 目录存在")
     
+    # 确保路径使用 .pt 后缀（Ultralytics 要求）
+    checkpoint_path_pt = _ensure_yolo_checkpoint_path(checkpoint_path)
+    
     # 加载模型
-    model = YOLO(str(checkpoint_path))
+    model = YOLO(checkpoint_path_pt)
     model.to(device)
     model.eval()
     
@@ -614,8 +673,11 @@ def load_yolov10_model(checkpoint_path: str, device: str = "cuda"):
     except ImportError:
         raise ImportError("需要安装 ultralytics 或确保 yolov10/ultralytics 目录存在")
     
+    # 确保路径使用 .pt 后缀（Ultralytics 要求）
+    checkpoint_path_pt = _ensure_yolo_checkpoint_path(checkpoint_path)
+    
     # 加载模型
-    model = YOLO(str(checkpoint_path))
+    model = YOLO(checkpoint_path_pt)
     model.to(device)
     model.eval()
     
