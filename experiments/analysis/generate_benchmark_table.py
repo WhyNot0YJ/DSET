@@ -657,8 +657,8 @@ def evaluate_accuracy(model, config_path: str, device: str = "cuda",
                         inference_ender = torch.cuda.Event(enable_timing=True)
                         inference_starter.record()
                     else:
-                        _cuda_sync_if_available(device)
-                        inference_start_time = time.time()
+                        # CPU 模式：使用 perf_counter 获得高精度计时
+                        inference_start_time = time.perf_counter()
                 
                 outputs = model(images, targets)
                 
@@ -678,8 +678,8 @@ def evaluate_accuracy(model, config_path: str, device: str = "cuda",
                         torch.cuda.synchronize()
                         inference_elapsed_ms = inference_starter.elapsed_time(inference_ender)
                     else:
-                        _cuda_sync_if_available(device)
-                        inference_elapsed_ms = (time.time() - inference_start_time) * 1000.0
+                        # CPU 模式：使用 perf_counter 计算耗时
+                        inference_elapsed_ms = (time.perf_counter() - inference_start_time) * 1000.0
                     inference_times.append(inference_elapsed_ms)
                     
                     # 后处理计时
@@ -688,8 +688,8 @@ def evaluate_accuracy(model, config_path: str, device: str = "cuda",
                         postprocess_ender = torch.cuda.Event(enable_timing=True)
                         postprocess_starter.record()
                     else:
-                        _cuda_sync_if_available(device)
-                        postprocess_start_time = time.time()
+                        # CPU 模式：使用 perf_counter
+                        postprocess_start_time = time.perf_counter()
                 
                 has_predictions = isinstance(outputs, dict) and (
                     ('class_scores' in outputs and 'bboxes' in outputs) or
@@ -705,8 +705,8 @@ def evaluate_accuracy(model, config_path: str, device: str = "cuda",
                         torch.cuda.synchronize()
                         postprocess_elapsed_ms = postprocess_starter.elapsed_time(postprocess_ender)
                     else:
-                        _cuda_sync_if_available(device)
-                        postprocess_elapsed_ms = (time.time() - postprocess_start_time) * 1000.0
+                        # CPU 模式：使用 perf_counter 计算耗时
+                        postprocess_elapsed_ms = (time.perf_counter() - postprocess_start_time) * 1000.0
                     postprocess_times.append(postprocess_elapsed_ms)
                     perf_samples += 1
                 
@@ -909,7 +909,7 @@ def evaluate_single_model(model_name: str, model_config: Dict, args, project_roo
     metrics = {'mAP': 0.0, 'AP50': 0.0, 'APS': 0.0,
                'latency_inference_ms': 0.0, 'latency_postprocess_ms': 0.0,
                'latency_total_ms': 0.0, 'fps': 0.0}
-    max_samples = 300
+    max_samples = getattr(args, 'max_samples', 300)  # 从参数获取，支持 CPU 模式
     
     if model_type in ["dset", "rtdetr"] and config_path:
         if not args.skip_fps:
@@ -954,7 +954,7 @@ def evaluate_single_model(model_name: str, model_config: Dict, args, project_roo
     }
 
 
-def print_summary_table(results: List[Dict], gpu_name: str = "GPU", save_csv: bool = True):
+def print_summary_table(results: List[Dict], gpu_name: str = "GPU", save_csv: bool = True, max_samples: int = 300):
     """打印结果汇总表格并保存为 CSV"""
     if not results:
         print("\n⚠ 没有评估结果")
@@ -988,7 +988,7 @@ def print_summary_table(results: List[Dict], gpu_name: str = "GPU", save_csv: bo
         csv_rows.append([name, r.get('model_type', ''), params, flops, latency, inf, post, fps, mAP, ap50, aps, r.get('input_size', '')])
     
     print("-" * 120)
-    print(f"Note: Performance on {gpu_name}, batch_size=1, 300 samples")
+    print(f"Note: Performance on {gpu_name}, batch_size=1, {max_samples} samples")
     print("=" * 120)
     
     if save_csv:
@@ -1063,11 +1063,32 @@ def main():
     parser.add_argument('--deformable_work_dir', type=str, default=None)
     parser.add_argument('--deformable_config', type=str, default=None)
     parser.add_argument('--models_config', type=str, default=None)
+    parser.add_argument('--cpu_mode', action='store_true',
+                       help='使用 CPU 模拟边缘设备推理（自动限制样本量为 50）')
+    parser.add_argument('--max_samples', type=int, default=300,
+                       help='性能测试的最大样本数（默认 300，CPU 模式自动设为 50）')
     
     args = parser.parse_args()
     
-    # GPU 名称
-    gpu_name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU"
+    # CPU 模式处理
+    if args.cpu_mode:
+        args.device = 'cpu'
+        args.max_samples = min(args.max_samples, 50)  # CPU 模式限制样本量
+        print("=" * 80)
+        print("⚠️  CPU 模拟边缘设备模式")
+        print("=" * 80)
+        print(f"  • 设备: CPU (模拟边缘计算设备)")
+        print(f"  • 样本量: {args.max_samples} (缩减以加快测试)")
+        print(f"  • 预期: Token Pruning 将带来显著的倍数级加速")
+        print("=" * 80)
+        print()
+    
+    # GPU/CPU 名称
+    if args.device == 'cuda' and torch.cuda.is_available():
+        gpu_name = torch.cuda.get_device_name(0)
+    else:
+        import platform
+        gpu_name = f"CPU ({platform.processor() or 'Unknown'})"
     
     print("=" * 80)
     print("性能对比表生成脚本")
@@ -1109,7 +1130,7 @@ def main():
     
     # 输出结果
     if len(all_results) > 1:
-        print_summary_table(all_results, gpu_name, save_csv=True)
+        print_summary_table(all_results, gpu_name, save_csv=True, max_samples=args.max_samples)
     elif all_results:
         r = all_results[0]
         _format_evaluation_results(
