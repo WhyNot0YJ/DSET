@@ -191,10 +191,14 @@ def measure_fps(model,
     使用 CUDA Events 进行精确计时（如果使用 CUDA），确保获取真实的 GPU 硬件执行耗时。
     对于 YOLO 模型，FPS 测量包含完整的推理流程（前向传播 + NMS）
     
+    注意：Batch Size 会被强制设置为 1（目标检测论文标准：单帧延迟测试），
+    以确保测试结果符合学术规范（YOLOv10/RT-DETR 等论文均采用 BS=1 的 FPS 标准）。
+    
     Args:
         model: PyTorch 模型或 YOLO 模型
         input_size: 输入尺寸 (batch, channels, height, width)，默认 (1, 3, 736, 1280)
-        num_iter: 测试迭代次数
+                    注意：函数内部会将 batch 维度强制设置为 1
+        num_iter: 测试迭代次数（默认 300，针对高端显卡需要更多循环以抵消启动开销）
         warmup_iter: 预热迭代次数（默认 20，确保模型充分预热）
         device: 设备 ('cuda' 或 'cpu')
         is_yolo: 是否为 YOLO 模型（使用不同的输入格式，且包含 NMS）
@@ -254,7 +258,9 @@ def measure_fps(model,
         # 标准 PyTorch 模型使用 tensor
         # 显式确保模型和输入都在正确的设备上
         model = model.to(device)
-        dummy_input = torch.randn(input_size).to(device)
+        # 强制 Batch Size = 1（目标检测论文标准：单帧延迟测试）
+        fps_input_size = (1, input_size[1], input_size[2], input_size[3])
+        dummy_input = torch.randn(fps_input_size).to(device)
         # 再次确保设备一致性（防止 thop 计算后的残留状态）
         model = model.to(device)
         
@@ -1214,6 +1220,7 @@ def evaluate_single_model(model_name: str, model_config: Dict, args, project_roo
     fps = 0.0
     if not args.skip_fps:
         print(f"\n  测量 FPS...")
+        print(f"  ℹ FPS 测试正在以 Batch Size = 1, Iterations = {args.fps_iter} 的标准运行")
         try:
             fps = measure_fps(model, input_size_tuple, args.fps_iter, args.warmup_iter, args.device, is_yolo=is_yolo_model)
             print(f"  ✓ FPS: {fps:.1f}")
@@ -1403,7 +1410,7 @@ def main():
                        help='输入图像尺寸 [height, width] (如果未指定，将根据模型类型自动选择)')
     parser.add_argument('--device', type=str, default='cuda',
                        help='设备 (cuda 或 cpu)')
-    parser.add_argument('--fps_iter', type=int, default=100,
+    parser.add_argument('--fps_iter', type=int, default=300,
                        help='FPS 测试迭代次数')
     parser.add_argument('--warmup_iter', type=int, default=20,
                        help='FPS 测试预热迭代次数（默认 20，确保模型充分预热）')
