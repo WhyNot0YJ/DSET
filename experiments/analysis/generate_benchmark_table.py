@@ -207,12 +207,27 @@ def load_dset_model(config_path: str, checkpoint_path: str, device: str = "cuda"
     model.load_state_dict(state_dict, strict=False)
     model.eval()
     
-    # 启用 token pruning
+    # 启用 token pruning - 强制设置 epoch=100 以跨越 warmup 阶段
     if hasattr(model, 'encoder') and hasattr(model.encoder, 'set_epoch'):
         dset_config = config.get('model', {}).get('dset', {})
         warmup_epochs = dset_config.get('token_pruning_warmup_epochs', 10)
-        model.encoder.set_epoch(max(warmup_epochs, 10))
-        print(f"  ✓ 已启用 token pruning")
+        target_keep_ratio = dset_config.get('token_keep_ratio', 1.0)
+        
+        # 强制 epoch=100 以确保剪枝完全激活（progress=1.0）
+        forced_epoch = 100
+        model.encoder.set_epoch(forced_epoch)
+        
+        # 验证剪枝状态
+        if hasattr(model.encoder, 'token_pruners') and model.encoder.token_pruners:
+            pruner = model.encoder.token_pruners[0]
+            actual_keep_ratio = pruner.get_current_keep_ratio() if hasattr(pruner, 'get_current_keep_ratio') else None
+            pruning_enabled = pruner.pruning_enabled if hasattr(pruner, 'pruning_enabled') else False
+            print(f"  ✓ Token Pruning: epoch={forced_epoch}, warmup={warmup_epochs}")
+            print(f"    - pruning_enabled: {pruning_enabled}")
+            print(f"    - target_keep_ratio: {target_keep_ratio}")
+            print(f"    - actual_keep_ratio: {actual_keep_ratio}")
+        else:
+            print(f"  ✓ 已启用 token pruning (epoch={forced_epoch})")
     
     return model
 
@@ -621,6 +636,7 @@ def evaluate_accuracy(model, config_path: str, device: str = "cuda",
         total_samples = 0
         perf_samples = 0
         limit_samples = (max_samples < 999999)
+        shape_printed = False  # 只打印一次维度信息
         
         print(f"  运行推理循环...")
         
@@ -645,6 +661,16 @@ def evaluate_accuracy(model, config_path: str, device: str = "cuda",
                         inference_start_time = time.time()
                 
                 outputs = model(images, targets)
+                
+                # 物理维度检查（只打印一次）
+                if not shape_printed and isinstance(outputs, dict):
+                    shape_printed = True
+                    if 'class_scores' in outputs:
+                        seq_len = outputs['class_scores'].shape[1]
+                        print(f"  ✓ 物理维度检查: class_scores shape = {outputs['class_scores'].shape} (seq_len={seq_len})")
+                    elif 'pred_logits' in outputs:
+                        seq_len = outputs['pred_logits'].shape[1]
+                        print(f"  ✓ 物理维度检查: pred_logits shape = {outputs['pred_logits'].shape} (seq_len={seq_len})")
                 
                 if need_timing:
                     if use_cuda_events:
