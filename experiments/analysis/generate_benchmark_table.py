@@ -71,6 +71,7 @@ import yaml
 import torch
 import torch.nn as nn
 import time
+import json
 from pathlib import Path
 from typing import Dict, Optional, Tuple, List
 from io import StringIO
@@ -214,9 +215,9 @@ def measure_fps(model,
         
         import numpy as np
         # YOLO 通常需要正方形输入，使用 Letterbox 填充
-        # 为了包含填充开销，使用最大边作为正方形边长进行测速
-        # 注意：实际输入可能是 736x1280，但 YOLO 会填充到 1280x1280
-        yolo_size = max(input_size[2], input_size[3])  # 使用最大边作为正方形边长
+        # 使用传入的 input_size（已根据模型类型自动适配为 1280x1280 或用户指定值）
+        # 如果传入的不是正方形，使用最大边以确保兼容性
+        yolo_size = max(input_size[2], input_size[3])
         dummy_image = np.random.randint(0, 255, (yolo_size, yolo_size, 3), dtype=np.uint8)
         
         # Warmup（包含 NMS）
@@ -615,6 +616,113 @@ def load_yolov10_model(checkpoint_path: str, device: str = "cuda"):
     return model
 
 
+def evaluate_yolo_accuracy(model, config_path: str, device: str = "cuda") -> Dict[str, float]:
+    """
+    使用 YOLO 模型的 val() 方法进行评估
+    
+    Args:
+        model: YOLO 模型（ultralytics YOLO 对象）
+        config_path: 数据集配置文件路径（YAML 格式）
+        device: 设备
+    
+    Returns:
+        包含 mAP [0.5:0.95], AP50, APS (Small) 的字典
+    """
+    try:
+        print(f"  ✓ 使用 YOLO model.val() 进行评估")
+        print(f"  ✓ 数据集配置: {config_path}")
+        
+        # 调用 YOLO 的 val 方法
+        # 注意：YOLO 的 val 方法需要 data 参数指向数据集配置文件
+        results = model.val(
+            data=str(config_path),
+            device=device,
+            verbose=False  # 减少输出
+        )
+        
+        # 从 results 中提取指标
+        # ultralytics 的 metrics 对象包含 box.map, box.map50 等
+        metrics = {
+            'mAP': 0.0,
+            'AP50': 0.0,
+            'APS': 0.0
+        }
+        
+        if hasattr(results, 'box'):
+            if hasattr(results.box, 'map'):
+                metrics['mAP'] = float(results.box.map)  # mAP@0.5:0.95
+            if hasattr(results.box, 'map50'):
+                metrics['AP50'] = float(results.box.map50)  # mAP@0.5
+            # APS (Small) 可能在不同位置，需要检查
+            if hasattr(results.box, 'maps'):
+                # maps 是一个数组，通常包含不同尺寸的 mAP
+                # [0] = all, [1] = small, [2] = medium, [3] = large
+                maps = results.box.maps
+                if len(maps) > 1:
+                    metrics['APS'] = float(maps[1])  # Small objects
+        
+        # 如果上述方法失败，尝试从 results 字典中获取
+        if metrics['mAP'] == 0.0 and isinstance(results, dict):
+            if 'metrics' in results:
+                metrics_dict = results['metrics']
+                metrics['mAP'] = metrics_dict.get('map', 0.0)
+                metrics['AP50'] = metrics_dict.get('map50', 0.0)
+                metrics['APS'] = metrics_dict.get('map_s', 0.0)
+        
+        print(f"  ✓ mAP (0.5:0.95): {metrics['mAP']:.4f}")
+        print(f"  ✓ AP50: {metrics['AP50']:.4f}")
+        print(f"  ✓ APS (Small): {metrics['APS']:.4f}")
+        
+        return metrics
+        
+    except Exception as e:
+        print(f"  ⚠ YOLO 评估失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return {'mAP': 0.0, 'AP50': 0.0, 'APS': 0.0}
+
+
+def evaluate_deformable_detr_accuracy(model, config_path: str, device: str = "cuda") -> Dict[str, float]:
+    """
+    使用 MMEngine 评估 Deformable-DETR 模型
+    
+    Args:
+        model: Deformable-DETR 模型
+        config_path: 配置文件路径
+        device: 设备
+    
+    Returns:
+        包含 mAP [0.5:0.95], AP50, APS (Small) 的字典
+    """
+    try:
+        from mmengine.config import Config
+        from mmdet.apis import init_detector, inference_detector
+        from mmdet.datasets import build_dataloader, build_dataset
+        from mmdet.registry import DATASETS
+        
+        print(f"  ✓ 使用 MMEngine 进行评估")
+        print(f"  ⚠ 注意: Deformable-DETR 评估需要完整的 MMEngine 配置")
+        print(f"  ⚠ 当前版本暂不支持自动评估，返回默认值")
+        
+        # TODO: 实现完整的 MMEngine 评估逻辑
+        # 这需要：
+        # 1. 加载数据集配置
+        # 2. 创建 DataLoader
+        # 3. 运行推理
+        # 4. 使用 MMEngine 的评估器计算 mAP
+        
+        return {'mAP': 0.0, 'AP50': 0.0, 'APS': 0.0}
+        
+    except ImportError:
+        print(f"  ⚠ MMEngine 未安装，无法评估 Deformable-DETR")
+        return {'mAP': 0.0, 'AP50': 0.0, 'APS': 0.0}
+    except Exception as e:
+        print(f"  ⚠ Deformable-DETR 评估失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return {'mAP': 0.0, 'AP50': 0.0, 'APS': 0.0}
+
+
 def evaluate_accuracy(model, config_path: str, device: str = "cuda", model_type: str = "dset") -> Dict[str, float]:
     """
     使用 pycocotools 在验证集上运行完整的 COCO 评估循环
@@ -935,6 +1043,306 @@ def _compute_coco_metrics(predictions: List[Dict], targets: List[Dict],
         return {'mAP': 0.0, 'AP50': 0.0, 'APS': 0.0}
 
 
+def _resolve_path(path_str: str, project_root: Path) -> Path:
+    """
+    解析路径，支持相对路径和绝对路径
+    
+    Args:
+        path_str: 路径字符串
+        project_root: 项目根目录
+    
+    Returns:
+        解析后的绝对路径
+    """
+    if not path_str:
+        return None
+    path = Path(path_str)
+    if path.is_absolute():
+        return path
+    else:
+        return project_root / path
+
+
+def _get_yolo_data_path(model, model_config: Dict, project_root: Path) -> Optional[Path]:
+    """
+    获取 YOLO 模型的数据集配置文件路径
+    
+    优先级：
+    1. 配置中的 data 字段
+    2. 从 model.ckpt.data 获取（如果存在）
+    3. 返回 None（需要用户手动指定）
+    
+    Args:
+        model: YOLO 模型对象
+        model_config: 模型配置字典
+        project_root: 项目根目录
+    
+    Returns:
+        数据集配置文件路径，如果无法获取则返回 None
+    """
+    # 方法1: 从配置中获取
+    data_config = model_config.get('data', None)
+    if data_config:
+        data_path = _resolve_path(data_config, project_root)
+        if data_path and data_path.exists():
+            return data_path
+        else:
+            print(f"  ⚠ 配置中的 data 路径不存在: {data_path}")
+    
+    # 方法2: 尝试从 model.ckpt.data 获取
+    try:
+        if hasattr(model, 'ckpt') and model.ckpt is not None:
+            # 检查 ckpt 中是否有 data 信息
+            if hasattr(model.ckpt, 'data') and model.ckpt.data:
+                data_path = Path(model.ckpt.data)
+                if data_path.exists():
+                    print(f"  ✓ 从模型检查点中获取数据集配置: {data_path}")
+                    return data_path
+                else:
+                    # 尝试作为相对路径解析
+                    data_path = _resolve_path(model.ckpt.data, project_root)
+                    if data_path and data_path.exists():
+                        print(f"  ✓ 从模型检查点中获取数据集配置: {data_path}")
+                        return data_path
+    except Exception as e:
+        pass  # 忽略错误，继续尝试其他方法
+    
+    # 方法3: 无法获取，返回 None
+    return None
+
+
+def evaluate_single_model(model_name: str, model_config: Dict, args, project_root: Path) -> Optional[Dict]:
+    """
+    评估单个模型
+    
+    Args:
+        model_name: 模型名称（用于显示）
+        model_config: 模型配置字典（包含 type, config, checkpoint, input_size 等）
+        args: 命令行参数
+        project_root: 项目根目录
+    
+    Returns:
+        包含评估结果的字典，如果失败则返回 None
+    """
+    print("\n" + "=" * 80)
+    print(f"评估模型: {model_name}")
+    print("=" * 80)
+    
+    # 从配置中提取参数
+    model_type = model_config.get('type', args.model_type)
+    config_path_str = model_config.get('config', args.config)
+    checkpoint_path_str = model_config.get('checkpoint', None)
+    input_size_override = model_config.get('input_size', None)
+    
+    # 确定 input_size（优先级：模型配置 > 全局配置 > 自动默认值）
+    def get_auto_default_size(model_type: str) -> List[int]:
+        if "yolo" in model_type.lower():
+            return [1280, 1280]
+        else:
+            return [736, 1280]
+    
+    if input_size_override is not None:
+        input_size = input_size_override
+    else:
+        input_size = get_auto_default_size(model_type)
+    
+    # 转换为绝对路径（使用统一的路径解析函数）
+    config_path = _resolve_path(config_path_str, project_root) if config_path_str else None
+    
+    # 处理检查点路径
+    if checkpoint_path_str:
+        checkpoint_path = _resolve_path(checkpoint_path_str, project_root)
+        if not checkpoint_path.exists():
+            print(f"⚠ 警告: 检查点不存在: {checkpoint_path}")
+            return None
+    else:
+        # 尝试自动查找
+        logs_dir = _resolve_path(args.logs_dir, project_root)
+        checkpoint_path = find_latest_best_model(logs_dir, model_type)
+        if checkpoint_path is None:
+            print(f"⚠ 警告: 无法找到检查点 (模型类型: {model_type})")
+            return None
+    
+    print(f"  模型类型: {model_type}")
+    print(f"  配置文件: {config_path}")
+    print(f"  检查点: {checkpoint_path}")
+    print(f"  输入尺寸: {input_size[0]}x{input_size[1]}")
+    
+    # 加载模型
+    is_yolo_model = model_type.startswith("yolov8") or model_type.startswith("yolov10")
+    try:
+        if model_type == "dset":
+            if config_path is None:
+                print(f"  ⚠ 错误: DSET 模型需要配置文件")
+                return None
+            model = load_dset_model(str(config_path), str(checkpoint_path), args.device)
+        elif model_type == "rtdetr":
+            if config_path is None:
+                print(f"  ⚠ 错误: RT-DETR 模型需要配置文件")
+                return None
+            model = load_rtdetr_model(str(config_path), str(checkpoint_path), args.device)
+        elif model_type == "deformable-detr":
+            model = load_deformable_detr_model(str(checkpoint_path), args.device, config_path=str(config_path) if config_path else None)
+        elif model_type.startswith("yolov8"):
+            model = load_yolov8_model(str(checkpoint_path), args.device)
+        elif model_type.startswith("yolov10"):
+            model = load_yolov10_model(str(checkpoint_path), args.device)
+        else:
+            print(f"  ⚠ 错误: 不支持的模型类型: {model_type}")
+            return None
+        print("  ✓ 模型加载成功")
+    except Exception as e:
+        print(f"  ⚠ 错误: 模型加载失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+    
+    # 计算参数量和 FLOPs
+    input_size_tuple = (1, 3, input_size[0], input_size[1])
+    print(f"\n  计算模型信息...")
+    
+    # 注意：DSET 模型的 token pruning 激活已在 load_dset_model 中完成，这里不再重复
+    
+    params_m, flops_g = get_model_info(model, input_size_tuple, is_yolo=is_yolo_model)
+    print(f"  ✓ 参数量: {params_m:.2f} M")
+    if flops_g > 0:
+        print(f"  ✓ FLOPs: {flops_g:.2f} G")
+    
+    # 测量 FPS
+    fps = 0.0
+    if not args.skip_fps:
+        print(f"\n  测量 FPS...")
+        try:
+            fps = measure_fps(model, input_size_tuple, args.fps_iter, args.warmup_iter, args.device, is_yolo=is_yolo_model)
+            print(f"  ✓ FPS: {fps:.1f}")
+        except Exception as e:
+            print(f"  ⚠ FPS 测量失败: {e}")
+    
+    # 评估精度
+    metrics = {'mAP': 0.0, 'AP50': 0.0, 'APS': 0.0}
+    if model_type == "dset":
+        if config_path:
+            print(f"\n  运行 COCO 评估...")
+            metrics = evaluate_accuracy(model, str(config_path), args.device, model_type="dset")
+    elif model_type == "rtdetr":
+        if config_path:
+            print(f"\n  运行 COCO 评估...")
+            metrics = evaluate_accuracy(model, str(config_path), args.device, model_type="rtdetr")
+    elif model_type == "deformable-detr":
+        if config_path:
+            print(f"\n  运行 Deformable-DETR 评估...")
+            metrics = evaluate_deformable_detr_accuracy(model, str(config_path), args.device)
+    elif is_yolo_model:
+        # YOLO 模型：尝试获取数据集配置文件路径
+        data_config_path = _get_yolo_data_path(model, model_config, project_root)
+        if data_config_path:
+            print(f"\n  运行 YOLO 评估...")
+            metrics = evaluate_yolo_accuracy(model, str(data_config_path), args.device)
+        else:
+            print(f"  ⚠ YOLO 模型需要数据集配置文件")
+            print(f"  ⚠ 请在 JSON 配置中添加 \"data\": \"path/to/data.yaml\" 字段")
+            print(f"  ⚠ 或确保模型检查点中包含数据集配置信息")
+    
+    # 清理显存
+    del model
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    
+    # 返回结果
+    return {
+        'model_name': model_name,
+        'model_type': model_type,
+        'params_m': params_m,
+        'flops_g': flops_g,
+        'fps': fps,
+        'mAP': metrics['mAP'],
+        'AP50': metrics['AP50'],
+        'APS': metrics['APS'],
+        'input_size': f"{input_size[0]}x{input_size[1]}"
+    }
+
+
+def print_summary_table(results: List[Dict], gpu_name: str = "GPU", save_csv: bool = True):
+    """
+    打印结果汇总表格（使用简单的字符串格式化）并保存为 CSV
+    
+    Args:
+        results: 评估结果列表
+        gpu_name: GPU 名称
+        save_csv: 是否保存为 CSV 文件
+    """
+    if not results:
+        print("\n⚠ 没有评估结果可显示")
+        return
+    
+    print("\n" + "=" * 120)
+    print("BATCH EVALUATION SUMMARY".center(120))
+    print("=" * 120)
+    
+    # 表头
+    header = f"{'Model Name':<25} {'Params(M)':<12} {'FLOPs(G)':<12} {'FPS':<10} {'mAP':<10} {'AP50':<10} {'APS':<10} {'Input':<12}"
+    print(header)
+    print("-" * 120)
+    
+    # 准备 CSV 数据
+    csv_rows = []
+    csv_header = ['Model Name', 'Model Type', 'Params(M)', 'FLOPs(G)', 'FPS', 'mAP', 'AP50', 'APS', 'Input Size']
+    csv_rows.append(csv_header)
+    
+    # 数据行
+    for result in results:
+        model_name = result.get('model_name', 'Unknown')[:24]
+        params_m = result.get('params_m', 0)
+        flops_g = result.get('flops_g', 0)
+        fps = result.get('fps', 0)
+        mAP = result.get('mAP', 0)
+        AP50 = result.get('AP50', 0)
+        APS = result.get('APS', 0)
+        input_size = result.get('input_size', 'N/A')
+        model_type = result.get('model_type', 'Unknown')
+        
+        # 格式化显示字符串（处理 N/A）
+        params_str = f"{params_m:.2f}" if params_m > 0 else "N/A"
+        flops_str = f"{flops_g:.2f}" if flops_g > 0 else "N/A"
+        fps_str = f"{fps:.1f}" if fps > 0 else "N/A"
+        map_str = f"{mAP:.4f}" if mAP > 0 else "N/A"
+        ap50_str = f"{AP50:.4f}" if AP50 > 0 else "N/A"
+        aps_str = f"{APS:.4f}" if APS > 0 else "N/A"
+        
+        row = f"{model_name:<25} {params_str:<12} {flops_str:<12} {fps_str:<10} {map_str:<10} {ap50_str:<10} {aps_str:<10} {input_size:<12}"
+        print(row)
+        
+        # CSV 行（使用原始数值，N/A 用空字符串表示）
+        csv_row = [
+            model_name,
+            model_type,
+            f"{params_m:.2f}" if params_m > 0 else "",
+            f"{flops_g:.2f}" if flops_g > 0 else "",
+            f"{fps:.1f}" if fps > 0 else "",
+            f"{mAP:.4f}" if mAP > 0 else "",
+            f"{AP50:.4f}" if AP50 > 0 else "",
+            f"{APS:.4f}" if APS > 0 else "",
+            input_size
+        ]
+        csv_rows.append(csv_row)
+    
+    print("-" * 120)
+    print(f"Note: FPS measured on {gpu_name} with CUDA Events. Accuracy evaluated via pycocotools (DSET/RT-DETR) or model.val() (YOLO).")
+    print("=" * 120)
+    
+    # 保存为 CSV 文件
+    if save_csv:
+        import csv
+        csv_path = Path(project_root) / "benchmark_results.csv"
+        try:
+            with open(csv_path, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                writer.writerows(csv_rows)
+            print(f"\n✓ 结果已保存到: {csv_path}")
+        except Exception as e:
+            print(f"\n⚠ 保存 CSV 文件失败: {e}")
+
+
 def find_latest_best_model(logs_dir: Path, model_type: str = "dset") -> Optional[Path]:
     """
     在 logs 目录下找到最新的 best_model.pth
@@ -989,8 +1397,8 @@ def main():
                        help='DSET 配置文件路径')
     parser.add_argument('--checkpoint', type=str, default=None,
                        help='指定检查点路径（如果未指定，将自动查找最新的）')
-    parser.add_argument('--input_size', type=int, nargs=2, default=[736, 1280],
-                       help='输入图像尺寸 [height, width] (默认: 736 1280，对应 1280x720 缩放后尺寸，736 是 32 的倍数)')
+    parser.add_argument('--input_size', type=int, nargs=2, default=None,
+                       help='输入图像尺寸 [height, width] (如果未指定，将根据模型类型自动选择)')
     parser.add_argument('--device', type=str, default='cuda',
                        help='设备 (cuda 或 cpu)')
     parser.add_argument('--fps_iter', type=int, default=100,
@@ -1009,134 +1417,12 @@ def main():
                        help='Deformable-DETR work_dirs 路径（当 model_type=deformable-detr 时使用）')
     parser.add_argument('--deformable_config', type=str, default=None,
                        help='Deformable-DETR 配置文件路径（可选）')
+    parser.add_argument('--models_config', type=str, default=None,
+                       help='JSON 配置文件路径（包含多个模型的配置，支持 input_size 字段）')
     
     args = parser.parse_args()
     
-    # 转换为绝对路径（使用显式设置的项目根目录）
-    logs_dir = Path(project_root) / args.logs_dir
-    config_path = Path(project_root) / args.config
-    
-    print("=" * 80)
-    print("性能对比表生成脚本")
-    print("=" * 80)
-    
-    # 1. 查找或使用指定的检查点
-    if args.checkpoint:
-        checkpoint_path = Path(args.checkpoint)
-        if not checkpoint_path.is_absolute():
-            checkpoint_path = project_root / checkpoint_path
-    else:
-        print(f"\n查找最新的检查点在: {logs_dir} (模型类型: {args.model_type})")
-        result = find_latest_best_model(logs_dir, args.model_type)
-        if result is None:
-            print(f"错误: 在 {logs_dir} 下未找到检查点")
-            return
-        checkpoint_path = result
-    
-    print(f"✓ 找到检查点: {checkpoint_path}")
-    
-    # 2. 加载模型并计算参数量
-    print(f"\n加载模型: {checkpoint_path}")
-    is_yolo_model = args.model_type.startswith("yolov8") or args.model_type.startswith("yolov10")
-    try:
-        if args.model_type == "dset":
-            model = load_dset_model(str(config_path), str(checkpoint_path), args.device)
-        elif args.model_type == "rtdetr":
-            rtdetr_config = args.rtdetr_config or config_path
-            model = load_rtdetr_model(str(rtdetr_config), str(checkpoint_path), args.device)
-        elif args.model_type == "deformable-detr":
-            deformable_config = args.deformable_config
-            model = load_deformable_detr_model(str(checkpoint_path), args.device, config_path=deformable_config)
-        elif args.model_type.startswith("yolov8"):
-            model = load_yolov8_model(str(checkpoint_path), args.device)
-        elif args.model_type.startswith("yolov10"):
-            model = load_yolov10_model(str(checkpoint_path), args.device)
-        else:
-            raise ValueError(f"不支持的模型类型: {args.model_type}")
-        print("✓ 模型加载成功")
-    except Exception as e:
-        print(f"错误: 模型加载失败: {e}")
-        import traceback
-        traceback.print_exc()
-        return
-    
-    # 3. 计算参数量和 FLOPs
-    # 输入尺寸逻辑：
-    # - DSET/RT-DETRv2: FLOPs 和 FPS 都使用 (1, 3, 736, 1280)
-    # - YOLO: FLOPs 使用 (1, 3, 736, 1280) 公平比较，FPS 使用 (1, 3, 1280, 1280) 包含 Letterbox 开销
-    input_size_flops = (1, 3, args.input_size[0], args.input_size[1])  # 用于 FLOPs 计算
-    input_size_fps = input_size_flops  # 默认与 FLOPs 相同
-    
-    if is_yolo_model:
-        # YOLO FPS 测速使用 1280x1280 以包含 Letterbox 填充开销
-        input_size_fps = (1, 3, max(args.input_size), max(args.input_size))
-        print(f"\n计算模型信息...")
-        print(f"  FLOPs 计算尺寸: {input_size_flops[2]}x{input_size_flops[3]} (公平比较)")
-        print(f"  FPS 测速尺寸: {input_size_fps[2]}x{input_size_fps[3]} (包含 Letterbox 填充开销)")
-    else:
-        # DSET/RT-DETRv2: FLOPs 和 FPS 使用相同尺寸
-        print(f"\n计算模型信息 (输入尺寸: {input_size_flops[2]}x{input_size_flops[3]})...")
-    
-    # 对于 DSET 模型，确保在计算 FLOPs 之前激活 token pruning
-    if args.model_type == "dset" and hasattr(model, 'encoder') and hasattr(model.encoder, 'set_epoch'):
-        # 从配置中获取 warmup_epochs
-        try:
-            with open(config_path, 'r', encoding='utf-8') as f:
-                config = yaml.safe_load(f)
-            dset_config = config.get('model', {}).get('dset', {})
-            warmup_epochs = dset_config.get('token_pruning_warmup_epochs', 10)
-            model.encoder.set_epoch(max(warmup_epochs, 10))
-            print(f"  ✓ 已激活 DSET token pruning (epoch={max(warmup_epochs, 10)}) 以正确计算 FLOPs")
-        except Exception as e:
-            print(f"  ⚠ 无法读取配置以激活 token pruning: {e}")
-    
-    params_m, flops_g = get_model_info(model, input_size_flops, is_yolo=is_yolo_model)
-    print(f"✓ 参数量: {params_m:.2f} M")
-    if flops_g > 0:
-        print(f"✓ FLOPs: {flops_g:.2f} G")
-    else:
-        print(f"⚠ FLOPs: 未计算（可能需要安装 thop: pip install thop）")
-    
-    # 4. 测量 FPS（使用正确的输入尺寸）
-    fps = 0.0
-    if not args.skip_fps:
-        print(f"\n测量 FPS (迭代 {args.fps_iter} 次, 预热 {args.warmup_iter} 次)...")
-        try:
-            fps = measure_fps(model, input_size_fps, args.fps_iter, args.warmup_iter, args.device, is_yolo=is_yolo_model)
-            print(f"✓ FPS: {fps:.1f}")
-        except Exception as e:
-            print(f"警告: FPS 测量失败: {e}")
-            import traceback
-            traceback.print_exc()
-    else:
-        print("\n跳过 FPS 测试")
-    
-    # 5. 使用 pycocotools 在验证集上运行评估
-    metrics = {'mAP': 0.0, 'AP50': 0.0, 'APS': 0.0}
-    if args.model_type == "dset":
-        print(f"\n运行 COCO 评估 (使用验证集)...")
-        metrics = evaluate_accuracy(model, str(config_path), args.device, model_type="dset")
-        print(f"✓ mAP (0.5:0.95): {metrics['mAP']:.4f}")
-        print(f"✓ AP50: {metrics['AP50']:.4f}")
-        print(f"✓ APS (Small): {metrics['APS']:.4f}")
-    elif args.model_type == "rtdetr":
-        print(f"\n运行 COCO 评估 (使用验证集)...")
-        # RT-DETRv2 使用 RTDETRTrainer 进行评估
-        metrics = evaluate_accuracy(model, str(rtdetr_config), args.device, model_type="rtdetr")
-        print(f"✓ mAP (0.5:0.95): {metrics['mAP']:.4f}")
-        print(f"✓ AP50: {metrics['AP50']:.4f}")
-        print(f"✓ APS (Small): {metrics['APS']:.4f}")
-    elif args.model_type == "deformable-detr":
-        print("\n注意: Deformable-DETR 评估需要 MMEngine 格式，当前版本暂不支持自动评估")
-        print("   请手动填入 mAP 指标或扩展评估逻辑")
-    elif is_yolo_model:
-        print("\n注意: YOLO 模型评估需要 ultralytics 格式，当前版本暂不支持自动评估")
-        print("   请手动填入 mAP 指标或扩展评估逻辑")
-    else:
-        print("\n警告: 未支持的模型类型，mAP 指标将使用默认值 0.0")
-    
-    # 6. 输出标准化评估结果（学术论文格式）
-    # 动态检测 GPU 模型
+    # 动态检测 GPU 名称
     if torch.cuda.is_available():
         try:
             gpu_name = torch.cuda.get_device_name(0)
@@ -1145,17 +1431,80 @@ def main():
     else:
         gpu_name = "CPU"
     
-    # 格式化并输出标准化评估结果（学术论文格式）
-    _format_evaluation_results(
-        model_type=args.model_type,
-        params_m=params_m,
-        flops_g=flops_g,
-        fps=fps,
-        metrics=metrics,
-        input_resolution=(args.input_size[1], args.input_size[0]),
-        is_yolo=is_yolo_model,
-        gpu_name=gpu_name
-    )
+    print("=" * 80)
+    print("性能对比表生成脚本")
+    print("=" * 80)
+    
+    # 统一入口逻辑：如果没有提供 --models_config，手动构造单项配置
+    if args.models_config:
+        # 批量评估模式：从 JSON 文件加载配置
+        json_config_path = _resolve_path(args.models_config, project_root)
+        if not json_config_path.exists():
+            print(f"错误: JSON 配置文件不存在: {json_config_path}")
+            return
+        
+        with open(json_config_path, 'r', encoding='utf-8') as f:
+            json_config = json.load(f)
+        print(f"✓ 已加载 JSON 配置文件: {json_config_path}")
+        print(f"✓ 批量评估模式: 将评估 {len(json_config)} 个模型\n")
+    else:
+        # 单模型评估模式：手动构造单项配置
+        def get_auto_default_size(model_type: str) -> List[int]:
+            """根据模型类型自动返回默认 input_size"""
+            if "yolo" in model_type.lower():
+                return [1280, 1280]
+            else:
+                return [736, 1280]
+        
+        auto_default_size = get_auto_default_size(args.model_type)
+        final_input_size = args.input_size if args.input_size is not None else auto_default_size
+        
+        # 构造单项配置
+        single_model_config = {
+            'type': args.model_type,
+            'config': args.config,
+            'checkpoint': args.checkpoint,
+            'input_size': final_input_size
+        }
+        
+        # 处理特殊参数
+        if args.model_type == "rtdetr" and args.rtdetr_config:
+            single_model_config['config'] = args.rtdetr_config
+        if args.model_type == "deformable-detr" and args.deformable_config:
+            single_model_config['config'] = args.deformable_config
+        
+        json_config = {'single_model': single_model_config}
+        print(f"✓ 单模型评估模式\n")
+    
+    # 统一处理：所有评估都通过 evaluate_single_model 完成
+    all_results = []
+    for model_name, model_config in json_config.items():
+        if not isinstance(model_config, dict):
+            print(f"⚠ 跳过无效配置: {model_name} (配置不是字典格式)")
+            continue
+        
+        result = evaluate_single_model(model_name, model_config, args, project_root)
+        if result:
+            all_results.append(result)
+    
+    # 打印汇总表格并保存为 CSV
+    if len(all_results) > 1:
+        # 批量模式：打印汇总表格
+        print_summary_table(all_results, gpu_name, save_csv=True)
+    else:
+        # 单模型模式：使用原有的格式化输出
+        if all_results:
+            result = all_results[0]
+            _format_evaluation_results(
+                model_type=result['model_type'],
+                params_m=result['params_m'],
+                flops_g=result['flops_g'],
+                fps=result['fps'],
+                metrics={'mAP': result['mAP'], 'AP50': result['AP50'], 'APS': result['APS']},
+                input_resolution=(int(result['input_size'].split('x')[1]), int(result['input_size'].split('x')[0])),
+                is_yolo=result['model_type'].startswith("yolov8") or result['model_type'].startswith("yolov10"),
+                gpu_name=gpu_name
+            )
 
 
 def _format_evaluation_results(model_type: str, params_m: float, flops_g: float, fps: float,
@@ -1185,9 +1534,12 @@ def _format_evaluation_results(model_type: str, params_m: float, flops_g: float,
     }
     model_display_name = model_name_map.get(model_type, model_type.upper())
     
-    # 确定有效输入分辨率
+    # 确定有效输入分辨率（已根据模型类型自动适配，直接使用传入值）
     if is_yolo:
-        effective_resolution = f"{max(input_resolution)}x{max(input_resolution)}"
+        # YOLO 模型默认已设置为正方形（1280x1280），直接使用传入值
+        # 如果不是正方形，使用最大边以确保显示正确
+        yolo_size = max(input_resolution[0], input_resolution[1])
+        effective_resolution = f"{yolo_size}x{yolo_size}"
     else:
         effective_resolution = f"{input_resolution[0]}x{input_resolution[1]}"
     
