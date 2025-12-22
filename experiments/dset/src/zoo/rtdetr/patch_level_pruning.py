@@ -499,7 +499,7 @@ class PatchLevelPruner(nn.Module):
         reduction: str = 'mean'
     ) -> torch.Tensor:
         """
-        Modified Focal Loss (reference: CornerNet/CenterNet) - 优化版本
+        Modified Focal Loss (reference: CornerNet/CenterNet)
         
         Formula:
         - Positive samples: (1 - p)^alpha * log(p) * y
