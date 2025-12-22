@@ -314,7 +314,7 @@ class HybridEncoder(nn.Module):
             )
             self.token_pruners.append(pruner)
         
-            encoder_layer = TransformerEncoderLayer(
+        encoder_layer = TransformerEncoderLayer(
             hidden_dim, 
             nhead=nhead,
             dim_feedforward=dim_feedforward, 
