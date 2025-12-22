@@ -735,14 +735,17 @@ def evaluate_yolo_accuracy(model, config_path: str, device: str = "cuda", max_sa
         print(f"  ℹ 注意: YOLO model.val() 会评估整个验证集，results.speed 提供平均耗时统计")
         
         # 调用 YOLO 的 val 方法
+        # 关键修复：强制设置 batch_size=1（学术论文标准：单帧延迟测试）
         # 注意：YOLO 的 val 方法会评估整个验证集，results.speed 提供的是平均耗时
         # 这对于性能测试是合理的，因为速度统计本身就是平均值
         results = model.val(
             data=str(config_path),
             device=device,
             verbose=False,  # 减少输出
-            max_det=300  # 限制每张图片的最大检测数量
+            max_det=300,  # 限制每张图片的最大检测数量
+            batch=1  # 关键修复：强制设置 batch_size=1（性能测试标准）
         )
+        print(f"  ✓ 确认: YOLO 评估使用 batch_size=1（性能测试标准）")
         
         # 从 results 中提取指标
         # ultralytics 的 metrics 对象包含 box.map, box.map50 等
@@ -941,7 +944,27 @@ def evaluate_accuracy(model, config_path: str, device: str = "cuda", model_type:
             config['misc'] = {}
         config['misc']['device'] = device
         
-        # 创建 trainer 以获取数据加载器（使用与训练相同的配置）
+        # 关键修复：强制设置 batch_size = 1 用于性能测试（学术论文标准：单帧延迟测试）
+        # 确保所有性能测试都在 batch_size=1 的条件下进行
+        if 'dataset' not in config:
+            config['dataset'] = {}
+        if 'val_batch_size' in config['dataset']:
+            original_batch_size = config['dataset']['val_batch_size']
+            print(f"  ℹ 原始验证集 batch_size: {original_batch_size}，强制设置为 1（性能测试标准）")
+        else:
+            print(f"  ℹ 强制设置验证集 batch_size = 1（性能测试标准）")
+        config['dataset']['val_batch_size'] = 1
+        
+        # 对于 RT-DETR，可能还需要检查其他配置项
+        if model_type == "rtdetr":
+            # RT-DETR 可能使用不同的配置结构
+            if 'train' in config and 'batch_size' in config['train']:
+                # 保持训练 batch_size 不变，只修改验证集
+                pass
+            if 'val' in config and 'batch_size' in config['val']:
+                config['val']['batch_size'] = 1
+        
+        # 创建 trainer 以获取数据加载器（使用 batch_size=1 的配置）
         if model_type == "dset":
             trainer = TrainerClass(config, config_file_path=str(config_path))
             _, val_loader = trainer._create_data_loaders()
@@ -951,6 +974,13 @@ def evaluate_accuracy(model, config_path: str, device: str = "cuda", model_type:
             trainer.model = model  # 传入已加载权重的模型
             trainer.criterion = trainer.create_criterion()
             train_loader, val_loader = trainer.create_datasets()  # 获取验证集加载器
+        
+        # 验证 batch_size 确实为 1
+        actual_batch_size = val_loader.batch_size if hasattr(val_loader, 'batch_size') else None
+        if actual_batch_size is not None and actual_batch_size != 1:
+            print(f"  ⚠ 警告: DataLoader batch_size = {actual_batch_size}，期望为 1")
+        else:
+            print(f"  ✓ 确认: DataLoader batch_size = 1（性能测试标准）")
         
         print(f"  ✓ 创建验证集 DataLoader (样本数: {len(val_loader.dataset)})")
         print(f"  ✓ 使用与训练相同的图像缩放逻辑 (max_size=1280, 保持宽高比 → 1280x720)")
@@ -997,6 +1027,17 @@ def evaluate_accuracy(model, config_path: str, device: str = "cuda", model_type:
                 original_batch_size = images.shape[0]
                 B, C, H_tensor, W_tensor = images.shape
                 
+                # 关键修复：确保 batch_size = 1（性能测试标准）
+                # 由于我们已经强制设置了 DataLoader 的 batch_size=1，这里应该总是为 1
+                if original_batch_size != 1:
+                    print(f"  ⚠ 警告: 检测到 batch_size = {original_batch_size}，期望为 1。强制截取第一张图片。")
+                    images = images[:1]
+                    targets = targets[:1]
+                    original_batch_size = 1
+                
+                # 验证 Tensor 第一维度为 1
+                assert images.shape[0] == 1, f"性能测试要求 batch_size=1，但检测到 {images.shape[0]}"
+                
                 # 判断是否需要计时（仅对前 max_samples 张图片进行性能测试）
                 need_timing = limit_samples and (perf_samples < max_samples)
                 
@@ -1038,7 +1079,10 @@ def evaluate_accuracy(model, config_path: str, device: str = "cuda", model_type:
                         inference_end_time = time.time()
                         inference_elapsed_ms = (inference_end_time - inference_start_time) * 1000.0
                     
-                    inference_times.append(inference_elapsed_ms / remaining_perf)
+                    # 关键修复：batch_size=1 时，总延迟就是单张图片的延迟（不需要除以 batch_size）
+                    # 由于我们已经强制设置了 batch_size=1，remaining_perf 应该总是 1
+                    assert remaining_perf == 1, f"性能测试要求 batch_size=1，但 remaining_perf = {remaining_perf}"
+                    inference_times.append(inference_elapsed_ms)  # batch_size=1，直接使用总延迟
                     
                     # 后处理计时开始（仅包含必要的张量计算：sigmoid/softmax、坐标转换）
                     # 关键修复：不包含 .cpu().numpy() 和 append 等慢速 Python 操作
@@ -1073,7 +1117,8 @@ def evaluate_accuracy(model, config_path: str, device: str = "cuda", model_type:
                         postprocess_end_time = time.time()
                         postprocess_elapsed_ms = (postprocess_end_time - postprocess_start_time) * 1000.0
                     
-                    postprocess_times.append(postprocess_elapsed_ms / remaining_perf)
+                    # 关键修复：batch_size=1 时，总延迟就是单张图片的延迟（不需要除以 batch_size）
+                    postprocess_times.append(postprocess_elapsed_ms)  # batch_size=1，直接使用总延迟
                     
                     # 性能测试计时结束后，收集数据用于精度评估（不计时）
                     if has_predictions:
@@ -1148,7 +1193,9 @@ def evaluate_accuracy(model, config_path: str, device: str = "cuda", model_type:
                             inference_end_time = time.time()
                             inference_elapsed_ms = (inference_end_time - inference_start_time) * 1000.0
                         
-                        inference_times.append(inference_elapsed_ms / original_batch_size)
+                        # 关键修复：batch_size=1 时，总延迟就是单张图片的延迟（不需要除以 batch_size）
+                        assert original_batch_size == 1, f"性能测试要求 batch_size=1，但检测到 {original_batch_size}"
+                        inference_times.append(inference_elapsed_ms)  # batch_size=1，直接使用总延迟
                         
                         # 后处理计时开始（仅包含必要的张量计算：sigmoid/softmax、坐标转换）
                         # 关键修复：不包含 .cpu().numpy() 和 append 等慢速 Python 操作
@@ -1185,7 +1232,8 @@ def evaluate_accuracy(model, config_path: str, device: str = "cuda", model_type:
                             postprocess_end_time = time.time()
                             postprocess_elapsed_ms = (postprocess_end_time - postprocess_start_time) * 1000.0
                         
-                        postprocess_times.append(postprocess_elapsed_ms / original_batch_size)
+                        # 关键修复：batch_size=1 时，总延迟就是单张图片的延迟（不需要除以 batch_size）
+                        postprocess_times.append(postprocess_elapsed_ms)  # batch_size=1，直接使用总延迟
                         perf_samples += original_batch_size
                     
                     # 性能测试计时结束后，收集数据用于精度评估（不计时）
@@ -1208,14 +1256,19 @@ def evaluate_accuracy(model, config_path: str, device: str = "cuda", model_type:
         
         # 计算平均耗时（仅在有计时数据时）
         # 关键修复：分离推理时间和后处理时间，确保数据真实可信
+        # 关键修复：所有性能测试都在 batch_size=1 条件下进行，latency_total_ms 基于单张图片的完整耗时
         if inference_times and postprocess_times:
             # 计算平均推理时间（仅网络前向传播）
+            # 注意：由于 batch_size=1，inference_times 中存储的已经是单张图片的延迟（不是 batch 的平均值）
             avg_inference_ms = sum(inference_times) / len(inference_times)
             
-            # 计算平均后处理时间（包括 sigmoid/softmax、坐标转换、CPU 传输）
+            # 计算平均后处理时间（仅包含必要的张量计算：sigmoid/softmax、坐标转换）
+            # 注意：由于 batch_size=1，postprocess_times 中存储的已经是单张图片的延迟（不是 batch 的平均值）
+            # 关键修复：不包含 .cpu().numpy() 和 append 等慢速 Python 操作，保持计时器纯净
             avg_postprocess_ms = sum(postprocess_times) / len(postprocess_times)
             
             # 总耗时 = 推理时间 + 后处理时间
+            # 由于 batch_size=1，latency_total_ms 就是单张图片的完整耗时（不是 batch 的平均值）
             latency_total_ms = avg_inference_ms + avg_postprocess_ms
             fps = 1000.0 / latency_total_ms if latency_total_ms > 0 else 0.0
             
@@ -1224,6 +1277,7 @@ def evaluate_accuracy(model, config_path: str, device: str = "cuda", model_type:
             
             print(f"  ✓ 耗时统计 (ms): Inference={latency_inference_ms:.2f}, Post-process={latency_postprocess_ms:.2f}, Total={latency_total_ms:.2f}")
             print(f"  ✓ FPS: {fps:.1f}")
+            print(f"  ✓ 注意: 所有性能测试在 batch_size=1 条件下进行（学术论文标准：单帧延迟测试）")
             print(f"  ✓ 注意: 后处理仅包含必要的张量计算（sigmoid/softmax、坐标转换），不包含 .cpu().numpy() 和 append 等慢速 Python 操作")
         elif inference_times:
             # 兼容旧代码（如果没有后处理时间数据）
