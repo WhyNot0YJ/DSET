@@ -578,15 +578,28 @@ def evaluate_accuracy(model, config_path: str, device: str = "cuda",
             trainer.criterion = trainer.create_criterion()
             _, val_loader = trainer.create_datasets()
         
+        # 强制重构 DataLoader：如果 batch_size 不为 1，则重新包装
+        actual_batch_size = val_loader.batch_size if hasattr(val_loader, 'batch_size') else None
+        if actual_batch_size != 1:
+            print(f"  ⚠ 发现加载器 batch_size={actual_batch_size}，正在强行重构为 1...")
+            val_loader = torch.utils.data.DataLoader(
+                val_loader.dataset,
+                batch_size=1,
+                shuffle=False,
+                num_workers=val_loader.num_workers if hasattr(val_loader, 'num_workers') else 0,
+                pin_memory=val_loader.pin_memory if hasattr(val_loader, 'pin_memory') else False,
+                collate_fn=val_loader.collate_fn if hasattr(val_loader, 'collate_fn') else None
+            )
+        
         dataset_size = len(val_loader.dataset)
         dataloader_length = len(val_loader)
         
-        # 断言检查：batch_size 必须为 1，否则直接报错停止
-        actual_batch_size = val_loader.batch_size if hasattr(val_loader, 'batch_size') else None
-        assert actual_batch_size == 1, \
-            f"错误: DataLoader batch_size={actual_batch_size}，期望为 1。请检查 Trainer 内部的配置键。"
+        # 断言检查：重构后 batch_size 必须为 1
+        final_batch_size = val_loader.batch_size if hasattr(val_loader, 'batch_size') else None
+        assert final_batch_size == 1, \
+            f"错误: 重构后 DataLoader batch_size={final_batch_size}，仍不为 1。"
         assert dataloader_length == dataset_size, \
-            f"错误: DataLoader 长度 ({dataloader_length}) != 数据集大小 ({dataset_size})，batch_size 配置可能失效。"
+            f"错误: DataLoader 长度 ({dataloader_length}) != 数据集大小 ({dataset_size})。"
         
         print(f"  ✓ DataLoader: {dataloader_length}/{dataset_size} (batch_size=1 已确认)")
         
