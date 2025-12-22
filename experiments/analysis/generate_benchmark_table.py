@@ -250,11 +250,16 @@ def measure_fps(model,
             torch.cuda.synchronize()
         
         # 实际测试（包含 NMS，如果是 YOLOv8）
+        # 关键修复：确保在计时前后都同步，避免虚高 FPS
         if use_cuda_events:
+            torch.cuda.synchronize()  # 确保预热完成
             starter = torch.cuda.Event(enable_timing=True)
             ender = torch.cuda.Event(enable_timing=True)
             starter.record()
         else:
+            # 即使不使用 CUDA Events，如果是 CUDA 设备也要同步
+            if device == "cuda" and torch.cuda.is_available():
+                torch.cuda.synchronize()  # 确保预热完成
             start_time = time.time()
         
         # 关键优化：循环内不进行同步，避免 CPU 调度延迟
@@ -263,9 +268,12 @@ def measure_fps(model,
         
         if use_cuda_events:
             ender.record()
-            torch.cuda.synchronize()  # 只在循环后同步一次
+            torch.cuda.synchronize()  # 确保所有操作完成
             elapsed_time = starter.elapsed_time(ender) / 1000.0  # 转换为秒
         else:
+            # 即使不使用 CUDA Events，如果是 CUDA 设备也要同步
+            if device == "cuda" and torch.cuda.is_available():
+                torch.cuda.synchronize()  # 确保所有操作完成
             end_time = time.time()
             elapsed_time = end_time - start_time
     else:
@@ -286,11 +294,16 @@ def measure_fps(model,
             torch.cuda.synchronize()
         
         # 实际测试
+        # 关键修复：确保在计时前后都同步，避免虚高 FPS
         if use_cuda_events:
+            torch.cuda.synchronize()  # 确保预热完成
             starter = torch.cuda.Event(enable_timing=True)
             ender = torch.cuda.Event(enable_timing=True)
             starter.record()
         else:
+            # 即使不使用 CUDA Events，如果是 CUDA 设备也要同步
+            if device == "cuda" and torch.cuda.is_available():
+                torch.cuda.synchronize()  # 确保预热完成
             start_time = time.time()
         
         # 关键优化：循环内不进行同步，避免 CPU 调度延迟
@@ -300,9 +313,12 @@ def measure_fps(model,
         
         if use_cuda_events:
             ender.record()
-            torch.cuda.synchronize()  # 只在循环后同步一次
+            torch.cuda.synchronize()  # 确保所有操作完成
             elapsed_time = starter.elapsed_time(ender) / 1000.0  # 转换为秒
         else:
+            # 即使不使用 CUDA Events，如果是 CUDA 设备也要同步
+            if device == "cuda" and torch.cuda.is_available():
+                torch.cuda.synchronize()  # 确保所有操作完成
             end_time = time.time()
             elapsed_time = end_time - start_time
     
@@ -957,10 +973,14 @@ def evaluate_accuracy(model, config_path: str, device: str = "cuda", model_type:
         all_targets = []
         
         # 使用 CUDA Events 进行精确计时（如果使用 CUDA）
+        # 关键修复：强制使用 CUDA Events 以确保准确计时（避免异步操作导致的虚高 FPS）
         use_cuda_events = (device == "cuda" and torch.cuda.is_available())
+        if use_cuda_events:
+            print(f"  ✓ 使用 CUDA Events 进行精确计时（确保 GPU 同步）")
         
         # 用于性能测试的计时数据
-        inference_times = []  # 存储每次推理的耗时（ms）
+        inference_times = []  # 存储每次推理的耗时（ms，仅网络前向传播）
+        postprocess_times = []  # 存储每次后处理的耗时（ms，包括 sigmoid/softmax、坐标转换、CPU 传输）
         total_samples = 0
         perf_samples = 0  # 用于性能测试的样本数
         
@@ -988,31 +1008,49 @@ def evaluate_accuracy(model, config_path: str, device: str = "cuda", model_type:
                     perf_targets = targets[:remaining_perf]
                     
                     # 处理性能测试部分（计时）
+                    # 关键修复：数据加载不在计时范围内（确保只测模型推理）
                     perf_images = perf_images.to(device)
                     perf_targets = [{k: v.to(device) if isinstance(v, torch.Tensor) else v 
                                    for k, v in t.items()} for t in perf_targets]
                     
+                    # 推理计时开始（强制同步，确保 GPU 操作完成）
                     if use_cuda_events:
-                        torch.cuda.synchronize()
-                        starter = torch.cuda.Event(enable_timing=True)
-                        ender = torch.cuda.Event(enable_timing=True)
-                        starter.record()
+                        torch.cuda.synchronize()  # 确保之前的操作完成
+                        inference_starter = torch.cuda.Event(enable_timing=True)
+                        inference_ender = torch.cuda.Event(enable_timing=True)
+                        inference_starter.record()
                     else:
-                        start_time = time.time()
+                        if device == "cuda" and torch.cuda.is_available():
+                            torch.cuda.synchronize()  # CPU 模式下也要同步（如果可用）
+                        inference_start_time = time.time()
                     
+                    # 模型推理（仅网络前向传播）
                     perf_outputs = model(perf_images, perf_targets)
                     
+                    # 推理计时结束（强制同步，确保 GPU 操作完成）
                     if use_cuda_events:
-                        ender.record()
-                        torch.cuda.synchronize()
-                        elapsed_ms = starter.elapsed_time(ender)
+                        inference_ender.record()
+                        torch.cuda.synchronize()  # 确保推理完成
+                        inference_elapsed_ms = inference_starter.elapsed_time(inference_ender)
                     else:
-                        end_time = time.time()
-                        elapsed_ms = (end_time - start_time) * 1000.0
+                        if device == "cuda" and torch.cuda.is_available():
+                            torch.cuda.synchronize()  # CPU 模式下也要同步（如果可用）
+                        inference_end_time = time.time()
+                        inference_elapsed_ms = (inference_end_time - inference_start_time) * 1000.0
                     
-                    inference_times.append(elapsed_ms / remaining_perf)
+                    inference_times.append(inference_elapsed_ms / remaining_perf)
                     
-                    # 收集性能测试部分的预测结果
+                    # 后处理计时开始（包括 sigmoid/softmax、坐标转换、CPU 传输）
+                    if use_cuda_events:
+                        postprocess_starter = torch.cuda.Event(enable_timing=True)
+                        postprocess_ender = torch.cuda.Event(enable_timing=True)
+                        postprocess_starter.record()
+                    else:
+                        if device == "cuda" and torch.cuda.is_available():
+                            torch.cuda.synchronize()
+                        postprocess_start_time = time.time()
+                    
+                    # 收集性能测试部分的预测结果（包含后处理）
                     has_predictions = (
                         isinstance(perf_outputs, dict) and (
                             ('class_scores' in perf_outputs and 'bboxes' in perf_outputs) or
@@ -1024,6 +1062,19 @@ def evaluate_accuracy(model, config_path: str, device: str = "cuda", model_type:
                             perf_outputs, perf_targets, batch_idx, all_predictions, all_targets,
                             W_tensor, H_tensor, remaining_perf
                         )
+                    
+                    # 后处理计时结束（强制同步，确保所有操作完成）
+                    if use_cuda_events:
+                        postprocess_ender.record()
+                        torch.cuda.synchronize()  # 确保后处理完成（包括 CPU 传输）
+                        postprocess_elapsed_ms = postprocess_starter.elapsed_time(postprocess_ender)
+                    else:
+                        if device == "cuda" and torch.cuda.is_available():
+                            torch.cuda.synchronize()
+                        postprocess_end_time = time.time()
+                        postprocess_elapsed_ms = (postprocess_end_time - postprocess_start_time) * 1000.0
+                    
+                    postprocess_times.append(postprocess_elapsed_ms / remaining_perf)
                     
                     perf_samples += remaining_perf
                     total_samples += remaining_perf
@@ -1058,33 +1109,50 @@ def evaluate_accuracy(model, config_path: str, device: str = "cuda", model_type:
                     need_timing = False  # 后续不再需要计时
                 else:
                     # 正常处理整个 batch
+                    # 关键修复：数据加载不在计时范围内（确保只测模型推理）
                     images = images.to(device)
                     targets = [{k: v.to(device) if isinstance(v, torch.Tensor) else v 
                                for k, v in t.items()} for t in targets]
                     
                     # 如果需要计时，进行性能测试
                     if need_timing:
+                        # 推理计时开始（强制同步，确保 GPU 操作完成）
                         if use_cuda_events:
-                            torch.cuda.synchronize()
-                            starter = torch.cuda.Event(enable_timing=True)
-                            ender = torch.cuda.Event(enable_timing=True)
-                            starter.record()
+                            torch.cuda.synchronize()  # 确保之前的操作完成
+                            inference_starter = torch.cuda.Event(enable_timing=True)
+                            inference_ender = torch.cuda.Event(enable_timing=True)
+                            inference_starter.record()
                         else:
-                            start_time = time.time()
+                            if device == "cuda" and torch.cuda.is_available():
+                                torch.cuda.synchronize()  # CPU 模式下也要同步（如果可用）
+                            inference_start_time = time.time()
                     
+                    # 模型推理（仅网络前向传播）
                     outputs = model(images, targets)
                     
                     if need_timing:
+                        # 推理计时结束（强制同步，确保 GPU 操作完成）
                         if use_cuda_events:
-                            ender.record()
-                            torch.cuda.synchronize()
-                            elapsed_ms = starter.elapsed_time(ender)
+                            inference_ender.record()
+                            torch.cuda.synchronize()  # 确保推理完成
+                            inference_elapsed_ms = inference_starter.elapsed_time(inference_ender)
                         else:
-                            end_time = time.time()
-                            elapsed_ms = (end_time - start_time) * 1000.0
+                            if device == "cuda" and torch.cuda.is_available():
+                                torch.cuda.synchronize()  # CPU 模式下也要同步（如果可用）
+                            inference_end_time = time.time()
+                            inference_elapsed_ms = (inference_end_time - inference_start_time) * 1000.0
                         
-                        inference_times.append(elapsed_ms / original_batch_size)
-                        perf_samples += original_batch_size
+                        inference_times.append(inference_elapsed_ms / original_batch_size)
+                        
+                        # 后处理计时开始（包括 sigmoid/softmax、坐标转换、CPU 传输）
+                        if use_cuda_events:
+                            postprocess_starter = torch.cuda.Event(enable_timing=True)
+                            postprocess_ender = torch.cuda.Event(enable_timing=True)
+                            postprocess_starter.record()
+                        else:
+                            if device == "cuda" and torch.cuda.is_available():
+                                torch.cuda.synchronize()
+                            postprocess_start_time = time.time()
                     
                     # 收集预测结果（所有情况下都收集，用于精度评估）
                     has_predictions = (
@@ -1099,6 +1167,21 @@ def evaluate_accuracy(model, config_path: str, device: str = "cuda", model_type:
                             W_tensor, H_tensor, original_batch_size
                         )
                     
+                    if need_timing:
+                        # 后处理计时结束（强制同步，确保所有操作完成）
+                        if use_cuda_events:
+                            postprocess_ender.record()
+                            torch.cuda.synchronize()  # 确保后处理完成（包括 CPU 传输）
+                            postprocess_elapsed_ms = postprocess_starter.elapsed_time(postprocess_ender)
+                        else:
+                            if device == "cuda" and torch.cuda.is_available():
+                                torch.cuda.synchronize()
+                            postprocess_end_time = time.time()
+                            postprocess_elapsed_ms = (postprocess_end_time - postprocess_start_time) * 1000.0
+                        
+                        postprocess_times.append(postprocess_elapsed_ms / original_batch_size)
+                        perf_samples += original_batch_size
+                    
                     total_samples += original_batch_size
                 
                 if (batch_idx + 1) % 10 == 0:
@@ -1110,18 +1193,36 @@ def evaluate_accuracy(model, config_path: str, device: str = "cuda", model_type:
         print(f"  ✓ 收集到 {len(all_predictions)} 个预测框, {len(all_targets)} 个真实标注")
         
         # 计算平均耗时（仅在有计时数据时）
-        if inference_times:
+        # 关键修复：分离推理时间和后处理时间，确保数据真实可信
+        if inference_times and postprocess_times:
+            # 计算平均推理时间（仅网络前向传播）
+            avg_inference_ms = sum(inference_times) / len(inference_times)
+            
+            # 计算平均后处理时间（包括 sigmoid/softmax、坐标转换、CPU 传输）
+            avg_postprocess_ms = sum(postprocess_times) / len(postprocess_times)
+            
+            # 总耗时 = 推理时间 + 后处理时间
+            latency_total_ms = avg_inference_ms + avg_postprocess_ms
+            fps = 1000.0 / latency_total_ms if latency_total_ms > 0 else 0.0
+            
+            latency_inference_ms = avg_inference_ms
+            latency_postprocess_ms = avg_postprocess_ms
+            
+            print(f"  ✓ 耗时统计 (ms): Inference={latency_inference_ms:.2f}, Post-process={latency_postprocess_ms:.2f}, Total={latency_total_ms:.2f}")
+            print(f"  ✓ FPS: {fps:.1f}")
+            print(f"  ✓ 注意: 后处理包括 sigmoid/softmax、坐标转换、CPU 传输等操作")
+        elif inference_times:
+            # 兼容旧代码（如果没有后处理时间数据）
             avg_latency_ms = sum(inference_times) / len(inference_times)
             fps = 1000.0 / avg_latency_ms if avg_latency_ms > 0 else 0.0
             
-            # 端到端模型（DSET/RT-DETR）的后处理耗时接近 0（已包含在推理中）
-            # 将总耗时全部归为推理耗时
             latency_inference_ms = avg_latency_ms
-            latency_postprocess_ms = 0.0  # 端到端模型没有独立的 NMS 后处理
+            latency_postprocess_ms = 0.0
             latency_total_ms = avg_latency_ms
             
             print(f"  ✓ 耗时统计 (ms): Inference={latency_inference_ms:.2f}, Post-process={latency_postprocess_ms:.2f}, Total={latency_total_ms:.2f}")
             print(f"  ✓ FPS: {fps:.1f}")
+            print(f"  ⚠ 警告: 后处理时间未测量（可能影响 FPS 准确性）")
         else:
             # 跳过性能测试时，性能指标为 0
             latency_inference_ms = 0.0
