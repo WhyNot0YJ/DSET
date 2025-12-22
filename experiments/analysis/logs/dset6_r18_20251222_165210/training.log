@@ -1,0 +1,44 @@
+2025-12-22 16:52:10,392 - WARNING - 预训练权重文件不存在: pretrained/rtdetrv2_r18vd_120e_coco_rerun_48.1.pth
+2025-12-22 16:52:10,392 - INFO - 将从随机初始化开始训练
+2025-12-22 16:52:10,438 - INFO - ✓ 已启用GPU优化: cudnn.benchmark=True, TF32=True
+2025-12-22 16:52:10,438 - INFO - ✓ 创建DSET RT-DETR模型
+2025-12-22 16:52:10,438 - INFO -   Decoder专家数量: 6
+2025-12-22 16:52:10,438 - INFO -   Backbone: presnet18
+2025-12-22 16:52:10,439 - INFO -   Encoder: in_channels=[128, 256, 512], expansion=0.5, num_layers=1
+2025-12-22 16:52:10,439 - INFO -   Encoder MoE设计: 层间共享
+2025-12-22 16:52:10,439 - INFO -   双稀疏配置（DSET核心特性，必然启用）:
+2025-12-22 16:52:10,439 - INFO -     - Patch-MoE: 启用 (experts=6, top_k=3, patch_size=1)
+2025-12-22 16:52:10,439 - INFO -     - Patch-level Pruning: 启用（与 Patch-MoE 兼容）
+2025-12-22 16:52:10,439 - INFO -       → keep_ratio={2: 0.7}, warmup=10
+2025-12-22 16:52:10,439 - INFO -   损失权重配置:
+2025-12-22 16:52:10,439 - INFO -     - Token Pruning Loss: False (weight=0.005)
+2025-12-22 16:52:10,439 - INFO -     - CASS Supervision: True (weight=0.01, expansion=1.2, min_size=2.0)
+2025-12-22 16:52:10,440 - INFO -     - Decoder MoE: 0.01
+2025-12-22 16:52:10,440 - INFO -     - Encoder MoE: 0.001
+2025-12-22 16:52:10,611 - INFO - ✓ 创建数据加载器
+2025-12-22 16:52:10,612 - INFO -   训练集: 5042 | 验证集: 2016
+2025-12-22 16:52:10,612 - INFO -   数据加载配置: num_workers=16, prefetch_factor=4, pin_memory=True
+2025-12-22 16:52:10,617 - INFO - ✓ 预训练参数组: 170 个参数, lr=1e-05
+2025-12-22 16:52:10,620 - INFO - ✓ Norm层参数组: 116 个参数, lr=0.0001, wd=0
+2025-12-22 16:52:10,622 - INFO - ✓ 新参数组: 79 个参数, lr=0.0001
+2025-12-22 16:52:10,623 - INFO - ✓ 使用CosineAnnealingLR调度器 (eta_min=1e-06)
+2025-12-22 16:52:10,623 - INFO - ✓ 学习率预热 3 epochs
+2025-12-22 16:52:10,734 - INFO - ⏱️  Early Stopping: 启用 (patience=20, metric=mAP_0.5_0.95, mode=max)
+2025-12-22 16:52:10,735 - INFO - 推理输出目录: logs/dset6_r18_20251222_165210/inference_samples
+2025-12-22 16:52:10,951 - WARNING - 预训练权重文件不存在: pretrained/rtdetrv2_r18vd_120e_coco_rerun_48.1.pth
+2025-12-22 16:52:10,951 - INFO - 将从随机初始化开始训练
+2025-12-22 16:52:10,999 - INFO - ✓ 已启用GPU优化: cudnn.benchmark=True, TF32=True
+2025-12-22 16:52:10,999 - INFO - ✓ 创建DSET RT-DETR模型
+2025-12-22 16:52:11,000 - INFO -   Decoder专家数量: 6
+2025-12-22 16:52:11,000 - INFO -   Backbone: presnet18
+2025-12-22 16:52:11,000 - INFO -   Encoder: in_channels=[128, 256, 512], expansion=0.5, num_layers=1
+2025-12-22 16:52:11,000 - INFO -   Encoder MoE设计: 层间共享
+2025-12-22 16:52:11,000 - INFO -   双稀疏配置（DSET核心特性，必然启用）:
+2025-12-22 16:52:11,000 - INFO -     - Patch-MoE: 启用 (experts=6, top_k=3, patch_size=1)
+2025-12-22 16:52:11,000 - INFO -     - Patch-level Pruning: 启用（与 Patch-MoE 兼容）
+2025-12-22 16:52:11,000 - INFO -       → keep_ratio={2: 0.7}, warmup=10
+2025-12-22 16:52:11,000 - INFO -   损失权重配置:
+2025-12-22 16:52:11,001 - INFO -     - Token Pruning Loss: False (weight=0.005)
+2025-12-22 16:52:11,001 - INFO -     - CASS Supervision: True (weight=0.01, expansion=1.2, min_size=2.0)
+2025-12-22 16:52:11,001 - INFO -     - Decoder MoE: 0.01
+2025-12-22 16:52:11,001 - INFO -     - Encoder MoE: 0.001

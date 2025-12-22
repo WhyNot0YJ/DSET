@@ -1,0 +1,13 @@
+{
+  "dset6-r18-0.3": {
+    "type":"dset",
+    "config": "/root/autodl-tmp/DSET/experiments/dset/logs/encoder_balance_loss_0.01/dset6_r18_20251217_154127/config.yaml",
+    "checkpoint": "/root/autodl-tmp/DSET/experiments/dset/logs/encoder_balance_loss_0.01/dset6_r18_20251217_154127/best_model.pth"
+  },
+  "dset6-r18-0.7": {
+    "type":"dset",
+    "config": "/root/autodl-tmp/DSET/experiments/dset/logs/encoder_balance_loss_0.01/dset6_r18_20251218_044654/config.yaml",
+    "checkpoint": "/root/autodl-tmp/DSET/experiments/dset/logs/encoder_balance_loss_0.01/dset6_r18_20251218_044654/best_model.pth"
+  }
+}
+
