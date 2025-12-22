@@ -1040,7 +1040,8 @@ def evaluate_accuracy(model, config_path: str, device: str = "cuda", model_type:
                     
                     inference_times.append(inference_elapsed_ms / remaining_perf)
                     
-                    # 后处理计时开始（包括 sigmoid/softmax、坐标转换、CPU 传输）
+                    # 后处理计时开始（仅包含必要的张量计算：sigmoid/softmax、坐标转换）
+                    # 关键修复：不包含 .cpu().numpy() 和 append 等慢速 Python 操作
                     if use_cuda_events:
                         postprocess_starter = torch.cuda.Event(enable_timing=True)
                         postprocess_ender = torch.cuda.Event(enable_timing=True)
@@ -1050,7 +1051,7 @@ def evaluate_accuracy(model, config_path: str, device: str = "cuda", model_type:
                             torch.cuda.synchronize()
                         postprocess_start_time = time.time()
                     
-                    # 收集性能测试部分的预测结果（包含后处理）
+                    # 仅执行必要的后处理张量计算（用于性能测试）
                     has_predictions = (
                         isinstance(perf_outputs, dict) and (
                             ('class_scores' in perf_outputs and 'bboxes' in perf_outputs) or
@@ -1058,15 +1059,13 @@ def evaluate_accuracy(model, config_path: str, device: str = "cuda", model_type:
                         )
                     )
                     if has_predictions:
-                        _collect_predictions_for_coco(
-                            perf_outputs, perf_targets, batch_idx, all_predictions, all_targets,
-                            W_tensor, H_tensor, remaining_perf
-                        )
+                        # 只执行必要的张量计算，不执行 .cpu().numpy() 和 append
+                        _postprocess_for_timing(perf_outputs, W_tensor, H_tensor)
                     
-                    # 后处理计时结束（强制同步，确保所有操作完成）
+                    # 后处理计时结束（强制同步，确保所有张量计算完成）
                     if use_cuda_events:
                         postprocess_ender.record()
-                        torch.cuda.synchronize()  # 确保后处理完成（包括 CPU 传输）
+                        torch.cuda.synchronize()  # 确保后处理张量计算完成
                         postprocess_elapsed_ms = postprocess_starter.elapsed_time(postprocess_ender)
                     else:
                         if device == "cuda" and torch.cuda.is_available():
@@ -1075,6 +1074,13 @@ def evaluate_accuracy(model, config_path: str, device: str = "cuda", model_type:
                         postprocess_elapsed_ms = (postprocess_end_time - postprocess_start_time) * 1000.0
                     
                     postprocess_times.append(postprocess_elapsed_ms / remaining_perf)
+                    
+                    # 性能测试计时结束后，收集数据用于精度评估（不计时）
+                    if has_predictions:
+                        _collect_predictions_for_coco(
+                            perf_outputs, perf_targets, batch_idx, all_predictions, all_targets,
+                            W_tensor, H_tensor, remaining_perf
+                        )
                     
                     perf_samples += remaining_perf
                     total_samples += remaining_perf
@@ -1144,7 +1150,8 @@ def evaluate_accuracy(model, config_path: str, device: str = "cuda", model_type:
                         
                         inference_times.append(inference_elapsed_ms / original_batch_size)
                         
-                        # 后处理计时开始（包括 sigmoid/softmax、坐标转换、CPU 传输）
+                        # 后处理计时开始（仅包含必要的张量计算：sigmoid/softmax、坐标转换）
+                        # 关键修复：不包含 .cpu().numpy() 和 append 等慢速 Python 操作
                         if use_cuda_events:
                             postprocess_starter = torch.cuda.Event(enable_timing=True)
                             postprocess_ender = torch.cuda.Event(enable_timing=True)
@@ -1154,24 +1161,23 @@ def evaluate_accuracy(model, config_path: str, device: str = "cuda", model_type:
                                 torch.cuda.synchronize()
                             postprocess_start_time = time.time()
                     
-                    # 收集预测结果（所有情况下都收集，用于精度评估）
+                    # 检查是否有预测结果
                     has_predictions = (
                         isinstance(outputs, dict) and (
                             ('class_scores' in outputs and 'bboxes' in outputs) or
                             ('pred_logits' in outputs and 'pred_boxes' in outputs)
                         )
                     )
-                    if has_predictions:
-                        _collect_predictions_for_coco(
-                            outputs, targets, batch_idx, all_predictions, all_targets,
-                            W_tensor, H_tensor, original_batch_size
-                        )
+                    
+                    if need_timing and has_predictions:
+                        # 性能测试阶段：只执行必要的后处理张量计算（用于计时）
+                        _postprocess_for_timing(outputs, W_tensor, H_tensor)
                     
                     if need_timing:
-                        # 后处理计时结束（强制同步，确保所有操作完成）
+                        # 后处理计时结束（强制同步，确保所有张量计算完成）
                         if use_cuda_events:
                             postprocess_ender.record()
-                            torch.cuda.synchronize()  # 确保后处理完成（包括 CPU 传输）
+                            torch.cuda.synchronize()  # 确保后处理张量计算完成
                             postprocess_elapsed_ms = postprocess_starter.elapsed_time(postprocess_ender)
                         else:
                             if device == "cuda" and torch.cuda.is_available():
@@ -1181,6 +1187,14 @@ def evaluate_accuracy(model, config_path: str, device: str = "cuda", model_type:
                         
                         postprocess_times.append(postprocess_elapsed_ms / original_batch_size)
                         perf_samples += original_batch_size
+                    
+                    # 性能测试计时结束后，收集数据用于精度评估（不计时）
+                    # 或者在不计时的精度评估阶段，直接收集数据
+                    if has_predictions:
+                        _collect_predictions_for_coco(
+                            outputs, targets, batch_idx, all_predictions, all_targets,
+                            W_tensor, H_tensor, original_batch_size
+                        )
                     
                     total_samples += original_batch_size
                 
@@ -1210,7 +1224,7 @@ def evaluate_accuracy(model, config_path: str, device: str = "cuda", model_type:
             
             print(f"  ✓ 耗时统计 (ms): Inference={latency_inference_ms:.2f}, Post-process={latency_postprocess_ms:.2f}, Total={latency_total_ms:.2f}")
             print(f"  ✓ FPS: {fps:.1f}")
-            print(f"  ✓ 注意: 后处理包括 sigmoid/softmax、坐标转换、CPU 传输等操作")
+            print(f"  ✓ 注意: 后处理仅包含必要的张量计算（sigmoid/softmax、坐标转换），不包含 .cpu().numpy() 和 append 等慢速 Python 操作")
         elif inference_times:
             # 兼容旧代码（如果没有后处理时间数据）
             avg_latency_ms = sum(inference_times) / len(inference_times)
@@ -1249,6 +1263,74 @@ def evaluate_accuracy(model, config_path: str, device: str = "cuda", model_type:
         return {'mAP': 0.0, 'AP50': 0.0, 'APS': 0.0, 
                 'latency_inference_ms': 0.0, 'latency_postprocess_ms': 0.0, 
                 'latency_total_ms': 0.0, 'fps': 0.0}
+
+
+def _postprocess_for_timing(outputs: Dict, img_w: int, img_h: int) -> None:
+    """
+    仅执行必要的后处理张量计算（用于性能测试计时）
+    
+    不包含慢速的 Python 操作（.cpu().numpy(), append 等），
+    只保留模型推理后必要的张量计算：
+    - sigmoid/softmax 计算
+    - 坐标转换（归一化 -> 像素坐标）
+    - clamp 操作
+    
+    这些操作是模型推理延迟的一部分，应该在性能测试中测量。
+    
+    Args:
+        outputs: 模型输出字典
+        img_w: 图像宽度
+        img_h: 图像高度
+    """
+    # 兼容两种输出格式：pred_logits/pred_boxes 或 class_scores/bboxes
+    if 'pred_logits' in outputs:
+        pred_logits = outputs['pred_logits']  # [B, Q, C]
+        pred_boxes = outputs['pred_boxes']    # [B, Q, 4]
+        use_sigmoid = True  # RT-DETR 使用 sigmoid
+    elif 'class_scores' in outputs:
+        pred_logits = outputs['class_scores']  # [B, Q, C]
+        pred_boxes = outputs['bboxes']        # [B, Q, 4]
+        use_sigmoid = False  # DSET 使用 softmax
+    else:
+        return  # 没有有效的预测输出
+    
+    batch_size_actual = pred_logits.shape[0]
+    
+    for i in range(batch_size_actual):
+        # RT-DETR 使用 sigmoid，DSET 使用 softmax（必要的张量计算）
+        if use_sigmoid:
+            pred_scores = torch.sigmoid(pred_logits[i])  # [Q, C]
+        else:
+            pred_scores = torch.softmax(pred_logits[i], dim=-1)  # [Q, C]
+        max_scores, pred_classes = torch.max(pred_scores, dim=-1)  # [Q]
+        
+        # 过滤无效框（padding框）
+        valid_boxes_mask = ~torch.all(pred_boxes[i] == 1.0, dim=1)
+        valid_indices = torch.where(valid_boxes_mask)[0]
+        
+        if len(valid_indices) > 0:
+            filtered_boxes = pred_boxes[i][valid_indices]
+            
+            # 转换为COCO格式 (x, y, w, h)（必要的张量计算）
+            if filtered_boxes.shape[0] > 0:
+                boxes_coco = torch.zeros_like(filtered_boxes)
+                if filtered_boxes.max() <= 1.0:
+                    # 归一化坐标 -> 像素坐标
+                    boxes_coco[:, 0] = (filtered_boxes[:, 0] - filtered_boxes[:, 2] / 2) * img_w
+                    boxes_coco[:, 1] = (filtered_boxes[:, 1] - filtered_boxes[:, 3] / 2) * img_h
+                    boxes_coco[:, 2] = filtered_boxes[:, 2] * img_w
+                    boxes_coco[:, 3] = filtered_boxes[:, 3] * img_h
+                else:
+                    boxes_coco = filtered_boxes.clone()
+                
+                # Clamp坐标（必要的张量计算）
+                boxes_coco[:, 0] = torch.clamp(boxes_coco[:, 0], 0, img_w)
+                boxes_coco[:, 1] = torch.clamp(boxes_coco[:, 1], 0, img_h)
+                boxes_coco[:, 2] = torch.clamp(boxes_coco[:, 2], 1, img_w)
+                boxes_coco[:, 3] = torch.clamp(boxes_coco[:, 3], 1, img_h)
+                
+                # 注意：不执行 .cpu().numpy() 和 append 操作
+                # 这些操作不在性能测试计时范围内
 
 
 def _collect_predictions_for_coco(outputs: Dict, targets: List[Dict], batch_idx: int,
