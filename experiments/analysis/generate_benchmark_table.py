@@ -55,13 +55,19 @@
 - 需要安装 thop 库来计算 FLOPs: pip install thop
 - 需要安装 pycocotools 进行 COCO 评估: pip install pycocotools
 - FLOPs 计算仅反映模型网络结构的计算量（MACs），不包含 NMS 等后处理操作
-- YOLO 模型的 FPS 测量包含完整的推理流程（前向传播 + NMS）
+- FPS 测量优化（确保公平对比）：
+  * 消除同步瓶颈：所有同步操作移出循环，只在 starter.record() 之前和 ender.record() 之后执行一次同步
+  * 统一输入格式：所有模型（包括 YOLO）统一使用预先生成的 torch.Tensor，避免图像编解码和 CPU 归一化开销
+  * 公平对待 NMS：
+    - YOLOv8: FPS 包含其内置的 NMS 后处理耗时（通过 model() 高级 API）
+    - YOLOv10 / RT-DETR / DSET: 端到端模型，天然没有传统 NMS，FPS 反映纯网络计算 + 端到端后处理
+  * Warmup 次数：默认 50 次，确保 RTX 5090 等高端显卡达到稳定的工作频率
 - DSET 模型会自动启用 token pruning（设置 epoch >= warmup_epochs）以确保评估反映剪枝后的状态
 - 输入尺寸逻辑：
   * DSET/RT-DETRv2: FLOPs 和 FPS 均使用 736x1280（对应 1280x720 有效分辨率，736 是 32 的倍数）
   * YOLO: FLOPs 使用 736x1280（公平比较），FPS 使用 1280x1280（包含 Letterbox 填充开销）
-- FPS 测量使用 CUDA Events 进行精确计时（如果使用 CUDA）
-- 输出格式符合学术论文标准，可直接复制使用
+- FPS 测量使用 CUDA Events 进行精确计时（如果使用 CUDA），同步操作在循环外执行以消除 CPU 调度延迟
+- 输出格式符合学术论文标准，包含 FPS 和 Latency (ms) 指标，可直接复制使用
 """
 
 import os
@@ -182,14 +188,19 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 12
 def measure_fps(model, 
                 input_size: Tuple[int, int, int, int] = (1, 3, 736, 1280),
                 num_iter: int = 100,
-                warmup_iter: int = 20,
+                warmup_iter: int = 50,
                 device: str = "cuda",
                 is_yolo: bool = False) -> float:
     """
     测量模型的 FPS (Frames Per Second)
     
     使用 CUDA Events 进行精确计时（如果使用 CUDA），确保获取真实的 GPU 硬件执行耗时。
-    对于 YOLO 模型，FPS 测量包含完整的推理流程（前向传播 + NMS）
+    关键优化：
+    1. 消除同步瓶颈：所有同步操作移出循环，只在 starter.record() 之前和 ender.record() 之后执行一次同步
+    2. 统一输入格式：所有模型（包括 YOLO）统一使用预先生成的 torch.Tensor，避免图像编解码和 CPU 归一化开销
+    3. 公平对待 NMS：
+       - YOLOv8: FPS 包含其内置的 NMS 后处理耗时（通过 model() 高级 API）
+       - YOLOv10 / RT-DETR / DSET: 端到端模型，天然没有传统 NMS，FPS 反映纯网络计算 + 端到端后处理
     
     注意：Batch Size 会被强制设置为 1（目标检测论文标准：单帧延迟测试），
     以确保测试结果符合学术规范（YOLOv10/RT-DETR 等论文均采用 BS=1 的 FPS 标准）。
@@ -199,42 +210,47 @@ def measure_fps(model,
         input_size: 输入尺寸 (batch, channels, height, width)，默认 (1, 3, 736, 1280)
                     注意：函数内部会将 batch 维度强制设置为 1
         num_iter: 测试迭代次数（默认 300，针对高端显卡需要更多循环以抵消启动开销）
-        warmup_iter: 预热迭代次数（默认 20，确保模型充分预热）
+        warmup_iter: 预热迭代次数（默认 50，确保 RTX 5090 等高端显卡达到稳定的工作频率）
         device: 设备 ('cuda' 或 'cpu')
-        is_yolo: 是否为 YOLO 模型（使用不同的输入格式，且包含 NMS）
+        is_yolo: 是否为 YOLO 模型（YOLOv8 包含 NMS，YOLOv10 为端到端）
     
     Returns:
-        FPS 值（对于 YOLO 模型，包含 NMS 的完整推理时间）
+        FPS 值
+        - YOLOv8: 包含 NMS 的完整推理时间（网络计算 + NMS 后处理）
+        - YOLOv10 / RT-DETR / DSET: 端到端推理时间（纯网络计算 + 端到端后处理）
     """
     model.eval()
     
     # 使用 CUDA Events 进行精确计时（如果使用 CUDA）
     use_cuda_events = (device == "cuda" and torch.cuda.is_available())
     
+    # 统一使用 Tensor 输入（消除框架开销）
+    # 强制 Batch Size = 1（目标检测论文标准：单帧延迟测试）
+    fps_input_size = (1, input_size[1], input_size[2], input_size[3])
+    
     if is_yolo:
-        # YOLO 模型使用 numpy/PIL 图像格式
-        # 注意：YOLO 模型的 model() 调用已经包含完整的推理流程（前向传播 + NMS）
-        # 确保模型在正确的设备上
+        # YOLO 模型：统一使用 Tensor 输入，避免 Numpy 输入时的图像编解码和 CPU 归一化开销
+        # 注意：YOLOv8 的 model() 调用包含完整的推理流程（前向传播 + NMS）
+        # YOLOv10 为端到端模型，没有传统 NMS
         model = model.to(device)
         
-        import numpy as np
-        # YOLO 通常需要正方形输入，使用 Letterbox 填充
-        # 使用传入的 input_size（已根据模型类型自动适配为 1280x1280 或用户指定值）
-        # 如果传入的不是正方形，使用最大边以确保兼容性
+        # 生成预归一化的 Tensor 输入（范围 [0, 1]）
+        # YOLO 模型期望输入为 [0, 1] 范围的 float32 tensor，形状为 (B, C, H, W)
         yolo_size = max(input_size[2], input_size[3])
-        dummy_image = np.random.randint(0, 255, (yolo_size, yolo_size, 3), dtype=np.uint8)
+        dummy_input = torch.rand(fps_input_size[0], fps_input_size[1], yolo_size, yolo_size).to(device)
+        # 确保输入在 [0, 1] 范围（YOLO 的预处理会进行归一化）
+        dummy_input = dummy_input.clamp(0.0, 1.0)
         
-        # Warmup（包含 NMS）
+        # Warmup（包含 NMS，如果是 YOLOv8）
+        # 注意：YOLO 的高级 API model() 会自动处理 Tensor 输入
         for _ in range(warmup_iter):
-            _ = model(dummy_image, verbose=False)  # 这会执行完整的推理流程，包括 NMS
-            if use_cuda_events:
-                torch.cuda.synchronize()
+            _ = model(dummy_input, verbose=False)  # 这会执行完整的推理流程，YOLOv8 包含 NMS
         
-        # 同步（如果是 CUDA）
+        # 同步（如果是 CUDA）- 只在循环外同步一次
         if use_cuda_events:
             torch.cuda.synchronize()
         
-        # 实际测试（包含 NMS）
+        # 实际测试（包含 NMS，如果是 YOLOv8）
         if use_cuda_events:
             starter = torch.cuda.Event(enable_timing=True)
             ender = torch.cuda.Event(enable_timing=True)
@@ -242,24 +258,21 @@ def measure_fps(model,
         else:
             start_time = time.time()
         
+        # 关键优化：循环内不进行同步，避免 CPU 调度延迟
         for _ in range(num_iter):
-            _ = model(dummy_image, verbose=False)  # 包含 NMS 的完整推理
-            if use_cuda_events:
-                torch.cuda.synchronize()  # 每轮都同步，确保精确计时
+            _ = model(dummy_input, verbose=False)  # 包含 NMS 的完整推理（YOLOv8）
         
         if use_cuda_events:
             ender.record()
-            torch.cuda.synchronize()
+            torch.cuda.synchronize()  # 只在循环后同步一次
             elapsed_time = starter.elapsed_time(ender) / 1000.0  # 转换为秒
         else:
             end_time = time.time()
             elapsed_time = end_time - start_time
     else:
-        # 标准 PyTorch 模型使用 tensor
+        # 标准 PyTorch 模型（DSET, RT-DETR, Deformable-DETR）：端到端模型，无传统 NMS
         # 显式确保模型和输入都在正确的设备上
         model = model.to(device)
-        # 强制 Batch Size = 1（目标检测论文标准：单帧延迟测试）
-        fps_input_size = (1, input_size[1], input_size[2], input_size[3])
         dummy_input = torch.randn(fps_input_size).to(device)
         # 再次确保设备一致性（防止 thop 计算后的残留状态）
         model = model.to(device)
@@ -268,10 +281,8 @@ def measure_fps(model,
         with torch.no_grad():
             for _ in range(warmup_iter):
                 _ = model(dummy_input)
-                if use_cuda_events:
-                    torch.cuda.synchronize()
         
-        # 同步（如果是 CUDA）
+        # 同步（如果是 CUDA）- 只在循环外同步一次
         if use_cuda_events:
             torch.cuda.synchronize()
         
@@ -283,15 +294,14 @@ def measure_fps(model,
         else:
             start_time = time.time()
         
+        # 关键优化：循环内不进行同步，避免 CPU 调度延迟
         with torch.no_grad():
             for _ in range(num_iter):
                 _ = model(dummy_input)
-                if use_cuda_events:
-                    torch.cuda.synchronize()  # 每轮都同步，确保精确计时
         
         if use_cuda_events:
             ender.record()
-            torch.cuda.synchronize()
+            torch.cuda.synchronize()  # 只在循环后同步一次
             elapsed_time = starter.elapsed_time(ender) / 1000.0  # 转换为秒
         else:
             end_time = time.time()
@@ -1319,6 +1329,9 @@ def evaluate_single_model(model_name: str, model_config: Dict, args, project_roo
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
     
+    # 计算延迟（Latency）
+    latency_ms = (1000.0 / fps) if fps > 0 else 0.0
+    
     # 返回结果
     return {
         'model_name': model_name,
@@ -1326,6 +1339,7 @@ def evaluate_single_model(model_name: str, model_config: Dict, args, project_roo
         'params_m': params_m,
         'flops_g': flops_g,
         'fps': fps,
+        'latency_ms': latency_ms,
         'mAP': metrics['mAP'],
         'AP50': metrics['AP50'],
         'APS': metrics['APS'],
@@ -1350,14 +1364,14 @@ def print_summary_table(results: List[Dict], gpu_name: str = "GPU", save_csv: bo
     print("BATCH EVALUATION SUMMARY".center(120))
     print("=" * 120)
     
-    # 表头
-    header = f"{'Model Name':<25} {'Params(M)':<12} {'FLOPs(G)':<12} {'FPS':<10} {'mAP':<10} {'AP50':<10} {'APS':<10} {'Input':<12}"
+    # 表头（增加 Latency 列）
+    header = f"{'Model Name':<25} {'Params(M)':<12} {'FLOPs(G)':<12} {'FPS':<10} {'Latency(ms)':<12} {'mAP':<10} {'AP50':<10} {'APS':<10} {'Input':<12}"
     print(header)
-    print("-" * 120)
+    print("-" * 140)
     
-    # 准备 CSV 数据
+    # 准备 CSV 数据（增加 Latency 列）
     csv_rows = []
-    csv_header = ['Model Name', 'Model Type', 'Params(M)', 'FLOPs(G)', 'FPS', 'mAP', 'AP50', 'APS', 'Input Size']
+    csv_header = ['Model Name', 'Model Type', 'Params(M)', 'FLOPs(G)', 'FPS', 'Latency(ms)', 'mAP', 'AP50', 'APS', 'Input Size']
     csv_rows.append(csv_header)
     
     # 数据行
@@ -1366,6 +1380,7 @@ def print_summary_table(results: List[Dict], gpu_name: str = "GPU", save_csv: bo
         params_m = result.get('params_m', 0)
         flops_g = result.get('flops_g', 0)
         fps = result.get('fps', 0)
+        latency_ms = result.get('latency_ms', 0)
         mAP = result.get('mAP', 0)
         AP50 = result.get('AP50', 0)
         APS = result.get('APS', 0)
@@ -1376,11 +1391,12 @@ def print_summary_table(results: List[Dict], gpu_name: str = "GPU", save_csv: bo
         params_str = f"{params_m:.2f}" if params_m > 0 else "N/A"
         flops_str = f"{flops_g:.2f}" if flops_g > 0 else "N/A"
         fps_str = f"{fps:.1f}" if fps > 0 else "N/A"
+        latency_str = f"{latency_ms:.2f}" if latency_ms > 0 else "N/A"
         map_str = f"{mAP:.4f}" if mAP > 0 else "N/A"
         ap50_str = f"{AP50:.4f}" if AP50 > 0 else "N/A"
         aps_str = f"{APS:.4f}" if APS > 0 else "N/A"
         
-        row = f"{model_name:<25} {params_str:<12} {flops_str:<12} {fps_str:<10} {map_str:<10} {ap50_str:<10} {aps_str:<10} {input_size:<12}"
+        row = f"{model_name:<25} {params_str:<12} {flops_str:<12} {fps_str:<10} {latency_str:<12} {map_str:<10} {ap50_str:<10} {aps_str:<10} {input_size:<12}"
         print(row)
         
         # CSV 行（使用原始数值，N/A 用空字符串表示）
@@ -1390,6 +1406,7 @@ def print_summary_table(results: List[Dict], gpu_name: str = "GPU", save_csv: bo
             f"{params_m:.2f}" if params_m > 0 else "",
             f"{flops_g:.2f}" if flops_g > 0 else "",
             f"{fps:.1f}" if fps > 0 else "",
+            f"{latency_ms:.2f}" if latency_ms > 0 else "",
             f"{mAP:.4f}" if mAP > 0 else "",
             f"{AP50:.4f}" if AP50 > 0 else "",
             f"{APS:.4f}" if APS > 0 else "",
@@ -1397,9 +1414,11 @@ def print_summary_table(results: List[Dict], gpu_name: str = "GPU", save_csv: bo
         ]
         csv_rows.append(csv_row)
     
-    print("-" * 120)
-    print(f"Note: FPS measured on {gpu_name} with CUDA Events. Accuracy evaluated via pycocotools (DSET/RT-DETR) or model.val() (YOLO).")
-    print("=" * 120)
+    print("-" * 140)
+    print(f"Note: FPS measured on {gpu_name} with CUDA Events (synchronization outside loop to eliminate CPU scheduling overhead).")
+    print(f"      YOLOv8: FPS includes NMS post-processing. YOLOv10/RT-DETR/DSET: End-to-end inference (no traditional NMS).")
+    print(f"      Accuracy evaluated via pycocotools (DSET/RT-DETR) or model.val() (YOLO).")
+    print("=" * 140)
     
     # 保存为 CSV 文件
     if save_csv:
@@ -1474,8 +1493,8 @@ def main():
                        help='设备 (cuda 或 cpu)')
     parser.add_argument('--fps_iter', type=int, default=300,
                        help='FPS 测试迭代次数')
-    parser.add_argument('--warmup_iter', type=int, default=20,
-                       help='FPS 测试预热迭代次数（默认 20，确保模型充分预热）')
+    parser.add_argument('--warmup_iter', type=int, default=50,
+                       help='FPS 测试预热迭代次数（默认 50，确保 RTX 5090 等高端显卡达到稳定的工作频率）')
     parser.add_argument('--skip_fps', action='store_true',
                        help='跳过 FPS 测试（仅使用已有数据）')
     parser.add_argument('--model_type', type=str, default='dset',
@@ -1571,6 +1590,7 @@ def main():
                 params_m=result['params_m'],
                 flops_g=result['flops_g'],
                 fps=result['fps'],
+                latency_ms=result.get('latency_ms', 0),
                 metrics={'mAP': result['mAP'], 'AP50': result['AP50'], 'APS': result['APS']},
                 input_resolution=(int(result['input_size'].split('x')[1]), int(result['input_size'].split('x')[0])),
                 is_yolo=result['model_type'].startswith("yolov8") or result['model_type'].startswith("yolov10"),
@@ -1579,7 +1599,7 @@ def main():
 
 
 def _format_evaluation_results(model_type: str, params_m: float, flops_g: float, fps: float,
-                               metrics: Dict[str, float], input_resolution: Tuple[int, int],
+                               latency_ms: float, metrics: Dict[str, float], input_resolution: Tuple[int, int],
                                is_yolo: bool = False, gpu_name: str = "GPU") -> None:
     """
     格式化并输出标准化的评估结果（学术论文格式）
@@ -1589,6 +1609,7 @@ def _format_evaluation_results(model_type: str, params_m: float, flops_g: float,
         params_m: 参数量（百万）
         flops_g: FLOPs（十亿）
         fps: FPS
+        latency_ms: 延迟（毫秒）
         metrics: 包含 mAP, AP50, APS 的字典
         input_resolution: 输入分辨率 (width, height)
         is_yolo: 是否为 YOLO 模型
@@ -1626,9 +1647,10 @@ def _format_evaluation_results(model_type: str, params_m: float, flops_g: float,
     params_str = f"{params_m:.2f} M" if params_m > 0 else "N/A"
     flops_str = f"{flops_g:.2f} G" if flops_g > 0 else "N/A"
     fps_str = f"{fps:.1f}" if fps > 0 else "N/A"
+    latency_str = f"{latency_ms:.2f} ms" if latency_ms > 0 else "N/A"
     
     # 使用传入的 gpu_name（已在 main 函数中动态检测）
-    print(f"Params: {params_str} | FLOPs: {flops_str} | FPS ({gpu_name}): {fps_str}")
+    print(f"Params: {params_str} | FLOPs: {flops_str} | FPS ({gpu_name}): {fps_str} | Latency: {latency_str}")
     
     # 精度指标
     map_str = f"{metrics['mAP']:.4f}" if metrics['mAP'] > 0 else "N/A"
@@ -1639,10 +1661,18 @@ def _format_evaluation_results(model_type: str, params_m: float, flops_g: float,
     print("-" * 70)
     
     # 数据来源说明
+    nms_note = ""
+    if model_type.startswith("yolov8"):
+        nms_note = " (FPS includes NMS post-processing)"
+    elif model_type.startswith("yolov10") or model_type in ["rtdetr", "dset"]:
+        nms_note = " (End-to-end inference, no traditional NMS)"
+    
     if model_type in ["dset", "rtdetr"]:
-        print("Note: Accuracy evaluated via pycocotools. FPS measured with CUDA Events.")
+        print(f"Note: Accuracy evaluated via pycocotools. FPS measured with CUDA Events{nms_note}.")
+        print("      Synchronization outside loop to eliminate CPU scheduling overhead.")
     else:
-        print("Note: FPS measured with CUDA Events.")
+        print(f"Note: FPS measured with CUDA Events{nms_note}.")
+        print("      Synchronization outside loop to eliminate CPU scheduling overhead.")
     
     print("=" * 70)
 
