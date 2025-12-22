@@ -439,7 +439,10 @@ class PatchLevelPruner(nn.Module):
             dist_y = torch.where(yy < y1_core, y1_core - yy,
                         torch.where(yy > y2_core, yy - y2_core, torch.zeros_like(yy)))
             dist_to_core = torch.sqrt(dist_x**2 + dist_y**2)
-            expand_dist = torch.sqrt(expand_w**2 + expand_h**2) + 1e-6
+            # Fix: Ensure expand_dist has a minimum value to prevent extremely small radius
+            # for thin objects (e.g., traffic cones) which would cause zero decay values
+            expand_dist = torch.sqrt(expand_w**2 + expand_h**2)
+            expand_dist = torch.clamp(expand_dist, min=1.0)  # Ensure minimum radius of 1 pixel
             normalized_dist = dist_to_core / expand_dist
             
             if decay_type == 'gaussian':
