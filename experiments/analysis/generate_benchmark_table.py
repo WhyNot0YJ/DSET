@@ -269,6 +269,23 @@ def load_deformable_detr_model(checkpoint_path: str, device: str = "cuda", confi
         from mmdet.registry import MODELS
     except ImportError:
         raise ImportError("需要安装 mmengine 和 mmdet")
+
+    # 关键：确保 mmdet 的所有模块都已注册到 mmengine Registry，否则会出现
+    # "DetDataPreprocessor is not in the mmengine::model registry" 之类的错误。
+    try:
+        from mmdet.utils import register_all_modules
+        try:
+            # 新版 mmdet 推荐：同时初始化 default scope
+            register_all_modules(init_default_scope=True)
+        except TypeError:
+            # 兼容旧版签名
+            register_all_modules()
+    except Exception:
+        # 某些环境可能没有该工具函数，但正常 import mmdet 也会触发注册
+        try:
+            import mmdet  # noqa: F401
+        except Exception:
+            pass
     
     checkpoint = _load_checkpoint(checkpoint_path)
     state_dict = checkpoint.get('state_dict', checkpoint.get('model', checkpoint))
