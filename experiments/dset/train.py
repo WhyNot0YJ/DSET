@@ -618,6 +618,11 @@ class DSETTrainer:
         # 初始化组件
         self._setup_logging()
         self.model = self._create_model()
+        
+        pretrained_weights = self.config['model'].get('pretrained_weights', None)
+        if pretrained_weights:
+            self._load_pretrained_weights(self.model, pretrained_weights)
+            
         self.train_loader, self.val_loader = self._create_data_loaders()
         self.optimizer = self._create_optimizer()
         self.scheduler = self._create_scheduler()
@@ -789,10 +794,7 @@ class DSETTrainer:
             moe_noise_std=moe_noise_std
         )
         
-        # 加载预训练权重
-        pretrained_weights = self.config['model'].get('pretrained_weights', None)
-        if pretrained_weights:
-            self._load_pretrained_weights(model, pretrained_weights)
+        # [修复] 移除 _create_model 内部的加载逻辑，统一在 DSETTrainer.__init__ 中处理
         
         model = model.to(self.device)
         
@@ -1488,14 +1490,15 @@ class DSETTrainer:
         token_pruning_loss_sum = 0.0  # Token pruning loss
         cass_loss_sum = 0.0  # CASS supervision loss
         
-        # 统计细粒度MoE的专家使用率（跨所有Decoder层聚合）
-        expert_usage_count = [0] * self.model.num_experts
-        total_tokens = 0
+        num_decoder_experts = self.model.num_experts
+        num_encoder_experts = self.model.patch_moe_num_experts if hasattr(self.model, 'patch_moe_num_experts') else 4
         
-        # 统计Token Pruning和Encoder MoE
-        token_pruning_ratios = []  # 收集每个batch的pruning ratio
-        encoder_expert_count = []  # Encoder专家使用统计
+        decoder_expert_usage_tensor = torch.zeros(num_decoder_experts, dtype=torch.long, device=self.device)
+        encoder_expert_usage_tensor = torch.zeros(num_encoder_experts, dtype=torch.long, device=self.device)
+        
+        total_tokens = 0
         encoder_total_tokens = 0
+        token_pruning_ratios = []
         
         for batch_idx, (images, targets) in enumerate(self.train_loader):
             
@@ -1553,54 +1556,39 @@ class DSETTrainer:
                     token_pruning_ratios.append(avg_ratio)
                 
                 # 收集Encoder (Patch-MoE) 专家使用率
-                if 'moe_expert_indices' in encoder_info and encoder_info['moe_expert_indices']:
-                    # 初始化encoder专家计数（如果还未初始化）
-                    if not encoder_expert_count:
-                        # 假设encoder专家数量与配置一致
-                        num_encoder_experts = self.model.patch_moe_num_experts if hasattr(self.model, 'patch_moe_num_experts') else 4
-                        encoder_expert_count = [0] * num_encoder_experts
+                enc_router_logits = encoder_info.get('moe_router_logits', [])
+                if isinstance(enc_router_logits, list) and len(enc_router_logits) > 0:
+                    enc_router_logits_tensor = torch.cat(enc_router_logits, dim=0)
                     
-                    # 统计encoder专家使用（使用torch.bincount向量化，避免CPU-GPU同步）
-                    for expert_indices in encoder_info['moe_expert_indices']:
-                        if expert_indices is not None:
-                            # 1. 展平
-                            flat_indices = expert_indices.flatten()
-                            
-                            # 2. 使用 torch.bincount 在 GPU 上直接统计
-                            # minlength 保证即使某个专家没被选中，输出维度也是对的
-                            counts = torch.bincount(flat_indices, minlength=len(encoder_expert_count))
-                            
-                            # 3. 只把最终的几个数字搬回CPU（而不是几千个）
-                            current_counts = counts.cpu().tolist()
-                            
-                            # 4. 累加
-                            for i in range(len(encoder_expert_count)):
-                                if i < len(current_counts):
-                                    encoder_expert_count[i] += current_counts[i]
-                            
-                            encoder_total_tokens += expert_indices.numel()
+                    # 使用合并后的 tensor 进行 topk 计算
+                    enc_top_k = self.model.patch_moe_top_k if hasattr(self.model, 'patch_moe_top_k') else 2
+                    _, enc_top_indices = torch.topk(enc_router_logits_tensor, enc_top_k, dim=-1)
+                    
+                    flat_enc_indices = enc_top_indices.flatten()
+                    enc_counts = torch.bincount(flat_enc_indices, minlength=num_encoder_experts)
+                    encoder_expert_usage_tensor.add_(enc_counts)
+                    
+                    encoder_total_tokens += enc_top_indices.numel()
             
-            # 收集Decoder细粒度MoE的专家使用统计（使用torch.bincount向量化）
+            # 收集Decoder细粒度MoE的专家使用统计
             if self.model.decoder.use_moe:
                 for layer in self.model.decoder.decoder.layers:
                     if hasattr(layer, 'adaptive_expert_layer') and layer.adaptive_expert_layer.router_logits_cache is not None:
-                        router_logits = layer.adaptive_expert_layer.router_logits_cache  # [N, num_experts]
-                        # 计算每个token选择的top-k专家
-                        _, top_indices = torch.topk(router_logits, self.model.decoder.moe_top_k, dim=-1)  # [N, K]
+                        router_logits = layer.adaptive_expert_layer.router_logits_cache
+                    
+                        if isinstance(router_logits, list) and len(router_logits) > 0:
+                            router_logits = torch.cat(router_logits, dim=0)
                         
-                        # 使用 torch.bincount 在 GPU 上直接统计（向量化）
-                        flat_indices = top_indices.flatten()
-                        counts = torch.bincount(flat_indices, minlength=self.model.num_experts)
-                        
-                        # 只把最终的几个数字搬回CPU
-                        current_counts = counts.cpu().tolist()
-                        
-                        # 累加
-                        for i in range(self.model.num_experts):
-                            if i < len(current_counts):
-                                expert_usage_count[i] += current_counts[i]
-                        
-                        total_tokens += router_logits.shape[0] * self.model.decoder.moe_top_k
+                        if isinstance(router_logits, torch.Tensor) and router_logits.numel() > 0:
+                            # 计算每个token选择的top-k专家
+                            _, top_indices = torch.topk(router_logits, self.model.decoder.moe_top_k, dim=-1)
+                            
+                            # [优化] 在 GPU 上累加计数
+                            flat_dec_indices = top_indices.flatten()
+                            dec_counts = torch.bincount(flat_dec_indices, minlength=num_decoder_experts)
+                            decoder_expert_usage_tensor.add_(dec_counts)
+                            
+                            total_tokens += router_logits.shape[0] * self.model.decoder.moe_top_k
             
             if batch_idx % 100 == 0:
                 det_loss_val = outputs.get('detection_loss', torch.tensor(0.0)).item() if isinstance(outputs, dict) else 0.0
@@ -1610,7 +1598,9 @@ class DSETTrainer:
             
             self.global_step += 1
         
-        # 计算平均值
+        decoder_expert_usage_count = decoder_expert_usage_tensor.cpu().tolist()
+        encoder_expert_usage_count = encoder_expert_usage_tensor.cpu().tolist()
+                # 计算平均值
         num_batches = len(self.train_loader)
         avg_loss = total_loss / num_batches
         avg_detection_loss = detection_loss / num_batches
@@ -1622,15 +1612,15 @@ class DSETTrainer:
         # 计算Decoder专家使用率
         expert_usage_rate = []
         if total_tokens > 0:
-            for count in expert_usage_count:
+            for count in decoder_expert_usage_count:
                 expert_usage_rate.append(count / total_tokens)
         else:
-            expert_usage_rate = [1.0 / self.model.num_experts] * self.model.num_experts
+            expert_usage_rate = [1.0 / num_decoder_experts] * num_decoder_experts
         
         # 计算Encoder专家使用率
         encoder_expert_usage_rate = []
-        if encoder_expert_count and encoder_total_tokens > 0:
-            for count in encoder_expert_count:
+        if encoder_total_tokens > 0:
+            for count in encoder_expert_usage_count:
                 encoder_expert_usage_rate.append(count / encoder_total_tokens)
         
         # 计算平均Token Pruning比例
@@ -1645,7 +1635,7 @@ class DSETTrainer:
             'cass_loss': avg_cass_loss,  # CASS supervision loss
             'token_pruning_ratio': avg_token_pruning_ratio,
             'moe_load_balance_loss': avg_decoder_moe_lb_loss + avg_encoder_moe_loss,  # 总MoE损失（向后兼容）
-            'expert_usage': expert_usage_count,
+            'expert_usage': decoder_expert_usage_count,
             'expert_usage_rate': expert_usage_rate,
             'encoder_expert_usage_rate': encoder_expert_usage_rate
         }
@@ -1678,22 +1668,25 @@ class DSETTrainer:
         all_predictions = []
         all_targets = []
         
+        image_id_to_size = {}
+        
         # 统计验证时的剪枝比例
         val_pruning_ratios = []
-        
-        # 初始化默认尺寸 (防止 val_loader 为空)
-        current_h, current_w = 736, 1280
         
         # 验证逻辑
         with torch.no_grad():
             for batch_idx, (images, targets) in enumerate(self.val_loader):
                 # 动态获取 Tensor 尺寸
                 B, C, H_tensor, W_tensor = images.shape
-                current_h, current_w = H_tensor, W_tensor
 
                 images = images.to(self.device)
                 targets = [{k: v.to(self.device) if isinstance(v, torch.Tensor) else v 
                            for k, v in t.items()} for t in targets]
+                
+                # 记录该 batch 的尺寸信息
+                for i, target in enumerate(targets):
+                    image_id = batch_idx * self.config['training']['batch_size'] + i
+                    image_id_to_size[image_id] = (W_tensor, H_tensor)
                 
                 outputs = self.ema.module(images, targets)
                 
@@ -1715,6 +1708,7 @@ class DSETTrainer:
         # 保存预测结果用于后续打印每个类别mAP（避免重复计算）
         self._last_val_predictions = all_predictions
         self._last_val_targets = all_targets
+        self._last_val_image_id_to_size = image_id_to_size
         
         avg_loss = total_loss / len(self.val_loader)
         
@@ -1731,9 +1725,9 @@ class DSETTrainer:
             else:
                 self.logger.debug(f"  验证时Token Pruning: Warmup阶段 (epoch {self.current_epoch} < warmup_epochs), pruning_ratio=0.0 (正常)")
         
-        # 计算mAP（不计算每个类别的mAP，只在best_model时计算）
+        # [修复] 计算 mAP 时，传递 image_id_to_size 以支持多尺度验证精度
         mAP_metrics = self._compute_map_metrics(all_predictions, all_targets, 
-                                              img_h=current_h, img_w=current_w,
+                                              image_id_to_size=image_id_to_size,
                                               print_per_category=False)
         
         return {
@@ -1845,7 +1839,12 @@ class DSETTrainer:
                     self.logger.warning("预测结果为空，跳过每类mAP计算")
                     return
                 # 重新计算mAP，print_per_category=True会输出COCO详细评估表格
-                mAP_metrics = self._compute_map_metrics(self._last_val_predictions, self._last_val_targets, print_per_category=True)
+                mAP_metrics = self._compute_map_metrics(
+                    self._last_val_predictions, 
+                    self._last_val_targets, 
+                    image_id_to_size=getattr(self, '_last_val_image_id_to_size', None),
+                    print_per_category=True
+                )
                 per_category_map = mAP_metrics.get('per_category_map', {})
             else:
                 # 如果没有保存的结果，则重新计算（兼容性处理）
@@ -1853,26 +1852,37 @@ class DSETTrainer:
                 self.ema.module.eval()
                 all_predictions = []
                 all_targets = []
+                image_id_to_size = {}
                 
                 with torch.no_grad():
-                    for batch_idx, (images, targets) in enumerate(self.val_dataloader):
+                    for batch_idx, (images, targets) in enumerate(self.val_loader):
                         # 动态获取 Tensor 尺寸
                         B, C, H_tensor, W_tensor = images.shape
                         images = images.to(self.device)
                         targets = [{k: v.to(self.device) if isinstance(v, torch.Tensor) else v 
                                    for k, v in t.items()} for t in targets]
                         
+                        for i, target in enumerate(targets):
+                            image_id = batch_idx * self.config['training']['batch_size'] + i
+                            image_id_to_size[image_id] = (W_tensor, H_tensor)
+                        
                         outputs = self.ema.module(images, targets)
                         
                         if 'class_scores' in outputs and 'bboxes' in outputs:
                             self._collect_predictions(outputs, targets, batch_idx, all_predictions, all_targets, W_tensor, H_tensor)
                 
-                mAP_metrics = self._compute_map_metrics(all_predictions, all_targets, print_per_category=True)
+                mAP_metrics = self._compute_map_metrics(
+                    all_predictions, 
+                    all_targets, 
+                    image_id_to_size=image_id_to_size,
+                    print_per_category=True
+                )
                 per_category_map = mAP_metrics.get('per_category_map', {})
         except Exception as e:
             self.logger.warning(f"打印best_model每类mAP失败: {e}")
     
     def _compute_map_metrics(self, predictions: List[Dict], targets: List[Dict], 
+                             image_id_to_size: Dict[int, Tuple[int, int]] = None,
                              img_h: int = 736, img_w: int = 1280,
                              print_per_category: bool = False) -> Dict[str, float]:
         """计算mAP指标。
@@ -1880,8 +1890,9 @@ class DSETTrainer:
         Args:
             predictions: 预测结果列表
             targets: 真实标签列表
-            img_h: 图像高度 (Tensor Shape)
-            img_w: 图像宽度 (Tensor Shape)
+            image_id_to_size: 图像ID到(W, H)的映射字典（推荐）
+            img_h: 默认图像高度
+            img_w: 默认图像宽度
             print_per_category: 是否打印每个类别的详细mAP（默认False，只在best_model时打印）
         """
         try:
@@ -1922,13 +1933,17 @@ class DSETTrainer:
                 }
             }
             
-            # 添加图像信息
+            # [修复] 动态设置每张图像的正确尺寸
             image_ids = set(target['image_id'] for target in targets)
             for img_id in image_ids:
+                if image_id_to_size and img_id in image_id_to_size:
+                    w, h = image_id_to_size[img_id]
+                else:
+                    w, h = img_w, img_h
                 coco_gt['images'].append({
                     'id': img_id, 
-                    'width': img_w,
-                    'height': img_h
+                    'width': w,
+                    'height': h
                 })
             
             # 添加标注

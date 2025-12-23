@@ -5,26 +5,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Tuple, List, Optional
 
-class SpecialistNetwork(nn.Module):
-    """专家网络 - 标准MLP"""
-    def __init__(self, d_model: int, dim_feedforward: int, dropout: float = 0.1, activation: str = 'relu'):
-        super().__init__()
-        self.linear1 = nn.Linear(d_model, dim_feedforward)
-        self.linear2 = nn.Linear(dim_feedforward, d_model)
-        self.dropout = nn.Dropout(dropout)
-        if activation == 'relu': 
-            self.activation = nn.ReLU()
-        elif activation == 'gelu': 
-            self.activation = nn.GELU()
-        elif activation == 'silu': 
-            self.activation = nn.SiLU()
-        else: 
-            self.activation = nn.ReLU()
-    
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.linear2(self.dropout(self.activation(self.linear1(x))))
-
-
 class MoELayer(nn.Module):
     """Universal Token-Level MoE Layer - 向量化实现（无 for 循环）
     

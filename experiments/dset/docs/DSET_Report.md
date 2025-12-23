@@ -54,7 +54,7 @@ DSET的核心创新在于Encoder层的**双稀疏机制**：
 # Patch-MoE层结构
 class PatchMoELayer:
     - PatchLevelRouter: 基于patch特征的路由器
-    - SpecialistNetwork × num_experts: 专家网络组
+    - Multi-Expert MLP (Vectorized): 专家MLP组（向量化实现）
     - 负载均衡损失: 确保专家负载均衡
 ```
 
