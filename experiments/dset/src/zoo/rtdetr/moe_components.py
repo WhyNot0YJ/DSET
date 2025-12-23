@@ -81,7 +81,8 @@ class MoELayer(nn.Module):
     
     def forward(self, x: torch.Tensor, spatial_shape: Optional[Tuple[int, int]] = None) -> torch.Tensor:
         """
-        Sync-Free Weight Gathering MoE - Optimized for High-End GPUs (RTX 5090)
+        Memory-Efficient Token-Grouping MoE - Scales with Token Count, not Weight-Token Product.
+        Optimized to prevent OOM on large batches.
         
         Args:
             x: [B, N, C] Token features
@@ -89,56 +90,51 @@ class MoELayer(nn.Module):
             output: [B, N, C]
         """
         B, N, C = x.shape
-        L = B * N
         E = self.num_experts
         K = self.top_k
         
-        # 1. Router Logic (No synchronization)
+        # 1. Router Logic
         router_logits = self.router(x)  # [B, N, E]
         router_probs = F.softmax(router_logits, dim=-1)  # [B, N, E]
         expert_weights, expert_indices = torch.topk(router_probs, K, dim=-1)  # [B, N, K]
+        
+        # Renormalize expert weights
         expert_weights = expert_weights / (expert_weights.sum(dim=-1, keepdim=True) + 1e-9)
         
         # Cache for loss (Flattened for convenience)
         self.router_logits_cache = router_logits.view(-1, E)
         self.expert_indices_cache = expert_indices.view(-1, K)
 
-        # 2. Parallel Expert Execution via BMM (Eliminates the loop over experts)
-        # This approach gathers all needed weights into a single batch, reducing kernel launches.
-        # It's specifically optimized for high-throughput GPUs like 5090 where memory bandwidth is abundant.
+        x_flat = x.view(-1, C)
+        out_flat = torch.zeros_like(x_flat)
         
-        flat_expert_indices = expert_indices.view(-1)  # [L*K]
+        # Flatten expert mapping for efficient indexing
+        flat_expert_indices = expert_indices.view(-1, K)
+        flat_expert_weights = expert_weights.view(-1, K)
         
-        # Gather weights for all tokens in one shot
-        # self.expert_w1: [E, D_ff, C] -> w1: [L*K, D_ff, C]
-        w1 = self.expert_w1[flat_expert_indices]
-        b1 = self.expert_b1[flat_expert_indices]
-        
-        # Prepare tokens: [B, N, C] -> [L*K, 1, C]
-        x_flat = x.view(L, C)
-        # If K=1, repeat_interleave is nearly free
-        x_expanded = x_flat.repeat_interleave(K, dim=0).unsqueeze(1)
-        
-        # Expert Layer 1: [L*K, 1, C] @ [L*K, C, D_ff] -> [L*K, 1, D_ff]
-        h = torch.bmm(x_expanded, w1.transpose(1, 2)) + b1.unsqueeze(1)
-        h = self.activation(h)
-        h = self.dropout(h)
-        
-        # Expert Layer 2: [L*K, 1, D_ff] @ [L*K, D_ff, C] -> [L*K, 1, C]
-        w2 = self.expert_w2[flat_expert_indices]
-        b2 = self.expert_b2[flat_expert_indices]
-        out = torch.bmm(h, w2.transpose(1, 2)) + b2.unsqueeze(1)
-        
-        # 3. Weighting and Reconstruction
-        # out: [L*K, 1, C] -> [L, K, C]
-        out = out.view(L, K, C)
-        # Multiply by weights: [L, K, C] * [L, K, 1]
-        out = out * expert_weights.view(L, K, 1)
-        
-        # Combine Top-K: [L, K, C] -> [L, C]
-        final_output = out.sum(dim=1)
-        
-        return final_output.view(B, N, C)
+        # 2. Key Fix: Loop over experts and process assigned tokens as a group
+        # This keeps memory usage dependent only on active tokens, not the full weight expansion.
+        for i in range(E):
+            # Find tokens assigned to current expert i
+            token_indices, slot_indices = torch.where(flat_expert_indices == i)
+            if token_indices.numel() == 0:
+                continue
+                
+            # Extract only the tokens that need this expert
+            temp_x = x_flat[token_indices]
+            
+            # Compute: Single expert pass for the gathered group of tokens
+            # Using F.linear with the pre-stored expert parameters
+            h = F.linear(temp_x, self.expert_w1[i], self.expert_b1[i])
+            h = self.activation(h)
+            h = self.dropout(h)
+            temp_out = F.linear(h, self.expert_w2[i], self.expert_b2[i])
+            
+            # Apply routing weights and accumulate back to output
+            weights = flat_expert_weights[token_indices, slot_indices].unsqueeze(-1)
+            out_flat.index_add_(0, token_indices, temp_out * weights)
+            
+        return out_flat.view(B, N, C)
 
 
 # =========================================================================
