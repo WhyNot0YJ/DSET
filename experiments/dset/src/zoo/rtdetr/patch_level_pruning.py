@@ -284,19 +284,27 @@ class PatchLevelPruner(nn.Module):
             valid_mask = (orig_h_all < H) & (orig_w_all < W)
             orig_idx_flat = orig_idx_all.reshape(batch_size, -1)
             valid_mask_flat = valid_mask.reshape(batch_size, -1)
+            
+            # 向量化处理：完全消除 Python 循环
+            # 1. 确定每个 batch 的最大有效 token 数
             valid_counts = valid_mask_flat.sum(dim=1)
             max_valid_count = int(valid_counts.max().item()) if valid_counts.numel() > 0 and valid_counts.max() > 0 else 0
             
             if max_valid_count > 0:
-                kept_indices = torch.full((batch_size, max_valid_count), -1, device=tokens.device, dtype=torch.long)
-                for b in range(batch_size):
-                    batch_valid_mask = valid_mask_flat[b]
-                    if batch_valid_mask.any():
-                        batch_indices_flat = orig_idx_flat[b]
-                        valid_indices = batch_indices_flat[batch_valid_mask]
-                        num_valid = valid_indices.shape[0]
-                        if num_valid > 0:
-                            kept_indices[b, :num_valid] = valid_indices
+                # 2. 构造 [B, max_valid_count] 的索引矩阵
+                # 使用 topk 配合 mask 可以快速提取有效索引并保持相对顺序
+                # 我们给无效位置一个非常大的负数，然后取前 max_valid_count 个
+                score_for_selection = torch.where(valid_mask_flat, 
+                                                 torch.arange(orig_idx_flat.shape[1], device=tokens.device).float(),
+                                                 torch.tensor(-1e9, device=tokens.device))
+                _, selection_indices = torch.topk(score_for_selection, max_valid_count, dim=1, largest=True)
+                # 重新排序以保持原始顺序
+                selection_indices, _ = torch.sort(selection_indices, dim=1)
+                
+                # 3. 提取索引并应用 mask
+                kept_indices = torch.gather(orig_idx_flat, 1, selection_indices)
+                batch_valid_mask = torch.gather(valid_mask_flat, 1, selection_indices)
+                kept_indices = torch.where(batch_valid_mask, kept_indices, torch.tensor(-1, device=tokens.device))
             else:
                 kept_indices = None
         else:

@@ -511,7 +511,7 @@ class HybridEncoder(nn.Module):
                         if hasattr(moe_layer, 'expert_indices_cache') and moe_layer.expert_indices_cache is not None:
                             encoder_info['moe_expert_indices'].append(moe_layer.expert_indices_cache)
                 
-                # 6. 特征还原：使用 Scatter/Fill-Zero 模式
+                # 6. 特征还原：使用向量化 Scatter 模式，消除 Python 循环
                 # memory: [B, N_kept, C]
                 # 创建全0画布: [B, H_original * W_original, C]
                 memory_2d_flat = torch.zeros(
@@ -521,23 +521,28 @@ class HybridEncoder(nn.Module):
                 
                 # 使用 kept_indices 将 memory 填回画布对应位置
                 if kept_indices is not None:
-                    # 处理 -1 填充值：只填充有效位置
+                    # 1. 处理有效性掩码
                     valid_mask = (kept_indices >= 0) & (kept_indices < h_original * w_original)
-                    kept_indices_clean = kept_indices.clamp(0, h_original * w_original - 1)
                     
-                    # 对每个batch分别处理（因为每个batch的有效token数可能不同）
-                    for b in range(B):
-                        batch_valid = valid_mask[b]  # [N_kept]
-                        if batch_valid.any():
-                            valid_indices_b = kept_indices_clean[b][batch_valid]  # [M]
-                            valid_memory_b = memory[b][batch_valid]  # [M, C]
-                            memory_2d_flat[b, valid_indices_b] = valid_memory_b  # Scatter操作
+                    # 2. 构造全局展平索引 [B * N_kept]
+                    batch_offsets = torch.arange(B, device=memory.device).view(B, 1) * (h_original * w_original)
+                    global_indices = (kept_indices + batch_offsets).view(-1)
+                    
+                    # 3. 展平特征和掩码
+                    memory_flat = memory.view(-1, self.hidden_dim)
+                    valid_mask_flat = valid_mask.view(-1)
+                    
+                    # 4. 提取有效数据并 Scatter
+                    valid_indices = global_indices[valid_mask_flat]
+                    valid_features = memory_flat[valid_mask_flat]
+                    
+                    # 使用 index_copy_ 实现高效的向量化填充，完全消除 Python for 循环
+                    memory_2d_flat.view(-1, self.hidden_dim).index_copy_(0, valid_indices, valid_features)
                 else:
                     # 如果没有 kept_indices（warmup期间），直接填充
                     if memory.shape[1] == h_original * w_original:
                         memory_2d_flat = memory
                     else:
-                        # 如果数量不匹配，只填充前 N_kept 个位置
                         memory_2d_flat[:, :N_kept] = memory
                 
                 # Reshape 回 [B, C, H_original, W_original]

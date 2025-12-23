@@ -66,61 +66,64 @@ class MoELayer(nn.Module):
     
     def forward(self, x: torch.Tensor, spatial_shape: Optional[Tuple[int, int]] = None) -> torch.Tensor:
         """
-        Args:
-            x: [B, N, C] Token特征，N可以是动态的
-            spatial_shape: (H, W) 空间形状（可选，仅作为元数据，不再用于计算）
+        Truly Sparse & Vectorized MoE Forward - Optimized for High-End GPUs (RTX 5090)
         
+        Args:
+            x: [B, N, C] Token features
         Returns:
-            output: [B, N, C] 处理后的Token特征
+            output: [B, N, C]
         """
         B, N, C = x.shape
+        E = self.num_experts
+        K = self.top_k
         
-        # 路由决策：Token-Level
-        # x: [B, N, C] -> router_logits: [B, N, num_experts]
-        router_logits = self.router(x)  # [B, N, num_experts]
-        
-        # Noisy Gating: 在训练时添加噪声以提升探索和负载均衡
+        # 1. Router Logic
+        router_logits = self.router(x)  # [B, N, E]
         if self.training:
             router_logits = router_logits + torch.randn_like(router_logits) * self.noise_std
         
-        router_probs = F.softmax(router_logits, dim=-1)
-        expert_weights, expert_indices = torch.topk(router_probs, self.top_k, dim=-1)  # [B, N, K]
-        
-        # 归一化权重
+        router_probs = F.softmax(router_logits, dim=-1)  # [B, N, E]
+        expert_weights, expert_indices = torch.topk(router_probs, K, dim=-1)  # [B, N, K]
         expert_weights = expert_weights / (expert_weights.sum(dim=-1, keepdim=True) + 1e-9)
         
-        # 缓存用于损失计算
-        self.router_logits_cache = router_logits.reshape(-1, self.num_experts)  # [B*N, num_experts]
-        self.expert_indices_cache = expert_indices.reshape(-1, self.top_k)  # [B*N, K]
+        # Cache for loss
+        self.router_logits_cache = router_logits.reshape(-1, E)
+        self.expert_indices_cache = expert_indices.reshape(-1, K)
+
+        # 2. Sparse Execution via Token Grouping (Optimized to minimize kernel launches)
+        # Flatten x to [L, C] where L = B*N
+        x_flat = x.view(-1, C)
+        output_flat = torch.zeros_like(x_flat)
         
-        # Vectorized Top-K Masking 机制
-        x_flat = x.reshape(-1, C)  # [B*N, C]
-        output_flat = torch.zeros_like(x_flat)  # [B*N, C]
+        expert_indices_flat = expert_indices.view(-1)  # [L*K]
+        expert_weights_flat = expert_weights.view(-1)  # [L*K]
         
-        expert_weights_flat = expert_weights.reshape(-1, self.top_k)  # [B*N, K]
-        expert_indices_flat = expert_indices.reshape(-1, self.top_k)  # [B*N, K]
+        # Pre-calculate token indices to avoid repeating interleave in loop
+        token_indices = torch.arange(B * N, device=x.device).repeat_interleave(K)
         
-        # 对每个专家进行向量化计算
-        for expert_id in range(self.num_experts):
-            for k in range(self.top_k):
-                # 找到分配给当前专家的token
-                mask = (expert_indices_flat[:, k] == expert_id)  # [B*N]
-                
-                if mask.any():
-                    # 提取对应的token和权重
-                    selected_tokens = x_flat[mask]  # [M, C]
-                    selected_weights = expert_weights_flat[mask, k:k+1]  # [M, 1]
-                    
-                    # 专家处理
-                    expert_out = self.experts[expert_id](selected_tokens)  # [M, C]
-                    
-                    # 加权累加
-                    output_flat[mask] += expert_out * selected_weights
-        
-        # 恢复形状
-        output = output_flat.reshape(B, N, C)
-        
-        return output
+        # We iterate over experts once.
+        # This eliminates the nested loop (for expert_id and for k) and uses efficient indexing.
+        for expert_id in range(E):
+            # Find tokens assigned to this expert across all Top-K positions
+            idx_mask = (expert_indices_flat == expert_id)
+            if not idx_mask.any():
+                continue
+            
+            # Extract tokens and their corresponding weights
+            selected_token_ids = token_indices[idx_mask]
+            selected_weights = expert_weights_flat[idx_mask].view(-1, 1)
+            
+            # index_select is generally faster than boolean masking for large GPUs
+            current_x = torch.index_select(x_flat, 0, selected_token_ids)
+            
+            # Expert MLP Execution (using the nn.Module instance from ModuleList)
+            expert_out = self.experts[expert_id](current_x)
+            
+            # Scatter addition: output[selected_token_ids] += out * weights
+            # Use index_add_ for safe accumulation
+            output_flat.index_add_(0, selected_token_ids, expert_out * selected_weights)
+            
+        return output_flat.view(B, N, C)
 
 # =========================================================================
 # 负载均衡损失函数
