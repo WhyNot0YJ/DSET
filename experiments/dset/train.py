@@ -1471,37 +1471,33 @@ class DSETTrainer:
             self.logger.warning("⚠️ Warning: No dataset with aug_mosaic_prob/aug_mixup_prob found! Mosaic/Mixup might not be disabled.")
 
     def train_epoch(self) -> Dict[str, float]:
-        """训练一个epoch（支持DSET渐进式训练）。"""
+        """训练一个epoch（支持DSET渐进式训练，采用即产即清原则优化）。"""
         self.model.train()
         
         # 设置模型的epoch（用于Token Pruning Loss和CASS Loss的Warmup控制）
-        # 这会同时更新encoder的epoch（在model.set_epoch内部调用）
         if hasattr(self.model, 'set_epoch'):
             self.model.set_epoch(self.current_epoch)
-            # 调试：检查是否设置了epoch
-            if self.current_epoch >= 10 and self.current_epoch % 5 == 0:  # 每5个epoch打印一次
-                if hasattr(self.model, 'encoder') and hasattr(self.model.encoder, 'token_pruners') and self.model.encoder.token_pruners:
-                    pruner = self.model.encoder.token_pruners[0]
         
+        # [极致优化] 核心优化：在GPU上直接维护计数器，不再缓存巨大的Logits列表
+        num_decoder_experts = self.model.num_experts
+        num_encoder_experts = self.model.patch_moe_num_experts if hasattr(self.model, 'patch_moe_num_experts') else 4
+        
+        # 统计整个Epoch的累加器（在GPU上，极小的内存占用）
+        decoder_expert_usage_total = torch.zeros(num_decoder_experts, dtype=torch.long, device=self.device)
+        encoder_expert_usage_total = torch.zeros(num_encoder_experts, dtype=torch.long, device=self.device)
+        total_dec_tokens = 0
+        total_enc_tokens = 0
+        
+        # 损失统计
         total_loss = 0.0
         detection_loss = 0.0
         moe_lb_loss = 0.0  # MoE load balance loss
         encoder_moe_loss_sum = 0.0  # Encoder Patch-MoE loss
         token_pruning_loss_sum = 0.0  # Token pruning loss
         cass_loss_sum = 0.0  # CASS supervision loss
-        
-        num_decoder_experts = self.model.num_experts
-        num_encoder_experts = self.model.patch_moe_num_experts if hasattr(self.model, 'patch_moe_num_experts') else 4
-        
-        decoder_expert_usage_tensor = torch.zeros(num_decoder_experts, dtype=torch.long, device=self.device)
-        encoder_expert_usage_tensor = torch.zeros(num_encoder_experts, dtype=torch.long, device=self.device)
-        
-        total_tokens = 0
-        encoder_total_tokens = 0
         token_pruning_ratios = []
         
         for batch_idx, (images, targets) in enumerate(self.train_loader):
-            
             images = images.to(self.device)
             targets = [{k: v.to(self.device) if isinstance(v, torch.Tensor) else v 
                        for k, v in t.items()} for t in targets]
@@ -1519,16 +1515,13 @@ class DSETTrainer:
             
             # 反向传播（添加梯度裁剪）
             self.scaler.scale(loss).backward()
-            
-            # 梯度裁剪（防止梯度爆炸）
             self.scaler.unscale_(self.optimizer)
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=self.clip_max_norm)
-            
             self.scaler.step(self.optimizer)
             self.scaler.update()
             self.ema.update(self.model)
             
-            # 统计损失
+            # 统计各种Loss
             total_loss += loss.item() if isinstance(loss, torch.Tensor) else float(loss)
             if isinstance(outputs, dict):
                 if 'detection_loss' in outputs:
@@ -1547,60 +1540,65 @@ class DSETTrainer:
                     cass_loss_val = outputs['cass_loss']
                     cass_loss_sum += cass_loss_val.item() if isinstance(cass_loss_val, torch.Tensor) else float(cass_loss_val)
             
-            # 收集Token Pruning信息（从outputs中获取encoder_info）
+            # [极致优化] 即产即清：不保留Logits列表，计算完TopK和bincount后立即释放显存
+            # 处理Encoder MoE统计
             if isinstance(outputs, dict) and 'encoder_info' in outputs:
-                encoder_info = outputs['encoder_info']
-                if 'token_pruning_ratios' in encoder_info and encoder_info['token_pruning_ratios']:
-                    # 取平均pruning ratio（如果有多个encoder层）
-                    avg_ratio = sum(encoder_info['token_pruning_ratios']) / len(encoder_info['token_pruning_ratios'])
+                enc_info = outputs['encoder_info']
+                # Token Pruning比例
+                if 'token_pruning_ratios' in enc_info and enc_info['token_pruning_ratios']:
+                    avg_ratio = sum(enc_info['token_pruning_ratios']) / len(enc_info['token_pruning_ratios'])
                     token_pruning_ratios.append(avg_ratio)
                 
-                # 收集Encoder (Patch-MoE) 专家使用率
-                enc_router_logits = encoder_info.get('moe_router_logits', [])
-                if isinstance(enc_router_logits, list) and len(enc_router_logits) > 0:
-                    enc_router_logits_tensor = torch.cat(enc_router_logits, dim=0)
-                    
-                    # 使用合并后的 tensor 进行 topk 计算
+                # Encoder专家使用率统计（即产即清）
+                enc_logits = enc_info.get('moe_router_logits', [])
+                if enc_logits and isinstance(enc_logits, list) and len(enc_logits) > 0:
+                    # 仅在GPU上计算TopK索引并计数，完成后Logits即可被释放
+                    enc_logits_tensor = torch.cat(enc_logits, dim=0)
                     enc_top_k = self.model.patch_moe_top_k if hasattr(self.model, 'patch_moe_top_k') else 2
-                    _, enc_top_indices = torch.topk(enc_router_logits_tensor, enc_top_k, dim=-1)
-                    
-                    flat_enc_indices = enc_top_indices.flatten()
-                    enc_counts = torch.bincount(flat_enc_indices, minlength=num_encoder_experts)
-                    encoder_expert_usage_tensor.add_(enc_counts)
-                    
-                    encoder_total_tokens += enc_top_indices.numel()
+                    _, enc_indices = torch.topk(enc_logits_tensor, enc_top_k, dim=-1)
+                    encoder_expert_usage_total.add_(torch.bincount(enc_indices.flatten(), minlength=num_encoder_experts))
+                    total_enc_tokens += enc_indices.numel()
+                    # Logits tensor在此处自动释放（无引用）
             
-            # 收集Decoder细粒度MoE的专家使用统计
+            # 处理Decoder MoE统计（即产即清）
             if self.model.decoder.use_moe:
                 for layer in self.model.decoder.decoder.layers:
-                    if hasattr(layer, 'adaptive_expert_layer') and layer.adaptive_expert_layer.router_logits_cache is not None:
-                        router_logits = layer.adaptive_expert_layer.router_logits_cache
-                    
-                        if isinstance(router_logits, list) and len(router_logits) > 0:
-                            router_logits = torch.cat(router_logits, dim=0)
-                        
-                        if isinstance(router_logits, torch.Tensor) and router_logits.numel() > 0:
-                            # 计算每个token选择的top-k专家
-                            _, top_indices = torch.topk(router_logits, self.model.decoder.moe_top_k, dim=-1)
+                    if hasattr(layer, 'adaptive_expert_layer'):
+                        dec_logits = layer.adaptive_expert_layer.router_logits_cache
+                        if dec_logits:
+                            # 处理列表格式的logits
+                            if isinstance(dec_logits, list) and len(dec_logits) > 0:
+                                dec_logits_tensor = torch.cat(dec_logits, dim=0)
+                            elif isinstance(dec_logits, torch.Tensor) and dec_logits.numel() > 0:
+                                dec_logits_tensor = dec_logits
+                            else:
+                                continue
                             
-                            # [优化] 在 GPU 上累加计数
-                            flat_dec_indices = top_indices.flatten()
-                            dec_counts = torch.bincount(flat_dec_indices, minlength=num_decoder_experts)
-                            decoder_expert_usage_tensor.add_(dec_counts)
-                            
-                            total_tokens += router_logits.shape[0] * self.model.decoder.moe_top_k
+                            # 仅在GPU上计算TopK索引并计数，完成后Logits即可被释放
+                            _, dec_indices = torch.topk(dec_logits_tensor, self.model.decoder.moe_top_k, dim=-1)
+                            decoder_expert_usage_total.add_(torch.bincount(dec_indices.flatten(), minlength=num_decoder_experts))
+                            total_dec_tokens += dec_indices.numel()
+                            # Logits tensor在此处自动释放（无引用）
             
+            # [优化] 日志打印逻辑：不再重新进行耗时的cat操作，直接使用累加器
             if batch_idx % 100 == 0:
                 det_loss_val = outputs.get('detection_loss', torch.tensor(0.0)).item() if isinstance(outputs, dict) else 0.0
                 moe_loss_val = outputs.get('moe_load_balance_loss', torch.tensor(0.0)).item() if isinstance(outputs, dict) else 0.0
+                
                 self.logger.info(f'Epoch {self.current_epoch} | Batch {batch_idx} | '
                                f'Loss: {loss.item():.2f} (Det: {det_loss_val:.2f}, MoE: {moe_loss_val:.4f})')
+                
+                # 实时显示专家分布（使用累加器，无需重新计算）
+                if total_dec_tokens > 0:
+                    usage_p = (decoder_expert_usage_total.float() / total_dec_tokens * 100).cpu().tolist()
+                    self.logger.info(f'  Decoder专家实时分布: {[f"{x:.1f}%" for x in usage_p]}')
+                if total_enc_tokens > 0:
+                    usage_p = (encoder_expert_usage_total.float() / total_enc_tokens * 100).cpu().tolist()
+                    self.logger.info(f'  Encoder专家实时分布: {[f"{x:.1f}%" for x in usage_p]}')
             
             self.global_step += 1
         
-        decoder_expert_usage_count = decoder_expert_usage_tensor.cpu().tolist()
-        encoder_expert_usage_count = encoder_expert_usage_tensor.cpu().tolist()
-                # 计算平均值
+        # Epoch结束，计算平均值并返回统计结果
         num_batches = len(self.train_loader)
         avg_loss = total_loss / num_batches
         avg_detection_loss = detection_loss / num_batches
@@ -1609,19 +1607,23 @@ class DSETTrainer:
         avg_token_pruning_loss = token_pruning_loss_sum / num_batches
         avg_cass_loss = cass_loss_sum / num_batches
         
-        # 计算Decoder专家使用率
+        # 计算专家使用率（从GPU累加器转换）
+        decoder_expert_usage_count = decoder_expert_usage_total.cpu().tolist()
+        encoder_expert_usage_count = encoder_expert_usage_total.cpu().tolist()
+        
         expert_usage_rate = []
-        if total_tokens > 0:
+        if total_dec_tokens > 0:
             for count in decoder_expert_usage_count:
-                expert_usage_rate.append(count / total_tokens)
+                expert_usage_rate.append(count / total_dec_tokens)
         else:
             expert_usage_rate = [1.0 / num_decoder_experts] * num_decoder_experts
         
-        # 计算Encoder专家使用率
         encoder_expert_usage_rate = []
-        if encoder_total_tokens > 0:
+        if total_enc_tokens > 0:
             for count in encoder_expert_usage_count:
-                encoder_expert_usage_rate.append(count / encoder_total_tokens)
+                encoder_expert_usage_rate.append(count / total_enc_tokens)
+        else:
+            encoder_expert_usage_rate = [1.0 / num_encoder_experts] * num_encoder_experts
         
         # 计算平均Token Pruning比例
         avg_token_pruning_ratio = sum(token_pruning_ratios) / len(token_pruning_ratios) if token_pruning_ratios else 0.0
@@ -2326,17 +2328,7 @@ class DSETTrainer:
 def main() -> None:
     """主函数。"""
     
-    # ==========================================
-    # [新增] 解决 AutoDL/Docker 共享内存不足导致的死锁问题
-    # ==========================================
-    import torch.multiprocessing
-    try:
-        torch.multiprocessing.set_sharing_strategy('file_system')
-        print("✓ 已设置多进程共享策略为: file_system (防止共享内存溢出)")
-    except:
-        pass
-    # ==========================================
-    
+
     parser = argparse.ArgumentParser(description='自适应专家RT-DETR训练')
     parser.add_argument('--config', type=str, default='A', 
                        help='专家配置 (A: 6专家, B: 3专家) 或YAML配置文件路径')
