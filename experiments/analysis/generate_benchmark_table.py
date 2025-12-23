@@ -274,10 +274,34 @@ def load_deformable_detr_model(checkpoint_path: str, device: str = "cuda", confi
     state_dict = checkpoint.get('state_dict', checkpoint.get('model', checkpoint))
     
     cfg = None
-    if 'meta' in checkpoint and 'cfg' in checkpoint['meta']:
-        cfg = Config(checkpoint['meta']['cfg'])
-    elif config_path and os.path.exists(config_path):
+    # 优先使用显式提供的 config_path（更稳定、可复现）
+    if config_path and os.path.exists(config_path):
         cfg = Config.fromfile(config_path)
+    # 回退：尝试从 checkpoint meta 中恢复配置
+    elif 'meta' in checkpoint and 'cfg' in checkpoint['meta']:
+        meta_cfg = checkpoint['meta']['cfg']
+        # 兼容：有些 mmdet/mmengine checkpoint 会把 cfg 保存为 dict；也有很多保存为 str（文件路径或文本内容）
+        if isinstance(meta_cfg, dict):
+            cfg = Config(meta_cfg)
+        elif isinstance(meta_cfg, str):
+            # 1) 如果是文件路径
+            if os.path.exists(meta_cfg):
+                cfg = Config.fromfile(meta_cfg)
+            else:
+                # 2) 可能是 python config 文本内容
+                if hasattr(Config, 'fromstring'):
+                    try:
+                        cfg = Config.fromstring(meta_cfg, file_format='.py')
+                    except TypeError:
+                        # 兼容旧版本签名
+                        cfg = Config.fromstring(meta_cfg)
+                else:
+                    # 3) 极端兼容：写入临时文件再 fromfile
+                    import tempfile
+                    with tempfile.NamedTemporaryFile('w', suffix='.py', delete=False, encoding='utf-8') as f:
+                        f.write(meta_cfg)
+                        tmp_cfg_path = f.name
+                    cfg = Config.fromfile(tmp_cfg_path)
     
     if cfg is None:
         raise FileNotFoundError("无法找到 Deformable-DETR 配置文件")
