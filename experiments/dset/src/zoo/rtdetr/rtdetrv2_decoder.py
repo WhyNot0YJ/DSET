@@ -679,4 +679,5 @@ class RTDETRTransformerv2(nn.Module):
                 if ael.router_logits_cache:
                     router_logits_list.extend(ael.router_logits_cache)
         
-        return compute_moe_balance_loss(router_logits_list, self.num_experts)
+        top_k = self.moe_top_k if hasattr(self, 'moe_top_k') else 2
+        return compute_moe_balance_loss(router_logits_list, self.num_experts, top_k=top_k)

@@ -433,7 +433,8 @@ class HybridEncoder(nn.Module):
             return {'balance_loss': zero_tensor}
         
         num_experts = router_logits_list[0].shape[-1] if len(router_logits_list) > 0 else 4
-        balance_loss = compute_moe_balance_loss(router_logits_list, num_experts, expert_indices_list)
+        top_k = self.patch_moe_top_k if hasattr(self, 'patch_moe_top_k') else 2
+        balance_loss = compute_moe_balance_loss(router_logits_list, num_experts, expert_indices_list, top_k=top_k)
         
         return {'balance_loss': balance_loss}
 

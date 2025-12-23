@@ -128,17 +128,65 @@ class MoELayer(nn.Module):
 
 def compute_moe_balance_loss(router_logits_list: List[torch.Tensor], 
                              num_experts: int,
-                             expert_indices_list: List[torch.Tensor] = None) -> torch.Tensor:
+                             expert_indices_list: List[torch.Tensor] = None,
+                             top_k: int = 2) -> torch.Tensor:
     """
-    [精简版] 采用 Switch Transformer 风格的可微负载均衡损失。
+    [改进版] MoE 负载均衡损失 - 引入实际负载计算，修复统计盲区。
+    
+    使用公式: Loss = E · Σ(P_mean · f_mean)
+    其中:
+        P_mean: 原始 Softmax 概率的均值（软概率）
+        f_mean: 实际负载代理（基于 Top-K 权重的聚合，保持可微性）
+    
+    Args:
+        router_logits_list: Router logits 列表，每个元素形状为 [N, E]
+        num_experts: 专家数量
+        expert_indices_list: 专家索引列表（可选，用于未来扩展）
+        top_k: Top-K 路由的 K 值（默认 2）
+    
+    Returns:
+        负载均衡损失标量
     """
     if not router_logits_list: 
          return torch.tensor(0.0, device='cuda' if torch.cuda.is_available() else 'cpu')
         
     total_loss = 0.0
     for logits in router_logits_list:
-        probs = F.softmax(logits, dim=-1)
-        expert_probs = probs.mean(dim=0)  # [E]
-        total_loss += num_experts * torch.sum(expert_probs * expert_probs)
+        # logits: [N, E], N 是 token 数量，E 是专家数量
+        
+        # 1. 计算原始 Softmax 概率（软概率）
+        probs = F.softmax(logits, dim=-1)  # [N, E]
+        
+        # 2. P_mean: 每个专家的平均软概率
+        P_mean = probs.mean(dim=0)  # [E]
+        
+        # 3. f_mean: 实际负载代理（基于 Top-K 权重的聚合，保持可微性）
+        # 计算 Top-K 权重
+        expert_weights, expert_indices = torch.topk(probs, top_k, dim=-1)  # [N, K], [N, K]
+        
+        # 归一化 Top-K 权重
+        expert_weights = expert_weights / (expert_weights.sum(dim=-1, keepdim=True) + 1e-9)  # [N, K]
+        
+        # 将 Top-K 权重聚合到每个专家上，得到实际负载（向量化实现）
+        N = expert_indices.shape[0]
+        device = logits.device
+        
+        # 使用 one-hot 编码将权重分配到对应的专家（向量化）
+        # 将 [N, K] 的索引和权重展平为 [N*K]
+        flat_indices = expert_indices.flatten()  # [N*K]
+        flat_weights = expert_weights.flatten()  # [N*K]
+        
+        # 使用 scatter_add 一次性累加所有权重
+        f_mean = torch.zeros(num_experts, device=device, dtype=logits.dtype)  # [E]
+        f_mean.scatter_add_(0, flat_indices, flat_weights)  # [E]
+        # f_mean 现在表示每个专家接收到的总权重（总和 = N，因为每个token的top-k权重总和为1）
+        
+        # 归一化实际负载（使其与 P_mean 在同一尺度，都是概率分布）
+        f_mean = f_mean / (f_mean.sum() + 1e-9)  # 归一化到总和为 1，与 P_mean 对齐
+        
+        # 4. 计算负载均衡损失: Loss = E · Σ(P_mean · f_mean)
+        # 这个公式能强迫"软概率"去对齐"硬计数"
+        loss = num_experts * torch.sum(P_mean * f_mean)
+        total_loss += loss
         
     return total_loss / len(router_logits_list)
