@@ -118,15 +118,18 @@ def load_model(config_path: str, checkpoint_path: str, device: str = "cuda"):
     model.eval()
     model = model.to(device)
     
-    # Enable pruning during inference by setting epoch >= warmup_epochs
-    # This ensures pruning_enabled=True in PatchLevelPruner
+    # Enable pruning during inference by setting epoch to a large value (e.g., 100)
+    # This ensures pruning is fully active and keep_ratio is at its target value
     if hasattr(model, 'encoder') and hasattr(model.encoder, 'set_epoch'):
-        # Get warmup_epochs from config (default: 10)
-        dset_config = config.get('dset', {})
+        # Get dset config from model section
+        dset_config = config.get('model', {}).get('dset', {})
         warmup_epochs = dset_config.get('token_pruning_warmup_epochs', 10)
-        # Set epoch to enable pruning (epoch >= warmup_epochs)
-        model.encoder.set_epoch(warmup_epochs)
-        print(f"  ✓ Enabled token pruning for inference (epoch={warmup_epochs})")
+        
+        # [FIX] Set epoch=100 to ensure pruning progress is 1.0 (fully active)
+        # This aligns inference with the best model performance during training
+        forced_epoch = 100
+        model.encoder.set_epoch(forced_epoch)
+        print(f"  ✓ Enabled token pruning for inference (epoch={forced_epoch}, warmup={warmup_epochs})")
     
     num_queries = config.get('model', {}).get('num_queries', 100)
     

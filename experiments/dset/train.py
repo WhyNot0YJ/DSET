@@ -1756,7 +1756,8 @@ class DSETTrainer:
         batch_size = pred_logits.shape[0]
         
         for i in range(batch_size):
-            pred_scores = torch.softmax(pred_logits[i], dim=-1)  # [Q, C]
+            # [FIX] 使用 sigmoid 激活函数，对齐 Focal Loss / VFL 训练逻辑
+            pred_scores = torch.sigmoid(pred_logits[i])  # [Q, C]
             max_scores, pred_classes = torch.max(pred_scores, dim=-1)  # [Q]
             
             # 过滤无效框（padding框），保留所有有效预测框

@@ -257,7 +257,7 @@ def load_dset_model(config_path: str, checkpoint_path: str, device: str = "cuda"
     config['misc']['device'] = device
     
     trainer = DSETTrainer(config, config_file_path=str(config_path))
-    model = trainer._create_model()
+    model = trainer.model
     
     checkpoint = _load_checkpoint(checkpoint_path)
     state_dict = _extract_state_dict(checkpoint)
@@ -909,13 +909,15 @@ def evaluate_accuracy(model, config_path: str, device: str = "cuda",
                     print(f"  ✓ Token Pruning: {'已激活' if pruner.pruning_enabled else '未激活'}")
         
         # --- GPU Warmup ---
-        warmup_iters = 20
+        warmup_iters = getattr(args, 'warmup_iter', 20) if 'args' in locals() else 20
         print(f"  ✓ GPU 热身中 ({warmup_iters} 次迭代)...")
         with torch.no_grad():
             for i, (images, targets) in enumerate(val_loader):
                 if i >= warmup_iters:
                     break
-                _ = model(images.to(device), targets)
+                images = images.to(device)
+                # 热身时不带 targets，模拟真实推理路径
+                _ = model(images)
         if device == 'cuda':
             torch.cuda.synchronize()
         
@@ -927,7 +929,7 @@ def evaluate_accuracy(model, config_path: str, device: str = "cuda",
         total_samples = 0
         perf_samples = 0
         limit_samples = (max_samples < 999999)
-        shape_printed = False  # 只打印一次维度信息
+        shape_printed = False
         
         print(f"  运行推理循环...")
         
@@ -937,10 +939,11 @@ def evaluate_accuracy(model, config_path: str, device: str = "cuda",
                 need_timing = limit_samples and (perf_samples < max_samples)
                 
                 images = images.to(device)
+                # 预先处理 targets 到 device，用于 COCO 评估，但不传给 model
                 targets = [{k: v.to(device) if isinstance(v, torch.Tensor) else v 
                            for k, v in t.items()} for t in targets]
                 
-                # 推理计时（计时器内部保持纯净，无 print/assert）
+                # 推理计时：绝不传入 targets，确保只测量推理链路
                 if need_timing:
                     if use_cuda_events:
                         torch.cuda.synchronize()
@@ -948,20 +951,10 @@ def evaluate_accuracy(model, config_path: str, device: str = "cuda",
                         inference_ender = torch.cuda.Event(enable_timing=True)
                         inference_starter.record()
                     else:
-                        # CPU 模式：使用 perf_counter 获得高精度计时
                         inference_start_time = time.perf_counter()
                 
-                outputs = model(images, targets)
-                
-                # 物理维度检查（只打印一次）
-                if not shape_printed and isinstance(outputs, dict):
-                    shape_printed = True
-                    if 'class_scores' in outputs:
-                        seq_len = outputs['class_scores'].shape[1]
-                        print(f"  ✓ 物理维度检查: class_scores shape = {outputs['class_scores'].shape} (seq_len={seq_len})")
-                    elif 'pred_logits' in outputs:
-                        seq_len = outputs['pred_logits'].shape[1]
-                        print(f"  ✓ 物理维度检查: pred_logits shape = {outputs['pred_logits'].shape} (seq_len={seq_len})")
+                # 公平性核心：调用无 targets 版本的 forward
+                outputs = model(images)
                 
                 if need_timing:
                     if use_cuda_events:
@@ -969,7 +962,6 @@ def evaluate_accuracy(model, config_path: str, device: str = "cuda",
                         torch.cuda.synchronize()
                         inference_elapsed_ms = inference_starter.elapsed_time(inference_ender)
                     else:
-                        # CPU 模式：使用 perf_counter 计算耗时
                         inference_elapsed_ms = (time.perf_counter() - inference_start_time) * 1000.0
                     inference_times.append(inference_elapsed_ms)
                     
@@ -979,7 +971,6 @@ def evaluate_accuracy(model, config_path: str, device: str = "cuda",
                         postprocess_ender = torch.cuda.Event(enable_timing=True)
                         postprocess_starter.record()
                     else:
-                        # CPU 模式：使用 perf_counter
                         postprocess_start_time = time.perf_counter()
                 
                 has_predictions = isinstance(outputs, dict) and (
