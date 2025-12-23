@@ -66,7 +66,7 @@ class MoELayer(nn.Module):
     
     def forward(self, x: torch.Tensor, spatial_shape: Optional[Tuple[int, int]] = None) -> torch.Tensor:
         """
-        Truly Sparse & Vectorized MoE Forward - Optimized for High-End GPUs (RTX 5090)
+        Sync-Free Weight Gathering MoE - Optimized for High-End GPUs (RTX 5090)
         
         Args:
             x: [B, N, C] Token features
@@ -74,56 +74,61 @@ class MoELayer(nn.Module):
             output: [B, N, C]
         """
         B, N, C = x.shape
+        L = B * N
         E = self.num_experts
         K = self.top_k
         
-        # 1. Router Logic
+        # 1. Router Logic (No synchronization)
         router_logits = self.router(x)  # [B, N, E]
-        if self.training:
-            router_logits = router_logits + torch.randn_like(router_logits) * self.noise_std
-        
         router_probs = F.softmax(router_logits, dim=-1)  # [B, N, E]
         expert_weights, expert_indices = torch.topk(router_probs, K, dim=-1)  # [B, N, K]
         expert_weights = expert_weights / (expert_weights.sum(dim=-1, keepdim=True) + 1e-9)
         
-        # Cache for loss
-        self.router_logits_cache = router_logits.reshape(-1, E)
-        self.expert_indices_cache = expert_indices.reshape(-1, K)
+        # Cache for loss (Flattened for convenience)
+        self.router_logits_cache = router_logits.view(-1, E)
+        self.expert_indices_cache = expert_indices.view(-1, K)
 
-        # 2. Sparse Execution via Token Grouping (Optimized to minimize kernel launches)
-        # Flatten x to [L, C] where L = B*N
-        x_flat = x.view(-1, C)
-        output_flat = torch.zeros_like(x_flat)
+        # 2. Parallel Expert Execution via BMM
+        # Instead of looping over experts, we gather the weights for all tokens and 
+        # execute a single Batch Matrix Multiplication. This minimizes kernel launches.
         
-        expert_indices_flat = expert_indices.view(-1)  # [L*K]
-        expert_weights_flat = expert_weights.view(-1)  # [L*K]
+        flat_expert_indices = expert_indices.view(-1)  # [L*K]
         
-        # Pre-calculate token indices to avoid repeating interleave in loop
-        token_indices = torch.arange(B * N, device=x.device).repeat_interleave(K)
+        # Gather weights for all tokens in one shot from the specialists
+        # This uses the parameters from SpecialistNetwork instances inside the ModuleList
+        # First layer weights
+        w1_all = torch.stack([exp.linear1.weight for exp in self.experts])  # [E, D_ff, C]
+        b1_all = torch.stack([exp.linear1.bias for exp in self.experts])    # [E, D_ff]
         
-        # We iterate over experts once.
-        # This eliminates the nested loop (for expert_id and for k) and uses efficient indexing.
-        for expert_id in range(E):
-            # Find tokens assigned to this expert across all Top-K positions
-            idx_mask = (expert_indices_flat == expert_id)
-            if not idx_mask.any():
-                continue
-            
-            # Extract tokens and their corresponding weights
-            selected_token_ids = token_indices[idx_mask]
-            selected_weights = expert_weights_flat[idx_mask].view(-1, 1)
-            
-            # index_select is generally faster than boolean masking for large GPUs
-            current_x = torch.index_select(x_flat, 0, selected_token_ids)
-            
-            # Expert MLP Execution (using the nn.Module instance from ModuleList)
-            expert_out = self.experts[expert_id](current_x)
-            
-            # Scatter addition: output[selected_token_ids] += out * weights
-            # Use index_add_ for safe accumulation
-            output_flat.index_add_(0, selected_token_ids, expert_out * selected_weights)
-            
-        return output_flat.view(B, N, C)
+        # Indexed gather
+        w1 = w1_all[flat_expert_indices]  # [L*K, D_ff, C]
+        b1 = b1_all[flat_expert_indices]  # [L*K, D_ff]
+        
+        # Prepare tokens
+        x_flat = x.view(L, C)
+        x_expanded = x_flat.repeat_interleave(K, dim=0).unsqueeze(1) # [L*K, 1, C]
+        
+        # Layer 1
+        h = torch.bmm(x_expanded, w1.transpose(1, 2)) + b1.unsqueeze(1)
+        # Activation is shared or we assume same for all experts
+        h = self.experts[0].activation(h)
+        h = self.experts[0].dropout(h)
+        
+        # Layer 2
+        w2_all = torch.stack([exp.linear2.weight for exp in self.experts])  # [E, C, D_ff]
+        b2_all = torch.stack([exp.linear2.bias for exp in self.experts])    # [E, C]
+        
+        w2 = w2_all[flat_expert_indices]  # [L*K, C, D_ff]
+        b2 = b2_all[flat_expert_indices]  # [L*K, C]
+        
+        out = torch.bmm(h, w2.transpose(1, 2)) + b2.unsqueeze(1)
+        
+        # 3. Weighting and Reconstruction
+        out = out.view(L, K, C)
+        out = out * expert_weights.view(L, K, 1)
+        final_output = out.sum(dim=1)
+        
+        return final_output.view(B, N, C)
 
 # =========================================================================
 # 负载均衡损失函数

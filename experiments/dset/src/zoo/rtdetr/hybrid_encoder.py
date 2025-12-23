@@ -511,32 +511,31 @@ class HybridEncoder(nn.Module):
                         if hasattr(moe_layer, 'expert_indices_cache') and moe_layer.expert_indices_cache is not None:
                             encoder_info['moe_expert_indices'].append(moe_layer.expert_indices_cache)
                 
-                # 6. 特征还原：使用向量化 Scatter 模式，消除 Python 循环
+                # 6. 特征还原：极致向量化 Scatter 模式
                 # memory: [B, N_kept, C]
-                # 创建全0画布: [B, H_original * W_original, C]
                 memory_2d_flat = torch.zeros(
                     B, h_original * w_original, self.hidden_dim,
                     device=memory.device, dtype=memory.dtype
                 )
                 
-                # 使用 kept_indices 将 memory 填回画布对应位置
                 if kept_indices is not None:
-                    # 1. 处理有效性掩码
-                    valid_mask = (kept_indices >= 0) & (kept_indices < h_original * w_original)
+                    # 彻底消除 Python 循环，并针对单 Batch 进一步简化
+                    valid_mask = (kept_indices >= 0)
                     
-                    # 2. 构造全局展平索引 [B * N_kept]
-                    batch_offsets = torch.arange(B, device=memory.device).view(B, 1) * (h_original * w_original)
-                    global_indices = (kept_indices + batch_offsets).view(-1)
+                    if B == 1:
+                        # 针对推理（BS=1）的极简路径
+                        valid_indices = kept_indices.view(-1)[valid_mask.view(-1)]
+                        valid_features = memory.view(-1, self.hidden_dim)[valid_mask.view(-1)]
+                    else:
+                        # 针对训练（BS>1）的向量化路径
+                        batch_offsets = torch.arange(B, device=memory.device).view(B, 1) * (h_original * w_original)
+                        global_indices = (kept_indices + batch_offsets).view(-1)
+                        
+                        valid_mask_flat = valid_mask.view(-1)
+                        valid_indices = global_indices[valid_mask_flat]
+                        valid_features = memory.view(-1, self.hidden_dim)[valid_mask_flat]
                     
-                    # 3. 展平特征和掩码
-                    memory_flat = memory.view(-1, self.hidden_dim)
-                    valid_mask_flat = valid_mask.view(-1)
-                    
-                    # 4. 提取有效数据并 Scatter
-                    valid_indices = global_indices[valid_mask_flat]
-                    valid_features = memory_flat[valid_mask_flat]
-                    
-                    # 使用 index_copy_ 实现高效的向量化填充，完全消除 Python for 循环
+                    # 使用 index_copy_ 或 index_put_ 进行高速填充
                     memory_2d_flat.view(-1, self.hidden_dim).index_copy_(0, valid_indices, valid_features)
                 else:
                     # 如果没有 kept_indices（warmup期间），直接填充
