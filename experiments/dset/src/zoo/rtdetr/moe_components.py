@@ -177,8 +177,9 @@ def compute_moe_balance_loss(router_logits_list: List[torch.Tensor],
         flat_weights = expert_weights.flatten()  # [N*K]
         
         # 使用 scatter_add 一次性累加所有权重
-        f_mean = torch.zeros(num_experts, device=device, dtype=logits.dtype)  # [E]
-        f_mean.scatter_add_(0, flat_indices, flat_weights)  # [E]
+        # 注意：scatter_add_ 要求 dtype 一致，统一使用 float32 进行计算
+        f_mean = torch.zeros(num_experts, device=device, dtype=torch.float32)  # [E]
+        f_mean.scatter_add_(0, flat_indices, flat_weights.float())  # [E]
         # f_mean 现在表示每个专家接收到的总权重（总和 = N，因为每个token的top-k权重总和为1）
         
         # 归一化实际负载（使其与 P_mean 在同一尺度，都是概率分布）
@@ -186,7 +187,8 @@ def compute_moe_balance_loss(router_logits_list: List[torch.Tensor],
         
         # 4. 计算负载均衡损失: Loss = E · Σ(P_mean · f_mean)
         # 这个公式能强迫"软概率"去对齐"硬计数"
-        loss = num_experts * torch.sum(P_mean * f_mean)
+        # 注意：确保类型一致，统一使用 float32
+        loss = num_experts * torch.sum(P_mean.float() * f_mean)
         total_loss += loss
         
     return total_loss / len(router_logits_list)
