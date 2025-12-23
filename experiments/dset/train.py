@@ -1580,21 +1580,13 @@ class DSETTrainer:
                             total_dec_tokens += dec_indices.numel()
                             # Logits tensor在此处自动释放（无引用）
             
-            # [优化] 日志打印逻辑：不再重新进行耗时的cat操作，直接使用累加器
+            # [优化] 日志打印逻辑：每100个batch只显示基本loss信息
             if batch_idx % 100 == 0:
                 det_loss_val = outputs.get('detection_loss', torch.tensor(0.0)).item() if isinstance(outputs, dict) else 0.0
                 moe_loss_val = outputs.get('moe_load_balance_loss', torch.tensor(0.0)).item() if isinstance(outputs, dict) else 0.0
                 
                 self.logger.info(f'Epoch {self.current_epoch} | Batch {batch_idx} | '
                                f'Loss: {loss.item():.2f} (Det: {det_loss_val:.2f}, MoE: {moe_loss_val:.4f})')
-                
-                # 实时显示专家分布（使用累加器，无需重新计算）
-                if total_dec_tokens > 0:
-                    usage_p = (decoder_expert_usage_total.float() / total_dec_tokens * 100).cpu().tolist()
-                    self.logger.info(f'  Decoder专家实时分布: {[f"{x:.1f}%" for x in usage_p]}')
-                if total_enc_tokens > 0:
-                    usage_p = (encoder_expert_usage_total.float() / total_enc_tokens * 100).cpu().tolist()
-                    self.logger.info(f'  Encoder专家实时分布: {[f"{x:.1f}%" for x in usage_p]}')
             
             self.global_step += 1
         
@@ -2223,9 +2215,12 @@ class DSETTrainer:
                 if self.model.use_cass:
                     self.logger.info(f"  CASS Loss: {train_metrics.get('cass_loss', 0.0):.4f}")
                 self.logger.info(f"  MoE总损失: {train_metrics['moe_load_balance_loss']:.4f}")
-                # 显示专家使用率
+                # 显示专家使用率（每个epoch显示一次）
                 usage_str = [f"{rate*100:.2f}%" for rate in train_metrics['expert_usage_rate']]
                 self.logger.info(f"  Decoder专家使用率: [{', '.join(usage_str)}]")
+                if 'encoder_expert_usage_rate' in train_metrics and train_metrics['encoder_expert_usage_rate']:
+                    enc_usage_str = [f"{rate*100:.2f}%" for rate in train_metrics['encoder_expert_usage_rate']]
+                    self.logger.info(f"  Encoder专家使用率: [{', '.join(enc_usage_str)}]")
             
             # 记录训练指标到可视化器
             current_lr = self.optimizer.param_groups[0]['lr']
