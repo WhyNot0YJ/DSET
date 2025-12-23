@@ -150,27 +150,15 @@ def compute_moe_balance_loss(router_logits_list: List[torch.Tensor],
                              num_experts: int,
                              expert_indices_list: List[torch.Tensor] = None) -> torch.Tensor:
     """
-    [修复] 采用 Switch Transformer 风格的可微负载均衡损失。
-    不再使用 torch.bincount (不可微)，而是使用 expert_probs 的平方项作为 Proxy。
+    [精简版] 采用 Switch Transformer 风格的可微负载均衡损失。
     """
-    if len(router_logits_list) == 0: 
+    if not router_logits_list: 
          return torch.tensor(0.0, device='cuda' if torch.cuda.is_available() else 'cpu')
         
     total_loss = 0.0
-    num_layers = 0
-        
     for logits in router_logits_list:
-        if logits is None or logits.numel() == 0:
-            continue
-                
         probs = F.softmax(logits, dim=-1)
         expert_probs = probs.mean(dim=0)  # [E]
-                
-        # 使用 Soft-assignment 的均值作为实际选择的可微代理
-        # Loss = E * sum(P_i^2)，这会最小化概率分布的方差，实现真正的梯度闭环
-        loss = num_experts * torch.sum(expert_probs * expert_probs)
-                
-        total_loss += loss
-        num_layers += 1
+        total_loss += num_experts * torch.sum(expert_probs * expert_probs)
         
-    return total_loss / num_layers if num_layers > 0 else torch.tensor(0.0)
+    return total_loss / len(router_logits_list)

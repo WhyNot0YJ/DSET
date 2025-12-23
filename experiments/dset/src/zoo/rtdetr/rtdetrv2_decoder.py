@@ -174,7 +174,8 @@ class TransformerDecoderLayer(nn.Module):
                  use_moe=False,
                  num_experts=6,
                  moe_top_k=2,
-                 moe_noise_std=0.1):
+                 moe_noise_std=0.1,
+                 router_init_std=0.05):
         super(TransformerDecoderLayer, self).__init__()
 
         # self attention
@@ -198,7 +199,8 @@ class TransformerDecoderLayer(nn.Module):
                 top_k=moe_top_k,
                 dropout=dropout,
                 activation=activation,
-                noise_std=moe_noise_std
+                noise_std=moe_noise_std,
+                router_init_std=router_init_std
             )
         else:
             # Standard FFN
@@ -337,7 +339,8 @@ class RTDETRTransformerv2(nn.Module):
                  use_moe=False,
                  num_experts=6,
                  moe_top_k=2,
-                 moe_noise_std=0.1):
+                 moe_noise_std=0.1,
+                 router_init_std=0.05):
         super().__init__()
         assert len(feat_channels) <= num_levels
         assert len(feat_strides) == len(feat_channels)
@@ -361,6 +364,7 @@ class RTDETRTransformerv2(nn.Module):
         self.num_experts = num_experts
         self.moe_top_k = moe_top_k
         self.moe_noise_std = moe_noise_std
+        self.router_init_std = router_init_std # [新增]
 
         assert query_select_method in ('default', 'one2many', 'agnostic'), ''
         assert cross_attn_method in ('default', 'discrete'), ''
@@ -378,7 +382,8 @@ class RTDETRTransformerv2(nn.Module):
             use_moe=use_moe,
             num_experts=num_experts,
             moe_top_k=moe_top_k,
-            moe_noise_std=moe_noise_std
+            moe_noise_std=moe_noise_std,
+            router_init_std=router_init_std
         )
         self.decoder = TransformerDecoder(hidden_dim, decoder_layer, num_layers, eval_idx)
 
@@ -592,6 +597,12 @@ class RTDETRTransformerv2(nn.Module):
 
 
     def forward(self, feats, targets=None):
+        # [修复] 共享层模式下，每个 Batch 开始前清空 MoE 记录
+        if self.use_moe:
+            for layer in self.decoder.layers:
+                if hasattr(layer, 'adaptive_expert_layer') and hasattr(layer.adaptive_expert_layer, 'reset_cache'):
+                    layer.adaptive_expert_layer.reset_cache()
+                    
         # input projection and embedding
         memory, spatial_shapes = self._get_encoder_input(feats)
         
@@ -656,23 +667,16 @@ class RTDETRTransformerv2(nn.Module):
     def get_moe_load_balance_loss(self):
         """Get MoE load balance loss.
         
-        Collect router logits and expert indices from all decoder layers and compute loss.
+        Collect router logits from all decoder layers and compute loss.
         """
         if not self.use_moe:
             return torch.tensor(0.0)
         
         router_logits_list = []
-        expert_indices_list = []
         for layer in self.decoder.layers:
-            if hasattr(layer, 'use_moe') and layer.use_moe:
-                if hasattr(layer, 'adaptive_expert_layer'):
-                    ael = layer.adaptive_expert_layer
-                    if hasattr(ael, 'router_logits_cache') and ael.router_logits_cache is not None:
-                        router_logits_list.append(ael.router_logits_cache)
-                        # Collect expert_indices if available
-                        if hasattr(ael, 'expert_indices_cache') and ael.expert_indices_cache is not None:
-                            expert_indices_list.append(ael.expert_indices_cache)
-                        else:
-                            expert_indices_list.append(None)
+            if hasattr(layer, 'adaptive_expert_layer'):
+                ael = layer.adaptive_expert_layer
+                if ael.router_logits_cache:
+                    router_logits_list.extend(ael.router_logits_cache)
         
-        return compute_moe_balance_loss(router_logits_list, self.num_experts, expert_indices_list)
+        return compute_moe_balance_loss(router_logits_list, self.num_experts)
