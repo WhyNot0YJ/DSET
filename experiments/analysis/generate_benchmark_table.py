@@ -113,7 +113,64 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 12
             flops_g = flops / 1e9
             print(f"  ✓ FLOPs: {flops_g:.2f} G")
         except Exception as e:
-            print(f"  ⚠ FLOPs 计算失败: {e}")
+            # mmdet 模型通常无法直接 profile(model, (tensor,))，需要构造 wrapper
+            try:
+                is_mmdet_model = isinstance(getattr(model, '__class__', None), type) and \
+                                ('mmdet' in getattr(model.__class__, '__module__', ''))
+            except Exception:
+                is_mmdet_model = False
+            
+            if is_mmdet_model:
+                try:
+                    # 优先使用 mmengine 的复杂度分析工具（如果存在）
+                    from mmengine.analysis import get_model_complexity_info
+                    _, _, H, W = input_size
+                    # get_model_complexity_info 的 input_shape 一般是 (C, H, W)
+                    analysis = get_model_complexity_info(
+                        model, (3, int(H), int(W)),
+                        as_strings=False,
+                        print_per_layer_stat=False
+                    )
+                    # 不同版本返回值可能是 (flops, params) 或 dict
+                    if isinstance(analysis, tuple) and len(analysis) >= 1:
+                        flops = analysis[0]
+                        flops_g = float(flops) / 1e9
+                        print(f"  ✓ FLOPs(mmengine): {flops_g:.2f} G")
+                    elif isinstance(analysis, dict) and 'flops' in analysis:
+                        flops_g = float(analysis['flops']) / 1e9
+                        print(f"  ✓ FLOPs(mmengine): {flops_g:.2f} G")
+                except Exception:
+                    try:
+                        # 回退：用 thop 对 mmdet detector 做 wrapper profile（构造最小 data_samples）
+                        from copy import deepcopy
+                        from mmdet.structures import DetDataSample
+                        _, _, H, W = input_size
+                        sample = DetDataSample()
+                        sample.set_metainfo({
+                            'ori_shape': (int(H), int(W), 3),
+                            'img_shape': (int(H), int(W), 3),
+                            'pad_shape': (int(H), int(W), 3),
+                            'scale_factor': (1.0, 1.0),
+                            'batch_input_shape': (int(H), int(W)),
+                        })
+                        
+                        class _MMDetWrapper(nn.Module):
+                            def __init__(self, det_model, data_sample):
+                                super().__init__()
+                                self.det_model = det_model
+                                self.data_sample = data_sample
+                            def forward(self, x):
+                                # mode='tensor' 通常返回 head 的原始 tensor 输出（便于 profile）
+                                return self.det_model(x, [self.data_sample], mode='tensor')
+                        
+                        wrapped = _MMDetWrapper(deepcopy(model).eval().to(device), sample)
+                        flops, _ = profile(wrapped, inputs=(dummy_input,), verbose=False)
+                        flops_g = flops / 1e9
+                        print(f"  ✓ FLOPs(thop+mmdet wrapper): {flops_g:.2f} G")
+                    except Exception as e2:
+                        print(f"  ⚠ FLOPs 计算失败(mmdet): {e2!r}")
+            else:
+                print(f"  ⚠ FLOPs 计算失败: {e!r}")
     
     return params_m, flops_g
 
@@ -444,11 +501,172 @@ def evaluate_yolo_accuracy(model, config_path: str, device: str = "cuda", max_sa
 
 
 def evaluate_deformable_detr_accuracy(model, config_path: str, device: str = "cuda") -> Dict[str, float]:
-    """评估 Deformable-DETR 模型（暂不支持自动评估）"""
-    print(f"  ⚠ Deformable-DETR 评估暂不支持，返回默认值")
-    return {'mAP': 0.0, 'AP50': 0.0, 'APS': 0.0,
-            'latency_inference_ms': 0.0, 'latency_postprocess_ms': 0.0,
-            'latency_total_ms': 0.0, 'fps': 0.0}
+    """评估 Deformable-DETR 模型（使用 mmdet/mmengine Runner.test()）。
+    
+    注意：该函数仅保留兼容入口（旧调用点）。更完整的评估（含 FPS/Latency）
+    请使用 evaluate_deformable_detr_full。
+    """
+    metrics = evaluate_deformable_detr_full(
+        config_path=config_path,
+        checkpoint_path=None,
+        device=device,
+        max_samples=300,
+        warmup_iter=50,
+        fps_iter=300,
+        skip_fps=True,
+    )
+    return metrics
+
+
+def _safe_get_metric(metrics: Dict, keys: List[str], default: float = 0.0) -> float:
+    """Robust metric key lookup across mmdet versions."""
+    for k in keys:
+        if k in metrics:
+            try:
+                return float(metrics[k])
+            except Exception:
+                pass
+    # 兼容：有些 evaluator 会把 key 写成 'coco/bbox_mAP' 或 'bbox_mAP'
+    for k, v in metrics.items():
+        if isinstance(k, str):
+            for cand in keys:
+                if k.endswith(cand) or cand in k:
+                    try:
+                        return float(v)
+                    except Exception:
+                        pass
+    return float(default)
+
+
+def _move_to_device(obj, device: str):
+    """Recursively move tensors to device (for mmengine/mmdet batch dict)."""
+    if torch.is_tensor(obj):
+        return obj.to(device)
+    if isinstance(obj, dict):
+        return {k: _move_to_device(v, device) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        moved = [_move_to_device(v, device) for v in obj]
+        return type(obj)(moved) if not isinstance(obj, tuple) else tuple(moved)
+    return obj
+
+
+def evaluate_deformable_detr_full(config_path: str,
+                                  checkpoint_path: Optional[str],
+                                  device: str = "cuda",
+                                  max_samples: int = 300,
+                                  warmup_iter: int = 50,
+                                  fps_iter: int = 300,
+                                  skip_fps: bool = False) -> Dict[str, float]:
+    """对 Deformable-DETR 做完整评估：mAP/AP50/APS + FPS/Latency（batch_size=1）。
+    
+    - 精度：使用 mmdet 的 Runner.test()（COCO evaluator）
+    - 性能：从同一个 test_dataloader 取 batch，计时 model.test_step()（端到端：含 data_preprocessor + predict）
+    """
+    try:
+        from mmengine.config import Config
+        from mmengine.runner import Runner
+        from mmdet.utils import register_all_modules
+    except Exception as e:
+        print(f"  ⚠ Deformable-DETR 评估依赖导入失败: {e!r}")
+        return {'mAP': 0.0, 'AP50': 0.0, 'APS': 0.0,
+                'latency_inference_ms': 0.0, 'latency_postprocess_ms': 0.0,
+                'latency_total_ms': 0.0, 'fps': 0.0}
+    
+    # 注册 mmdet 模块（不同版本签名略有差异）
+    try:
+        register_all_modules(init_default_scope=True)
+    except TypeError:
+        register_all_modules()
+    
+    cfg = Config.fromfile(config_path)
+    if checkpoint_path:
+        cfg.load_from = checkpoint_path
+    
+    # 强制 batch_size=1（benchmark 标准）。
+    # 其余配置（pipeline/resize/evaluator/proposal_nums/metric_items/num_workers 等）
+    # 严格沿用训练脚本（如 train_deformable_r18.py）生成的 config，保证一致性。
+    for dl_key in ['test_dataloader', 'val_dataloader']:
+        if hasattr(cfg, dl_key):
+            dl = getattr(cfg, dl_key)
+            if isinstance(dl, dict):
+                dl['batch_size'] = 1
+    
+    # 避免写日志到 work_dir（Runner 需要但我们不关心）
+    try:
+        import tempfile
+        cfg.work_dir = tempfile.mkdtemp(prefix='bench_deformable_detr_')
+    except Exception:
+        cfg.work_dir = cfg.get('work_dir', './work_dirs/bench_deformable_detr')
+    
+    runner = Runner.from_cfg(cfg)
+    runner.model = runner.model.to(device)
+    runner.model.eval()
+    
+    # 1) 精度评估（COCO mAP）
+    test_metrics = runner.test()
+    
+    mAP = _safe_get_metric(test_metrics, ['coco/bbox_mAP', 'bbox_mAP', 'mAP'], 0.0)
+    AP50 = _safe_get_metric(test_metrics, ['coco/bbox_mAP_50', 'bbox_mAP_50', 'AP50', 'mAP_50'], 0.0)
+    APS = _safe_get_metric(test_metrics, ['coco/bbox_mAP_s', 'bbox_mAP_s', 'APS', 'mAP_s'], 0.0)
+    
+    out = {'mAP': mAP, 'AP50': AP50, 'APS': APS,
+           'latency_inference_ms': 0.0, 'latency_postprocess_ms': 0.0,
+           'latency_total_ms': 0.0, 'fps': 0.0}
+    
+    # 2) 性能评估（FPS / Latency）
+    if skip_fps:
+        return out
+    
+    # 获取 dataloader（不同版本可能是 test_dataloader / val_dataloader）
+    dataloader = getattr(runner, 'test_dataloader', None) or getattr(runner, 'val_dataloader', None)
+    if dataloader is None:
+        print("  ⚠ Runner 中未找到 test_dataloader/val_dataloader，跳过性能评估")
+        return out
+    
+    use_cuda_events = (device == "cuda" and torch.cuda.is_available())
+    inference_times = []
+    
+    # Warmup
+    with torch.no_grad():
+        for i, data_batch in enumerate(dataloader):
+            if i >= warmup_iter:
+                break
+            data_batch = _move_to_device(data_batch, device)
+            _ = runner.model.test_step(data_batch)
+    _cuda_sync_if_available(device)
+    
+    # Timed iterations
+    with torch.no_grad():
+        for i, data_batch in enumerate(dataloader):
+            if i >= min(fps_iter, max_samples):
+                break
+            data_batch = _move_to_device(data_batch, device)
+            
+            if use_cuda_events:
+                starter = torch.cuda.Event(enable_timing=True)
+                ender = torch.cuda.Event(enable_timing=True)
+                starter.record()
+                _ = runner.model.test_step(data_batch)
+                ender.record()
+                torch.cuda.synchronize()
+                elapsed_ms = starter.elapsed_time(ender)
+            else:
+                start_t = time.perf_counter()
+                _ = runner.model.test_step(data_batch)
+                _cuda_sync_if_available(device)
+                elapsed_ms = (time.perf_counter() - start_t) * 1000.0
+            
+            inference_times.append(elapsed_ms)
+    
+    if inference_times:
+        avg_inference_ms = sum(inference_times) / len(inference_times)
+        out['latency_inference_ms'] = avg_inference_ms
+        out['latency_postprocess_ms'] = 0.0
+        out['latency_total_ms'] = avg_inference_ms
+        out['fps'] = 1000.0 / avg_inference_ms if avg_inference_ms > 0 else 0.0
+        print(f"  ✓ Latency: Inf={out['latency_inference_ms']:.2f}ms, Post={out['latency_postprocess_ms']:.2f}ms, Total={out['latency_total_ms']:.2f}ms")
+    
+    return out
 
 
 def _get_outputs_info(outputs: Dict) -> Tuple[torch.Tensor, torch.Tensor, bool]:
@@ -961,8 +1179,16 @@ def evaluate_single_model(model_name: str, model_config: Dict, args, project_roo
                                                model_type=model_type, max_samples=999999)
             metrics.update({k: metrics_partial.get(k, 0.0) for k in ['mAP', 'AP50', 'APS']})
     elif model_type == "deformable-detr" and config_path:
-        metrics_partial = evaluate_deformable_detr_accuracy(model, str(config_path), args.device)
-        metrics.update({k: metrics_partial.get(k, 0.0) for k in ['mAP', 'AP50', 'APS']})
+        # Deformable-DETR：使用 mmdet Runner.test() 获取 COCO 指标，并可选做 FPS/Latency
+        metrics = evaluate_deformable_detr_full(
+            config_path=str(config_path),
+            checkpoint_path=str(checkpoint_path),
+            device=args.device,
+            max_samples=max_samples,
+            warmup_iter=getattr(args, 'warmup_iter', 50),
+            fps_iter=getattr(args, 'fps_iter', 300),
+            skip_fps=bool(getattr(args, 'skip_fps', False)),
+        )
     elif is_yolo_model:
         data_config_path = _get_yolo_data_path(model, model_config, project_root)
         if data_config_path:
