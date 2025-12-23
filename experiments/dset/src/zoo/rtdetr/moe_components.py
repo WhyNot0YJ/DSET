@@ -37,7 +37,7 @@ class MoELayer(nn.Module):
     
     def __init__(self, d_model: int, dim_feedforward: int, num_experts: int = 4, 
                  top_k: int = 2, dropout: float = 0.1, activation: str = 'gelu', 
-                 noise_std: float = 0.1):
+                 noise_std: float = 0.1, router_init_std: float = 0.05):
         super().__init__()
         self.d_model = d_model
         self.dim_feedforward = dim_feedforward
@@ -46,16 +46,13 @@ class MoELayer(nn.Module):
         self.noise_std = noise_std
         self.dropout_rate = dropout
         
-        # Router
+        # [修复] 提高初始化 std 并支持配置化
         self.router = nn.Linear(d_model, num_experts, bias=False)
-        nn.init.normal_(self.router.weight, mean=0.0, std=0.02)
+        nn.init.normal_(self.router.weight, mean=0.0, std=router_init_std)
         
         # 向量化专家权重：每个专家的两层 MLP
-        # 第一层：d_model -> dim_feedforward，为每个专家分别存储
         self.expert_w1 = nn.Parameter(torch.empty(num_experts, dim_feedforward, d_model))
         self.expert_b1 = nn.Parameter(torch.zeros(num_experts, dim_feedforward))
-        
-        # 第二层：dim_feedforward -> d_model，为每个专家分别存储
         self.expert_w2 = nn.Parameter(torch.empty(num_experts, d_model, dim_feedforward))
         self.expert_b2 = nn.Parameter(torch.zeros(num_experts, d_model))
         
@@ -76,8 +73,14 @@ class MoELayer(nn.Module):
         else:
             self.activation = nn.ReLU()
         
-        self.router_logits_cache = None
-        self.expert_indices_cache = None
+        # [修复] 缓存改为列表，以支持共享层多次 forward 的记录
+        self.router_logits_cache = []
+        self.expert_indices_cache = []
+
+    def reset_cache(self):
+        """用于在共享层模式下，每个 Batch 开始前清空记录"""
+        self.router_logits_cache = []
+        self.expert_indices_cache = []
     
     def forward(self, x: torch.Tensor, spatial_shape: Optional[Tuple[int, int]] = None) -> torch.Tensor:
         """
@@ -95,15 +98,19 @@ class MoELayer(nn.Module):
         
         # 1. Router Logic
         router_logits = self.router(x)  # [B, N, E]
+        # [修复] Noisy Top-K: 仅在训练阶段加入探索噪声
+        if self.training and self.noise_std > 0:
+            noise = torch.randn_like(router_logits) * self.noise_std
+            router_logits = router_logits + noise
         router_probs = F.softmax(router_logits, dim=-1)  # [B, N, E]
         expert_weights, expert_indices = torch.topk(router_probs, K, dim=-1)  # [B, N, K]
         
         # Renormalize expert weights
         expert_weights = expert_weights / (expert_weights.sum(dim=-1, keepdim=True) + 1e-9)
         
-        # Cache for loss (Flattened for convenience)
-        self.router_logits_cache = router_logits.view(-1, E)
-        self.expert_indices_cache = expert_indices.view(-1, K)
+        # [修复] 列表化存储，防止共享层覆盖
+        self.router_logits_cache.append(router_logits.view(-1, E))
+        self.expert_indices_cache.append(expert_indices.view(-1, K))
 
         x_flat = x.view(-1, C)
         out_flat = torch.zeros_like(x_flat)
@@ -113,7 +120,6 @@ class MoELayer(nn.Module):
         flat_expert_weights = expert_weights.view(-1, K)
         
         # 2. Key Fix: Loop over experts and process assigned tokens as a group
-        # This keeps memory usage dependent only on active tokens, not the full weight expansion.
         for i in range(E):
             # Find tokens assigned to current expert i
             token_indices, slot_indices = torch.where(flat_expert_indices == i)
@@ -123,8 +129,7 @@ class MoELayer(nn.Module):
             # Extract only the tokens that need this expert
             temp_x = x_flat[token_indices]
             
-            # Compute: Single expert pass for the gathered group of tokens
-            # Using F.linear with the pre-stored expert parameters
+            # Compute: Single expert pass
             h = F.linear(temp_x, self.expert_w1[i], self.expert_b1[i])
             h = self.activation(h)
             h = self.dropout(h)
@@ -145,48 +150,27 @@ def compute_moe_balance_loss(router_logits_list: List[torch.Tensor],
                              num_experts: int,
                              expert_indices_list: List[torch.Tensor] = None) -> torch.Tensor:
     """
-    统一的 MoE 负载均衡损失函数，同时支持 Encoder 和 Decoder。
-    
-    使用 Switch Transformer 风格的负载均衡损失：
-    Loss = num_experts * sum(f_i * P_i)
-    
-    其中：
-    - f_i: 实际路由到专家 i 的 token 比例 (expert_usage)
-    - P_i: 专家 i 的平均 router 概率 (expert_probs)
-    
-    Args:
-        router_logits_list: List of router logits tensors, each of shape [N, num_experts]
-        num_experts: Number of experts
-        expert_indices_list: Optional list of expert indices tensors for computing actual usage
-    
-    Returns:
-        Average balance loss across all layers
+    [修复] 采用 Switch Transformer 风格的可微负载均衡损失。
+    不再使用 torch.bincount (不可微)，而是使用 expert_probs 的平方项作为 Proxy。
     """
     if len(router_logits_list) == 0: 
-        return torch.tensor(0.0, device='cuda' if torch.cuda.is_available() else 'cpu')
-    
+         return torch.tensor(0.0, device='cuda' if torch.cuda.is_available() else 'cpu')
+        
     total_loss = 0.0
     num_layers = 0
-    
-    for i, logits in enumerate(router_logits_list):
+        
+    for logits in router_logits_list:
         if logits is None or logits.numel() == 0:
             continue
-        
+                
         probs = F.softmax(logits, dim=-1)
-        expert_probs = probs.mean(dim=0)
-        
-        if expert_indices_list is not None and i < len(expert_indices_list) and expert_indices_list[i] is not None:
-            indices = expert_indices_list[i]
-            flat_indices = indices.view(-1)
-            usage_counts = torch.bincount(flat_indices, minlength=num_experts).float()
-            total_dispatches = flat_indices.size(0)
-            expert_usage = usage_counts / total_dispatches
-        else:
-            expert_usage = expert_probs
-        
-        loss = num_experts * torch.sum(expert_usage * expert_probs)
-        
+        expert_probs = probs.mean(dim=0)  # [E]
+                
+        # 使用 Soft-assignment 的均值作为实际选择的可微代理
+        # Loss = E * sum(P_i^2)，这会最小化概率分布的方差，实现真正的梯度闭环
+        loss = num_experts * torch.sum(expert_probs * expert_probs)
+                
         total_loss += loss
         num_layers += 1
-    
+        
     return total_loss / num_layers if num_layers > 0 else torch.tensor(0.0)

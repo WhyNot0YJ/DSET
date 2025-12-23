@@ -127,7 +127,8 @@ class TransformerEncoderLayer(nn.Module):
                  num_experts=4,
                  moe_top_k=2,
                  patch_size=4,
-                 moe_noise_std=0.1):
+                 moe_noise_std=0.1,
+                 router_init_std=0.05): # [新增]
         super().__init__()
         self.normalize_before = normalize_before
         self.use_moe = use_moe
@@ -144,7 +145,8 @@ class TransformerEncoderLayer(nn.Module):
                 top_k=moe_top_k,
                 dropout=dropout,
                 activation=activation,
-                noise_std=moe_noise_std
+                noise_std=moe_noise_std,
+                router_init_std=router_init_std # [新增]
             )
         else:
             # 标准FFN
@@ -245,7 +247,8 @@ class HybridEncoder(nn.Module):
                  cass_focal_alpha=2.0,
                  cass_focal_beta=4.0,
                  # MoE noise_std parameter
-                 moe_noise_std=0.1):
+                 moe_noise_std=0.1,
+                 router_init_std=0.05): # [新增]
         """
         Args:
             token_keep_ratio: Patch retention ratio (0.5-0.7)
@@ -285,8 +288,9 @@ class HybridEncoder(nn.Module):
         self.cass_focal_alpha = cass_focal_alpha
         self.cass_focal_beta = cass_focal_beta
         
-        # MoE noise_std parameter
+        # MoE parameters
         self.moe_noise_std = moe_noise_std
+        self.router_init_std = router_init_std # [新增]
         
         self.use_patch_moe = True
         self.use_token_pruning = True
@@ -352,7 +356,8 @@ class HybridEncoder(nn.Module):
             num_experts=patch_moe_num_experts,
             moe_top_k=patch_moe_top_k,
             patch_size=1,  # MoE现在是token-level，patch_size固定为1
-            moe_noise_std=moe_noise_std)
+            moe_noise_std=moe_noise_std,
+            router_init_std=router_init_std) # [新增]
 
         self.encoder = nn.ModuleList([
             TransformerEncoder(encoder_layer, num_encoder_layers) for _ in range(len(use_encoder_idx))
@@ -436,6 +441,12 @@ class HybridEncoder(nn.Module):
         assert len(feats) == len(self.in_channels)
         proj_feats = [self.input_proj[i](feat) for i, feat in enumerate(feats)]
         
+        # [修复] 共享层模式下，每个 Batch 开始前清空 MoE 记录
+        for encoder in self.encoder:
+            for layer in encoder.layers:
+                if hasattr(layer, 'moe_layer') and hasattr(layer.moe_layer, 'reset_cache'):
+                    layer.moe_layer.reset_cache()
+        
         encoder_info = {
             'token_pruning_ratios': [],
             'importance_scores_list': [],
@@ -502,14 +513,15 @@ class HybridEncoder(nn.Module):
                     spatial_shape=None  # 不再用于reshape
                 )
                 
-                # 5. 收集 MoE 信息
+                # 5. 收集 MoE 信息（支持列表化的缓存）
                 for layer in self.encoder[i].layers:
                     if hasattr(layer, 'moe_layer'):
                         moe_layer = layer.moe_layer
-                        if hasattr(moe_layer, 'router_logits_cache') and moe_layer.router_logits_cache is not None:
-                            encoder_info['moe_router_logits'].append(moe_layer.router_logits_cache)
-                        if hasattr(moe_layer, 'expert_indices_cache') and moe_layer.expert_indices_cache is not None:
-                            encoder_info['moe_expert_indices'].append(moe_layer.expert_indices_cache)
+                        # 使用 extend 将列表内容合并
+                        if hasattr(moe_layer, 'router_logits_cache') and moe_layer.router_logits_cache:
+                            encoder_info['moe_router_logits'].extend(moe_layer.router_logits_cache)
+                        if hasattr(moe_layer, 'expert_indices_cache') and moe_layer.expert_indices_cache:
+                            encoder_info['moe_expert_indices'].extend(moe_layer.expert_indices_cache)
                 
                 # 6. 特征还原：极致向量化 Scatter 模式
                 # memory: [B, N_kept, C]
