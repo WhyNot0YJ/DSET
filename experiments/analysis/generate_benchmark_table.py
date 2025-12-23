@@ -444,6 +444,15 @@ def load_yolov10_model(checkpoint_path: str, device: str = "cuda"):
 def evaluate_yolo_accuracy(model, config_path: str, device: str = "cuda", max_samples: int = 300) -> Dict[str, float]:
     """使用 YOLO model.val() 进行评估"""
     try:
+        # --- GPU Warmup ---
+        if device == 'cuda':
+            print(f"  ✓ YOLO GPU 热身中...")
+            # 简单的热身：使用一个随机 tensor 跑几次
+            warmup_img = torch.randn(1, 3, 1280, 1280).to(device)
+            for _ in range(10):
+                _ = model(warmup_img, verbose=False)
+            torch.cuda.synchronize()
+
         print(f"  ✓ 使用 YOLO model.val() 进行评估")
         
         results = model.val(
@@ -602,6 +611,18 @@ def evaluate_deformable_detr_full(config_path: str,
     runner.model = runner.model.to(device)
     runner.model.eval()
     
+    # --- GPU Warmup ---
+    if device == 'cuda':
+        print(f"  ✓ Deformable-DETR GPU 热身中...")
+        dataloader = getattr(runner, 'test_dataloader', None) or getattr(runner, 'val_dataloader', None)
+        if dataloader:
+            with torch.no_grad():
+                for i, data_batch in enumerate(dataloader):
+                    if i >= 10: break
+                    data_batch = _move_to_device(data_batch, device)
+                    _ = runner.model.test_step(data_batch)
+            torch.cuda.synchronize()
+
     # 1) 精度评估（COCO mAP）
     test_metrics = runner.test()
     
@@ -886,6 +907,17 @@ def evaluate_accuracy(model, config_path: str, device: str = "cuda",
                 pruner = model.encoder.token_pruners[0]
                 if hasattr(pruner, 'pruning_enabled'):
                     print(f"  ✓ Token Pruning: {'已激活' if pruner.pruning_enabled else '未激活'}")
+        
+        # --- GPU Warmup ---
+        warmup_iters = 20
+        print(f"  ✓ GPU 热身中 ({warmup_iters} 次迭代)...")
+        with torch.no_grad():
+            for i, (images, targets) in enumerate(val_loader):
+                if i >= warmup_iters:
+                    break
+                _ = model(images.to(device), targets)
+        if device == 'cuda':
+            torch.cuda.synchronize()
         
         all_predictions = []
         all_targets = []
