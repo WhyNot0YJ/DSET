@@ -17,7 +17,7 @@ class MoELayer(nn.Module):
     
     def __init__(self, d_model: int, dim_feedforward: int, num_experts: int = 4, 
                  top_k: int = 2, dropout: float = 0.1, activation: str = 'gelu', 
-                 noise_std: float = 0.1, router_init_std: float = 0.05):
+                 noise_std: float = 0.1, router_init_std: float = 0.02):
         super().__init__()
         self.d_model = d_model
         self.dim_feedforward = dim_feedforward
@@ -131,44 +131,51 @@ def compute_moe_balance_loss(router_logits_list: List[torch.Tensor],
                              expert_indices_list: List[torch.Tensor] = None,
                              top_k: int = 2) -> torch.Tensor:
     """
-    [P^2 算法] MoE 负载均衡损失 - 意图引导型，允许专家特化。
+    Switch Transformer 风格的 MoE 负载均衡损失。
     
-    使用公式: Loss = E · Σ(P_mean)^2
+    使用公式: Loss = E × Σ(f_i × P_i)
     其中:
-        P_mean: 每个专家的平均 Softmax 概率
-    
-    核心思想：
-        - 只约束路由器的"整体意图"公平，不强制每个 Token 的选择
-        - 允许路由器在特定 Token 上给某个专家高分，只要全 Batch 平均分接近即可
-        - 这正是专家产生"特长"（如专家1算车、专家2算路）的关键
+        f_i: 实际路由到专家 i 的 token 比例 (通过 bincount 统计)
+        P_i: 专家 i 的平均 router 概率
     
     Args:
         router_logits_list: Router logits 列表，每个元素形状为 [N, E]
         num_experts: 专家数量
-        expert_indices_list: 专家索引列表（未使用，保持接口兼容）
-        top_k: Top-K 路由的 K 值（未使用，保持接口兼容）
+        expert_indices_list: 专家索引列表，用于计算实际路由比例
+        top_k: Top-K 路由的 K 值（保持接口兼容）
     
     Returns:
         负载均衡损失标量
-        完美均衡时 p_mean = 1/E, 则 Loss = E * E * (1/E)^2 = 1.0
     """
     if not router_logits_list: 
         return torch.tensor(0.0, device='cuda' if torch.cuda.is_available() else 'cpu')
-        
+    
     total_loss = 0.0
-    for logits in router_logits_list:
-        # logits: [N, E], N 是 token 数量，E 是专家数量
+    num_layers = 0
+    
+    for i, logits in enumerate(router_logits_list):
+        if logits is None or logits.numel() == 0:
+            continue
         
-        # 1. 计算 Softmax 概率 [N, E]
-        probs = F.softmax(logits.float(), dim=-1)
+        # 计算 Softmax 概率
+        probs = F.softmax(logits.float(), dim=-1)  # [N, E]
+        expert_probs = probs.mean(dim=0)  # [E] 每个专家的平均概率
         
-        # 2. 计算 Batch 内每个专家的平均概率 [E]
-        # 这是 P^2 逻辑的核心：只看路由器的意图是否平均
-        p_mean = probs.mean(dim=0)
+        # 计算实际路由比例 f_i
+        if expert_indices_list is not None and i < len(expert_indices_list) and expert_indices_list[i] is not None:
+            indices = expert_indices_list[i]
+            flat_indices = indices.view(-1)
+            usage_counts = torch.bincount(flat_indices, minlength=num_experts).float()
+            total_dispatches = flat_indices.size(0)
+            expert_usage = usage_counts / total_dispatches  # [E] 实际选择比例
+        else:
+            # 如果没有 indices，退化为使用概率作为 usage
+            expert_usage = expert_probs
         
-        # 3. 计算平方和损失
-        # 完美均衡时 p_mean = 1/E, 则 Loss = E * E * (1/E)^2 = 1.0
-        layer_loss = num_experts * torch.sum(p_mean ** 2)
-        total_loss += layer_loss
+        # Switch Transformer 损失: Loss = E × Σ(f_i × P_i)
+        loss = num_experts * torch.sum(expert_usage * expert_probs)
         
-    return total_loss / len(router_logits_list)
+        total_loss += loss
+        num_layers += 1
+    
+    return total_loss / num_layers if num_layers > 0 else torch.tensor(0.0)

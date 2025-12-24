@@ -128,7 +128,7 @@ class TransformerEncoderLayer(nn.Module):
                  moe_top_k=2,
                  patch_size=4,
                  moe_noise_std=0.1,
-                 router_init_std=0.05): # [新增]
+                 router_init_std=0.02): 
         super().__init__()
         self.normalize_before = normalize_before
         self.use_moe = use_moe
@@ -248,7 +248,7 @@ class HybridEncoder(nn.Module):
                  cass_focal_beta=4.0,
                  # MoE noise_std parameter
                  moe_noise_std=0.1,
-                 router_init_std=0.05): # [新增]
+                 router_init_std=0.02): # [修复] 恢复为冠军版本值
         """
         Args:
             token_keep_ratio: Patch retention ratio (0.5-0.7)

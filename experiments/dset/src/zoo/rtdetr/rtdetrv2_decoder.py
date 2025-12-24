@@ -175,7 +175,7 @@ class TransformerDecoderLayer(nn.Module):
                  num_experts=6,
                  moe_top_k=2,
                  moe_noise_std=0.1,
-                 router_init_std=0.05):
+                 router_init_std=0.02):
         super(TransformerDecoderLayer, self).__init__()
 
         # self attention
@@ -340,7 +340,7 @@ class RTDETRTransformerv2(nn.Module):
                  num_experts=6,
                  moe_top_k=2,
                  moe_noise_std=0.1,
-                 router_init_std=0.05):
+                 router_init_std=0.02): 
         super().__init__()
         assert len(feat_channels) <= num_levels
         assert len(feat_strides) == len(feat_channels)

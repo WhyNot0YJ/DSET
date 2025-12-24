@@ -50,7 +50,7 @@ training:
   deterministic: false
   decoder_moe_balance_weight: 0.01
   encoder_moe_balance_weight: 0.001
-  moe_balance_warmup_epochs: 2
+  moe_balance_warmup_epochs: 0
 data:
   data_root: /root/autodl-tmp/datasets/DAIR-V2X
 checkpoint:
