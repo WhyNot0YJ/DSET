@@ -146,6 +146,7 @@ class DSETRTDETR(nn.Module):
                  # MoE weight config
                  decoder_moe_balance_weight: float = None,
                  encoder_moe_balance_weight: float = None,
+                 moe_balance_warmup_epochs: int = 0,
                  use_token_pruning_loss: bool = False,
                  token_pruning_loss_weight: float = 0.001,
                 # CASS (Context-Aware Soft Supervision) config
@@ -179,6 +180,7 @@ class DSETRTDETR(nn.Module):
             patch_moe_patch_size: Patch-MoE patch size
             decoder_moe_balance_weight: Decoder MoE balance loss weight
             encoder_moe_balance_weight: Encoder MoE balance loss weight
+            moe_balance_warmup_epochs: Number of epochs before applying MOE balance loss (default: 0)
             use_token_pruning_loss: Whether to compute token pruning auxiliary loss
             token_pruning_loss_weight: Token pruning loss weight
             use_cass: Whether to use Context-Aware Soft Supervision for token pruning
@@ -230,6 +232,9 @@ class DSETRTDETR(nn.Module):
             self.decoder_moe_balance_weight = decoder_moe_balance_weight
         if encoder_moe_balance_weight is not None:
             self.encoder_moe_balance_weight = encoder_moe_balance_weight
+        
+        # MOE Balance Warmup配置：在前N个epoch内不应用MOE平衡损失，让专家自然分化
+        self.moe_balance_warmup_epochs = moe_balance_warmup_epochs
         if token_pruning_loss_weight is not None:
             self.token_pruning_loss_weight = token_pruning_loss_weight
         
@@ -452,13 +457,22 @@ class DSETRTDETR(nn.Module):
                 # Warmup 期间：Token Pruning Loss 为 0
                 token_pruning_loss = torch.tensor(0.0, device=images.device)
             
+            # 检查是否在 MOE Balance Warmup 期间
+            # 在 warmup 期间，MOE 平衡损失权重设为 0，让专家自然分化
+            in_moe_balance_warmup = self.current_epoch < self.moe_balance_warmup_epochs
+            
             # Decoder MoE权重
-            if hasattr(self, 'decoder_moe_balance_weight'):
+            if in_moe_balance_warmup:
+                decoder_moe_weight = 0.0
+            elif hasattr(self, 'decoder_moe_balance_weight'):
                 decoder_moe_weight = self.decoder_moe_balance_weight
             else:
                 decoder_moe_weight = 0.05
+            
             # Encoder Patch-MoE权重
-            if hasattr(self, 'encoder_moe_balance_weight'):
+            if in_moe_balance_warmup:
+                encoder_moe_weight = 0.0
+            elif hasattr(self, 'encoder_moe_balance_weight'):
                 encoder_moe_weight = self.encoder_moe_balance_weight
             else:
                 # 默认值：0.05（中等值）
@@ -607,13 +621,6 @@ class DSETTrainer:
         
         # 梯度裁剪参数（从配置读取）
         self.clip_max_norm = self.config.get('training', {}).get('clip_max_norm', 10.0)
-
-        # [新增] 读取 close_mosaic_epochs 参数
-        # 优先从 data_augmentation 读取，兼容 augmentation
-        aug_config = self.config.get('data_augmentation', {})
-        if not aug_config:
-            aug_config = self.config.get('augmentation', {})
-        self.close_mosaic_epochs = aug_config.get('close_mosaic_epochs', 0)
         
         # 初始化组件
         self._setup_logging()
@@ -755,6 +762,8 @@ class DSETTrainer:
         # 从配置文件读取MoE权重
         decoder_moe_balance_weight = self.config.get('training', {}).get('decoder_moe_balance_weight', None)
         encoder_moe_balance_weight = self.config.get('training', {}).get('encoder_moe_balance_weight', None)
+        # MOE Balance Warmup: 在前N个epoch内不应用MOE平衡损失
+        moe_balance_warmup_epochs = self.config.get('training', {}).get('moe_balance_warmup_epochs', 0)
         
         # 从配置文件读取num_encoder_layers，默认为1
         num_encoder_layers = self.config.get('model', {}).get('encoder', {}).get('num_encoder_layers', 1)
@@ -781,6 +790,7 @@ class DSETTrainer:
             # MoE权重配置
             decoder_moe_balance_weight=decoder_moe_balance_weight,
             encoder_moe_balance_weight=encoder_moe_balance_weight,
+            moe_balance_warmup_epochs=moe_balance_warmup_epochs,
             # CASS配置
             use_cass=use_cass,
             cass_loss_weight=cass_loss_weight,
@@ -824,6 +834,8 @@ class DSETTrainer:
         self.logger.info(f"    - CASS Supervision: {use_cass} (weight={cass_loss_weight}, expansion={cass_expansion_ratio}, min_size={cass_min_size})")
         self.logger.info(f"    - Decoder MoE: {decoder_moe_balance_weight if decoder_moe_balance_weight else 'auto'}")
         self.logger.info(f"    - Encoder MoE: {encoder_moe_balance_weight if encoder_moe_balance_weight else 'auto'}")
+        if moe_balance_warmup_epochs > 0:
+            self.logger.info(f"    - MOE Balance Warmup: {moe_balance_warmup_epochs} epochs (延迟平衡策略：前{moe_balance_warmup_epochs}个epoch不应用MOE平衡损失)")
         
         return model
     
@@ -1441,35 +1453,6 @@ class DSETTrainer:
         except Exception as e:
             self.logger.error(f"恢复检查点失败: {e}")
     
-    def _disable_mosaic_mixup(self):
-        """Disable Mosaic and Mixup for the last N epochs."""
-        self.logger.info(f"🛑 Reached final {self.close_mosaic_epochs} epochs. Disabling Mosaic & Mixup for finetuning!")
-        
-        count = 0
-        def _update_dataset(dataset):
-            nonlocal count
-            updated = False
-            # 直接修改 dataset 的属性
-            if hasattr(dataset, 'aug_mosaic_prob'):
-                dataset.aug_mosaic_prob = 0.0
-                updated = True
-            if hasattr(dataset, 'aug_mixup_prob'):
-                dataset.aug_mixup_prob = 0.0
-                updated = True
-            
-            if updated:
-                self.logger.info(f"  - Disabled Mosaic/Mixup for {type(dataset).__name__}")
-                count += 1
-            
-            # 递归处理 Subset 或其他 Wrapper
-            if hasattr(dataset, 'dataset'):
-                _update_dataset(dataset.dataset)
-                
-        _update_dataset(self.train_loader.dataset)
-        
-        if count == 0:
-            self.logger.warning("⚠️ Warning: No dataset with aug_mosaic_prob/aug_mixup_prob found! Mosaic/Mixup might not be disabled.")
-
     def train_epoch(self) -> Dict[str, float]:
         """训练一个epoch（支持DSET渐进式训练，采用即产即清原则优化）。"""
         self.model.train()
@@ -2160,10 +2143,6 @@ class DSETTrainer:
         
         for epoch in range(self.current_epoch, epochs):
             self.current_epoch = epoch
-            
-            # [新增] Close Mosaic 策略 check
-            if self.close_mosaic_epochs > 0 and epoch == (epochs - self.close_mosaic_epochs):
-                self._disable_mosaic_mixup()
 
             # 训练
             train_metrics = self.train_epoch()
