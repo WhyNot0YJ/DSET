@@ -131,64 +131,44 @@ def compute_moe_balance_loss(router_logits_list: List[torch.Tensor],
                              expert_indices_list: List[torch.Tensor] = None,
                              top_k: int = 2) -> torch.Tensor:
     """
-    [改进版] MoE 负载均衡损失 - 引入实际负载计算，修复统计盲区。
+    [P^2 算法] MoE 负载均衡损失 - 意图引导型，允许专家特化。
     
-    使用公式: Loss = E · Σ(P_mean · f_mean)
+    使用公式: Loss = E · Σ(P_mean)^2
     其中:
-        P_mean: 原始 Softmax 概率的均值（软概率）
-        f_mean: 实际负载代理（基于 Top-K 权重的聚合，保持可微性）
+        P_mean: 每个专家的平均 Softmax 概率
+    
+    核心思想：
+        - 只约束路由器的"整体意图"公平，不强制每个 Token 的选择
+        - 允许路由器在特定 Token 上给某个专家高分，只要全 Batch 平均分接近即可
+        - 这正是专家产生"特长"（如专家1算车、专家2算路）的关键
     
     Args:
         router_logits_list: Router logits 列表，每个元素形状为 [N, E]
         num_experts: 专家数量
-        expert_indices_list: 专家索引列表（可选，用于未来扩展）
-        top_k: Top-K 路由的 K 值（默认 2）
+        expert_indices_list: 专家索引列表（未使用，保持接口兼容）
+        top_k: Top-K 路由的 K 值（未使用，保持接口兼容）
     
     Returns:
         负载均衡损失标量
+        完美均衡时 p_mean = 1/E, 则 Loss = E * E * (1/E)^2 = 1.0
     """
     if not router_logits_list: 
-         return torch.tensor(0.0, device='cuda' if torch.cuda.is_available() else 'cpu')
+        return torch.tensor(0.0, device='cuda' if torch.cuda.is_available() else 'cpu')
         
     total_loss = 0.0
     for logits in router_logits_list:
         # logits: [N, E], N 是 token 数量，E 是专家数量
         
-        # 1. 计算原始 Softmax 概率（软概率）
-        probs = F.softmax(logits, dim=-1)  # [N, E]
+        # 1. 计算 Softmax 概率 [N, E]
+        probs = F.softmax(logits.float(), dim=-1)
         
-        # 2. P_mean: 每个专家的平均软概率
-        P_mean = probs.mean(dim=0)  # [E]
+        # 2. 计算 Batch 内每个专家的平均概率 [E]
+        # 这是 P^2 逻辑的核心：只看路由器的意图是否平均
+        p_mean = probs.mean(dim=0)
         
-        # 3. f_mean: 实际负载代理（基于 Top-K 权重的聚合，保持可微性）
-        # 计算 Top-K 权重
-        expert_weights, expert_indices = torch.topk(probs, top_k, dim=-1)  # [N, K], [N, K]
-        
-        # 归一化 Top-K 权重
-        expert_weights = expert_weights / (expert_weights.sum(dim=-1, keepdim=True) + 1e-9)  # [N, K]
-        
-        # 将 Top-K 权重聚合到每个专家上，得到实际负载（向量化实现）
-        N = expert_indices.shape[0]
-        device = logits.device
-        
-        # 使用 one-hot 编码将权重分配到对应的专家（向量化）
-        # 将 [N, K] 的索引和权重展平为 [N*K]
-        flat_indices = expert_indices.flatten()  # [N*K]
-        flat_weights = expert_weights.flatten()  # [N*K]
-        
-        # 使用 scatter_add 一次性累加所有权重
-        # 注意：scatter_add_ 要求 dtype 一致，统一使用 float32 进行计算
-        f_mean = torch.zeros(num_experts, device=device, dtype=torch.float32)  # [E]
-        f_mean.scatter_add_(0, flat_indices, flat_weights.float())  # [E]
-        # f_mean 现在表示每个专家接收到的总权重（总和 = N，因为每个token的top-k权重总和为1）
-        
-        # 归一化实际负载（使其与 P_mean 在同一尺度，都是概率分布）
-        f_mean = f_mean / (f_mean.sum() + 1e-9)  # 归一化到总和为 1，与 P_mean 对齐
-        
-        # 4. 计算负载均衡损失: Loss = E · Σ(P_mean · f_mean)
-        # 这个公式能强迫"软概率"去对齐"硬计数"
-        # 注意：确保类型一致，统一使用 float32
-        loss = num_experts * torch.sum(P_mean.float() * f_mean)
-        total_loss += loss
+        # 3. 计算平方和损失
+        # 完美均衡时 p_mean = 1/E, 则 Loss = E * E * (1/E)^2 = 1.0
+        layer_loss = num_experts * torch.sum(p_mean ** 2)
+        total_loss += layer_loss
         
     return total_loss / len(router_logits_list)
