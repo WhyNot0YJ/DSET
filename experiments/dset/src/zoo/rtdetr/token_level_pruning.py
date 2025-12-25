@@ -136,7 +136,11 @@ class TokenLevelPruner(nn.Module):
         if H * W != num_tokens:
             raise ValueError(f"spatial_shape {spatial_shape} does not match num_tokens {num_tokens}")
         
-        # Warmup阶段跳过所有剪枝计算
+        # --- 核心修复：即使在 Warmup 期间，训练时也计算分数 ---
+        # 这样 CASS Loss 才能在 Pruning 真正开始前就训练 Predictor
+        token_importance_scores = self.importance_predictor(tokens)  # [B, N]
+
+        # 如果处于 Pruning 的 Warmup 阶段
         if self.training and self.current_epoch < self.warmup_epochs:
             info = {
                 'pruning_ratio': 0.0,
@@ -144,14 +148,16 @@ class TokenLevelPruner(nn.Module):
                 'num_pruned_tokens': 0,
                 'num_tokens': num_tokens,
                 'num_kept_tokens_info': num_tokens,
-                'token_importance_scores': None,
+                'token_importance_scores': token_importance_scores, # 必须传出分数！
                 'new_spatial_shape': (H, W),
                 'original_spatial_shape': (H, W)
             }
+            # 返回全部索引，不执行剪枝
             kept_indices = None if not return_indices else torch.arange(
                 num_tokens, device=tokens.device).unsqueeze(0).expand(batch_size, -1)
             return tokens, kept_indices, info
         
+        # --- 原有的正常剪枝逻辑 (Warmup 结束后执行) ---
         should_prune = self.pruning_enabled and (self.training or self.prune_in_eval)
         should_compute_scores = self.training
         
@@ -168,9 +174,6 @@ class TokenLevelPruner(nn.Module):
             kept_indices = None if not return_indices else torch.arange(
                 num_tokens, device=tokens.device).unsqueeze(0).expand(batch_size, -1)
             return tokens, kept_indices, info
-        
-        # 直接计算每个token的重要性分数
-        token_importance_scores = self.importance_predictor(tokens)  # [B, N]
         
         if num_tokens <= self.min_tokens:
             info = {

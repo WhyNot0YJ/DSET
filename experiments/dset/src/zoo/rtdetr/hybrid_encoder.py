@@ -470,7 +470,8 @@ class HybridEncoder(nn.Module):
                 )
                 encoder_info['token_pruning_ratios'].append(prune_info.get('pruning_ratio', 0.0))
                 
-                if 'token_importance_scores' in prune_info:
+                # 关键修复：只要 info 里有分数，就收集，不管当前是否在进行物理剪枝
+                if 'token_importance_scores' in prune_info and prune_info['token_importance_scores'] is not None:
                     encoder_info['importance_scores_list'].append(prune_info['token_importance_scores'])
                     encoder_info['feat_shapes_list'].append((h, w))  # Store corresponding feature shape
                 
