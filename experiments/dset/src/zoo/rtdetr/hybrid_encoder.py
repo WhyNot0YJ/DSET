@@ -9,7 +9,7 @@ import torch.nn as nn
 import torch.nn.functional as F 
 
 from .utils import get_activation
-from .patch_level_pruning import PatchLevelPruner
+from .token_level_pruning import TokenLevelPruner
 from .moe_components import MoELayer
 
 from ...core import register
@@ -126,7 +126,6 @@ class TransformerEncoderLayer(nn.Module):
                  use_moe=False,
                  num_experts=4,
                  moe_top_k=2,
-                 patch_size=4,
                  moe_noise_std=0.1,
                  router_init_std=0.02): 
         super().__init__()
@@ -234,9 +233,8 @@ class HybridEncoder(nn.Module):
                  # DSET 双稀疏参数
                  token_keep_ratio=0.7,
                  token_pruning_warmup_epochs=10,
-                 patch_moe_num_experts=4,
-                 patch_moe_top_k=2,
-                 patch_moe_patch_size=1,
+                 encoder_moe_num_experts=4,
+                 encoder_moe_top_k=2,
                  # CASS (Context-Aware Soft Supervision) 参数
                  use_cass=False,
                  cass_expansion_ratio=0.3,
@@ -253,9 +251,8 @@ class HybridEncoder(nn.Module):
         Args:
             token_keep_ratio: Patch retention ratio (0.5-0.7)
             token_pruning_warmup_epochs: Warmup epochs for pruning
-            patch_moe_num_experts: Number of experts for MoE
-            patch_moe_top_k: Top-K experts for MoE
-            patch_moe_patch_size: Patch size for pruning (MoE is now token-level, patch_size=1)
+            encoder_moe_num_experts: Number of experts for Encoder-MoE
+            encoder_moe_top_k: Top-K experts for Encoder-MoE
             use_cass: Whether to use Context-Aware Soft Supervision
             cass_expansion_ratio: Context band expansion ratio (0.2-0.3)
             cass_min_size: Minimum box size on feature map (protects small objects)
@@ -274,9 +271,8 @@ class HybridEncoder(nn.Module):
         # DSET dual-sparse parameters - 保存参数以便后续使用
         self.token_keep_ratio = token_keep_ratio
         self.token_pruning_warmup_epochs = token_pruning_warmup_epochs
-        self.patch_moe_num_experts = patch_moe_num_experts
-        self.patch_moe_top_k = patch_moe_top_k
-        self.patch_moe_patch_size = patch_moe_patch_size
+        self.encoder_moe_num_experts = encoder_moe_num_experts
+        self.encoder_moe_top_k = encoder_moe_top_k
         
         # CASS parameters - 保存参数以便后续使用
         self.use_cass = use_cass
@@ -292,9 +288,9 @@ class HybridEncoder(nn.Module):
         self.moe_noise_std = moe_noise_std
         self.router_init_std = router_init_std # [新增]
         
-        self.use_patch_moe = True
+        self.use_encoder_moe = True
         self.use_token_pruning = True
-        self.use_patch_level_pruning = True
+        self.use_token_level_pruning = True
         
         self.input_proj = nn.ModuleList()
         for in_channel in in_channels:
@@ -326,12 +322,11 @@ class HybridEncoder(nn.Module):
             # 2. Log HSP strategy (optional)
             
             # 3. Create pruner with CASS support
-            pruner = PatchLevelPruner(
+            pruner = TokenLevelPruner(
                 input_dim=hidden_dim,
-                patch_size=patch_moe_patch_size,
                 keep_ratio=current_keep_ratio,  # Use layer-specific ratio
                 adaptive=True,
-                min_patches=self._calculate_min_patches_for_layer(),
+                min_tokens=self._calculate_min_tokens_for_layer(),
                 warmup_epochs=token_pruning_warmup_epochs,
                 prune_in_eval=True,
                 # CASS parameters
@@ -353,9 +348,8 @@ class HybridEncoder(nn.Module):
             dropout=dropout,
             activation=enc_act,
             use_moe=True,
-            num_experts=patch_moe_num_experts,
-            moe_top_k=patch_moe_top_k,
-            patch_size=1,  # MoE现在是token-level，patch_size固定为1
+            num_experts=encoder_moe_num_experts,
+            moe_top_k=encoder_moe_top_k,
             moe_noise_std=moe_noise_std,
             router_init_std=router_init_std) # [新增]
 
@@ -383,9 +377,9 @@ class HybridEncoder(nn.Module):
                 CSPRepLayer(hidden_dim * 2, hidden_dim, round(3 * depth_mult), act=act, expansion=expansion)
             )
     
-    def _calculate_min_patches_for_layer(self) -> int:
+    def _calculate_min_tokens_for_layer(self) -> int:
         """
-        Calculate min_patches.
+        Calculate min_tokens.
         Returns a fixed safe minimum (1) to ensure code stability,
         leaving the actual pruning ratio control entirely to `keep_ratio`.
         """
@@ -433,7 +427,7 @@ class HybridEncoder(nn.Module):
             return {'balance_loss': zero_tensor}
         
         num_experts = router_logits_list[0].shape[-1] if len(router_logits_list) > 0 else 4
-        top_k = self.patch_moe_top_k if hasattr(self, 'patch_moe_top_k') else 2
+        top_k = self.encoder_moe_top_k if hasattr(self, 'encoder_moe_top_k') else 2
         balance_loss = compute_moe_balance_loss(router_logits_list, num_experts, expert_indices_list, top_k=top_k)
         
         return {'balance_loss': balance_loss}
@@ -476,8 +470,8 @@ class HybridEncoder(nn.Module):
                 )
                 encoder_info['token_pruning_ratios'].append(prune_info.get('pruning_ratio', 0.0))
                 
-                if 'patch_importance_scores' in prune_info:
-                    encoder_info['importance_scores_list'].append(prune_info['patch_importance_scores'])
+                if 'token_importance_scores' in prune_info:
+                    encoder_info['importance_scores_list'].append(prune_info['token_importance_scores'])
                     encoder_info['feat_shapes_list'].append((h, w))  # Store corresponding feature shape
                 
                 # 3. 使用 Gather 提取对应的 PosEmbed

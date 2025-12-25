@@ -73,18 +73,60 @@ def _extract_state_dict(checkpoint: dict) -> dict:
     return checkpoint
 
 
-def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 1280), is_yolo: bool = False) -> Tuple[float, float]:
-    """计算模型的参数量和 FLOPs"""
+def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 1280), 
+                   is_yolo: bool = False, config: Dict = None, model_type: str = "dset") -> Tuple[float, float, float, float]:
+    """
+    计算模型的参数量和理论 FLOPs
+    
+    Returns:
+        total_params_m: 总参数量 (M)
+        active_params_m: 激活参数量 (M) - 考虑 MoE 后的实际参数
+        base_flops_g: 基准 FLOPs (G) - 全量运行时的计算量
+        theory_flops_g: 理论 FLOPs (G) - 考虑 token pruning 和 MoE 后的理论计算量
+    """
     # 计算参数量
     if is_yolo and hasattr(model, 'model'):
         pytorch_model = model.model
     else:
         pytorch_model = model
     total_params = sum(p.numel() for p in pytorch_model.parameters())
-    params_m = total_params / 1e6
+    total_params_m = total_params / 1e6
     
-    # 计算 FLOPs
-    flops_g = 0.0
+    # 计算激活参数量（考虑 MoE）
+    active_params = total_params
+    if model_type == "dset" and config is not None:
+        # 从配置获取 num_experts
+        dset_config = config.get('model', {}).get('dset', {})
+        encoder_experts = dset_config.get('encoder_moe_num_experts', 1)
+        decoder_experts = config.get('model', {}).get('num_experts', 1)
+        
+        # 分别统计 Encoder 和 Decoder 的专家参数
+        encoder_expert_params = 0
+        decoder_expert_params = 0
+        
+        # 遍历所有参数，识别专家参数
+        for name, param in pytorch_model.named_parameters():
+            # Encoder 专家参数：参数名包含 'encoder' 且含 'expert' 或 'encoder_moe'
+            if 'encoder' in name.lower() and ('expert' in name.lower() or 'encoder_moe' in name.lower()):
+                encoder_expert_params += param.numel()
+            # Decoder 专家参数：参数名包含 'decoder' 且含 'moe_layer'
+            elif 'decoder' in name.lower() and 'moe_layer' in name.lower():
+                decoder_expert_params += param.numel()
+        
+        # 计算激活参数
+        # Encoder: Top-1 路由，激活参数 = Expert_Params / Num_Experts
+        # Decoder: Top-3 路由，激活参数 = (Expert_Params * 3) / Num_Experts
+        encoder_active = encoder_expert_params / max(encoder_experts, 1) if encoder_experts > 1 else encoder_expert_params
+        decoder_active = (decoder_expert_params * 3) / max(decoder_experts, 1) if decoder_experts > 1 else decoder_expert_params
+        
+        # 总激活参数 = 总参数 - 专家总参数 + Encoder激活部分 + Decoder激活部分
+        total_expert_params = encoder_expert_params + decoder_expert_params
+        active_params = (total_params - total_expert_params) + encoder_active + decoder_active
+    
+    active_params_m = active_params / 1e6
+    
+    # 计算基准 FLOPs（全量运行）
+    base_flops_g = 0.0
     if is_yolo:
         try:
             from copy import deepcopy
@@ -94,14 +136,14 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 12
                 imgsz = [h, w] if h != w else h
                 try:
                     from ultralytics.utils.torch_utils import get_flops
-                    flops_g = get_flops(pytorch_model, imgsz=imgsz)
+                    base_flops_g = get_flops(pytorch_model, imgsz=imgsz)
                 except (ImportError, AttributeError):
                     if HAS_THOP:
                         pytorch_model = pytorch_model.eval()
                         device = next(pytorch_model.parameters()).device
                         dummy_input = torch.randn(input_size).to(device)
                         flops, _ = profile(deepcopy(pytorch_model), inputs=(dummy_input,), verbose=False)
-                        flops_g = flops / 1e9
+                        base_flops_g = flops / 1e9
         except Exception as e:
             print(f"  ⚠ YOLO FLOPs 计算失败: {e}")
     elif HAS_THOP:
@@ -110,8 +152,8 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 12
             device = next(model.parameters()).device
             dummy_input = torch.randn(input_size).to(device)
             flops, _ = profile(model, inputs=(dummy_input,), verbose=False)
-            flops_g = flops / 1e9
-            print(f"  ✓ FLOPs: {flops_g:.2f} G")
+            base_flops_g = flops / 1e9
+            print(f"  ✓ Base FLOPs: {base_flops_g:.2f} G")
         except Exception as e:
             # mmdet 模型通常无法直接 profile(model, (tensor,))，需要构造 wrapper
             try:
@@ -134,11 +176,11 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 12
                     # 不同版本返回值可能是 (flops, params) 或 dict
                     if isinstance(analysis, tuple) and len(analysis) >= 1:
                         flops = analysis[0]
-                        flops_g = float(flops) / 1e9
-                        print(f"  ✓ FLOPs(mmengine): {flops_g:.2f} G")
+                        base_flops_g = float(flops) / 1e9
+                        print(f"  ✓ Base FLOPs(mmengine): {base_flops_g:.2f} G")
                     elif isinstance(analysis, dict) and 'flops' in analysis:
-                        flops_g = float(analysis['flops']) / 1e9
-                        print(f"  ✓ FLOPs(mmengine): {flops_g:.2f} G")
+                        base_flops_g = float(analysis['flops']) / 1e9
+                        print(f"  ✓ Base FLOPs(mmengine): {base_flops_g:.2f} G")
                 except Exception:
                     try:
                         # 回退：用 thop 对 mmdet detector 做 wrapper profile（构造最小 data_samples）
@@ -165,78 +207,185 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 12
                         
                         wrapped = _MMDetWrapper(deepcopy(model).eval().to(device), sample)
                         flops, _ = profile(wrapped, inputs=(dummy_input,), verbose=False)
-                        flops_g = flops / 1e9
-                        print(f"  ✓ FLOPs(thop+mmdet wrapper): {flops_g:.2f} G")
+                        base_flops_g = flops / 1e9
+                        print(f"  ✓ Base FLOPs(thop+mmdet wrapper): {base_flops_g:.2f} G")
                     except Exception as e2:
                         print(f"  ⚠ FLOPs 计算失败(mmdet): {e2!r}")
             else:
                 print(f"  ⚠ FLOPs 计算失败: {e!r}")
     
-    return params_m, flops_g
-
-
-def measure_fps(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 1280),
-                num_iter: int = 100, warmup_iter: int = 50,
-                device: str = "cuda", is_yolo: bool = False) -> float:
-    """测量模型的 FPS（使用 CUDA Events 精确计时，batch_size=1）"""
-    model.eval()
-    use_cuda_events = (device == "cuda" and torch.cuda.is_available())
-    fps_input_size = (1, input_size[1], input_size[2], input_size[3])
-    
-    if is_yolo:
-        model = model.to(device)
-        yolo_size = max(input_size[2], input_size[3])
-        dummy_input = torch.rand(1, 3, yolo_size, yolo_size).to(device).clamp(0.0, 1.0)
+    # 计算理论 FLOPs（考虑 token pruning 和 MoE）
+    theory_flops_g = base_flops_g
+    if model_type == "dset" and config is not None and HAS_THOP:
+        dset_config = config.get('model', {}).get('dset', {})
+        token_keep_ratio = dset_config.get('token_keep_ratio', 1.0)
+        encoder_experts = dset_config.get('encoder_moe_num_experts', 1)
+        decoder_experts = config.get('model', {}).get('num_experts', 1)
         
-        for _ in range(warmup_iter):
-            _ = model(dummy_input, verbose=False)
+        # 如果 token_keep_ratio 是字典，取平均值或主要层的值
+        if isinstance(token_keep_ratio, dict):
+            # 取最大 key 对应的值（通常是 P5 层，即 layer 2）
+            if token_keep_ratio:
+                token_keep_ratio = max(token_keep_ratio.values())
+            else:
+                token_keep_ratio = 1.0
         
-        _cuda_sync_if_available(device)
-        
-        if use_cuda_events:
-            starter = torch.cuda.Event(enable_timing=True)
-            ender = torch.cuda.Event(enable_timing=True)
-            starter.record()
-            for _ in range(num_iter):
-                _ = model(dummy_input, verbose=False)
-            ender.record()
-            torch.cuda.synchronize()
-            elapsed_time = starter.elapsed_time(ender) / 1000.0
-        else:
-            start_time = time.time()
-            for _ in range(num_iter):
-                _ = model(dummy_input, verbose=False)
-            _cuda_sync_if_available(device)
-            elapsed_time = time.time() - start_time
+        try:
+            model.eval()
+            device = next(model.parameters()).device
+            dummy_img = torch.randn(input_size).to(device)
+            
+            from copy import deepcopy
+            
+            # ========== 1. Backbone: 密集计算 ==========
+            if not hasattr(model, 'backbone'):
+                raise AttributeError("模型缺少 backbone 属性")
+            
+            backbone_model = deepcopy(model.backbone).eval()
+            backbone_flops, _ = profile(backbone_model, inputs=(dummy_img,), verbose=False)
+            print(f"  ✓ Backbone FLOPs: {backbone_flops / 1e9:.2f} G")
+            
+            # ========== 2. 获取特征图作为 Encoder 的输入 ==========
+            with torch.no_grad():
+                backbone_feats = model.backbone(dummy_img)
+                # Encoder 通常处理最后一个特征图（S5/P5）
+                if isinstance(backbone_feats, (list, tuple)):
+                    encoder_feat = backbone_feats[-1]  # 使用最后一个特征图
+                else:
+                    encoder_feat = backbone_feats
+            
+            # ========== 3. 解构 Encoder (针对 AIFI 模块) ==========
+            if not hasattr(model, 'encoder'):
+                raise AttributeError("模型缺少 encoder 属性")
+            
+            if encoder_feat is None:
+                raise ValueError("无法获取 encoder 输入特征图")
+            
+            encoder_model = deepcopy(model.encoder).eval()
+            
+            # 准备 encoder 输入
+            if isinstance(backbone_feats, (list, tuple)):
+                encoder_input = backbone_feats
+            else:
+                encoder_input = [backbone_feats]
+            
+            # 先测量整个 encoder_model 的 total_enc_base
+            total_enc_base, _ = profile(encoder_model, inputs=(encoder_input,), verbose=False)
+            
+            enc_attn_base = 0
+            enc_ffn_base = 0
+            
+            # 遍历 encoder 的子模块，识别 Attention 和 FFN
+            for name, module in encoder_model.named_modules():
+                # 识别 MultiheadAttention 或相关 Attention 类
+                if isinstance(module, nn.MultiheadAttention) or "Attention" in module.__class__.__name__:
+                    # 准备输入：需要将特征图转换为序列格式
+                    B, C, H, W = encoder_feat.shape
+                    seq_feat = encoder_feat.flatten(2).permute(0, 2, 1)  # [B, H*W, C]
+                    
+                    # Profile Attention 层
+                    attn_flops, _ = profile(module, inputs=(seq_feat, seq_feat, seq_feat), verbose=False)
+                    enc_attn_base += attn_flops
+                
+                # 识别 FFN/MoE 层（Linear 层且包含 expert 或 ffn 关键字）
+                elif isinstance(module, nn.Linear) and any(k in name.lower() for k in ['expert', 'ffn', 'moe']):
+                    # 准备输入：平铺后的 token
+                    B, C, H, W = encoder_feat.shape
+                    flat_feat = encoder_feat.flatten(2).permute(0, 2, 1)  # [B, H*W, C]
+                    
+                    # Profile FFN 层
+                    ffn_flops, _ = profile(module, inputs=(flat_feat,), verbose=False)
+                    enc_ffn_base += ffn_flops
+            
+            if enc_attn_base == 0 and enc_ffn_base == 0:
+                raise RuntimeError("无法识别 Encoder 中的 Attention 或 FFN 层，解构失败")
+            
+            # 计算其他部分（Norm 层、Add 层等）：total_enc_base - enc_attn_base - enc_ffn_base
+            enc_others_base = max(0, total_enc_base - enc_attn_base - enc_ffn_base)
+            
+            print(f"  ✓ Encoder 解构: Total={total_enc_base/1e9:.2f}G, Attn={enc_attn_base/1e9:.2f}G, FFN={enc_ffn_base/1e9:.2f}G, Others={enc_others_base/1e9:.2f}G")
+            
+            # Encoder 理论值：完善公式，确保 Norm 层和 Add 层也被考虑
+            # Others (Norm, Add): FLOPs ∝ N，随 r 线性缩放
+            # Attention: FLOPs ∝ N²，随 r² 缩放
+            # FFN: FLOPs ∝ N，且 MoE 只激活 Top-1 expert，所以随 r/experts 缩放
+            theory_enc_flops = (enc_others_base * token_keep_ratio) + (enc_attn_base * (token_keep_ratio ** 2)) + (enc_ffn_base * (token_keep_ratio / max(encoder_experts, 1)))
+            
+            # ========== 4. Decoder: 只有 FFN 部分是 MoE (Top-3) ==========
+            if not hasattr(model, 'decoder'):
+                raise AttributeError("模型缺少 decoder 属性")
+            
+            decoder_model = deepcopy(model.decoder).eval()
+            
+            # 准备 decoder 输入：encoder 特征（多尺度）
+            if isinstance(backbone_feats, (list, tuple)):
+                decoder_feat_input = backbone_feats
+            else:
+                decoder_feat_input = [backbone_feats]
+            
+            # 构造 dummy_queries 模拟 Object Queries，不要传 None
+            B, C, H, W = encoder_feat.shape
+            num_queries = getattr(decoder_model, 'num_queries', 100)
+            dummy_queries = torch.randn(B, num_queries, C).to(device)
+            
+            # 统计整个 decoder 的 FLOPs
+            # Decoder 通常需要 encoder_features 和 queries
+            dec_base_flops, _ = profile(decoder_model, inputs=(decoder_feat_input, dummy_queries), verbose=False)
+            
+            dec_moe_flops = 0
+            processed_moe_paths = set()  # 记录已处理的 MoE 模块路径，避免重复统计
+            
+            # 遍历 decoder 的子模块，识别 MoE 层
+            for name, module in decoder_model.named_modules():
+                # 检查当前模块是否是已处理 MoE 模块的子模块
+                # 如果当前路径是已处理路径的子路径（前缀匹配），则跳过
+                is_child_of_processed = any(
+                    name.startswith(processed_path + '.') for processed_path in processed_moe_paths
+                )
+                
+                if is_child_of_processed:
+                    continue  # 跳过已处理 MoE 模块的子模块
+                
+                # 识别 MoE 层：检查类名或参数名
+                is_moe_layer = False
+                if 'moe_layer' in name.lower():
+                    is_moe_layer = True
+                elif hasattr(module, '__class__'):
+                    class_name = module.__class__.__name__
+                    if 'MoE' in class_name or 'MoELayer' in class_name:
+                        is_moe_layer = True
+                
+                if is_moe_layer:
+                    # Profile MoE 层，使用与 decoder 相同的 query 输入
+                    moe_flops, _ = profile(module, inputs=(dummy_queries,), verbose=False)
+                    dec_moe_flops += moe_flops
+                    processed_moe_paths.add(name)  # 记录已处理的 MoE 模块路径
+            
+            if dec_moe_flops == 0:
+                raise RuntimeError("无法识别 Decoder 中的 MoE 层，解构失败")
+            
+            dec_other_flops = max(0, dec_base_flops - dec_moe_flops)
+            print(f"  ✓ Decoder 解构: Total={dec_base_flops/1e9:.2f}G, MoE={dec_moe_flops/1e9:.2f}G, Other={dec_other_flops/1e9:.2f}G")
+            
+            # Decoder 理论值：MoE 部分按 Top-3 路由折算，其余部分不变
+            # Top-3 路由：激活 min(3, experts) 个专家，所以 FLOPs = 原始值 × min(3, experts) / experts
+            # 加固边界检查：确保比例计算正确
+            dec_moe_ratio = min(3, decoder_experts) / max(decoder_experts, 1)
+            theory_dec_flops = dec_other_flops + (dec_moe_flops * dec_moe_ratio)
+            
+            # ========== 5. 汇总：最终 T-GFLOPs ==========
+            total_theory_flops = backbone_flops + theory_enc_flops + theory_dec_flops
+            theory_flops_g = total_theory_flops / 1e9
+            
+            print(f"  ✓ Theory FLOPs (分模块): {theory_flops_g:.2f} G")
+            print(f"    - Backbone: {backbone_flops/1e9:.2f} G")
+            print(f"    - Encoder (r={token_keep_ratio:.2f}, e={encoder_experts}): {theory_enc_flops/1e9:.2f} G")
+            print(f"    - Decoder (e={decoder_experts}, top-3): {theory_dec_flops/1e9:.2f} G")
     else:
-        model = model.to(device)
-        dummy_input = torch.randn(fps_input_size).to(device)
-        
-        with torch.no_grad():
-            for _ in range(warmup_iter):
-                _ = model(dummy_input)
-        
-        _cuda_sync_if_available(device)
-        
-        if use_cuda_events:
-            starter = torch.cuda.Event(enable_timing=True)
-            ender = torch.cuda.Event(enable_timing=True)
-            starter.record()
-            with torch.no_grad():
-                for _ in range(num_iter):
-                    _ = model(dummy_input)
-            ender.record()
-            torch.cuda.synchronize()
-            elapsed_time = starter.elapsed_time(ender) / 1000.0
-        else:
-            start_time = time.time()
-            with torch.no_grad():
-                for _ in range(num_iter):
-                    _ = model(dummy_input)
-            _cuda_sync_if_available(device)
-            elapsed_time = time.time() - start_time
+        # 非 DSET 模型或没有 thop：理论 FLOPs = 基准 FLOPs
+        theory_flops_g = base_flops_g
     
-    return num_iter / elapsed_time if elapsed_time > 0 else 0.0
+    return total_params_m, active_params_m, base_flops_g, theory_flops_g
 
 
 def load_dset_model(config_path: str, checkpoint_path: str, device: str = "cuda"):
@@ -286,7 +435,7 @@ def load_dset_model(config_path: str, checkpoint_path: str, device: str = "cuda"
         else:
             print(f"  ✓ 已启用 token pruning (epoch={forced_epoch})")
     
-    return model
+    return model, config
 
 
 def load_rtdetr_model(config_path: str, checkpoint_path: str, device: str = "cuda"):
@@ -316,7 +465,7 @@ def load_rtdetr_model(config_path: str, checkpoint_path: str, device: str = "cud
     model.eval()
     model = model.to(device)
     
-    return model
+    return model, config
 
 
 def load_deformable_detr_model(checkpoint_path: str, device: str = "cuda", config_path: str = None):
@@ -385,7 +534,19 @@ def load_deformable_detr_model(checkpoint_path: str, device: str = "cuda", confi
     model.eval()
     model = model.to(device)
     
-    return model
+    # 将 Config 对象转换为 dict 以便后续处理
+    config_dict = {}
+    try:
+        if hasattr(cfg, '_cfg_dict'):
+            config_dict = cfg._cfg_dict
+        elif hasattr(cfg, 'to_dict'):
+            config_dict = cfg.to_dict()
+        elif hasattr(cfg, '__dict__'):
+            config_dict = dict(cfg.__dict__)
+    except:
+        pass
+    
+    return model, config_dict
 
 
 def _ensure_yolo_checkpoint_path(checkpoint_path: str) -> str:
@@ -424,7 +585,21 @@ def load_yolov8_model(checkpoint_path: str, device: str = "cuda"):
     model = YOLO(checkpoint_path_pt)
     model.to(device)
     model.eval()
-    return model
+    
+    # 构建配置字典
+    config = {
+        'model_type': 'yolov8',
+        'data': None
+    }
+    
+    # 尝试从模型对象中获取数据集路径
+    try:
+        if hasattr(model, 'ckpt') and model.ckpt and hasattr(model.ckpt, 'data'):
+            config['data'] = model.ckpt.data
+    except:
+        pass
+    
+    return model, config
 
 
 def load_yolov10_model(checkpoint_path: str, device: str = "cuda"):
@@ -438,21 +613,26 @@ def load_yolov10_model(checkpoint_path: str, device: str = "cuda"):
     model = YOLO(checkpoint_path_pt)
     model.to(device)
     model.eval()
-    return model
+    
+    # 构建配置字典
+    config = {
+        'model_type': 'yolov10',
+        'data': None
+    }
+    
+    # 尝试从模型对象中获取数据集路径
+    try:
+        if hasattr(model, 'ckpt') and model.ckpt and hasattr(model.ckpt, 'data'):
+            config['data'] = model.ckpt.data
+    except:
+        pass
+    
+    return model, config
 
 
 def evaluate_yolo_accuracy(model, config_path: str, device: str = "cuda", max_samples: int = 300) -> Dict[str, float]:
-    """使用 YOLO model.val() 进行评估"""
+    """使用 YOLO model.val() 进行评估（仅精度，无性能测试）"""
     try:
-        # --- GPU Warmup ---
-        if device == 'cuda':
-            print(f"  ✓ YOLO GPU 热身中...")
-            # 简单的热身：使用一个随机 tensor 跑几次
-            warmup_img = torch.randn(1, 3, 1280, 1280).to(device)
-            for _ in range(10):
-                _ = model(warmup_img, verbose=False)
-            torch.cuda.synchronize()
-
         print(f"  ✓ 使用 YOLO model.val() 进行评估")
         
         results = model.val(
@@ -460,12 +640,10 @@ def evaluate_yolo_accuracy(model, config_path: str, device: str = "cuda", max_sa
             device=device,
             verbose=False,
             max_det=300,
-            batch=1  # batch_size=1（性能测试标准）
+            batch=1
         )
         
-        metrics = {'mAP': 0.0, 'AP50': 0.0, 'APS': 0.0,
-                   'latency_inference_ms': 0.0, 'latency_postprocess_ms': 0.0,
-                   'latency_total_ms': 0.0, 'fps': 0.0}
+        metrics = {'mAP': 0.0, 'AP50': 0.0, 'APS': 0.0}
         
         if hasattr(results, 'box'):
             if hasattr(results.box, 'map'):
@@ -475,28 +653,6 @@ def evaluate_yolo_accuracy(model, config_path: str, device: str = "cuda", max_sa
             if hasattr(results.box, 'maps') and len(results.box.maps) > 1:
                 metrics['APS'] = float(results.box.maps[1])
         
-        if hasattr(results, 'speed'):
-            speed = results.speed
-            if isinstance(speed, dict):
-                preprocess_ms = float(speed.get('preprocess', 0.0))
-                inference_ms = float(speed.get('inference', 0.0))
-                postprocess_ms = float(speed.get('postprocess', 0.0))
-            elif isinstance(speed, (list, tuple)) and len(speed) >= 3:
-                preprocess_ms, inference_ms, postprocess_ms = float(speed[0]), float(speed[1]), float(speed[2])
-            else:
-                preprocess_ms = inference_ms = postprocess_ms = 0.0
-            
-            latency_total_ms = preprocess_ms + inference_ms + postprocess_ms
-            fps = 1000.0 / latency_total_ms if latency_total_ms > 0 else 0.0
-            
-            metrics.update({
-                'latency_inference_ms': inference_ms,
-                'latency_postprocess_ms': postprocess_ms,
-                'latency_total_ms': latency_total_ms,
-                'fps': fps
-            })
-            print(f"  ✓ Latency: Inf={inference_ms:.2f}ms, Post={postprocess_ms:.2f}ms, Total={latency_total_ms:.2f}ms")
-        
         print(f"  ✓ mAP: {metrics['mAP']:.4f}, AP50: {metrics['AP50']:.4f}, APS: {metrics['APS']:.4f}")
         return metrics
         
@@ -504,25 +660,15 @@ def evaluate_yolo_accuracy(model, config_path: str, device: str = "cuda", max_sa
         print(f"  ⚠ YOLO 评估失败: {e}")
         import traceback
         traceback.print_exc()
-        return {'mAP': 0.0, 'AP50': 0.0, 'APS': 0.0,
-                'latency_inference_ms': 0.0, 'latency_postprocess_ms': 0.0,
-                'latency_total_ms': 0.0, 'fps': 0.0}
+        return {'mAP': 0.0, 'AP50': 0.0, 'APS': 0.0}
 
 
 def evaluate_deformable_detr_accuracy(model, config_path: str, device: str = "cuda") -> Dict[str, float]:
-    """评估 Deformable-DETR 模型（使用 mmdet/mmengine Runner.test()）。
-    
-    注意：该函数仅保留兼容入口（旧调用点）。更完整的评估（含 FPS/Latency）
-    请使用 evaluate_deformable_detr_full。
-    """
+    """评估 Deformable-DETR 模型（使用 mmdet/mmengine Runner.test()，仅精度）"""
     metrics = evaluate_deformable_detr_full(
         config_path=config_path,
         checkpoint_path=None,
         device=device,
-        max_samples=300,
-        warmup_iter=50,
-        fps_iter=300,
-        skip_fps=True,
     )
     return metrics
 
@@ -561,25 +707,15 @@ def _move_to_device(obj, device: str):
 
 def evaluate_deformable_detr_full(config_path: str,
                                   checkpoint_path: Optional[str],
-                                  device: str = "cuda",
-                                  max_samples: int = 300,
-                                  warmup_iter: int = 50,
-                                  fps_iter: int = 300,
-                                  skip_fps: bool = False) -> Dict[str, float]:
-    """对 Deformable-DETR 做完整评估：mAP/AP50/APS + FPS/Latency（batch_size=1）。
-    
-    - 精度：使用 mmdet 的 Runner.test()（COCO evaluator）
-    - 性能：从同一个 test_dataloader 取 batch，计时 model.test_step()（端到端：含 data_preprocessor + predict）
-    """
+                                  device: str = "cuda") -> Dict[str, float]:
+    """评估 Deformable-DETR 模型（仅精度，使用 mmdet Runner.test()）"""
     try:
         from mmengine.config import Config
         from mmengine.runner import Runner
         from mmdet.utils import register_all_modules
     except Exception as e:
         print(f"  ⚠ Deformable-DETR 评估依赖导入失败: {e!r}")
-        return {'mAP': 0.0, 'AP50': 0.0, 'APS': 0.0,
-                'latency_inference_ms': 0.0, 'latency_postprocess_ms': 0.0,
-                'latency_total_ms': 0.0, 'fps': 0.0}
+        return {'mAP': 0.0, 'AP50': 0.0, 'APS': 0.0}
     
     # 注册 mmdet 模块（不同版本签名略有差异）
     try:
@@ -611,83 +747,14 @@ def evaluate_deformable_detr_full(config_path: str,
     runner.model = runner.model.to(device)
     runner.model.eval()
     
-    # --- GPU Warmup ---
-    if device == 'cuda':
-        print(f"  ✓ Deformable-DETR GPU 热身中...")
-        dataloader = getattr(runner, 'test_dataloader', None) or getattr(runner, 'val_dataloader', None)
-        if dataloader:
-            with torch.no_grad():
-                for i, data_batch in enumerate(dataloader):
-                    if i >= 10: break
-                    data_batch = _move_to_device(data_batch, device)
-                    _ = runner.model.test_step(data_batch)
-            torch.cuda.synchronize()
-
-    # 1) 精度评估（COCO mAP）
+    # 精度评估（COCO mAP）
     test_metrics = runner.test()
     
     mAP = _safe_get_metric(test_metrics, ['coco/bbox_mAP', 'bbox_mAP', 'mAP'], 0.0)
     AP50 = _safe_get_metric(test_metrics, ['coco/bbox_mAP_50', 'bbox_mAP_50', 'AP50', 'mAP_50'], 0.0)
     APS = _safe_get_metric(test_metrics, ['coco/bbox_mAP_s', 'bbox_mAP_s', 'APS', 'mAP_s'], 0.0)
     
-    out = {'mAP': mAP, 'AP50': AP50, 'APS': APS,
-           'latency_inference_ms': 0.0, 'latency_postprocess_ms': 0.0,
-           'latency_total_ms': 0.0, 'fps': 0.0}
-    
-    # 2) 性能评估（FPS / Latency）
-    if skip_fps:
-        return out
-    
-    # 获取 dataloader（不同版本可能是 test_dataloader / val_dataloader）
-    dataloader = getattr(runner, 'test_dataloader', None) or getattr(runner, 'val_dataloader', None)
-    if dataloader is None:
-        print("  ⚠ Runner 中未找到 test_dataloader/val_dataloader，跳过性能评估")
-        return out
-    
-    use_cuda_events = (device == "cuda" and torch.cuda.is_available())
-    inference_times = []
-    
-    # Warmup
-    with torch.no_grad():
-        for i, data_batch in enumerate(dataloader):
-            if i >= warmup_iter:
-                break
-            data_batch = _move_to_device(data_batch, device)
-            _ = runner.model.test_step(data_batch)
-    _cuda_sync_if_available(device)
-    
-    # Timed iterations
-    with torch.no_grad():
-        for i, data_batch in enumerate(dataloader):
-            if i >= min(fps_iter, max_samples):
-                break
-            data_batch = _move_to_device(data_batch, device)
-            
-            if use_cuda_events:
-                starter = torch.cuda.Event(enable_timing=True)
-                ender = torch.cuda.Event(enable_timing=True)
-                starter.record()
-                _ = runner.model.test_step(data_batch)
-                ender.record()
-                torch.cuda.synchronize()
-                elapsed_ms = starter.elapsed_time(ender)
-            else:
-                start_t = time.perf_counter()
-                _ = runner.model.test_step(data_batch)
-                _cuda_sync_if_available(device)
-                elapsed_ms = (time.perf_counter() - start_t) * 1000.0
-            
-            inference_times.append(elapsed_ms)
-    
-    if inference_times:
-        avg_inference_ms = sum(inference_times) / len(inference_times)
-        out['latency_inference_ms'] = avg_inference_ms
-        out['latency_postprocess_ms'] = 0.0
-        out['latency_total_ms'] = avg_inference_ms
-        out['fps'] = 1000.0 / avg_inference_ms if avg_inference_ms > 0 else 0.0
-        print(f"  ✓ Latency: Inf={out['latency_inference_ms']:.2f}ms, Post={out['latency_postprocess_ms']:.2f}ms, Total={out['latency_total_ms']:.2f}ms")
-    
-    return out
+    return {'mAP': mAP, 'AP50': AP50, 'APS': APS}
 
 
 def _get_outputs_info(outputs: Dict) -> Tuple[torch.Tensor, torch.Tensor, bool]:
@@ -700,36 +767,6 @@ def _get_outputs_info(outputs: Dict) -> Tuple[torch.Tensor, torch.Tensor, bool]:
     elif 'class_scores' in outputs:
         return outputs['class_scores'], outputs['bboxes'], True  # DSET: sigmoid (Focal Loss)
     return None, None, False
-
-
-def _postprocess_for_timing(outputs: Dict, img_w: int, img_h: int) -> None:
-    """仅执行必要的后处理张量计算（用于性能测试计时）"""
-    pred_logits, pred_boxes, use_sigmoid = _get_outputs_info(outputs)
-    if pred_logits is None:
-        return
-    
-    for i in range(pred_logits.shape[0]):
-        if use_sigmoid:
-            pred_scores = torch.sigmoid(pred_logits[i])
-        else:
-            pred_scores = torch.softmax(pred_logits[i], dim=-1)
-        max_scores, pred_classes = torch.max(pred_scores, dim=-1)
-        
-        valid_boxes_mask = ~torch.all(pred_boxes[i] == 1.0, dim=1)
-        valid_indices = torch.where(valid_boxes_mask)[0]
-        
-        if len(valid_indices) > 0:
-            filtered_boxes = pred_boxes[i][valid_indices]
-            if filtered_boxes.shape[0] > 0:
-                boxes_coco = torch.zeros_like(filtered_boxes)
-                if filtered_boxes.max() <= 1.0:
-                    boxes_coco[:, 0] = (filtered_boxes[:, 0] - filtered_boxes[:, 2] / 2) * img_w
-                    boxes_coco[:, 1] = (filtered_boxes[:, 1] - filtered_boxes[:, 3] / 2) * img_h
-                    boxes_coco[:, 2] = filtered_boxes[:, 2] * img_w
-                    boxes_coco[:, 3] = filtered_boxes[:, 3] * img_h
-                else:
-                    boxes_coco = filtered_boxes.clone()
-                boxes_coco = torch.clamp(boxes_coco, min=0)
 
 
 def _collect_predictions_for_coco(outputs: Dict, targets: List[Dict], batch_idx: int,
@@ -822,7 +859,7 @@ def _collect_predictions_for_coco(outputs: Dict, targets: List[Dict], batch_idx:
 
 def evaluate_accuracy(model, config_path: str, device: str = "cuda", 
                       model_type: str = "dset", max_samples: int = 300) -> Dict[str, float]:
-    """使用 pycocotools 在验证集上运行 COCO 评估，并测量性能"""
+    """使用 pycocotools 在验证集上运行 COCO 评估（仅精度，无性能测试）"""
     try:
         # 导入 Trainer
         if model_type == "dset":
@@ -908,89 +945,25 @@ def evaluate_accuracy(model, config_path: str, device: str = "cuda",
                 if hasattr(pruner, 'pruning_enabled'):
                     print(f"  ✓ Token Pruning: {'已激活' if pruner.pruning_enabled else '未激活'}")
         
-        # --- GPU Warmup ---
-        warmup_iters = getattr(args, 'warmup_iter', 20) if 'args' in locals() else 20
-        print(f"  ✓ GPU 热身中 ({warmup_iters} 次迭代)...")
-        with torch.no_grad():
-            for i, (images, targets) in enumerate(val_loader):
-                if i >= warmup_iters:
-                    break
-                images = images.to(device)
-                # 热身时不带 targets，模拟真实推理路径
-                _ = model(images)
-        if device == 'cuda':
-            torch.cuda.synchronize()
-        
         all_predictions = []
         all_targets = []
-        use_cuda_events = (device == "cuda" and torch.cuda.is_available())
-        inference_times = []
-        postprocess_times = []
-        total_samples = 0
-        perf_samples = 0
-        limit_samples = (max_samples < 999999)
-        shape_printed = False
         
-        print(f"  运行推理循环...")
+        print(f"  运行评估循环（仅精度评估，无性能测试）...")
         
         with torch.no_grad():
             for batch_idx, (images, targets) in enumerate(val_loader):
                 B, C, H_tensor, W_tensor = images.shape
-                need_timing = limit_samples and (perf_samples < max_samples)
-                
                 images = images.to(device)
-                # 预先处理 targets 到 device，用于 COCO 评估，但不传给 model
                 targets = [{k: v.to(device) if isinstance(v, torch.Tensor) else v 
                            for k, v in t.items()} for t in targets]
                 
-                # 推理计时：绝不传入 targets，确保只测量推理链路
-                if need_timing:
-                    if use_cuda_events:
-                        torch.cuda.synchronize()
-                        inference_starter = torch.cuda.Event(enable_timing=True)
-                        inference_ender = torch.cuda.Event(enable_timing=True)
-                        inference_starter.record()
-                    else:
-                        inference_start_time = time.perf_counter()
-                
-                # 公平性核心：调用无 targets 版本的 forward
+                # 单次前向传播获取输出
                 outputs = model(images)
-                
-                if need_timing:
-                    if use_cuda_events:
-                        inference_ender.record()
-                        torch.cuda.synchronize()
-                        inference_elapsed_ms = inference_starter.elapsed_time(inference_ender)
-                    else:
-                        inference_elapsed_ms = (time.perf_counter() - inference_start_time) * 1000.0
-                    inference_times.append(inference_elapsed_ms)
-                    
-                    # 后处理计时
-                    if use_cuda_events:
-                        postprocess_starter = torch.cuda.Event(enable_timing=True)
-                        postprocess_ender = torch.cuda.Event(enable_timing=True)
-                        postprocess_starter.record()
-                    else:
-                        postprocess_start_time = time.perf_counter()
                 
                 has_predictions = isinstance(outputs, dict) and (
                     ('class_scores' in outputs and 'bboxes' in outputs) or
                     ('pred_logits' in outputs and 'pred_boxes' in outputs)
                 )
-                
-                if need_timing and has_predictions:
-                    _postprocess_for_timing(outputs, W_tensor, H_tensor)
-                
-                if need_timing:
-                    if use_cuda_events:
-                        postprocess_ender.record()
-                        torch.cuda.synchronize()
-                        postprocess_elapsed_ms = postprocess_starter.elapsed_time(postprocess_ender)
-                    else:
-                        # CPU 模式：使用 perf_counter 计算耗时
-                        postprocess_elapsed_ms = (time.perf_counter() - postprocess_start_time) * 1000.0
-                    postprocess_times.append(postprocess_elapsed_ms)
-                    perf_samples += 1
                 
                 if has_predictions:
                     _collect_predictions_for_coco(
@@ -998,32 +971,14 @@ def evaluate_accuracy(model, config_path: str, device: str = "cuda",
                         W_tensor, H_tensor, 1
                     )
                 
-                total_samples += 1
-                
                 # 进度打印：每 100 个样本打印一次
                 if (batch_idx + 1) % 100 == 0:
                     print(f"    进度: {batch_idx + 1}/{dataloader_length}")
         
-        print(f"  ✓ 完成: {total_samples} 样本, {len(all_predictions)} 预测框")
+        print(f"  ✓ 完成: {len(val_loader)} 样本, {len(all_predictions)} 预测框")
         
-        # 计算耗时
-        if inference_times and postprocess_times:
-            avg_inference_ms = sum(inference_times) / len(inference_times)
-            avg_postprocess_ms = sum(postprocess_times) / len(postprocess_times)
-            latency_total_ms = avg_inference_ms + avg_postprocess_ms
-            fps = 1000.0 / latency_total_ms if latency_total_ms > 0 else 0.0
-            print(f"  ✓ Latency: Inf={avg_inference_ms:.2f}ms, Post={avg_postprocess_ms:.2f}ms, Total={latency_total_ms:.2f}ms")
-        else:
-            avg_inference_ms = avg_postprocess_ms = latency_total_ms = fps = 0.0
-        
-        # COCO 评估
+        # COCO 评估（仅精度指标）
         metrics = _compute_coco_metrics(all_predictions, all_targets, H_tensor, W_tensor)
-        metrics.update({
-            'latency_inference_ms': avg_inference_ms,
-            'latency_postprocess_ms': avg_postprocess_ms,
-            'latency_total_ms': latency_total_ms,
-            'fps': fps
-        })
         
         return metrics
         
@@ -1031,9 +986,7 @@ def evaluate_accuracy(model, config_path: str, device: str = "cuda",
         print(f"  ⚠ COCO 评估失败: {e}")
         import traceback
         traceback.print_exc()
-        return {'mAP': 0.0, 'AP50': 0.0, 'APS': 0.0,
-                'latency_inference_ms': 0.0, 'latency_postprocess_ms': 0.0,
-                'latency_total_ms': 0.0, 'fps': 0.0}
+        return {'mAP': 0.0, 'AP50': 0.0, 'APS': 0.0}
 
 
 def _compute_coco_metrics(predictions: List[Dict], targets: List[Dict],
@@ -1158,20 +1111,25 @@ def evaluate_single_model(model_name: str, model_config: Dict, args, project_roo
     print(f"  类型: {model_type}, 输入: {input_size[0]}x{input_size[1]}")
     print(f"  检查点: {checkpoint_path}")
     
-    # 加载模型
+    # 加载模型和配置
     is_yolo_model = model_type.startswith("yolov8") or model_type.startswith("yolov10")
+    config = None
     try:
         if model_type == "dset":
-            model = load_dset_model(str(config_path), str(checkpoint_path), args.device)
+            model, config = load_dset_model(str(config_path), str(checkpoint_path), args.device)
         elif model_type == "rtdetr":
-            model = load_rtdetr_model(str(config_path), str(checkpoint_path), args.device)
+            model, config = load_rtdetr_model(str(config_path), str(checkpoint_path), args.device)
         elif model_type == "deformable-detr":
             model = load_deformable_detr_model(str(checkpoint_path), args.device, 
                                                config_path=str(config_path) if config_path else None)
+            # 加载配置
+            if config_path:
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    config = yaml.safe_load(f)
         elif model_type.startswith("yolov8"):
-            model = load_yolov8_model(str(checkpoint_path), args.device)
+            model, config = load_yolov8_model(str(checkpoint_path), args.device)
         elif model_type.startswith("yolov10"):
-            model = load_yolov10_model(str(checkpoint_path), args.device)
+            model, config = load_yolov10_model(str(checkpoint_path), args.device)
         else:
             print(f"  ⚠ 不支持的模型类型: {model_type}")
             return None
@@ -1182,44 +1140,30 @@ def evaluate_single_model(model_name: str, model_config: Dict, args, project_roo
         traceback.print_exc()
         return None
     
-    # 计算参数量和 FLOPs
+    # 计算参数量和理论 FLOPs
     input_size_tuple = (1, 3, input_size[0], input_size[1])
-    params_m, flops_g = get_model_info(model, input_size_tuple, is_yolo=is_yolo_model)
-    print(f"  ✓ Params: {params_m:.2f}M, FLOPs: {flops_g:.2f}G")
+    total_params_m, active_params_m, base_flops_g, theory_flops_g = get_model_info(
+        model, input_size_tuple, is_yolo=is_yolo_model, config=config, model_type=model_type
+    )
+    print(f"  ✓ Total Params: {total_params_m:.2f}M, Active Params: {active_params_m:.2f}M")
+    print(f"  ✓ Base FLOPs: {base_flops_g:.2f}G, Theory FLOPs: {theory_flops_g:.2f}G")
     
-    # 评估
-    metrics = {'mAP': 0.0, 'AP50': 0.0, 'APS': 0.0,
-               'latency_inference_ms': 0.0, 'latency_postprocess_ms': 0.0,
-               'latency_total_ms': 0.0, 'fps': 0.0}
-    max_samples = getattr(args, 'max_samples', 300)  # 从参数获取，支持 CPU 模式
+    # 评估（仅精度）
+    metrics = {'mAP': 0.0, 'AP50': 0.0, 'APS': 0.0}
     
     if model_type in ["dset", "rtdetr"] and config_path:
-        if not args.skip_fps:
-            metrics = evaluate_accuracy(model, str(config_path), args.device, 
-                                        model_type=model_type, max_samples=max_samples)
-        else:
-            metrics_partial = evaluate_accuracy(model, str(config_path), args.device,
-                                               model_type=model_type, max_samples=999999)
-            metrics.update({k: metrics_partial.get(k, 0.0) for k in ['mAP', 'AP50', 'APS']})
+        metrics = evaluate_accuracy(model, str(config_path), args.device, 
+                                    model_type=model_type, max_samples=999999)
     elif model_type == "deformable-detr" and config_path:
-        # Deformable-DETR：使用 mmdet Runner.test() 获取 COCO 指标，并可选做 FPS/Latency
         metrics = evaluate_deformable_detr_full(
             config_path=str(config_path),
             checkpoint_path=str(checkpoint_path),
             device=args.device,
-            max_samples=max_samples,
-            warmup_iter=getattr(args, 'warmup_iter', 50),
-            fps_iter=getattr(args, 'fps_iter', 300),
-            skip_fps=bool(getattr(args, 'skip_fps', False)),
         )
     elif is_yolo_model:
         data_config_path = _get_yolo_data_path(model, model_config, project_root)
         if data_config_path:
-            if not args.skip_fps:
-                metrics = evaluate_yolo_accuracy(model, str(data_config_path), args.device, max_samples)
-            else:
-                metrics_partial = evaluate_yolo_accuracy(model, str(data_config_path), args.device, 999999)
-                metrics.update({k: metrics_partial.get(k, 0.0) for k in ['mAP', 'AP50', 'APS']})
+            metrics = evaluate_yolo_accuracy(model, str(data_config_path), args.device, 999999)
         else:
             print(f"  ⚠ YOLO 模型需要数据集配置文件")
     
@@ -1231,12 +1175,10 @@ def evaluate_single_model(model_name: str, model_config: Dict, args, project_roo
     return {
         'model_name': model_name,
         'model_type': model_type,
-        'params_m': params_m,
-        'flops_g': flops_g,
-        'fps': metrics.get('fps', 0.0),
-        'latency_inference_ms': metrics.get('latency_inference_ms', 0.0),
-        'latency_postprocess_ms': metrics.get('latency_postprocess_ms', 0.0),
-        'latency_total_ms': metrics.get('latency_total_ms', 0.0),
+        'total_params_m': total_params_m,
+        'active_params_m': active_params_m,
+        'base_flops_g': base_flops_g,
+        'theory_flops_g': theory_flops_g,
         'mAP': metrics.get('mAP', 0.0),
         'AP50': metrics.get('AP50', 0.0),
         'APS': metrics.get('APS', 0.0),
@@ -1245,41 +1187,71 @@ def evaluate_single_model(model_name: str, model_config: Dict, args, project_roo
 
 
 def print_summary_table(results: List[Dict], gpu_name: str = "GPU", save_csv: bool = True, max_samples: int = 300):
-    """打印结果汇总表格并保存为 CSV"""
+    """打印结果汇总表格并保存为 CSV（理论效率视角）"""
     if not results:
         print("\n⚠ 没有评估结果")
         return
     
-    print("\n" + "=" * 120)
-    print("BATCH EVALUATION SUMMARY".center(120))
-    print("=" * 120)
+    # 找到 baseline（RT-DETR R18，如果存在）
+    baseline_flops = None
+    baseline_resolution = None
+    for r in results:
+        if r.get('model_type') == 'rtdetr' and 'r18' in r.get('model_name', '').lower():
+            baseline_flops = r.get('base_flops_g', r.get('theory_flops_g', None))
+            baseline_resolution = r.get('input_size', None)
+            break
     
-    header = f"{'Model':<25} {'Params':<10} {'FLOPs':<10} {'Latency':<12} {'Inference':<10} {'Post':<10} {'FPS':<8} {'mAP':<8} {'AP50':<8} {'APS':<8}"
+    print("\n" + "=" * 160)
+    print("THEORETICAL EFFICIENCY EVALUATION".center(160))
+    print("=" * 160)
+    
+    header = f"{'Model':<25} {'Total':<10} {'Active':<10} {'Theory':<10} {'Saving':<10} {'Resolution':<12} {'mAP':<8} {'AP50':<8} {'APS':<8}"
     print(header)
-    print("-" * 120)
+    print("-" * 160)
+    print(f"{'':<25} {'Params':<10} {'Params':<10} {'GFLOPs':<10} {'(%)':<10} {'':<12} {'':<8} {'':<8} {'':<8}")
+    print(f"{'':<25} {'(M)':<10} {'(M)':<10} {'':<10} {'':<10} {'':<12} {'':<8} {'':<8} {'':<8}")
+    print("-" * 160)
     
-    csv_rows = [['Model', 'Type', 'Params(M)', 'FLOPs(G)', 'Latency(ms)', 'Inference(ms)', 
-                 'Post(ms)', 'FPS', 'mAP', 'AP50', 'APS', 'Input']]
+    csv_rows = [['Model', 'Type', 'Total Params(M)', 'Active Params(M)', 'Theory GFLOPs', 
+                 'Compute Saving(%)', 'Resolution', 'mAP', 'AP50', 'APS', 'Input']]
     
+    has_resolution_diff = False
     for r in results:
         name = r.get('model_name', 'Unknown')[:24]
-        params = f"{r.get('params_m', 0):.2f}" if r.get('params_m', 0) > 0 else "N/A"
-        flops = f"{r.get('flops_g', 0):.2f}" if r.get('flops_g', 0) > 0 else "N/A"
-        latency = f"{r.get('latency_total_ms', 0):.2f}" if r.get('latency_total_ms', 0) > 0 else "N/A"
-        inf = f"{r.get('latency_inference_ms', 0):.2f}" if r.get('latency_inference_ms', 0) > 0 else "N/A"
-        post = f"{r.get('latency_postprocess_ms', 0):.2f}" if r.get('latency_postprocess_ms', 0) > 0 else "N/A"
-        fps = f"{r.get('fps', 0):.1f}" if r.get('fps', 0) > 0 else "N/A"
+        total_params = f"{r.get('total_params_m', 0):.2f}" if r.get('total_params_m', 0) > 0 else "N/A"
+        active_params = f"{r.get('active_params_m', 0):.2f}" if r.get('active_params_m', 0) > 0 else "N/A"
+        theory_flops = f"{r.get('theory_flops_g', 0):.2f}" if r.get('theory_flops_g', 0) > 0 else "N/A"
+        resolution = r.get('input_size', 'N/A')
+        
+        # 计算计算节省率（相对于 baseline）
+        compute_saving = "N/A"
+        resolution_note = ""
+        if baseline_flops and r.get('theory_flops_g', 0) > 0:
+            saving = (1 - r.get('theory_flops_g', 0) / baseline_flops) * 100
+            compute_saving = f"{saving:.1f}"
+            
+            # 检查分辨率是否与 baseline 不同
+            if baseline_resolution and resolution != baseline_resolution:
+                compute_saving += "*"
+                resolution_note = "*"
+                has_resolution_diff = True
+        
         mAP = f"{r.get('mAP', 0):.4f}" if r.get('mAP', 0) > 0 else "N/A"
         ap50 = f"{r.get('AP50', 0):.4f}" if r.get('AP50', 0) > 0 else "N/A"
         aps = f"{r.get('APS', 0):.4f}" if r.get('APS', 0) > 0 else "N/A"
         
-        print(f"{name:<25} {params:<10} {flops:<10} {latency:<12} {inf:<10} {post:<10} {fps:<8} {mAP:<8} {ap50:<8} {aps:<8}")
+        print(f"{name:<25} {total_params:<10} {active_params:<10} {theory_flops:<10} {compute_saving:<10} {resolution:<12} {mAP:<8} {ap50:<8} {aps:<8}")
         
-        csv_rows.append([name, r.get('model_type', ''), params, flops, latency, inf, post, fps, mAP, ap50, aps, r.get('input_size', '')])
+        csv_rows.append([name, r.get('model_type', ''), total_params, active_params, theory_flops, 
+                        compute_saving, resolution, mAP, ap50, aps, r.get('input_size', '')])
     
-    print("-" * 120)
-    print(f"Note: Performance on {gpu_name}, batch_size=1, {max_samples} samples")
-    print("=" * 120)
+    print("-" * 160)
+    print("Note: Theoretical FLOPs are calculated based on sparsity-aware projection (Top-1 expert and token pruning ratio).")
+    if baseline_flops:
+        print(f"Baseline: RT-DETR R18 (Theory FLOPs = {baseline_flops:.2f}G, Resolution = {baseline_resolution})")
+    if has_resolution_diff:
+        print("* Compute Saving marked with '*' indicates different resolution from baseline.")
+    print("=" * 160)
     
     if save_csv:
         import csv
@@ -1293,27 +1265,48 @@ def print_summary_table(results: List[Dict], gpu_name: str = "GPU", save_csv: bo
 
 
 def find_latest_best_model(logs_dir: Path, model_type: str = "dset") -> Optional[Path]:
-    """在 logs 目录下找到最新的 best_model.pth"""
+    """在 logs 目录下找到最新的 best_model.pth 或 best.pt
+    
+    优先查找各实验目录下 weights/ 文件夹内的检查点文件，并按文件修改时间排序返回最新者。
+    """
+    best_models = []
+    
     if model_type == "deformable-detr":
-        best_models = list(logs_dir.rglob('best_*.pth'))
+        # Deformable-DETR: 查找 best_*.pth
+        # 优先查找 weights/ 目录
+        best_models.extend(list(logs_dir.rglob("weights/best_*.pth")))
+        best_models.extend(list(logs_dir.rglob("best_*.pth")))
     elif model_type.startswith("yolov"):
-        best_models = list(logs_dir.rglob('best_model.pth')) or list(logs_dir.rglob('weights/best.pt'))
+        # YOLO: 查找 best.pt 或 best_model.pth
+        # 优先查找 weights/ 目录
+        best_models.extend(list(logs_dir.rglob("weights/best.pt")))
+        best_models.extend(list(logs_dir.rglob("weights/best_model.pth")))
+        best_models.extend(list(logs_dir.rglob("best.pt")))
+        best_models.extend(list(logs_dir.rglob("best_model.pth")))
     else:
-        best_models = list(logs_dir.rglob('best_model.pth'))
+        # DSET/RT-DETR: 查找 best_model.pth
+        # 优先查找 weights/ 目录
+        best_models.extend(list(logs_dir.rglob("weights/best_model.pth")))
+        best_models.extend(list(logs_dir.rglob("best_model.pth")))
+    
+    # 去重并过滤存在的文件
+    best_models = list(set(best_models))
+    best_models = [p for p in best_models if p.exists() and p.is_file()]
     
     if not best_models:
         return None
     
+    # 按文件修改时间排序，返回最新的
     best_models.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     return best_models[0]
 
 
-def _format_evaluation_results(model_type: str, params_m: float, flops_g: float, fps: float,
-                               latency_total_ms: float, latency_inference_ms: float, 
-                               latency_postprocess_ms: float, metrics: Dict[str, float],
+def _format_evaluation_results(model_type: str, total_params_m: float, active_params_m: float, 
+                               base_flops_g: float, theory_flops_g: float,
+                               metrics: Dict[str, float],
                                input_resolution: Tuple[int, int], is_yolo: bool = False,
                                gpu_name: str = "GPU") -> None:
-    """格式化并输出评估结果"""
+    """格式化并输出评估结果（理论效率视角）"""
     model_names = {
         'dset': 'DSET', 'rtdetr': 'RT-DETRv2', 'deformable-detr': 'Deformable-DETR',
         'yolov8s': 'YOLOv8-s', 'yolov8m': 'YOLOv8-m',
@@ -1329,11 +1322,11 @@ def _format_evaluation_results(model_type: str, params_m: float, flops_g: float,
     print("\n" + "=" * 70)
     print(f"Model: {name} | Input: {res}")
     print("-" * 70)
-    print(f"Params: {params_m:.2f}M | FLOPs: {flops_g:.2f}G")
-    print(f"Latency ({gpu_name}): {latency_total_ms:.2f}ms (Inf: {latency_inference_ms:.2f}, Post: {latency_postprocess_ms:.2f})")
-    print(f"FPS: {fps:.1f}")
+    print(f"Total Params: {total_params_m:.2f}M | Active Params: {active_params_m:.2f}M")
+    print(f"Base FLOPs: {base_flops_g:.2f}G | Theory FLOPs: {theory_flops_g:.2f}G")
     print(f"mAP: {metrics['mAP']:.4f} | AP50: {metrics['AP50']:.4f} | APS: {metrics['APS']:.4f}")
     print("=" * 70)
+    print("Note: Theoretical FLOPs are calculated based on sparsity-aware projection (Top-1 expert and token pruning ratio).")
 
 
 def main():
@@ -1343,9 +1336,6 @@ def main():
     parser.add_argument('--checkpoint', type=str, default=None)
     parser.add_argument('--input_size', type=int, nargs=2, default=None)
     parser.add_argument('--device', type=str, default='cuda')
-    parser.add_argument('--fps_iter', type=int, default=300)
-    parser.add_argument('--warmup_iter', type=int, default=50)
-    parser.add_argument('--skip_fps', action='store_true')
     parser.add_argument('--model_type', type=str, default='dset',
                        choices=['dset', 'rtdetr', 'deformable-detr', 
                                'yolov8s', 'yolov8m', 'yolov10s', 'yolov10m'])
@@ -1353,25 +1343,8 @@ def main():
     parser.add_argument('--deformable_work_dir', type=str, default=None)
     parser.add_argument('--deformable_config', type=str, default=None)
     parser.add_argument('--models_config', type=str, default=None)
-    parser.add_argument('--cpu_mode', action='store_true',
-                       help='使用 CPU 模拟边缘设备推理（自动限制样本量为 50）')
-    parser.add_argument('--max_samples', type=int, default=300,
-                       help='性能测试的最大样本数（默认 300，CPU 模式自动设为 50）')
     
     args = parser.parse_args()
-    
-    # CPU 模式处理
-    if args.cpu_mode:
-        args.device = 'cpu'
-        args.max_samples = min(args.max_samples, 50)  # CPU 模式限制样本量
-        print("=" * 80)
-        print("⚠️  CPU 模拟边缘设备模式")
-        print("=" * 80)
-        print(f"  • 设备: CPU (模拟边缘计算设备)")
-        print(f"  • 样本量: {args.max_samples} (缩减以加快测试)")
-        print(f"  • 预期: Token Pruning 将带来显著的倍数级加速")
-        print("=" * 80)
-        print()
     
     # GPU/CPU 名称
     if args.device == 'cuda' and torch.cuda.is_available():
@@ -1420,13 +1393,13 @@ def main():
     
     # 输出结果
     if len(all_results) > 1:
-        print_summary_table(all_results, gpu_name, save_csv=True, max_samples=args.max_samples)
+        print_summary_table(all_results, gpu_name, save_csv=True, max_samples=0)  # max_samples 不再使用，设为 0
     elif all_results:
         r = all_results[0]
         _format_evaluation_results(
-            r['model_type'], r['params_m'], r['flops_g'], r['fps'],
-            r.get('latency_total_ms', 0), r.get('latency_inference_ms', 0),
-            r.get('latency_postprocess_ms', 0),
+            r['model_type'], 
+            r.get('total_params_m', 0), r.get('active_params_m', 0),
+            r.get('base_flops_g', 0), r.get('theory_flops_g', 0),
             {'mAP': r['mAP'], 'AP50': r['AP50'], 'APS': r['APS']},
             (int(r['input_size'].split('x')[1]), int(r['input_size'].split('x')[0])),
             r['model_type'].startswith("yolov"), gpu_name

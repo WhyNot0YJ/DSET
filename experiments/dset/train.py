@@ -140,15 +140,12 @@ class DSETRTDETR(nn.Module):
                  use_encoder_idx: list = None,
                  token_keep_ratio: Union[float, Dict[int, float]] = None,
                  token_pruning_warmup_epochs: int = 10,
-                 patch_moe_num_experts: int = 4,
-                 patch_moe_top_k: int = 2,
-                 patch_moe_patch_size: int = 1,
+                 encoder_moe_num_experts: int = 4,
+                 encoder_moe_top_k: int = 2,
                  # MoE weight config
                  decoder_moe_balance_weight: float = None,
                  encoder_moe_balance_weight: float = None,
                  moe_balance_warmup_epochs: int = 0,
-                 use_token_pruning_loss: bool = False,
-                 token_pruning_loss_weight: float = 0.001,
                 # CASS (Context-Aware Soft Supervision) config
                 use_cass: bool = False,
                 cass_loss_weight: float = 0.01,
@@ -175,22 +172,19 @@ class DSETRTDETR(nn.Module):
             use_encoder_idx: Which feature pyramid levels (P3, P4, P5) to process with Transformer Encoder
             token_keep_ratio: Patch retention ratio, can be float (uniform) or dict mapping layer index to ratio (e.g., {2: 0.9})
             token_pruning_warmup_epochs: Pruning warmup epochs
-            patch_moe_num_experts: Number of Patch-MoE experts
-            patch_moe_top_k: Patch-MoE top-k
-            patch_moe_patch_size: Patch-MoE patch size
+            encoder_moe_num_experts: Number of Encoder-MoE experts
+            encoder_moe_top_k: Encoder-MoE top-k
             decoder_moe_balance_weight: Decoder MoE balance loss weight
             encoder_moe_balance_weight: Encoder MoE balance loss weight
             moe_balance_warmup_epochs: Number of epochs before applying MOE balance loss (default: 0)
-            use_token_pruning_loss: Whether to compute token pruning auxiliary loss
-            token_pruning_loss_weight: Token pruning loss weight
             use_cass: Whether to use Context-Aware Soft Supervision for token pruning
             cass_loss_weight: CASS loss weight
             cass_expansion_ratio: Context band expansion ratio (0.2-0.3)
             cass_min_size: Minimum box size on feature map (protects small objects)
             
         Note:
-            - Patch-MoE and Patch-level Pruning are always enabled (DSET core features)
-            - No need to configure use_patch_moe and use_token_pruning
+            - Encoder-MoE and Token-level Pruning are always enabled (DSET core features)
+            - No need to configure use_encoder_moe and use_token_pruning
         """
         super().__init__()
         
@@ -209,10 +203,8 @@ class DSETRTDETR(nn.Module):
         # DSET双稀疏配置（Patch-MoE 必然启用，无需存储）
         self.token_keep_ratio = token_keep_ratio
         self.token_pruning_warmup_epochs = token_pruning_warmup_epochs
-        self.patch_moe_num_experts = patch_moe_num_experts
-        self.patch_moe_top_k = patch_moe_top_k
-        self.patch_moe_patch_size = patch_moe_patch_size
-        self.use_token_pruning_loss = use_token_pruning_loss
+        self.encoder_moe_num_experts = encoder_moe_num_experts
+        self.encoder_moe_top_k = encoder_moe_top_k
         
         # CASS configuration
         self.use_cass = use_cass
@@ -235,8 +227,6 @@ class DSETRTDETR(nn.Module):
         
         # MOE Balance Warmup配置：在前N个epoch内不应用MOE平衡损失，让专家自然分化
         self.moe_balance_warmup_epochs = moe_balance_warmup_epochs
-        if token_pruning_loss_weight is not None:
-            self.token_pruning_loss_weight = token_pruning_loss_weight
         
         # 设置专家数量
         self.num_experts = num_experts
@@ -307,9 +297,8 @@ class DSETRTDETR(nn.Module):
             # DSET dual-sparse params
             token_keep_ratio=self.token_keep_ratio,
             token_pruning_warmup_epochs=self.token_pruning_warmup_epochs,
-            patch_moe_num_experts=self.patch_moe_num_experts,
-            patch_moe_top_k=self.patch_moe_top_k,
-            patch_moe_patch_size=self.patch_moe_patch_size,
+            encoder_moe_num_experts=self.encoder_moe_num_experts,
+            encoder_moe_top_k=self.encoder_moe_top_k,
             # CASS parameters
             use_cass=self.use_cass,
             cass_expansion_ratio=self.cass_expansion_ratio,
@@ -429,34 +418,6 @@ class DSETRTDETR(nn.Module):
             else:
                 encoder_moe_loss = torch.tensor(0.0, device=images.device)
             
-            # 3. Patch-level Pruning损失（可选，鼓励学习有效的剪枝策略）
-            # ⚠️ Patch-level Pruning 必然启用（与 Patch-MoE 配套），但损失计算是可选的
-            # ⚠️ 关键：Token Pruning Loss 必须在 Warmup 期间为 0，避免拟合随机初始化的噪声分数
-            if self.use_token_pruning_loss and self.training and encoder_info and \
-               self.current_epoch >= self.token_pruning_warmup_epochs:
-                importance_scores_list = encoder_info.get('importance_scores_list', [])
-                if importance_scores_list and hasattr(self.encoder, 'token_pruners') and self.encoder.token_pruners:
-                    # 对所有encoder层的importance_scores计算损失并求平均
-                    token_pruning_loss = torch.tensor(0.0, device=images.device)
-                    for i, scores in enumerate(importance_scores_list):
-                        if i < len(self.encoder.token_pruners):
-                            # 计算每层的Patch-level Pruning损失（必然启用）
-                            pruner = self.encoder.token_pruners[i]
-                            # Patch-level Pruning: 使用 patch_importance_scores
-                            token_info = {'patch_importance_scores': scores}
-                            layer_loss = pruner.compute_pruning_loss(token_info)
-                            if layer_loss.device != images.device:
-                                layer_loss = layer_loss.to(images.device)
-                            token_pruning_loss = token_pruning_loss + layer_loss
-                    # 求平均
-                    if len(importance_scores_list) > 0:
-                        token_pruning_loss = token_pruning_loss / len(importance_scores_list)
-                else:
-                    token_pruning_loss = torch.tensor(0.0, device=images.device)
-            else:
-                # Warmup 期间：Token Pruning Loss 为 0
-                token_pruning_loss = torch.tensor(0.0, device=images.device)
-            
             # 检查是否在 MOE Balance Warmup 期间
             # 在 warmup 期间，MOE 平衡损失权重设为 0，让专家自然分化
             in_moe_balance_warmup = self.current_epoch < self.moe_balance_warmup_epochs
@@ -478,13 +439,7 @@ class DSETRTDETR(nn.Module):
                 # 默认值：0.05（中等值）
                 encoder_moe_weight = 0.05
             
-            # Token Pruning Loss权重
-            if hasattr(self, 'token_pruning_loss_weight'):
-                tp_weight = self.token_pruning_loss_weight
-            else:
-                tp_weight = 0.001
-            
-            # 4. CASS (Context-Aware Soft Supervision) Loss
+            # 3. CASS (Context-Aware Soft Supervision) Loss
             # Provides explicit supervision for token importance predictor using GT bboxes
             # ⚠️ 关键：CASS Loss 必须在 Warmup 期间为 0，避免拟合随机初始化的噪声分数
             if self.use_cass and self.training and encoder_info and targets is not None and \
@@ -529,7 +484,7 @@ class DSETRTDETR(nn.Module):
                             pruner = self.encoder.token_pruners[i]
                             if pruner.use_cass:
                                 layer_cass_loss = pruner.compute_cass_loss_from_info(
-                                    info={'patch_importance_scores': scores},
+                                    info={'token_importance_scores': scores},
                                     gt_bboxes=gt_bboxes,
                                     feat_shape=feat_shape,
                                     img_shape=img_shape
@@ -551,17 +506,15 @@ class DSETRTDETR(nn.Module):
             # CASS Loss weight
             cass_weight = self.cass_loss_weight if hasattr(self, 'cass_loss_weight') else 0.01
             
-            # 总损失：L = L_task + Decoder MoE损失 + Encoder MoE损失 + Token Pruning损失 + CASS损失
+            # 总损失：L = L_task + Decoder MoE损失 + Encoder MoE损失 + CASS损失
             total_loss = detection_loss + \
                         decoder_moe_weight * decoder_moe_loss + \
                         encoder_moe_weight * encoder_moe_loss + \
-                        tp_weight * token_pruning_loss + \
                         cass_weight * cass_loss
             
             output['detection_loss'] = detection_loss
             output['decoder_moe_loss'] = decoder_moe_loss
             output['encoder_moe_loss'] = encoder_moe_loss
-            output['token_pruning_loss'] = token_pruning_loss
             output['cass_loss'] = cass_loss
             output['moe_load_balance_loss'] = decoder_moe_loss + encoder_moe_loss  # 保持向后兼容
             output['total_loss'] = total_loss
@@ -569,7 +522,6 @@ class DSETRTDETR(nn.Module):
             
             output['decoder_moe_weight'] = decoder_moe_weight
             output['encoder_moe_balance_weight'] = encoder_moe_weight
-            output['token_pruning_weight'] = tp_weight
             output['cass_weight'] = cass_weight
             
             # 添加encoder info到输出（用于监控）
@@ -692,7 +644,7 @@ class DSETTrainer:
             # 从配置文件读取encoder和decoder专家数量
             num_decoder_experts = self.config.get('model', {}).get('num_experts', 6)
             dset_config = self.config.get('model', {}).get('dset', {})
-            num_encoder_experts = dset_config.get('patch_moe_num_experts', 4)
+            num_encoder_experts = dset_config.get('encoder_moe_num_experts', 4)
             # 生成实验名称（不带时间戳）
             # 如果encoder和decoder相同，使用 dset{num}_{backbone} 格式
             # 如果不同，使用 dset{encoder}{decoder}_{backbone} 格式
@@ -743,11 +695,8 @@ class DSETTrainer:
         # ⚠️ 注意：Patch-MoE 和 Patch-level Pruning 必然启用（DSET核心特性），无需配置
         token_keep_ratio = dset_config.get('token_keep_ratio', 0.7)
         token_pruning_warmup_epochs = dset_config.get('token_pruning_warmup_epochs', 10)
-        patch_moe_num_experts = dset_config.get('patch_moe_num_experts', 4)
-        patch_moe_top_k = dset_config.get('patch_moe_top_k', 2)
-        patch_moe_patch_size = dset_config.get('patch_moe_patch_size', 1)
-        use_token_pruning_loss = dset_config.get('use_token_pruning_loss', False)
-        token_pruning_loss_weight = dset_config.get('token_pruning_loss_weight', 0.001)
+        encoder_moe_num_experts = dset_config.get('encoder_moe_num_experts', 4)
+        encoder_moe_top_k = dset_config.get('encoder_moe_top_k', 2)
         
         # CASS (Context-Aware Soft Supervision) 配置
         use_cass = dset_config.get('use_cass', False)
@@ -782,11 +731,8 @@ class DSETTrainer:
             # DSET双稀疏参数（Patch-MoE 必然启用，无需传递）
             token_keep_ratio=token_keep_ratio,
             token_pruning_warmup_epochs=token_pruning_warmup_epochs,
-            patch_moe_num_experts=patch_moe_num_experts,
-            patch_moe_top_k=patch_moe_top_k,
-            patch_moe_patch_size=patch_moe_patch_size,
-            use_token_pruning_loss=use_token_pruning_loss,
-            token_pruning_loss_weight=token_pruning_loss_weight,
+            encoder_moe_num_experts=encoder_moe_num_experts,
+            encoder_moe_top_k=encoder_moe_top_k,
             # MoE权重配置
             decoder_moe_balance_weight=decoder_moe_balance_weight,
             encoder_moe_balance_weight=encoder_moe_balance_weight,
@@ -826,11 +772,10 @@ class DSETTrainer:
         self.logger.info(f"  Encoder: in_channels={encoder_in_channels}, expansion={encoder_expansion}, num_layers={num_encoder_layers}")
         self.logger.info(f"  Encoder MoE设计: 层间共享")
         self.logger.info(f"  双稀疏配置（DSET核心特性，必然启用）:")
-        self.logger.info(f"    - Patch-MoE: 启用 (experts={patch_moe_num_experts}, top_k={patch_moe_top_k}, patch_size={patch_moe_patch_size})")
+        self.logger.info(f"    - Encoder-MoE: 启用 (experts={encoder_moe_num_experts}, top_k={encoder_moe_top_k})")
         self.logger.info(f"    - Patch-level Pruning: 启用（与 Patch-MoE 兼容）")
         self.logger.info(f"      → keep_ratio={token_keep_ratio}, warmup={token_pruning_warmup_epochs}")
         self.logger.info(f"  损失权重配置:")
-        self.logger.info(f"    - Token Pruning Loss: {use_token_pruning_loss} (weight={token_pruning_loss_weight})")
         self.logger.info(f"    - CASS Supervision: {use_cass} (weight={cass_loss_weight}, expansion={cass_expansion_ratio}, min_size={cass_min_size})")
         self.logger.info(f"    - Decoder MoE: {decoder_moe_balance_weight if decoder_moe_balance_weight else 'auto'}")
         self.logger.info(f"    - Encoder MoE: {encoder_moe_balance_weight if encoder_moe_balance_weight else 'auto'}")
@@ -1085,12 +1030,12 @@ class DSETTrainer:
         # 定义新增结构的关键词（MoE、DSET等）
         # 基于实际代码中的模块命名：
         # - decoder.layers.X.adaptive_expert_layer.* (DSET的decoder MoE)
-        # - encoder.layers.X.patch_moe_layer.* (DSET的encoder Patch-MoE)
+        # - encoder.layers.X.encoder_moe_layer.* (DSET的encoder Encoder-MoE)
         # - encoder.token_pruners.* (DSET的token pruning)
         # - importance_predictor (token pruning中的重要性预测器)
         new_structure_keywords = [
             'adaptive_expert_layer',  # decoder中的MoE层
-            'patch_moe_layer',        # encoder中的Patch-MoE层
+            'encoder_moe_layer',        # encoder中的Encoder-MoE层
             'token_pruners',          # token pruning模块
             'importance_predictor'     # importance predictor
         ]
@@ -1463,7 +1408,7 @@ class DSETTrainer:
         
         # [极致优化] 核心优化：在GPU上直接维护计数器，不再缓存巨大的Logits列表
         num_decoder_experts = self.model.num_experts
-        num_encoder_experts = self.model.patch_moe_num_experts if hasattr(self.model, 'patch_moe_num_experts') else 4
+        num_encoder_experts = self.model.encoder_moe_num_experts if hasattr(self.model, 'encoder_moe_num_experts') else 4
         
         # 统计整个Epoch的累加器（在GPU上，极小的内存占用）
         decoder_expert_usage_total = torch.zeros(num_decoder_experts, dtype=torch.long, device=self.device)
@@ -1476,7 +1421,6 @@ class DSETTrainer:
         detection_loss = 0.0
         moe_lb_loss = 0.0  # MoE load balance loss
         encoder_moe_loss_sum = 0.0  # Encoder Patch-MoE loss
-        token_pruning_loss_sum = 0.0  # Token pruning loss
         cass_loss_sum = 0.0  # CASS supervision loss
         token_pruning_ratios = []
         
@@ -1516,9 +1460,6 @@ class DSETTrainer:
                 if 'encoder_moe_loss' in outputs:
                     enc_moe_loss_val = outputs['encoder_moe_loss']
                     encoder_moe_loss_sum += enc_moe_loss_val.item() if isinstance(enc_moe_loss_val, torch.Tensor) else float(enc_moe_loss_val)
-                if 'token_pruning_loss' in outputs:
-                    tp_loss_val = outputs['token_pruning_loss']
-                    token_pruning_loss_sum += tp_loss_val.item() if isinstance(tp_loss_val, torch.Tensor) else float(tp_loss_val)
                 if 'cass_loss' in outputs:
                     cass_loss_val = outputs['cass_loss']
                     cass_loss_sum += cass_loss_val.item() if isinstance(cass_loss_val, torch.Tensor) else float(cass_loss_val)
@@ -1537,7 +1478,7 @@ class DSETTrainer:
                 if enc_logits and isinstance(enc_logits, list) and len(enc_logits) > 0:
                     # 仅在GPU上计算TopK索引并计数，完成后Logits即可被释放
                     enc_logits_tensor = torch.cat(enc_logits, dim=0)
-                    enc_top_k = self.model.patch_moe_top_k if hasattr(self.model, 'patch_moe_top_k') else 2
+                    enc_top_k = self.model.encoder_moe_top_k if hasattr(self.model, 'encoder_moe_top_k') else 2
                     _, enc_indices = torch.topk(enc_logits_tensor, enc_top_k, dim=-1)
                     encoder_expert_usage_total.add_(torch.bincount(enc_indices.flatten(), minlength=num_encoder_experts))
                     total_enc_tokens += enc_indices.numel()
@@ -1579,7 +1520,6 @@ class DSETTrainer:
         avg_detection_loss = detection_loss / num_batches
         avg_decoder_moe_lb_loss = moe_lb_loss / num_batches
         avg_encoder_moe_loss = encoder_moe_loss_sum / num_batches
-        avg_token_pruning_loss = token_pruning_loss_sum / num_batches
         avg_cass_loss = cass_loss_sum / num_batches
         
         # 计算专家使用率（从GPU累加器转换）
@@ -1608,7 +1548,6 @@ class DSETTrainer:
             'detection_loss': avg_detection_loss,
             'decoder_moe_loss': avg_decoder_moe_lb_loss,
             'encoder_moe_loss': avg_encoder_moe_loss,  # Encoder Patch-MoE loss
-            'token_pruning_loss': avg_token_pruning_loss,
             'cass_loss': avg_cass_loss,  # CASS supervision loss
             'token_pruning_ratio': avg_token_pruning_ratio,
             'moe_load_balance_loss': avg_decoder_moe_lb_loss + avg_encoder_moe_loss,  # 总MoE损失（向后兼容）
@@ -2189,8 +2128,6 @@ class DSETTrainer:
                 self.logger.info(f"  检测损失: {train_metrics['detection_loss']:.2f}")
                 self.logger.info(f"  Decoder MoE损失: {train_metrics.get('decoder_moe_loss', 0.0):.4f}")
                 self.logger.info(f"  Encoder MoE损失: {train_metrics.get('encoder_moe_loss', 0.0):.4f}")
-                if self.model.use_token_pruning_loss:
-                    self.logger.info(f"  Token Pruning损失: {train_metrics.get('token_pruning_loss', 0.0):.6f}")
                 if self.model.use_cass:
                     self.logger.info(f"  CASS Loss: {train_metrics.get('cass_loss', 0.0):.4f}")
                 self.logger.info(f"  MoE总损失: {train_metrics['moe_load_balance_loss']:.4f}")
@@ -2215,7 +2152,6 @@ class DSETTrainer:
                 detection_loss=train_metrics.get('detection_loss', 0.0),
                 encoder_moe_loss=train_metrics.get('encoder_moe_loss', 0.0),  # Encoder Patch-MoE loss
                 decoder_moe_loss=train_metrics.get('decoder_moe_loss', 0.0),
-                token_pruning_loss=train_metrics.get('token_pruning_loss', 0.0),
                 token_pruning_ratio=train_metrics.get('token_pruning_ratio', 0.0),
                 # 传递encoder和decoder专家使用率
                 encoder_expert_usage=train_metrics.get('encoder_expert_usage_rate', []),

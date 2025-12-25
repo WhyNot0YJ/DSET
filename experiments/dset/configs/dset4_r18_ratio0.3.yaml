@@ -20,13 +20,10 @@ model:
     token_keep_ratio:
       2: 0.3
     token_pruning_warmup_epochs: 10
-    patch_moe_num_experts: 4
-    patch_moe_top_k: 2
-    patch_moe_patch_size: 1
-    use_token_pruning_loss: false
-    token_pruning_loss_weight: 0.005
+    encoder_moe_num_experts: 4
+    encoder_moe_top_k: 2
     use_cass: true
-    cass_loss_weight: 0.05
+    cass_loss_weight: 0.2
     cass_expansion_ratio: 0.8
     cass_min_size: 2.0
     use_subpixel_offset: true

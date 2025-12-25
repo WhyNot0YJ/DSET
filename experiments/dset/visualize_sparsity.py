@@ -54,7 +54,7 @@ class PruningHook:
         Hook function to intercept forward pass.
         outputs: (pruned_tokens, kept_indices, info)
         """
-        # Unpack outputs from PatchLevelPruner
+        # Unpack outputs from TokenLevelPruner
         # Note: HybridEncoder calls it with return_indices=True
         if isinstance(outputs, tuple):
             _, kept_indices, info = outputs
@@ -62,8 +62,8 @@ class PruningHook:
             return
 
         # Capture Importance Scores
-        if 'patch_importance_scores' in info:
-            self.scores = info['patch_importance_scores']
+        if 'token_importance_scores' in info:
+            self.scores = info['token_importance_scores']
 
         # Get original feature map dimensions from info
         if 'original_spatial_shape' in info:

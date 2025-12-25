@@ -1,4 +1,4 @@
-"""Patch-level Pruning Module for DSET"""
+"""Token-level Pruning Module for DSET"""
 
 import math
 import torch
@@ -45,15 +45,14 @@ class LearnableImportancePredictor(nn.Module):
         return self.fc2(x).squeeze(-1)
 
 
-class PatchLevelPruner(nn.Module):
-    """Patch级别剪枝器，支持CASS监督学习"""
+class TokenLevelPruner(nn.Module):
+    """Token级别剪枝器，支持CASS监督学习（每个token独立处理）"""
     
     def __init__(self, 
                  input_dim: int,
-                 patch_size: int = 4,
                  keep_ratio: float = 0.7,
                  adaptive: bool = True,
-                 min_patches: int = 10,
+                 min_tokens: int = 10,
                  warmup_epochs: int = 10,
                  prune_in_eval: bool = True,
                  # CASS parameters
@@ -68,10 +67,9 @@ class PatchLevelPruner(nn.Module):
         """
         Args:
             input_dim: Input feature dimension
-            patch_size: Patch size (must match Patch-MoE)
             keep_ratio: Retention ratio (0.5-0.7)
             adaptive: Whether to use adaptive pruning
-            min_patches: Minimum patches to keep
+            min_tokens: Minimum tokens to keep
             warmup_epochs: Warmup epochs
             prune_in_eval: Whether to prune during evaluation
             use_cass: Whether to use Context-Aware Soft Supervision
@@ -85,10 +83,9 @@ class PatchLevelPruner(nn.Module):
         """
         super().__init__()
         self.input_dim = input_dim
-        self.patch_size = patch_size
         self.keep_ratio = keep_ratio
         self.adaptive = adaptive
-        self.min_patches = min_patches
+        self.min_tokens = min_tokens
         self.warmup_epochs = warmup_epochs
         self.prune_in_eval = prune_in_eval
         
@@ -141,19 +138,13 @@ class PatchLevelPruner(nn.Module):
         
         # Warmup阶段跳过所有剪枝计算
         if self.training and self.current_epoch < self.warmup_epochs:
-            patch_h = min(self.patch_size, H)
-            patch_w = min(self.patch_size, W)
-            num_patches_h = (H + patch_h - 1) // patch_h
-            num_patches_w = (W + patch_w - 1) // patch_w
-            num_patches_total = num_patches_h * num_patches_w
-            
             info = {
                 'pruning_ratio': 0.0,
                 'num_kept_tokens': num_tokens,
                 'num_pruned_tokens': 0,
-                'num_patches': num_patches_total,
-                'num_kept_patches': num_patches_total,
-                'patch_importance_scores': None,
+                'num_tokens': num_tokens,
+                'num_kept_tokens_info': num_tokens,
+                'token_importance_scores': None,
                 'new_spatial_shape': (H, W),
                 'original_spatial_shape': (H, W)
             }
@@ -165,18 +156,12 @@ class PatchLevelPruner(nn.Module):
         should_compute_scores = self.training
         
         if not should_prune and not should_compute_scores:
-            patch_h = min(self.patch_size, H)
-            patch_w = min(self.patch_size, W)
-            num_patches_h = (H + patch_h - 1) // patch_h
-            num_patches_w = (W + patch_w - 1) // patch_w
-            num_patches_total = num_patches_h * num_patches_w
-            
             info = {
                 'pruning_ratio': 0.0,
                 'num_kept_tokens': num_tokens,
                 'num_pruned_tokens': 0,
-                'num_patches': num_patches_total,
-                'num_kept_patches': num_patches_total,
+                'num_tokens': num_tokens,
+                'num_kept_tokens_info': num_tokens,
                 'new_spatial_shape': (H, W),
                 'original_spatial_shape': (H, W)
             }
@@ -184,75 +169,37 @@ class PatchLevelPruner(nn.Module):
                 num_tokens, device=tokens.device).unsqueeze(0).expand(batch_size, -1)
             return tokens, kept_indices, info
         
-        tokens_2d = tokens.reshape(batch_size, H, W, channels)
+        # 直接计算每个token的重要性分数
+        token_importance_scores = self.importance_predictor(tokens)  # [B, N]
         
-        patch_h = min(self.patch_size, H)
-        patch_w = min(self.patch_size, W)
-        num_patches_h = (H + patch_h - 1) // patch_h
-        num_patches_w = (W + patch_w - 1) // patch_w
-        num_patches = num_patches_h * num_patches_w
-        
-        pad_h = num_patches_h * patch_h - H
-        pad_w = num_patches_w * patch_w - W
-        if pad_h > 0 or pad_w > 0:
-            tokens_2d_padded = tokens_2d.permute(0, 3, 1, 2)
-            tokens_2d_padded = F.pad(tokens_2d_padded, (0, pad_w, 0, pad_h))
-            tokens_2d_padded = tokens_2d_padded.permute(0, 2, 3, 1)
-            H_padded, W_padded = tokens_2d_padded.shape[1], tokens_2d_padded.shape[2]
-        else:
-            tokens_2d_padded = tokens_2d
-            H_padded, W_padded = H, W
-        
-        if num_patches <= self.min_patches:
-            if should_compute_scores:
-                tokens_2d_conv = tokens_2d_padded.permute(0, 3, 1, 2)
-                patches = tokens_2d_conv.unfold(2, patch_h, patch_h).unfold(3, patch_w, patch_w)
-                patches = patches.contiguous().view(batch_size, channels, num_patches, patch_h, patch_w)
-                patches_flat = patches.permute(0, 2, 3, 4, 1).contiguous()
-                patches_flat = patches_flat.reshape(batch_size, num_patches, patch_h * patch_w, channels)
-                patches_batch = patches_flat.view(batch_size * num_patches, patch_h * patch_w, channels)
-                token_importance = self.importance_predictor(patches_batch)
-                patch_importance_scores = token_importance.mean(dim=-1).view(batch_size, num_patches)
-            else:
-                patch_importance_scores = None
-            
+        if num_tokens <= self.min_tokens:
             info = {
                 'pruning_ratio': 0.0,
                 'num_kept_tokens': num_tokens,
                 'num_pruned_tokens': 0,
-                'num_patches': num_patches,
-                'num_kept_patches': num_patches,
+                'num_tokens': num_tokens,
+                'num_kept_tokens_info': num_tokens,
                 'new_spatial_shape': (H, W),
                 'original_spatial_shape': (H, W)
             }
-            if patch_importance_scores is not None:
-                info['patch_importance_scores'] = patch_importance_scores
+            if should_compute_scores:
+                info['token_importance_scores'] = token_importance_scores
             kept_indices = None if not return_indices else torch.arange(
                 num_tokens, device=tokens.device).unsqueeze(0).expand(batch_size, -1)
             return tokens, kept_indices, info
         
         current_keep_ratio = self.get_current_keep_ratio()
-        num_keep_patches_by_ratio = int(num_patches * current_keep_ratio)
-        num_keep_patches = min(max(self.min_patches, num_keep_patches_by_ratio), num_patches)
-        
-        tokens_2d_conv = tokens_2d_padded.permute(0, 3, 1, 2)
-        patches = tokens_2d_conv.unfold(2, patch_h, patch_h).unfold(3, patch_w, patch_w)
-        patches = patches.contiguous().view(batch_size, channels, num_patches, patch_h, patch_w)
-        patches_flat = patches.permute(0, 2, 3, 4, 1).contiguous()
-        patches_flat = patches_flat.reshape(batch_size, num_patches, patch_h * patch_w, channels)
-        patches_batch = patches_flat.view(batch_size * num_patches, patch_h * patch_w, channels)
-        token_importance = self.importance_predictor(patches_batch)
-        patch_importance_scores = token_importance.mean(dim=-1).view(batch_size, num_patches)
+        num_keep_tokens_by_ratio = int(num_tokens * current_keep_ratio)
+        num_keep_tokens = min(max(self.min_tokens, num_keep_tokens_by_ratio), num_tokens)
         
         if not should_prune:
             info = {
                 'pruning_ratio': 0.0,
                 'num_kept_tokens': num_tokens,
                 'num_pruned_tokens': 0,
-                'num_patches': num_patches,
-                'num_kept_patches': num_patches,
-                'num_pruned_patches': 0,
-                'patch_importance_scores': patch_importance_scores,
+                'num_tokens': num_tokens,
+                'num_kept_tokens_info': num_tokens,
+                'token_importance_scores': token_importance_scores,
                 'new_spatial_shape': (H, W),
                 'original_spatial_shape': (H, W)
             }
@@ -260,87 +207,36 @@ class PatchLevelPruner(nn.Module):
                 num_tokens, device=tokens.device).unsqueeze(0).expand(batch_size, -1)
             return tokens, kept_indices, info
         
-        _, top_patch_indices = torch.topk(patch_importance_scores, num_keep_patches, dim=-1)
-        top_patch_indices_sorted, _ = torch.sort(top_patch_indices, dim=-1)
+        # 选择top-k tokens
+        _, top_token_indices = torch.topk(token_importance_scores, num_keep_tokens, dim=-1)
+        top_token_indices_sorted, _ = torch.sort(top_token_indices, dim=-1)
         
-        top_patch_indices_expanded = top_patch_indices_sorted.unsqueeze(-1).unsqueeze(-1)
-        top_patch_indices_expanded = top_patch_indices_expanded.expand(-1, -1, patch_h * patch_w, channels)
-        kept_patches_flat = patches_flat.gather(dim=1, index=top_patch_indices_expanded)
-        pruned_tokens = kept_patches_flat.reshape(batch_size, num_keep_patches * patch_h * patch_w, channels)
-        num_kept_tokens_actual = num_keep_patches * patch_h * patch_w
+        # 收集保留的tokens
+        batch_indices = torch.arange(batch_size, device=tokens.device).unsqueeze(1).expand(-1, num_keep_tokens)
+        pruned_tokens = tokens[batch_indices, top_token_indices_sorted]
         
         if return_indices:
-            p_h_indices = top_patch_indices_sorted // num_patches_w
-            p_w_indices = top_patch_indices_sorted % num_patches_w
-            ph_offsets = torch.arange(patch_h, device=tokens.device).view(1, 1, patch_h, 1)
-            pw_offsets = torch.arange(patch_w, device=tokens.device).view(1, 1, 1, patch_w)
-            p_h_expanded = p_h_indices.unsqueeze(-1).unsqueeze(-1)
-            p_w_expanded = p_w_indices.unsqueeze(-1).unsqueeze(-1)
-            orig_h_all = p_h_expanded * patch_h + ph_offsets
-            orig_w_all = p_w_expanded * patch_w + pw_offsets
-            orig_h_all = orig_h_all.expand(-1, -1, -1, patch_w)
-            orig_w_all = orig_w_all.expand(-1, -1, patch_h, -1)
-            orig_idx_all = orig_h_all * W_padded + orig_w_all
-            valid_mask = (orig_h_all < H) & (orig_w_all < W)
-            orig_idx_flat = orig_idx_all.reshape(batch_size, -1)
-            valid_mask_flat = valid_mask.reshape(batch_size, -1)
-            
-            # 向量化处理：完全消除 Python 循环
-            # 1. 确定每个 batch 的最大有效 token 数
-            valid_counts = valid_mask_flat.sum(dim=1)
-            max_valid_count = int(valid_counts.max().item()) if valid_counts.numel() > 0 and valid_counts.max() > 0 else 0
-            
-            if max_valid_count > 0:
-                # 2. 构造 [B, max_valid_count] 的索引矩阵
-                # 使用 topk 配合 mask 可以快速提取有效索引并保持相对顺序
-                # 我们给无效位置一个非常大的负数，然后取前 max_valid_count 个
-                score_for_selection = torch.where(valid_mask_flat, 
-                                                 torch.arange(orig_idx_flat.shape[1], device=tokens.device).float(),
-                                                 torch.tensor(-1e9, device=tokens.device))
-                _, selection_indices = torch.topk(score_for_selection, max_valid_count, dim=1, largest=True)
-                # 重新排序以保持原始顺序
-                selection_indices, _ = torch.sort(selection_indices, dim=1)
-                
-                # 3. 提取索引并应用 mask
-                kept_indices = torch.gather(orig_idx_flat, 1, selection_indices)
-                batch_valid_mask = torch.gather(valid_mask_flat, 1, selection_indices)
-                kept_indices = torch.where(batch_valid_mask, kept_indices, torch.tensor(-1, device=tokens.device))
-            else:
-                kept_indices = None
+            kept_indices = top_token_indices_sorted
         else:
             kept_indices = None
         
-        num_kept_tokens = num_kept_tokens_actual
-        H_pruned_approx = int((num_kept_tokens + W - 1) // W) if W > 0 else num_kept_tokens
-        W_pruned_approx = W if H_pruned_approx * W >= num_kept_tokens else num_kept_tokens
+        # 计算新的空间形状（近似）
+        H_pruned_approx = int((num_keep_tokens + W - 1) // W) if W > 0 else num_keep_tokens
+        W_pruned_approx = W if H_pruned_approx * W >= num_keep_tokens else num_keep_tokens
         
         info = {
-            'pruning_ratio': 1.0 - (num_keep_patches / num_patches),
-            'num_kept_tokens': num_kept_tokens,
-            'num_pruned_tokens': num_tokens - num_kept_tokens,
-            'num_patches': num_patches,
-            'num_kept_patches': num_keep_patches,
-            'num_pruned_patches': num_patches - num_keep_patches,
-            'patch_importance_scores': patch_importance_scores,
+            'pruning_ratio': 1.0 - (num_keep_tokens / num_tokens),
+            'num_kept_tokens': num_keep_tokens,
+            'num_pruned_tokens': num_tokens - num_keep_tokens,
+            'num_tokens': num_tokens,
+            'num_kept_tokens_info': num_keep_tokens,
+            'token_importance_scores': token_importance_scores,
             'new_spatial_shape': (H_pruned_approx, W_pruned_approx),
             'original_spatial_shape': (H, W)
         }
         
         return pruned_tokens, kept_indices, info
     
-    def compute_pruning_loss(self, info: dict) -> torch.Tensor:
-        """计算剪枝损失（基于重要性分数的熵）"""
-        if 'patch_importance_scores' not in info or info.get('patch_importance_scores') is None:
-            return torch.tensor(0.0, requires_grad=False)
-        
-        patch_importance_scores = info['patch_importance_scores']
-        patch_probs = F.softmax(patch_importance_scores, dim=-1)
-        entropy = -(patch_probs * torch.log(patch_probs + 1e-8)).sum(dim=-1).mean()
-        num_patches = patch_importance_scores.shape[-1]
-        max_entropy = torch.log(torch.tensor(num_patches, dtype=torch.float32, device=patch_importance_scores.device))
-        normalized_entropy = entropy / max_entropy
-        return 1.0 - normalized_entropy
-
     def generate_soft_target_mask(
         self,
         gt_bboxes: List[torch.Tensor],
@@ -357,7 +253,7 @@ class PatchLevelPruner(nn.Module):
         Args:
             gt_bboxes: List of tensors [N, 4] in (x1, y1, x2, y2) format, original image scale.
                        Each tensor corresponds to one image in the batch.
-            feat_shape: (h, w) of the S5 feature map.
+            feat_shape: (h, w) of the feature map.
             img_shape: (H, W) of the original image.
             device: Target device for the mask tensor.
             expansion_ratio: Override for self.cass_expansion_ratio
@@ -365,8 +261,8 @@ class PatchLevelPruner(nn.Module):
             decay_type: Override for self.cass_decay_type ('gaussian' or 'linear')
         
         Returns:
-            target_mask: Tensor [B, num_patches] with values 0.0 to 1.0.
-                         Matches the shape of patch_importance_scores.
+            target_mask: Tensor [B, num_tokens] with values 0.0 to 1.0.
+                         Matches the shape of token_importance_scores.
         """
         B = len(gt_bboxes)
         h, w = feat_shape
@@ -378,17 +274,22 @@ class PatchLevelPruner(nn.Module):
         
         stride_h = ImgH / h
         stride_w = ImgW / w
-        patch_h = min(self.patch_size, h)
-        patch_w = min(self.patch_size, w)
-        num_patches_h = (h + patch_h - 1) // patch_h
-        num_patches_w = (w + patch_w - 1) // patch_w
+        num_tokens = h * w
         
-        target_mask_2d = torch.zeros((B, num_patches_h, num_patches_w), device=device, dtype=torch.float32)
-        patch_center_y = (torch.arange(num_patches_h, device=device, dtype=torch.float32) + 0.5) * patch_h
-        patch_center_x = (torch.arange(num_patches_w, device=device, dtype=torch.float32) + 0.5) * patch_w
-        yy, xx = torch.meshgrid(patch_center_y, patch_center_x, indexing='ij')
-        yy = yy.unsqueeze(0)
-        xx = xx.unsqueeze(0)
+        target_mask_2d = torch.zeros((B, h, w), device=device, dtype=torch.float32)
+        
+        # 修正：加入 +0.5 偏移，确保与 patch_size=1 时的中心点逻辑完全一致
+        # 原版逻辑：patch_center_y = (torch.arange(num_patches_h) + 0.5) * patch_h
+        # 当 patch_h = 1 时，坐标序列是 [0.5, 1.5, 2.5, ...]
+        # 这 0.5 个像素的特征图偏移，对应到原图上就是 stride * 0.5 像素的物理位移
+        # 对于小目标（如交通锥，约 10-15 像素）来说，这个偏移很重要
+        token_y = (torch.arange(h, device=device, dtype=torch.float32) + 0.5)
+        token_x = (torch.arange(w, device=device, dtype=torch.float32) + 0.5)
+        
+        # 使用 indexing='ij' 保持与原版网格一致
+        yy, xx = torch.meshgrid(token_y, token_x, indexing='ij')
+        yy = yy.unsqueeze(0)  # [1, h, w]
+        xx = xx.unsqueeze(0)  # [1, h, w]
         
         for b_idx in range(B):
             bboxes = gt_bboxes[b_idx]
@@ -500,6 +401,184 @@ class PatchLevelPruner(nn.Module):
         
         return target_mask
     
+    def generate_all_object_masks(
+        self,
+        gt_bboxes: List[torch.Tensor],
+        feat_shape: Tuple[int, int],
+        img_shape: Tuple[int, int],
+        device: torch.device,
+        expansion_ratio: Optional[float] = None,
+        min_size: Optional[float] = None,
+        decay_type: Optional[str] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Vectorized version: Generate individual masks for all objects in batch.
+        
+        This method generates masks for each object separately, avoiding repeated
+        meshgrid computations. It's optimized for performance when computing
+        object-level normalized CASS loss.
+        
+        Args:
+            gt_bboxes: List of tensors [N, 4] in (x1, y1, x2, y2) format, original image scale.
+                       Each tensor corresponds to one image in the batch.
+            feat_shape: (h, w) of the feature map.
+            img_shape: (H, W) of the original image.
+            device: Target device for the mask tensor.
+            expansion_ratio: Override for self.cass_expansion_ratio
+            min_size: Override for self.cass_min_size
+            decay_type: Override for self.cass_decay_type ('gaussian' or 'linear')
+        
+        Returns:
+            all_obj_masks: Tensor [Total_Objects, num_tokens] with values 0.0 to 1.0.
+                          Each row corresponds to one object's mask.
+            batch_indices: Tensor [Total_Objects] indicating which batch index each object belongs to.
+        """
+        B = len(gt_bboxes)
+        h, w = feat_shape
+        ImgH, ImgW = img_shape
+        
+        expansion_ratio = expansion_ratio if expansion_ratio is not None else self.cass_expansion_ratio
+        min_size = min_size if min_size is not None else self.cass_min_size
+        decay_type = decay_type if decay_type is not None else self.cass_decay_type
+        
+        stride_h = ImgH / h
+        stride_w = ImgW / w
+        num_tokens = h * w
+        
+        # Collect all objects and their batch indices
+        all_bboxes_list = []
+        batch_indices_list = []
+        
+        for b_idx in range(B):
+            bboxes = gt_bboxes[b_idx]
+            if bboxes is None or len(bboxes) == 0:
+                continue
+            
+            if bboxes.dim() == 1:
+                bboxes = bboxes.unsqueeze(0)
+            
+            for i in range(len(bboxes)):
+                all_bboxes_list.append(bboxes[i:i+1])  # Keep as [1, 4] for compatibility
+                batch_indices_list.append(b_idx)
+        
+        if len(all_bboxes_list) == 0:
+            # Return empty tensors with correct shape
+            return torch.zeros((0, num_tokens), device=device, dtype=torch.float32), \
+                   torch.zeros((0,), device=device, dtype=torch.long)
+        
+        Total_Objects = len(all_bboxes_list)
+        batch_indices = torch.tensor(batch_indices_list, device=device, dtype=torch.long)
+        
+        # Generate meshgrid once (shared across all objects)
+        token_y = (torch.arange(h, device=device, dtype=torch.float32) + 0.5)
+        token_x = (torch.arange(w, device=device, dtype=torch.float32) + 0.5)
+        yy, xx = torch.meshgrid(token_y, token_x, indexing='ij')
+        yy = yy.unsqueeze(0)  # [1, h, w]
+        xx = xx.unsqueeze(0)  # [1, h, w]
+        
+        # Stack all bboxes into a single tensor [Total_Objects, 4]
+        all_bboxes = torch.cat(all_bboxes_list, dim=0).float().to(device)  # [Total_Objects, 4]
+        
+        # Convert to feature map coordinates
+        bboxes_feat = all_bboxes.clone()
+        bboxes_feat[:, 0] = bboxes_feat[:, 0] / stride_w
+        bboxes_feat[:, 1] = bboxes_feat[:, 1] / stride_h
+        bboxes_feat[:, 2] = bboxes_feat[:, 2] / stride_w
+        bboxes_feat[:, 3] = bboxes_feat[:, 3] / stride_h
+        
+        x1 = bboxes_feat[:, 0]  # [Total_Objects]
+        y1 = bboxes_feat[:, 1]
+        x2 = bboxes_feat[:, 2]
+        y2 = bboxes_feat[:, 3]
+        box_w = x2 - x1
+        box_h = y2 - y1
+        
+        # Apply min_size expansion
+        needs_expand_w = box_w < min_size
+        needs_expand_h = box_h < min_size
+        center_x = (x1 + x2) / 2
+        center_y = (y1 + y2) / 2
+        x1 = torch.where(needs_expand_w, center_x - min_size / 2, x1)
+        x2 = torch.where(needs_expand_w, center_x + min_size / 2, x2)
+        y1 = torch.where(needs_expand_h, center_y - min_size / 2, y1)
+        y2 = torch.where(needs_expand_h, center_y + min_size / 2, y2)
+        box_w = x2 - x1
+        box_h = y2 - y1
+        
+        # Compute dilated boxes
+        expand_w = box_w * expansion_ratio
+        expand_h = box_h * expansion_ratio
+        x1_dilated = x1 - expand_w
+        y1_dilated = y1 - expand_h
+        x2_dilated = x2 + expand_w
+        y2_dilated = y2 + expand_h
+        
+        # Clamp coordinates
+        x1_core = torch.clamp(x1, 0, w - 1e-6)
+        y1_core = torch.clamp(y1, 0, h - 1e-6)
+        x2_core = torch.clamp(x2, 1e-6, w)
+        y2_core = torch.clamp(y2, 1e-6, h)
+        x1_dilated = torch.clamp(x1_dilated, 0, w - 1e-6)
+        y1_dilated = torch.clamp(y1_dilated, 0, h - 1e-6)
+        x2_dilated = torch.clamp(x2_dilated, 1e-6, w)
+        y2_dilated = torch.clamp(y2_dilated, 1e-6, h)
+        
+        # Reshape for broadcasting: [Total_Objects, 1, 1]
+        x1_core = x1_core.view(Total_Objects, 1, 1)
+        y1_core = y1_core.view(Total_Objects, 1, 1)
+        x2_core = x2_core.view(Total_Objects, 1, 1)
+        y2_core = y2_core.view(Total_Objects, 1, 1)
+        x1_dilated = x1_dilated.view(Total_Objects, 1, 1)
+        y1_dilated = y1_dilated.view(Total_Objects, 1, 1)
+        x2_dilated = x2_dilated.view(Total_Objects, 1, 1)
+        y2_dilated = y2_dilated.view(Total_Objects, 1, 1)
+        expand_w = expand_w.view(Total_Objects, 1, 1)
+        expand_h = expand_h.view(Total_Objects, 1, 1)
+        center_x_view = center_x.view(Total_Objects, 1, 1)
+        center_y_view = center_y.view(Total_Objects, 1, 1)
+        box_w_view = box_w.view(Total_Objects, 1, 1)
+        box_h_view = box_h.view(Total_Objects, 1, 1)
+        
+        # Vectorized mask computation: [Total_Objects, h, w]
+        in_core = (xx >= x1_core) & (xx <= x2_core) & (yy >= y1_core) & (yy <= y2_core)
+        in_dilated = (xx >= x1_dilated) & (xx <= x2_dilated) & (yy >= y1_dilated) & (yy <= y2_dilated)
+        in_context = in_dilated & ~in_core
+        
+        # Sub-pixel offset compensation
+        if self.use_subpixel_offset:
+            dist_x_abs = torch.abs(xx - center_x_view)
+            dist_y_abs = torch.abs(yy - center_y_view)
+            dist_x = torch.maximum(dist_x_abs - box_w_view / 2, torch.zeros_like(dist_x_abs))
+            dist_y = torch.maximum(dist_y_abs - box_h_view / 2, torch.zeros_like(dist_y_abs))
+        else:
+            dist_x = torch.where(xx < x1_core, x1_core - xx,
+                        torch.where(xx > x2_core, xx - x2_core, torch.zeros_like(xx)))
+            dist_y = torch.where(yy < y1_core, y1_core - yy,
+                        torch.where(yy > y2_core, yy - y2_core, torch.zeros_like(yy)))
+        
+        # Compute decay values
+        dist_to_core = torch.sqrt(dist_x**2 + dist_y**2)
+        expand_dist = torch.sqrt(expand_w**2 + expand_h**2)
+        expand_dist = torch.clamp(expand_dist, min=1.0)
+        normalized_dist = dist_to_core / expand_dist
+        
+        if decay_type == 'gaussian':
+            sigma = 0.5
+            decay_values = torch.exp(-normalized_dist**2 / (2 * sigma**2))
+            decay_values = torch.where(normalized_dist < 1.0, decay_values, torch.zeros_like(decay_values))
+        else:
+            decay_values = torch.clamp(1.0 - normalized_dist, 0.0, 1.0)
+        
+        # Combine core and context masks
+        box_masks = in_core.float()
+        context_contribution = decay_values * in_context.float()
+        box_masks = torch.maximum(box_masks, context_contribution)
+        
+        # Reshape to [Total_Objects, num_tokens]
+        all_obj_masks = box_masks.view(Total_Objects, -1)
+        
+        return all_obj_masks, batch_indices
+    
     def _compute_focal_loss(
         self,
         pred_scores: torch.Tensor,
@@ -516,8 +595,8 @@ class PatchLevelPruner(nn.Module):
         where p = sigmoid(pred_scores), y = target_mask
         
         Args:
-            pred_scores: Predicted importance logits [B, num_patches] (before sigmoid)
-            target_mask: Target soft mask [B, num_patches] with values 0.0 to 1.0
+            pred_scores: Predicted importance logits [B, num_tokens] (before sigmoid)
+            target_mask: Target soft mask [B, num_tokens] with values 0.0 to 1.0
             reduction: Loss reduction method ('mean', 'sum', 'none')
         
         Returns:
@@ -571,8 +650,8 @@ class PatchLevelPruner(nn.Module):
         Computes the CASS supervision loss using MSE or Focal Loss.
         
         Args:
-            pred_scores: Predicted importance logits [B, num_patches] (before sigmoid)
-            target_mask: Target soft mask [B, num_patches] with values 0.0 to 1.0
+            pred_scores: Predicted importance logits [B, num_tokens] (before sigmoid)
+            target_mask: Target soft mask [B, num_tokens] with values 0.0 to 1.0
             reduction: Loss reduction method ('mean', 'sum', 'none')
         
         Returns:
@@ -586,69 +665,6 @@ class PatchLevelPruner(nn.Module):
             loss = F.mse_loss(pred_probs, target_mask, reduction=reduction)
             return loss
     
-    def _debug_visualize_mask(self, target_mask: torch.Tensor, pred_scores: torch.Tensor):
-        """Debug helper: Visualize the target mask and predicted scores as heatmaps."""
-        import os
-        import time
-        import numpy as np
-        
-        try:
-            import cv2
-        except ImportError:
-            print("[CASS Debug] cv2 not available, skipping visualization")
-            return
-        
-        debug_dir = "./debug_cass_vis"
-        os.makedirs(debug_dir, exist_ok=True)
-        
-        target_np = target_mask[0].detach().cpu().numpy()
-        pred_np = torch.sigmoid(pred_scores[0]).detach().cpu().numpy()
-        num_patches = target_np.shape[0]
-        
-        side = int(np.sqrt(num_patches))
-        if side * side == num_patches:
-            grid_h, grid_w = side, side
-        else:
-            for h in range(int(np.sqrt(num_patches)), 0, -1):
-                if num_patches % h == 0:
-                    grid_h = h
-                    grid_w = num_patches // h
-                    break
-            else:
-                grid_h = 1
-                grid_w = num_patches
-        
-        target_2d = target_np.reshape(grid_h, grid_w)
-        pred_2d = pred_np.reshape(grid_h, grid_w)
-        target_vis = (target_2d * 255).astype(np.uint8)
-        pred_vis = (pred_2d * 255).astype(np.uint8)
-        
-        target_heatmap = cv2.applyColorMap(target_vis, cv2.COLORMAP_JET)
-        pred_heatmap = cv2.applyColorMap(pred_vis, cv2.COLORMAP_JET)
-        
-        scale = 10
-        target_heatmap = cv2.resize(target_heatmap, (grid_w * scale, grid_h * scale), 
-                                     interpolation=cv2.INTER_NEAREST)
-        pred_heatmap = cv2.resize(pred_heatmap, (grid_w * scale, grid_h * scale), 
-                                   interpolation=cv2.INTER_NEAREST)
-        
-        combined = np.hstack([target_heatmap, pred_heatmap])
-        cv2.putText(combined, "Target Mask (GT)", (10, 25), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-        cv2.putText(combined, "Pred Scores (sigmoid)", (grid_w * scale + 10, 25), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-        
-        timestamp = int(time.time() * 1000) % 1000000
-        filename = f"{debug_dir}/cass_mask_{timestamp}.png"
-        cv2.imwrite(filename, combined)
-        
-        print(f"[CASS Debug] Saved: {filename}")
-        print(f"  Grid shape: {grid_h}x{grid_w} = {num_patches} patches")
-        print(f"  Target mask: min={target_np.min():.3f}, max={target_np.max():.3f}, "
-              f"mean={target_np.mean():.3f}, nonzero={np.sum(target_np > 0)}")
-        print(f"  Pred scores: min={pred_np.min():.3f}, max={pred_np.max():.3f}, "
-              f"mean={pred_np.mean():.3f}")
-    
     def compute_cass_loss_from_info(
         self,
         info: Dict,
@@ -657,29 +673,67 @@ class PatchLevelPruner(nn.Module):
         img_shape: Tuple[int, int]
     ) -> torch.Tensor:
         """
-        Convenience method to compute CASS loss directly from pruner info dict.
+        Compute CASS loss with object-level normalization (vectorized version).
+        
+        Modified normalization strategy: Instead of averaging over all tokens in the image,
+        we normalize by the number of objects. This ensures that small objects (e.g., traffic cones)
+        contribute equally to the loss as large objects, preventing the loss from being dominated
+        by large objects.
+        
+        Performance optimization: Uses vectorized batch processing to avoid repeated
+        meshgrid computations. Instead of calling generate_soft_target_mask N times (once per object),
+        we generate all masks in a single pass.
+        
+        Core logic:
+        1. Generate all object masks in one vectorized call: [Total_Objects, num_tokens]
+        2. Expand pred_scores to match each object's batch index: [Total_Objects, num_tokens]
+        3. Compute Focal Loss for all objects at once (reduction='none')
+        4. Sum per-object losses and divide by total_objects
         
         Args:
-            info: Info dict from forward() containing 'patch_importance_scores'
+            info: Info dict from forward() containing 'token_importance_scores'
             gt_bboxes: List of ground truth boxes [N, 4] in (x1, y1, x2, y2) format
             feat_shape: (h, w) of the feature map
             img_shape: (H, W) of the original image
         
         Returns:
-            loss: CASS supervision loss
+            loss: CASS supervision loss normalized by number of objects
         """
-        if 'patch_importance_scores' not in info or info['patch_importance_scores'] is None:
-            return torch.tensor(0.0, requires_grad=False)
+        if 'token_importance_scores' not in info or info['token_importance_scores'] is None:
+            return torch.tensor(0.0, device=info.get('device', torch.device('cpu')), requires_grad=False)
         
-        pred_scores = info['patch_importance_scores']
+        pred_scores = info['token_importance_scores']
         device = pred_scores.device
-        target_mask = self.generate_soft_target_mask(
+        
+        # 1. Generate all object masks in one vectorized call
+        # Returns: [Total_Objects, num_tokens], [Total_Objects]
+        all_obj_masks, batch_indices = self.generate_all_object_masks(
             gt_bboxes=gt_bboxes,
             feat_shape=feat_shape,
             img_shape=img_shape,
             device=device
         )
-        loss = self.compute_cass_loss(pred_scores, target_mask)
         
-        return loss
-
+        total_objects = all_obj_masks.shape[0]
+        if total_objects == 0:
+            return torch.tensor(0.0, device=device, requires_grad=False)
+        
+        # 2. Expand pred_scores to match each object's batch index
+        # pred_scores: [B, num_tokens]
+        # batch_indices: [Total_Objects] -> indices into batch dimension
+        # expanded_preds: [Total_Objects, num_tokens]
+        expanded_preds = pred_scores[batch_indices]  # [Total_Objects, num_tokens]
+        
+        # 3. Vectorized loss computation for all objects
+        # Use reduction='none' to get per-object losses, then sum
+        per_obj_loss = self.compute_cass_loss(
+            expanded_preds,
+            all_obj_masks,
+            reduction='none'  # Returns [Total_Objects, num_tokens]
+        )
+        
+        # Sum over tokens for each object, then average over objects
+        per_obj_loss_sum = per_obj_loss.sum(dim=1)  # [Total_Objects]
+        total_loss = per_obj_loss_sum.sum() / total_objects
+        
+        return total_loss
