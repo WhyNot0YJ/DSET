@@ -151,6 +151,7 @@ class DSETRTDETR(nn.Module):
                 cass_loss_weight: float = 0.01,
                 cass_expansion_ratio: float = 0.3,
                 cass_min_size: float = 1.0,
+                cass_warmup_epochs: int = 3,
                 # CASS Focal Loss config
                 use_focal_loss: bool = True,
                 cass_focal_alpha: float = 2.0,
@@ -211,6 +212,7 @@ class DSETRTDETR(nn.Module):
         self.cass_loss_weight = cass_loss_weight
         self.cass_expansion_ratio = cass_expansion_ratio
         self.cass_min_size = cass_min_size
+        self.cass_warmup_epochs = cass_warmup_epochs
         # CASS Focal Loss configuration
         self.use_focal_loss = use_focal_loss
         self.cass_focal_alpha = cass_focal_alpha
@@ -442,8 +444,9 @@ class DSETRTDETR(nn.Module):
             # 3. CASS (Context-Aware Soft Supervision) Loss
             # Provides explicit supervision for token importance predictor using GT bboxes
             # ⚠️ 关键：CASS Loss 必须在 Warmup 期间为 0，避免拟合随机初始化的噪声分数
+            # CASS 可以比 Token Pruning 更早介入（第 3个 epoch），因为重要性预测器需要更早的监督信号
             if self.use_cass and self.training and encoder_info and targets is not None and \
-               self.current_epoch >= self.token_pruning_warmup_epochs:
+               self.current_epoch >= self.cass_warmup_epochs:
                 importance_scores_list = encoder_info.get('importance_scores_list', [])
                 feat_shapes_list = encoder_info.get('feat_shapes_list', [])
                 
@@ -703,6 +706,7 @@ class DSETTrainer:
         cass_loss_weight = dset_config.get('cass_loss_weight', 0.01)
         cass_expansion_ratio = dset_config.get('cass_expansion_ratio', 0.3)
         cass_min_size = dset_config.get('cass_min_size', 1.0)
+        cass_warmup_epochs = dset_config.get('cass_warmup_epochs', 3)  # 默认第 3 个 epoch 开始
         # CASS Focal Loss 配置
         use_focal_loss = dset_config.get('use_focal_loss', True)
         cass_focal_alpha = dset_config.get('cass_focal_alpha', 2.0)
@@ -742,6 +746,7 @@ class DSETTrainer:
             cass_loss_weight=cass_loss_weight,
             cass_expansion_ratio=cass_expansion_ratio,
             cass_min_size=cass_min_size,
+            cass_warmup_epochs=cass_warmup_epochs,
             # CASS Focal Loss 配置
             use_focal_loss=use_focal_loss,
             cass_focal_alpha=cass_focal_alpha,
@@ -776,7 +781,7 @@ class DSETTrainer:
         self.logger.info(f"    - Patch-level Pruning: 启用（与 Patch-MoE 兼容）")
         self.logger.info(f"      → keep_ratio={token_keep_ratio}, warmup={token_pruning_warmup_epochs}")
         self.logger.info(f"  损失权重配置:")
-        self.logger.info(f"    - CASS Supervision: {use_cass} (weight={cass_loss_weight}, expansion={cass_expansion_ratio}, min_size={cass_min_size})")
+        self.logger.info(f"    - CASS Supervision: {use_cass} (weight={cass_loss_weight}, expansion={cass_expansion_ratio}, min_size={cass_min_size}, warmup={cass_warmup_epochs} epochs)")
         self.logger.info(f"    - Decoder MoE: {decoder_moe_balance_weight if decoder_moe_balance_weight else 'auto'}")
         self.logger.info(f"    - Encoder MoE: {encoder_moe_balance_weight if encoder_moe_balance_weight else 'auto'}")
         if moe_balance_warmup_epochs > 0:
@@ -2082,6 +2087,11 @@ class DSETTrainer:
         
         for epoch in range(self.current_epoch, epochs):
             self.current_epoch = epoch
+
+            # CASS Loss warmup结束提示
+            if hasattr(self.model, 'use_cass') and self.model.use_cass and hasattr(self.model, 'cass_warmup_epochs'):
+                if epoch == self.model.cass_warmup_epochs:
+                    self.logger.info(f"  ⚠️  CASS Loss warmup结束，从epoch {epoch}开始应用CASS监督损失 (weight={self.model.cass_loss_weight})")
 
             # 训练
             train_metrics = self.train_epoch()

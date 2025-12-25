@@ -602,6 +602,7 @@ class TokenLevelPruner(nn.Module):
         Returns:
             loss: Scalar loss tensor (if reduction != 'none')
         """
+        pred_scores = torch.clamp(pred_scores, min=-10.0, max=10.0)
         pred_probs = torch.sigmoid(pred_scores)
         
         # 预计算常用中间值
@@ -657,6 +658,9 @@ class TokenLevelPruner(nn.Module):
         Returns:
             loss: Scalar loss tensor (if reduction != 'none')
         """
+        # Numerical Fuse: Clamp logits to prevent extreme gradients in FP16 training
+        pred_scores = torch.clamp(pred_scores, min=-10.0, max=10.0)
+        
         if self.use_focal_loss:
             return self._compute_focal_loss(pred_scores, target_mask, reduction)
         else:
@@ -673,12 +677,18 @@ class TokenLevelPruner(nn.Module):
         img_shape: Tuple[int, int]
     ) -> torch.Tensor:
         """
-        Compute CASS loss with object-level normalization (vectorized version).
+        Compute CASS loss with double normalization (vectorized version).
         
-        Modified normalization strategy: Instead of averaging over all tokens in the image,
-        we normalize by the number of objects. This ensures that small objects (e.g., traffic cones)
-        contribute equally to the loss as large objects, preventing the loss from being dominated
-        by large objects.
+        Double Normalization Strategy:
+        1. First normalization (within-object): Compute average loss per token for each object.
+           This ensures that regardless of object size, each object's raw contribution is at the same scale.
+        2. Second normalization (between-objects): Average the per-object mean losses across all objects.
+           This ensures that small objects (e.g., traffic cones) have equal "voice" as large objects
+           (e.g., trucks) in the final gradient.
+        
+        This prevents numerical explosion (nan) in FP16 mixed precision training by:
+        - Avoiding sum-based reduction that scales with object size
+        - Ensuring all objects contribute equally regardless of their token coverage
         
         Performance optimization: Uses vectorized batch processing to avoid repeated
         meshgrid computations. Instead of calling generate_soft_target_mask N times (once per object),
@@ -688,7 +698,8 @@ class TokenLevelPruner(nn.Module):
         1. Generate all object masks in one vectorized call: [Total_Objects, num_tokens]
         2. Expand pred_scores to match each object's batch index: [Total_Objects, num_tokens]
         3. Compute Focal Loss for all objects at once (reduction='none')
-        4. Sum per-object losses and divide by total_objects
+        4. First normalization: per_object_mean_loss = sum(loss) / num_tokens_in_object
+        5. Second normalization: final_loss = mean(per_object_mean_loss)
         
         Args:
             info: Info dict from forward() containing 'token_importance_scores'
@@ -697,7 +708,7 @@ class TokenLevelPruner(nn.Module):
             img_shape: (H, W) of the original image
         
         Returns:
-            loss: CASS supervision loss normalized by number of objects
+            loss: CASS supervision loss with double normalization
         """
         if 'token_importance_scores' not in info or info['token_importance_scores'] is None:
             return torch.tensor(0.0, device=info.get('device', torch.device('cpu')), requires_grad=False)
@@ -725,15 +736,17 @@ class TokenLevelPruner(nn.Module):
         expanded_preds = pred_scores[batch_indices]  # [Total_Objects, num_tokens]
         
         # 3. Vectorized loss computation for all objects
-        # Use reduction='none' to get per-object losses, then sum
-        per_obj_loss = self.compute_cass_loss(
+        # Use reduction='none' to get per-token losses: [Total_Objects, num_tokens]
+        per_token_loss = self.compute_cass_loss(
             expanded_preds,
             all_obj_masks,
-            reduction='none'  # Returns [Total_Objects, num_tokens]
+            reduction='none'
         )
         
-        # Sum over tokens for each object, then average over objects
-        per_obj_loss_sum = per_obj_loss.sum(dim=1)  # [Total_Objects]
-        total_loss = per_obj_loss_sum.sum() / total_objects
+        obj_areas = all_obj_masks.sum(dim=1).clamp(min=1.0)
+        
+        per_obj_total_loss = per_token_loss.sum(dim=1)
+        
+        total_loss = (per_obj_total_loss / obj_areas).mean()
         
         return total_loss
