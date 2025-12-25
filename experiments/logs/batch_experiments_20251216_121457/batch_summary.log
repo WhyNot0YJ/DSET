@@ -1,4 +1,0 @@
-[0;34m[INFO][0m 运行指定实验类型（按字典序排序）: YOLOv8+YOLOv10
-[0;34m[INFO][0m 开始实验: yolov8/configs/yolov8m_dairv2x.yaml
-[0;31m[ERROR][0m ✗ yolov8m_dairv2x | 失败 (退出码: 1, 耗时: 00:00:16)
-[0;34m[INFO][0m 开始实验: yolov8/configs/yolov8s_dairv2x.yaml

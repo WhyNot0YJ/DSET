@@ -1,6 +1,0 @@
-[0;34m[INFO][0m 使用键名选择配置
-[0;34m[INFO][0m 开始实验: dset/configs/dset4_r18_ratio0.3.yaml
-[0;32m[SUCCESS][0m ✓ 实验完成: dset4_r18_ratio0.3 (耗时: 07:01:15)
-[0;34m[INFO][0m 开始实验: dset/configs/dset48_r18_ratio0.3.yaml
-[0;32m[SUCCESS][0m ✓ 实验完成: dset48_r18_ratio0.3 (耗时: 06:55:00)
-[0;34m[INFO][0m 开始实验: dset/configs/dset6_r34_ratio0.3.yaml
