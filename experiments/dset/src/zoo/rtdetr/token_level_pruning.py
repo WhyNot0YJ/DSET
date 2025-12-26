@@ -62,8 +62,8 @@ class TokenLevelPruner(nn.Module):
                  cass_decay_type: str = 'gaussian',
                  use_subpixel_offset: bool = True,
                  use_focal_loss: bool = True,
-                 cass_focal_alpha: float = 2.0,
-                 cass_focal_beta: float = 4.0):
+                 cass_focal_alpha: float = 0.75,
+                 cass_focal_beta: float = 2.0):
         """
         Args:
             input_dim: Input feature dimension
@@ -77,9 +77,9 @@ class TokenLevelPruner(nn.Module):
             cass_min_size: Minimum box size on feature map (pixels)
             cass_decay_type: Decay type for context band ('gaussian' or 'linear')
             use_subpixel_offset: Whether to use sub-pixel offset compensation
-            use_focal_loss: Whether to use Focal Loss instead of MSE
-            cass_focal_alpha: Focal Loss alpha parameter
-            cass_focal_beta: Focal Loss beta parameter
+            use_focal_loss: Whether to use Varifocal Loss (VFL) instead of MSE
+            cass_focal_alpha: VFL alpha parameter (default: 0.75)
+            cass_focal_beta: VFL gamma parameter (default: 2.0)
         """
         super().__init__()
         self.input_dim = input_dim
@@ -582,20 +582,20 @@ class TokenLevelPruner(nn.Module):
         
         return all_obj_masks, batch_indices
     
-    def _compute_focal_loss(
+    def _compute_vfl(
         self,
         pred_scores: torch.Tensor,
         target_mask: torch.Tensor,
         reduction: str = 'mean'
     ) -> torch.Tensor:
         """
-        Modified Focal Loss (reference: CornerNet/CenterNet)
+        Varifocal Loss (VFL) for CASS supervision.
         
         Formula:
-        - Positive samples: (1 - p)^alpha * log(p) * y
-        - Negative samples: p^beta * log(1 - p) * (1 - y)
+        - For positive samples (y > 0): Loss = -y * [y * log(p) + (1-y) * log(1-p)]
+        - For negative samples (y = 0): Loss = -α * p^γ * log(1-p)
         
-        where p = sigmoid(pred_scores), y = target_mask
+        where p = sigmoid(pred_scores), y = target_mask, α = cass_focal_alpha, γ = cass_focal_beta
         
         Args:
             pred_scores: Predicted importance logits [B, num_tokens] (before sigmoid)
@@ -605,37 +605,39 @@ class TokenLevelPruner(nn.Module):
         Returns:
             loss: Scalar loss tensor (if reduction != 'none')
         """
+        # Numerical safety: Clamp logits to prevent extreme gradients in FP16 training
         pred_scores = torch.clamp(pred_scores, min=-10.0, max=10.0)
         pred_probs = torch.sigmoid(pred_scores)
         
-        # 预计算常用中间值
-        one_minus_p = 1 - pred_probs
-        log_p = torch.log(pred_probs + 1e-8)
-        log_one_minus_p = torch.log(one_minus_p + 1e-8)
+        # Add epsilon for numerical stability in log computation
+        epsilon = 1e-8
+        log_p = torch.log(pred_probs + epsilon)
+        log_one_minus_p = torch.log(1.0 - pred_probs + epsilon)
         
-        # 优化的幂运算：避免使用 torch.pow()
-        # alpha=2.0: (1-p)^2 = (1-p) * (1-p)
-        # beta=4.0: p^4 = (p*p) * (p*p)
-        if self.cass_focal_alpha == 2.0:
-            focal_weight_pos = one_minus_p * one_minus_p
+        # Identify positive and negative samples
+        # Positive samples: y > 0
+        # Negative samples: y = 0
+        is_positive = target_mask > 0
+        
+        # For positive samples: Loss = -y * [y * log(p) + (1-y) * log(1-p)]
+        pos_loss = -target_mask * (target_mask * log_p + (1.0 - target_mask) * log_one_minus_p)
+        
+        # For negative samples: Loss = -α * p^γ * log(1-p)
+        # Optimize power computation for common values
+        alpha = self.cass_focal_alpha
+        gamma = self.cass_focal_beta
+        
+        if gamma == 2.0:
+            p_gamma = pred_probs * pred_probs
+        elif gamma == 1.0:
+            p_gamma = pred_probs
         else:
-            focal_weight_pos = torch.pow(one_minus_p, self.cass_focal_alpha)
+            p_gamma = torch.pow(pred_probs, gamma)
         
-        if self.cass_focal_beta == 4.0:
-            p_sq = pred_probs * pred_probs
-            focal_weight_neg = p_sq * p_sq
-        elif self.cass_focal_beta == 2.0:
-            focal_weight_neg = pred_probs * pred_probs
-        else:
-            focal_weight_neg = torch.pow(pred_probs, self.cass_focal_beta)
+        neg_loss = -alpha * p_gamma * log_one_minus_p
         
-        # Positive sample loss: (1 - p)^alpha * log(p) * y
-        pos_loss = -focal_weight_pos * log_p * target_mask
-        
-        # Negative sample loss: p^beta * log(1 - p) * (1 - y)
-        neg_loss = -focal_weight_neg * log_one_minus_p * (1 - target_mask)
-        
-        loss = pos_loss + neg_loss
+        # Combine losses: use positive loss where y > 0, negative loss where y = 0
+        loss = torch.where(is_positive, pos_loss, neg_loss)
         
         if reduction == 'mean':
             return loss.mean()
@@ -651,7 +653,7 @@ class TokenLevelPruner(nn.Module):
         reduction: str = 'mean'
     ) -> torch.Tensor:
         """
-        Computes the CASS supervision loss using MSE or Focal Loss.
+        Computes the CASS supervision loss using MSE or Varifocal Loss (VFL).
         
         Args:
             pred_scores: Predicted importance logits [B, num_tokens] (before sigmoid)
@@ -665,7 +667,7 @@ class TokenLevelPruner(nn.Module):
         pred_scores = torch.clamp(pred_scores, min=-10.0, max=10.0)
         
         if self.use_focal_loss:
-            return self._compute_focal_loss(pred_scores, target_mask, reduction)
+            return self._compute_vfl(pred_scores, target_mask, reduction)
         else:
             # Original MSE implementation
             pred_probs = torch.sigmoid(pred_scores)
@@ -700,7 +702,7 @@ class TokenLevelPruner(nn.Module):
         Core logic:
         1. Generate all object masks in one vectorized call: [Total_Objects, num_tokens]
         2. Expand pred_scores to match each object's batch index: [Total_Objects, num_tokens]
-        3. Compute Focal Loss for all objects at once (reduction='none')
+        3. Compute Varifocal Loss (VFL) for all objects at once (reduction='none')
         4. First normalization: per_object_mean_loss = sum(loss) / num_tokens_in_object
         5. Second normalization: final_loss = mean(per_object_mean_loss)
         

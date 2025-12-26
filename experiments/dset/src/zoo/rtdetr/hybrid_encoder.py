@@ -240,10 +240,10 @@ class HybridEncoder(nn.Module):
                  cass_expansion_ratio=0.3,
                  cass_min_size=1.0,
                  cass_decay_type='gaussian',
-                 # CASS Focal Loss 参数
+                 # CASS Varifocal Loss 参数
                  use_focal_loss=True,
-                 cass_focal_alpha=2.0,
-                 cass_focal_beta=4.0,
+                 cass_focal_alpha=0.75,
+                 cass_focal_beta=2.0,
                  # MoE noise_std parameter
                  moe_noise_std=0.1,
                  router_init_std=0.02): # [修复] 恢复为冠军版本值
@@ -279,7 +279,7 @@ class HybridEncoder(nn.Module):
         self.cass_expansion_ratio = cass_expansion_ratio
         self.cass_min_size = cass_min_size
         self.cass_decay_type = cass_decay_type
-        # CASS Focal Loss parameters
+        # CASS Varifocal Loss (VFL) parameters
         self.use_focal_loss = use_focal_loss
         self.cass_focal_alpha = cass_focal_alpha
         self.cass_focal_beta = cass_focal_beta
@@ -334,7 +334,7 @@ class HybridEncoder(nn.Module):
                 cass_expansion_ratio=cass_expansion_ratio,
                 cass_min_size=cass_min_size,
                 cass_decay_type=cass_decay_type,
-                # CASS Focal Loss parameters
+                # CASS Varifocal Loss (VFL) parameters
                 use_focal_loss=use_focal_loss,
                 cass_focal_alpha=cass_focal_alpha,
                 cass_focal_beta=cass_focal_beta

@@ -148,14 +148,14 @@ class DSETRTDETR(nn.Module):
                  moe_balance_warmup_epochs: int = 0,
                 # CASS (Context-Aware Soft Supervision) config
                 use_cass: bool = False,
-                cass_loss_weight: float = 0.01,
+                cass_loss_weight: float = 0.2,
                 cass_expansion_ratio: float = 0.3,
                 cass_min_size: float = 1.0,
                 cass_warmup_epochs: int = 3,
-                # CASS Focal Loss config
+                # CASS Varifocal Loss config
                 use_focal_loss: bool = True,
-                cass_focal_alpha: float = 2.0,
-                cass_focal_beta: float = 4.0,
+                cass_focal_alpha: float = 0.75,
+                cass_focal_beta: float = 2.0,
                 # MoE noise_std config
                 moe_noise_std: float = 0.1):
         """Initialize DSET RT-DETR model.
@@ -213,7 +213,7 @@ class DSETRTDETR(nn.Module):
         self.cass_expansion_ratio = cass_expansion_ratio
         self.cass_min_size = cass_min_size
         self.cass_warmup_epochs = cass_warmup_epochs
-        # CASS Focal Loss configuration
+        # CASS Varifocal Loss (VFL) configuration
         self.use_focal_loss = use_focal_loss
         self.cass_focal_alpha = cass_focal_alpha
         self.cass_focal_beta = cass_focal_beta
@@ -306,7 +306,7 @@ class DSETRTDETR(nn.Module):
             cass_expansion_ratio=self.cass_expansion_ratio,
             cass_min_size=self.cass_min_size,
             cass_decay_type='gaussian',
-            # CASS Focal Loss parameters
+            # CASS Varifocal Loss (VFL) parameters
             use_focal_loss=self.use_focal_loss,
             cass_focal_alpha=self.cass_focal_alpha,
             cass_focal_beta=self.cass_focal_beta,
@@ -507,7 +507,7 @@ class DSETRTDETR(nn.Module):
                 cass_loss = torch.tensor(0.0, device=images.device)
             
             # CASS Loss weight
-            cass_weight = self.cass_loss_weight if hasattr(self, 'cass_loss_weight') else 0.01
+            cass_weight = self.cass_loss_weight if hasattr(self, 'cass_loss_weight') else 0.2
             
             # 总损失：L = L_task + Decoder MoE损失 + Encoder MoE损失 + CASS损失
             total_loss = detection_loss + \
@@ -703,14 +703,14 @@ class DSETTrainer:
         
         # CASS (Context-Aware Soft Supervision) 配置
         use_cass = dset_config.get('use_cass', False)
-        cass_loss_weight = dset_config.get('cass_loss_weight', 0.01)
+        cass_loss_weight = dset_config.get('cass_loss_weight', 0.2)
         cass_expansion_ratio = dset_config.get('cass_expansion_ratio', 0.3)
         cass_min_size = dset_config.get('cass_min_size', 1.0)
         cass_warmup_epochs = dset_config.get('cass_warmup_epochs', 3)  # 默认第 3 个 epoch 开始
-        # CASS Focal Loss 配置
+        # CASS Varifocal Loss (VFL) 配置
         use_focal_loss = dset_config.get('use_focal_loss', True)
-        cass_focal_alpha = dset_config.get('cass_focal_alpha', 2.0)
-        cass_focal_beta = dset_config.get('cass_focal_beta', 4.0)
+        cass_focal_alpha = dset_config.get('cass_focal_alpha', 0.75)
+        cass_focal_beta = dset_config.get('cass_focal_beta', 2.0)
         
         # 从配置文件读取MoE权重
         decoder_moe_balance_weight = self.config.get('training', {}).get('decoder_moe_balance_weight', None)
@@ -747,7 +747,7 @@ class DSETTrainer:
             cass_expansion_ratio=cass_expansion_ratio,
             cass_min_size=cass_min_size,
             cass_warmup_epochs=cass_warmup_epochs,
-            # CASS Focal Loss 配置
+            # CASS Varifocal Loss (VFL) 配置
             use_focal_loss=use_focal_loss,
             cass_focal_alpha=cass_focal_alpha,
             cass_focal_beta=cass_focal_beta,
