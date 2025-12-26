@@ -1,8 +1,8 @@
 {
   "deformable-detr-r18": {
     "type":"deformable-detr",
-    "config": "/root/autodl-tmp/DSET/experiments/deformable-detr/config.yaml",
-    "checkpoint": "/root/autodl-tmp/DSET/experiments/deformable-detr/best_coco_bbox_mAP_epoch_195.pth"
+    "config": "/root/autodl-tmp/DSET/experiments/deformable-detr/work_dirs/r18_baseline/config.yaml",
+    "checkpoint": "/root/autodl-tmp/DSET/experiments/deformable-detr/work_dirs/r18_baseline/best_coco_bbox_mAP_epoch_195.pth"
   }
 }
 

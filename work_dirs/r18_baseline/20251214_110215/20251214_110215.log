@@ -1,0 +1,1753 @@
+2025/12/14 11:02:16 - mmengine - INFO - 
+------------------------------------------------------------
+System environment:
+    sys.platform: linux
+    Python: 3.10.8 (main, Nov 24 2022, 14:13:03) [GCC 11.2.0]
+    CUDA available: True
+    MUSA available: False
+    numpy_random_seed: 137723804
+    GPU 0: NVIDIA GeForce RTX 5090
+    CUDA_HOME: /usr/local/cuda
+    NVCC: Cuda compilation tools, release 12.1, V12.1.105
+    GCC: gcc (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0
+    PyTorch: 2.10.0.dev20251114+cu128
+    PyTorch compiling details: PyTorch built with:
+  - GCC 13.3
+  - C++ Version: 201703
+  - Intel(R) oneAPI Math Kernel Library Version 2024.2-Product Build 20240605 for Intel(R) 64 architecture applications
+  - Intel(R) MKL-DNN v3.7.1 (Git Hash 8d263e693366ef8db40acc569cc7d8edf644556d)
+  - OpenMP 201511 (a.k.a. OpenMP 4.5)
+  - LAPACK is enabled (usually provided by MKL)
+  - NNPACK is enabled
+  - CPU capability usage: AVX512
+  - CUDA Runtime 12.8
+  - NVCC architecture flags: -gencode;arch=compute_70,code=sm_70;-gencode;arch=compute_75,code=sm_75;-gencode;arch=compute_80,code=sm_80;-gencode;arch=compute_86,code=sm_86;-gencode;arch=compute_90,code=sm_90;-gencode;arch=compute_100,code=sm_100;-gencode;arch=compute_120,code=sm_120
+  - CuDNN 91.0.2  (built against CUDA 12.9)
+    - Built with CuDNN 90.8
+  - Magma 2.6.1
+  - Build settings: BLAS_INFO=mkl, BUILD_TYPE=Release, COMMIT_SHA=f678a34183d6186c2b3b7dc7744ee865f0c2e9b0, CUDA_VERSION=12.8, CUDNN_VERSION=9.8.0, CXX_COMPILER=/opt/rh/gcc-toolset-13/root/usr/bin/c++, CXX_FLAGS= -fvisibility-inlines-hidden -DUSE_PTHREADPOOL -DNDEBUG -DUSE_KINETO -DLIBKINETO_NOROCTRACER -DLIBKINETO_NOXPUPTI=ON -DUSE_FBGEMM -DUSE_FBGEMM_GENAI -DUSE_PYTORCH_QNNPACK -DUSE_XNNPACK -DSYMBOLICATE_MOBILE_DEBUG_HANDLE -O2 -fPIC -DC10_NODEPRECATED -Wall -Wextra -Werror=return-type -Werror=non-virtual-dtor -Werror=range-loop-construct -Werror=bool-operation -Wnarrowing -Wno-missing-field-initializers -Wno-unknown-pragmas -Wno-unused-parameter -Wno-strict-overflow -Wno-strict-aliasing -Wno-stringop-overflow -Wsuggest-override -Wno-psabi -Wno-error=old-style-cast -faligned-new -Wno-maybe-uninitialized -fno-math-errno -fno-trapping-math -Werror=format -Wno-dangling-reference -Wno-error=dangling-reference -Wno-stringop-overflow, LAPACK_INFO=mkl, PERF_WITH_AVX=1, PERF_WITH_AVX2=1, TORCH_VERSION=2.10.0, USE_CUDA=ON, USE_CUDNN=ON, USE_CUSPARSELT=1, USE_GFLAGS=OFF, USE_GLOG=OFF, USE_GLOO=ON, USE_MKL=ON, USE_MKLDNN=ON, USE_MPI=OFF, USE_NCCL=1, USE_NNPACK=ON, USE_OPENMP=ON, USE_ROCM=OFF, USE_ROCM_KERNEL_ASSERT=OFF, USE_XCCL=OFF, USE_XPU=OFF, 
+
+    TorchVision: 0.25.0.dev20251115+cu128
+    OpenCV: 4.12.0
+    MMEngine: 0.10.7
+
+Runtime environment:
+    cudnn_benchmark: False
+    mp_cfg: {'mp_start_method': 'fork', 'opencv_num_threads': 0}
+    dist_cfg: {'backend': 'nccl'}
+    seed: 137723804
+    Distributed launcher: none
+    Distributed training: False
+    GPU number: 1
+------------------------------------------------------------
+
+2025/12/14 11:02:17 - mmengine - INFO - Config:
+auto_scale_lr = dict(base_batch_size=16, enable=True)
+backend_args = None
+custom_hooks = []
+data_root = '/root/autodl-tmp/datasets/DAIR-V2X/'
+dataset_type = 'CocoDataset'
+default_hooks = dict(
+    checkpoint=dict(
+        interval=1,
+        max_keep_ckpts=1,
+        rule='greater',
+        save_best='coco/bbox_mAP',
+        type='CheckpointHook'),
+    logger=dict(interval=50, type='LoggerHook'),
+    param_scheduler=dict(type='ParamSchedulerHook'),
+    sampler_seed=dict(type='DistSamplerSeedHook'),
+    timer=dict(type='IterTimerHook'),
+    visualization=dict(type='DetVisualizationHook'))
+default_scope = 'mmdet'
+env_cfg = dict(
+    cudnn_benchmark=False,
+    dist_cfg=dict(backend='nccl'),
+    mp_cfg=dict(mp_start_method='fork', opencv_num_threads=0))
+load_from = None
+log_level = 'INFO'
+log_processor = dict(by_epoch=True, type='LogProcessor', window_size=50)
+max_epochs = 50
+model = dict(
+    as_two_stage=False,
+    backbone=dict(
+        depth=18,
+        frozen_stages=1,
+        init_cfg=dict(checkpoint='torchvision://resnet18', type='Pretrained'),
+        norm_cfg=dict(requires_grad=False, type='BN'),
+        norm_eval=True,
+        num_stages=4,
+        out_indices=(
+            1,
+            2,
+            3,
+        ),
+        style='pytorch',
+        type='ResNet'),
+    bbox_head=dict(
+        loss_bbox=dict(loss_weight=5.0, type='L1Loss'),
+        loss_cls=dict(
+            alpha=0.25,
+            gamma=2.0,
+            loss_weight=2.0,
+            type='FocalLoss',
+            use_sigmoid=True),
+        loss_iou=dict(loss_weight=2.0, type='GIoULoss'),
+        num_classes=8,
+        sync_cls_avg_factor=True,
+        type='DeformableDETRHead'),
+    data_preprocessor=dict(
+        bgr_to_rgb=True,
+        mean=[
+            123.675,
+            116.28,
+            103.53,
+        ],
+        pad_size_divisor=1,
+        std=[
+            58.395,
+            57.12,
+            57.375,
+        ],
+        type='DetDataPreprocessor'),
+    decoder=dict(
+        layer_cfg=dict(
+            cross_attn_cfg=dict(batch_first=True, embed_dims=256),
+            ffn_cfg=dict(
+                embed_dims=256, feedforward_channels=1024, ffn_drop=0.1),
+            self_attn_cfg=dict(
+                batch_first=True, dropout=0.1, embed_dims=256, num_heads=8)),
+        num_layers=6,
+        post_norm_cfg=None,
+        return_intermediate=True),
+    encoder=dict(
+        layer_cfg=dict(
+            ffn_cfg=dict(
+                embed_dims=256, feedforward_channels=1024, ffn_drop=0.1),
+            self_attn_cfg=dict(batch_first=True, embed_dims=256)),
+        num_layers=6),
+    neck=dict(
+        act_cfg=None,
+        in_channels=[
+            128,
+            256,
+            512,
+        ],
+        kernel_size=1,
+        norm_cfg=dict(num_groups=32, type='GN'),
+        num_outs=4,
+        out_channels=256,
+        type='ChannelMapper'),
+    num_feature_levels=4,
+    num_queries=100,
+    positional_encoding=dict(normalize=True, num_feats=128, offset=-0.5),
+    test_cfg=dict(max_per_img=100),
+    train_cfg=dict(
+        assigner=dict(
+            match_costs=[
+                dict(type='FocalLossCost', weight=2.0),
+                dict(box_format='xywh', type='BBoxL1Cost', weight=5.0),
+                dict(iou_mode='giou', type='IoUCost', weight=2.0),
+            ],
+            type='HungarianAssigner')),
+    type='DeformableDETR',
+    with_box_refine=False)
+optim_wrapper = dict(
+    clip_grad=dict(max_norm=0.1, norm_type=2),
+    loss_scale='dynamic',
+    optimizer=dict(lr=0.0002, type='AdamW', weight_decay=0.0001),
+    paramwise_cfg=dict(
+        custom_keys=dict(
+            backbone=dict(lr_mult=0.1),
+            reference_points=dict(lr_mult=0.1),
+            sampling_offsets=dict(lr_mult=0.1))),
+    type='AmpOptimWrapper')
+param_scheduler = [
+    dict(
+        begin=0, by_epoch=False, end=500, start_factor=0.001, type='LinearLR'),
+    dict(
+        begin=0,
+        by_epoch=True,
+        end=200,
+        gamma=0.1,
+        milestones=[
+            160,
+        ],
+        type='MultiStepLR'),
+]
+resume = False
+test_cfg = dict(type='TestLoop')
+test_dataloader = dict(
+    batch_size=16,
+    dataset=dict(
+        ann_file='annotations/instances_val.json',
+        backend_args=None,
+        data_prefix=dict(img=''),
+        data_root='/root/autodl-tmp/datasets/DAIR-V2X/',
+        metainfo=dict(
+            classes=(
+                'Car',
+                'Truck',
+                'Van',
+                'Bus',
+                'Pedestrian',
+                'Cyclist',
+                'Motorcyclist',
+                'Trafficcone',
+            )),
+        pipeline=[
+            dict(backend_args=None, type='LoadImageFromFile'),
+            dict(keep_ratio=True, scale=(
+                1280,
+                720,
+            ), type='Resize'),
+            dict(type='LoadAnnotations', with_bbox=True),
+            dict(
+                meta_keys=(
+                    'img_id',
+                    'img_path',
+                    'ori_shape',
+                    'img_shape',
+                    'scale_factor',
+                ),
+                type='PackDetInputs'),
+        ],
+        test_mode=True,
+        type='CocoDataset'),
+    drop_last=False,
+    num_workers=16,
+    persistent_workers=True,
+    sampler=dict(shuffle=False, type='DefaultSampler'))
+test_evaluator = dict(
+    ann_file=
+    '/root/autodl-tmp/datasets/DAIR-V2X/annotations/instances_val.json',
+    backend_args=None,
+    format_only=False,
+    metric='bbox',
+    metric_items=[
+        'mAP',
+        'mAP_50',
+        'mAP_75',
+        'mAP_s',
+        'mAP_m',
+        'mAP_l',
+    ],
+    proposal_nums=(
+        1,
+        10,
+        100,
+    ),
+    type='CocoMetric')
+test_pipeline = [
+    dict(backend_args=None, type='LoadImageFromFile'),
+    dict(keep_ratio=True, scale=(
+        1333,
+        800,
+    ), type='Resize'),
+    dict(type='LoadAnnotations', with_bbox=True),
+    dict(
+        meta_keys=(
+            'img_id',
+            'img_path',
+            'ori_shape',
+            'img_shape',
+            'scale_factor',
+        ),
+        type='PackDetInputs'),
+]
+train_cfg = dict(max_epochs=200, type='EpochBasedTrainLoop', val_interval=1)
+train_dataloader = dict(
+    batch_sampler=dict(type='AspectRatioBatchSampler'),
+    batch_size=8,
+    dataset=dict(
+        ann_file='annotations/instances_train.json',
+        backend_args=None,
+        data_prefix=dict(img=''),
+        data_root='/root/autodl-tmp/datasets/DAIR-V2X/',
+        filter_cfg=dict(filter_empty_gt=False, min_size=32),
+        metainfo=dict(
+            classes=(
+                'Car',
+                'Truck',
+                'Van',
+                'Bus',
+                'Pedestrian',
+                'Cyclist',
+                'Motorcyclist',
+                'Trafficcone',
+            )),
+        pipeline=[
+            dict(backend_args=None, type='LoadImageFromFile'),
+            dict(type='LoadAnnotations', with_bbox=True),
+            dict(type='PhotoMetricDistortion'),
+            dict(min_crop_size=0.1, type='MinIoURandomCrop'),
+            dict(prob=0.5, type='RandomFlip'),
+            dict(
+                keep_ratio=True,
+                scales=[
+                    (
+                        1280,
+                        480,
+                    ),
+                    (
+                        1280,
+                        512,
+                    ),
+                    (
+                        1280,
+                        544,
+                    ),
+                    (
+                        1280,
+                        576,
+                    ),
+                    (
+                        1280,
+                        608,
+                    ),
+                    (
+                        1280,
+                        640,
+                    ),
+                    (
+                        1280,
+                        672,
+                    ),
+                    (
+                        1280,
+                        704,
+                    ),
+                    (
+                        1280,
+                        736,
+                    ),
+                    (
+                        1280,
+                        768,
+                    ),
+                    (
+                        1280,
+                        800,
+                    ),
+                ],
+                type='RandomChoiceResize'),
+            dict(type='PackDetInputs'),
+        ],
+        type='CocoDataset'),
+    num_workers=16,
+    persistent_workers=True,
+    sampler=dict(shuffle=True, type='DefaultSampler'))
+train_pipeline = [
+    dict(backend_args=None, type='LoadImageFromFile'),
+    dict(type='LoadAnnotations', with_bbox=True),
+    dict(prob=0.5, type='RandomFlip'),
+    dict(
+        transforms=[
+            [
+                dict(
+                    keep_ratio=True,
+                    scales=[
+                        (
+                            480,
+                            1333,
+                        ),
+                        (
+                            512,
+                            1333,
+                        ),
+                        (
+                            544,
+                            1333,
+                        ),
+                        (
+                            576,
+                            1333,
+                        ),
+                        (
+                            608,
+                            1333,
+                        ),
+                        (
+                            640,
+                            1333,
+                        ),
+                        (
+                            672,
+                            1333,
+                        ),
+                        (
+                            704,
+                            1333,
+                        ),
+                        (
+                            736,
+                            1333,
+                        ),
+                        (
+                            768,
+                            1333,
+                        ),
+                        (
+                            800,
+                            1333,
+                        ),
+                    ],
+                    type='RandomChoiceResize'),
+            ],
+            [
+                dict(
+                    keep_ratio=True,
+                    scales=[
+                        (
+                            400,
+                            4200,
+                        ),
+                        (
+                            500,
+                            4200,
+                        ),
+                        (
+                            600,
+                            4200,
+                        ),
+                    ],
+                    type='RandomChoiceResize'),
+                dict(
+                    allow_negative_crop=True,
+                    crop_size=(
+                        384,
+                        600,
+                    ),
+                    crop_type='absolute_range',
+                    type='RandomCrop'),
+                dict(
+                    keep_ratio=True,
+                    scales=[
+                        (
+                            480,
+                            1333,
+                        ),
+                        (
+                            512,
+                            1333,
+                        ),
+                        (
+                            544,
+                            1333,
+                        ),
+                        (
+                            576,
+                            1333,
+                        ),
+                        (
+                            608,
+                            1333,
+                        ),
+                        (
+                            640,
+                            1333,
+                        ),
+                        (
+                            672,
+                            1333,
+                        ),
+                        (
+                            704,
+                            1333,
+                        ),
+                        (
+                            736,
+                            1333,
+                        ),
+                        (
+                            768,
+                            1333,
+                        ),
+                        (
+                            800,
+                            1333,
+                        ),
+                    ],
+                    type='RandomChoiceResize'),
+            ],
+        ],
+        type='RandomChoice'),
+    dict(type='PackDetInputs'),
+]
+val_cfg = dict(type='ValLoop')
+val_dataloader = dict(
+    batch_size=16,
+    dataset=dict(
+        ann_file='annotations/instances_val.json',
+        backend_args=None,
+        data_prefix=dict(img=''),
+        data_root='/root/autodl-tmp/datasets/DAIR-V2X/',
+        metainfo=dict(
+            classes=(
+                'Car',
+                'Truck',
+                'Van',
+                'Bus',
+                'Pedestrian',
+                'Cyclist',
+                'Motorcyclist',
+                'Trafficcone',
+            )),
+        pipeline=[
+            dict(backend_args=None, type='LoadImageFromFile'),
+            dict(keep_ratio=True, scale=(
+                1280,
+                720,
+            ), type='Resize'),
+            dict(type='LoadAnnotations', with_bbox=True),
+            dict(
+                meta_keys=(
+                    'img_id',
+                    'img_path',
+                    'ori_shape',
+                    'img_shape',
+                    'scale_factor',
+                ),
+                type='PackDetInputs'),
+        ],
+        test_mode=True,
+        type='CocoDataset'),
+    drop_last=False,
+    num_workers=16,
+    persistent_workers=True,
+    sampler=dict(shuffle=False, type='DefaultSampler'))
+val_evaluator = dict(
+    ann_file=
+    '/root/autodl-tmp/datasets/DAIR-V2X/annotations/instances_val.json',
+    backend_args=None,
+    format_only=False,
+    metric='bbox',
+    metric_items=[
+        'mAP',
+        'mAP_50',
+        'mAP_75',
+        'mAP_s',
+        'mAP_m',
+        'mAP_l',
+    ],
+    proposal_nums=(
+        1,
+        10,
+        100,
+    ),
+    type='CocoMetric')
+vis_backends = [
+    dict(type='LocalVisBackend'),
+]
+visualizer = dict(
+    name='visualizer',
+    type='DetLocalVisualizer',
+    vis_backends=[
+        dict(type='LocalVisBackend'),
+    ])
+work_dir = 'work_dirs/r18_baseline'
+
+2025/12/14 11:02:18 - mmengine - INFO - Distributed training is not used, all SyncBatchNorm (SyncBN) layers in the model will be automatically reverted to BatchNormXd layers if they are used.
+2025/12/14 11:02:18 - mmengine - INFO - Hooks will be executed in the following order:
+before_run:
+(VERY_HIGH   ) RuntimeInfoHook                    
+(BELOW_NORMAL) LoggerHook                         
+ -------------------- 
+before_train:
+(VERY_HIGH   ) RuntimeInfoHook                    
+(NORMAL      ) IterTimerHook                      
+(VERY_LOW    ) CheckpointHook                     
+ -------------------- 
+before_train_epoch:
+(VERY_HIGH   ) RuntimeInfoHook                    
+(NORMAL      ) IterTimerHook                      
+(NORMAL      ) DistSamplerSeedHook                
+ -------------------- 
+before_train_iter:
+(VERY_HIGH   ) RuntimeInfoHook                    
+(NORMAL      ) IterTimerHook                      
+ -------------------- 
+after_train_iter:
+(VERY_HIGH   ) RuntimeInfoHook                    
+(NORMAL      ) IterTimerHook                      
+(BELOW_NORMAL) LoggerHook                         
+(LOW         ) ParamSchedulerHook                 
+(VERY_LOW    ) CheckpointHook                     
+ -------------------- 
+after_train_epoch:
+(NORMAL      ) IterTimerHook                      
+(LOW         ) ParamSchedulerHook                 
+(VERY_LOW    ) CheckpointHook                     
+ -------------------- 
+before_val:
+(VERY_HIGH   ) RuntimeInfoHook                    
+ -------------------- 
+before_val_epoch:
+(NORMAL      ) IterTimerHook                      
+ -------------------- 
+before_val_iter:
+(NORMAL      ) IterTimerHook                      
+ -------------------- 
+after_val_iter:
+(NORMAL      ) IterTimerHook                      
+(NORMAL      ) DetVisualizationHook               
+(BELOW_NORMAL) LoggerHook                         
+ -------------------- 
+after_val_epoch:
+(VERY_HIGH   ) RuntimeInfoHook                    
+(NORMAL      ) IterTimerHook                      
+(BELOW_NORMAL) LoggerHook                         
+(LOW         ) ParamSchedulerHook                 
+(VERY_LOW    ) CheckpointHook                     
+ -------------------- 
+after_val:
+(VERY_HIGH   ) RuntimeInfoHook                    
+ -------------------- 
+after_train:
+(VERY_HIGH   ) RuntimeInfoHook                    
+(VERY_LOW    ) CheckpointHook                     
+ -------------------- 
+before_test:
+(VERY_HIGH   ) RuntimeInfoHook                    
+ -------------------- 
+before_test_epoch:
+(NORMAL      ) IterTimerHook                      
+ -------------------- 
+before_test_iter:
+(NORMAL      ) IterTimerHook                      
+ -------------------- 
+after_test_iter:
+(NORMAL      ) IterTimerHook                      
+(NORMAL      ) DetVisualizationHook               
+(BELOW_NORMAL) LoggerHook                         
+ -------------------- 
+after_test_epoch:
+(VERY_HIGH   ) RuntimeInfoHook                    
+(NORMAL      ) IterTimerHook                      
+(BELOW_NORMAL) LoggerHook                         
+ -------------------- 
+after_test:
+(VERY_HIGH   ) RuntimeInfoHook                    
+ -------------------- 
+after_run:
+(BELOW_NORMAL) LoggerHook                         
+ -------------------- 
+2025/12/14 11:02:20 - mmengine - WARNING - backbone.conv1.weight is skipped since its requires_grad=False
+2025/12/14 11:02:20 - mmengine - WARNING - backbone.bn1.weight is skipped since its requires_grad=False
+2025/12/14 11:02:20 - mmengine - WARNING - backbone.bn1.bias is skipped since its requires_grad=False
+2025/12/14 11:02:20 - mmengine - WARNING - backbone.layer1.0.conv1.weight is skipped since its requires_grad=False
+2025/12/14 11:02:20 - mmengine - WARNING - backbone.layer1.0.bn1.weight is skipped since its requires_grad=False
+2025/12/14 11:02:20 - mmengine - WARNING - backbone.layer1.0.bn1.bias is skipped since its requires_grad=False
+2025/12/14 11:02:20 - mmengine - WARNING - backbone.layer1.0.conv2.weight is skipped since its requires_grad=False
+2025/12/14 11:02:20 - mmengine - WARNING - backbone.layer1.0.bn2.weight is skipped since its requires_grad=False
+2025/12/14 11:02:20 - mmengine - WARNING - backbone.layer1.0.bn2.bias is skipped since its requires_grad=False
+2025/12/14 11:02:20 - mmengine - WARNING - backbone.layer1.1.conv1.weight is skipped since its requires_grad=False
+2025/12/14 11:02:20 - mmengine - WARNING - backbone.layer1.1.bn1.weight is skipped since its requires_grad=False
+2025/12/14 11:02:20 - mmengine - WARNING - backbone.layer1.1.bn1.bias is skipped since its requires_grad=False
+2025/12/14 11:02:20 - mmengine - WARNING - backbone.layer1.1.conv2.weight is skipped since its requires_grad=False
+2025/12/14 11:02:20 - mmengine - WARNING - backbone.layer1.1.bn2.weight is skipped since its requires_grad=False
+2025/12/14 11:02:20 - mmengine - WARNING - backbone.layer1.1.bn2.bias is skipped since its requires_grad=False
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- backbone.layer2.0.conv1.weight:lr=2e-05
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- backbone.layer2.0.conv1.weight:weight_decay=0.0001
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- backbone.layer2.0.conv1.weight:lr_mult=0.1
+2025/12/14 11:02:20 - mmengine - WARNING - backbone.layer2.0.bn1.weight is skipped since its requires_grad=False
+2025/12/14 11:02:20 - mmengine - WARNING - backbone.layer2.0.bn1.bias is skipped since its requires_grad=False
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- backbone.layer2.0.conv2.weight:lr=2e-05
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- backbone.layer2.0.conv2.weight:weight_decay=0.0001
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- backbone.layer2.0.conv2.weight:lr_mult=0.1
+2025/12/14 11:02:20 - mmengine - WARNING - backbone.layer2.0.bn2.weight is skipped since its requires_grad=False
+2025/12/14 11:02:20 - mmengine - WARNING - backbone.layer2.0.bn2.bias is skipped since its requires_grad=False
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- backbone.layer2.0.downsample.0.weight:lr=2e-05
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- backbone.layer2.0.downsample.0.weight:weight_decay=0.0001
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- backbone.layer2.0.downsample.0.weight:lr_mult=0.1
+2025/12/14 11:02:20 - mmengine - WARNING - backbone.layer2.0.downsample.1.weight is skipped since its requires_grad=False
+2025/12/14 11:02:20 - mmengine - WARNING - backbone.layer2.0.downsample.1.bias is skipped since its requires_grad=False
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- backbone.layer2.1.conv1.weight:lr=2e-05
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- backbone.layer2.1.conv1.weight:weight_decay=0.0001
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- backbone.layer2.1.conv1.weight:lr_mult=0.1
+2025/12/14 11:02:20 - mmengine - WARNING - backbone.layer2.1.bn1.weight is skipped since its requires_grad=False
+2025/12/14 11:02:20 - mmengine - WARNING - backbone.layer2.1.bn1.bias is skipped since its requires_grad=False
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- backbone.layer2.1.conv2.weight:lr=2e-05
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- backbone.layer2.1.conv2.weight:weight_decay=0.0001
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- backbone.layer2.1.conv2.weight:lr_mult=0.1
+2025/12/14 11:02:20 - mmengine - WARNING - backbone.layer2.1.bn2.weight is skipped since its requires_grad=False
+2025/12/14 11:02:20 - mmengine - WARNING - backbone.layer2.1.bn2.bias is skipped since its requires_grad=False
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- backbone.layer3.0.conv1.weight:lr=2e-05
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- backbone.layer3.0.conv1.weight:weight_decay=0.0001
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- backbone.layer3.0.conv1.weight:lr_mult=0.1
+2025/12/14 11:02:20 - mmengine - WARNING - backbone.layer3.0.bn1.weight is skipped since its requires_grad=False
+2025/12/14 11:02:20 - mmengine - WARNING - backbone.layer3.0.bn1.bias is skipped since its requires_grad=False
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- backbone.layer3.0.conv2.weight:lr=2e-05
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- backbone.layer3.0.conv2.weight:weight_decay=0.0001
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- backbone.layer3.0.conv2.weight:lr_mult=0.1
+2025/12/14 11:02:20 - mmengine - WARNING - backbone.layer3.0.bn2.weight is skipped since its requires_grad=False
+2025/12/14 11:02:20 - mmengine - WARNING - backbone.layer3.0.bn2.bias is skipped since its requires_grad=False
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- backbone.layer3.0.downsample.0.weight:lr=2e-05
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- backbone.layer3.0.downsample.0.weight:weight_decay=0.0001
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- backbone.layer3.0.downsample.0.weight:lr_mult=0.1
+2025/12/14 11:02:20 - mmengine - WARNING - backbone.layer3.0.downsample.1.weight is skipped since its requires_grad=False
+2025/12/14 11:02:20 - mmengine - WARNING - backbone.layer3.0.downsample.1.bias is skipped since its requires_grad=False
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- backbone.layer3.1.conv1.weight:lr=2e-05
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- backbone.layer3.1.conv1.weight:weight_decay=0.0001
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- backbone.layer3.1.conv1.weight:lr_mult=0.1
+2025/12/14 11:02:20 - mmengine - WARNING - backbone.layer3.1.bn1.weight is skipped since its requires_grad=False
+2025/12/14 11:02:20 - mmengine - WARNING - backbone.layer3.1.bn1.bias is skipped since its requires_grad=False
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- backbone.layer3.1.conv2.weight:lr=2e-05
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- backbone.layer3.1.conv2.weight:weight_decay=0.0001
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- backbone.layer3.1.conv2.weight:lr_mult=0.1
+2025/12/14 11:02:20 - mmengine - WARNING - backbone.layer3.1.bn2.weight is skipped since its requires_grad=False
+2025/12/14 11:02:20 - mmengine - WARNING - backbone.layer3.1.bn2.bias is skipped since its requires_grad=False
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- backbone.layer4.0.conv1.weight:lr=2e-05
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- backbone.layer4.0.conv1.weight:weight_decay=0.0001
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- backbone.layer4.0.conv1.weight:lr_mult=0.1
+2025/12/14 11:02:20 - mmengine - WARNING - backbone.layer4.0.bn1.weight is skipped since its requires_grad=False
+2025/12/14 11:02:20 - mmengine - WARNING - backbone.layer4.0.bn1.bias is skipped since its requires_grad=False
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- backbone.layer4.0.conv2.weight:lr=2e-05
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- backbone.layer4.0.conv2.weight:weight_decay=0.0001
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- backbone.layer4.0.conv2.weight:lr_mult=0.1
+2025/12/14 11:02:20 - mmengine - WARNING - backbone.layer4.0.bn2.weight is skipped since its requires_grad=False
+2025/12/14 11:02:20 - mmengine - WARNING - backbone.layer4.0.bn2.bias is skipped since its requires_grad=False
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- backbone.layer4.0.downsample.0.weight:lr=2e-05
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- backbone.layer4.0.downsample.0.weight:weight_decay=0.0001
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- backbone.layer4.0.downsample.0.weight:lr_mult=0.1
+2025/12/14 11:02:20 - mmengine - WARNING - backbone.layer4.0.downsample.1.weight is skipped since its requires_grad=False
+2025/12/14 11:02:20 - mmengine - WARNING - backbone.layer4.0.downsample.1.bias is skipped since its requires_grad=False
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- backbone.layer4.1.conv1.weight:lr=2e-05
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- backbone.layer4.1.conv1.weight:weight_decay=0.0001
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- backbone.layer4.1.conv1.weight:lr_mult=0.1
+2025/12/14 11:02:20 - mmengine - WARNING - backbone.layer4.1.bn1.weight is skipped since its requires_grad=False
+2025/12/14 11:02:20 - mmengine - WARNING - backbone.layer4.1.bn1.bias is skipped since its requires_grad=False
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- backbone.layer4.1.conv2.weight:lr=2e-05
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- backbone.layer4.1.conv2.weight:weight_decay=0.0001
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- backbone.layer4.1.conv2.weight:lr_mult=0.1
+2025/12/14 11:02:20 - mmengine - WARNING - backbone.layer4.1.bn2.weight is skipped since its requires_grad=False
+2025/12/14 11:02:20 - mmengine - WARNING - backbone.layer4.1.bn2.bias is skipped since its requires_grad=False
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- encoder.layers.0.self_attn.sampling_offsets.weight:lr=2e-05
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- encoder.layers.0.self_attn.sampling_offsets.weight:weight_decay=0.0001
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- encoder.layers.0.self_attn.sampling_offsets.weight:lr_mult=0.1
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- encoder.layers.0.self_attn.sampling_offsets.bias:lr=2e-05
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- encoder.layers.0.self_attn.sampling_offsets.bias:weight_decay=0.0001
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- encoder.layers.0.self_attn.sampling_offsets.bias:lr_mult=0.1
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- encoder.layers.1.self_attn.sampling_offsets.weight:lr=2e-05
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- encoder.layers.1.self_attn.sampling_offsets.weight:weight_decay=0.0001
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- encoder.layers.1.self_attn.sampling_offsets.weight:lr_mult=0.1
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- encoder.layers.1.self_attn.sampling_offsets.bias:lr=2e-05
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- encoder.layers.1.self_attn.sampling_offsets.bias:weight_decay=0.0001
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- encoder.layers.1.self_attn.sampling_offsets.bias:lr_mult=0.1
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- encoder.layers.2.self_attn.sampling_offsets.weight:lr=2e-05
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- encoder.layers.2.self_attn.sampling_offsets.weight:weight_decay=0.0001
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- encoder.layers.2.self_attn.sampling_offsets.weight:lr_mult=0.1
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- encoder.layers.2.self_attn.sampling_offsets.bias:lr=2e-05
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- encoder.layers.2.self_attn.sampling_offsets.bias:weight_decay=0.0001
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- encoder.layers.2.self_attn.sampling_offsets.bias:lr_mult=0.1
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- encoder.layers.3.self_attn.sampling_offsets.weight:lr=2e-05
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- encoder.layers.3.self_attn.sampling_offsets.weight:weight_decay=0.0001
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- encoder.layers.3.self_attn.sampling_offsets.weight:lr_mult=0.1
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- encoder.layers.3.self_attn.sampling_offsets.bias:lr=2e-05
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- encoder.layers.3.self_attn.sampling_offsets.bias:weight_decay=0.0001
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- encoder.layers.3.self_attn.sampling_offsets.bias:lr_mult=0.1
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- encoder.layers.4.self_attn.sampling_offsets.weight:lr=2e-05
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- encoder.layers.4.self_attn.sampling_offsets.weight:weight_decay=0.0001
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- encoder.layers.4.self_attn.sampling_offsets.weight:lr_mult=0.1
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- encoder.layers.4.self_attn.sampling_offsets.bias:lr=2e-05
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- encoder.layers.4.self_attn.sampling_offsets.bias:weight_decay=0.0001
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- encoder.layers.4.self_attn.sampling_offsets.bias:lr_mult=0.1
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- encoder.layers.5.self_attn.sampling_offsets.weight:lr=2e-05
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- encoder.layers.5.self_attn.sampling_offsets.weight:weight_decay=0.0001
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- encoder.layers.5.self_attn.sampling_offsets.weight:lr_mult=0.1
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- encoder.layers.5.self_attn.sampling_offsets.bias:lr=2e-05
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- encoder.layers.5.self_attn.sampling_offsets.bias:weight_decay=0.0001
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- encoder.layers.5.self_attn.sampling_offsets.bias:lr_mult=0.1
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- decoder.layers.0.cross_attn.sampling_offsets.weight:lr=2e-05
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- decoder.layers.0.cross_attn.sampling_offsets.weight:weight_decay=0.0001
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- decoder.layers.0.cross_attn.sampling_offsets.weight:lr_mult=0.1
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- decoder.layers.0.cross_attn.sampling_offsets.bias:lr=2e-05
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- decoder.layers.0.cross_attn.sampling_offsets.bias:weight_decay=0.0001
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- decoder.layers.0.cross_attn.sampling_offsets.bias:lr_mult=0.1
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- decoder.layers.1.cross_attn.sampling_offsets.weight:lr=2e-05
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- decoder.layers.1.cross_attn.sampling_offsets.weight:weight_decay=0.0001
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- decoder.layers.1.cross_attn.sampling_offsets.weight:lr_mult=0.1
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- decoder.layers.1.cross_attn.sampling_offsets.bias:lr=2e-05
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- decoder.layers.1.cross_attn.sampling_offsets.bias:weight_decay=0.0001
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- decoder.layers.1.cross_attn.sampling_offsets.bias:lr_mult=0.1
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- decoder.layers.2.cross_attn.sampling_offsets.weight:lr=2e-05
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- decoder.layers.2.cross_attn.sampling_offsets.weight:weight_decay=0.0001
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- decoder.layers.2.cross_attn.sampling_offsets.weight:lr_mult=0.1
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- decoder.layers.2.cross_attn.sampling_offsets.bias:lr=2e-05
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- decoder.layers.2.cross_attn.sampling_offsets.bias:weight_decay=0.0001
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- decoder.layers.2.cross_attn.sampling_offsets.bias:lr_mult=0.1
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- decoder.layers.3.cross_attn.sampling_offsets.weight:lr=2e-05
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- decoder.layers.3.cross_attn.sampling_offsets.weight:weight_decay=0.0001
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- decoder.layers.3.cross_attn.sampling_offsets.weight:lr_mult=0.1
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- decoder.layers.3.cross_attn.sampling_offsets.bias:lr=2e-05
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- decoder.layers.3.cross_attn.sampling_offsets.bias:weight_decay=0.0001
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- decoder.layers.3.cross_attn.sampling_offsets.bias:lr_mult=0.1
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- decoder.layers.4.cross_attn.sampling_offsets.weight:lr=2e-05
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- decoder.layers.4.cross_attn.sampling_offsets.weight:weight_decay=0.0001
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- decoder.layers.4.cross_attn.sampling_offsets.weight:lr_mult=0.1
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- decoder.layers.4.cross_attn.sampling_offsets.bias:lr=2e-05
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- decoder.layers.4.cross_attn.sampling_offsets.bias:weight_decay=0.0001
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- decoder.layers.4.cross_attn.sampling_offsets.bias:lr_mult=0.1
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- decoder.layers.5.cross_attn.sampling_offsets.weight:lr=2e-05
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- decoder.layers.5.cross_attn.sampling_offsets.weight:weight_decay=0.0001
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- decoder.layers.5.cross_attn.sampling_offsets.weight:lr_mult=0.1
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- decoder.layers.5.cross_attn.sampling_offsets.bias:lr=2e-05
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- decoder.layers.5.cross_attn.sampling_offsets.bias:weight_decay=0.0001
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- decoder.layers.5.cross_attn.sampling_offsets.bias:lr_mult=0.1
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- reference_points_fc.weight:lr=2e-05
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- reference_points_fc.weight:weight_decay=0.0001
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- reference_points_fc.weight:lr_mult=0.1
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- reference_points_fc.bias:lr=2e-05
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- reference_points_fc.bias:weight_decay=0.0001
+2025/12/14 11:02:20 - mmengine - INFO - paramwise_options -- reference_points_fc.bias:lr_mult=0.1
+2025/12/14 11:02:20 - mmengine - INFO - LR is set based on batch size of 16 and the current batch size is 8. Scaling the original LR by 0.5.
+2025/12/14 11:02:22 - mmengine - INFO - load model from: torchvision://resnet18
+2025/12/14 11:02:22 - mmengine - INFO - Loads checkpoint by torchvision backend from path: torchvision://resnet18
+2025/12/14 11:02:23 - mmengine - WARNING - The model and loaded state dict do not match exactly
+
+unexpected key in source state_dict: fc.weight, fc.bias
+
+Name of parameter - Initialization information
+
+level_embed - torch.Size([4, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+backbone.conv1.weight - torch.Size([64, 3, 7, 7]): 
+PretrainedInit: load from torchvision://resnet18 
+
+backbone.bn1.weight - torch.Size([64]): 
+PretrainedInit: load from torchvision://resnet18 
+
+backbone.bn1.bias - torch.Size([64]): 
+PretrainedInit: load from torchvision://resnet18 
+
+backbone.layer1.0.conv1.weight - torch.Size([64, 64, 3, 3]): 
+PretrainedInit: load from torchvision://resnet18 
+
+backbone.layer1.0.bn1.weight - torch.Size([64]): 
+PretrainedInit: load from torchvision://resnet18 
+
+backbone.layer1.0.bn1.bias - torch.Size([64]): 
+PretrainedInit: load from torchvision://resnet18 
+
+backbone.layer1.0.conv2.weight - torch.Size([64, 64, 3, 3]): 
+PretrainedInit: load from torchvision://resnet18 
+
+backbone.layer1.0.bn2.weight - torch.Size([64]): 
+PretrainedInit: load from torchvision://resnet18 
+
+backbone.layer1.0.bn2.bias - torch.Size([64]): 
+PretrainedInit: load from torchvision://resnet18 
+
+backbone.layer1.1.conv1.weight - torch.Size([64, 64, 3, 3]): 
+PretrainedInit: load from torchvision://resnet18 
+
+backbone.layer1.1.bn1.weight - torch.Size([64]): 
+PretrainedInit: load from torchvision://resnet18 
+
+backbone.layer1.1.bn1.bias - torch.Size([64]): 
+PretrainedInit: load from torchvision://resnet18 
+
+backbone.layer1.1.conv2.weight - torch.Size([64, 64, 3, 3]): 
+PretrainedInit: load from torchvision://resnet18 
+
+backbone.layer1.1.bn2.weight - torch.Size([64]): 
+PretrainedInit: load from torchvision://resnet18 
+
+backbone.layer1.1.bn2.bias - torch.Size([64]): 
+PretrainedInit: load from torchvision://resnet18 
+
+backbone.layer2.0.conv1.weight - torch.Size([128, 64, 3, 3]): 
+PretrainedInit: load from torchvision://resnet18 
+
+backbone.layer2.0.bn1.weight - torch.Size([128]): 
+PretrainedInit: load from torchvision://resnet18 
+
+backbone.layer2.0.bn1.bias - torch.Size([128]): 
+PretrainedInit: load from torchvision://resnet18 
+
+backbone.layer2.0.conv2.weight - torch.Size([128, 128, 3, 3]): 
+PretrainedInit: load from torchvision://resnet18 
+
+backbone.layer2.0.bn2.weight - torch.Size([128]): 
+PretrainedInit: load from torchvision://resnet18 
+
+backbone.layer2.0.bn2.bias - torch.Size([128]): 
+PretrainedInit: load from torchvision://resnet18 
+
+backbone.layer2.0.downsample.0.weight - torch.Size([128, 64, 1, 1]): 
+PretrainedInit: load from torchvision://resnet18 
+
+backbone.layer2.0.downsample.1.weight - torch.Size([128]): 
+PretrainedInit: load from torchvision://resnet18 
+
+backbone.layer2.0.downsample.1.bias - torch.Size([128]): 
+PretrainedInit: load from torchvision://resnet18 
+
+backbone.layer2.1.conv1.weight - torch.Size([128, 128, 3, 3]): 
+PretrainedInit: load from torchvision://resnet18 
+
+backbone.layer2.1.bn1.weight - torch.Size([128]): 
+PretrainedInit: load from torchvision://resnet18 
+
+backbone.layer2.1.bn1.bias - torch.Size([128]): 
+PretrainedInit: load from torchvision://resnet18 
+
+backbone.layer2.1.conv2.weight - torch.Size([128, 128, 3, 3]): 
+PretrainedInit: load from torchvision://resnet18 
+
+backbone.layer2.1.bn2.weight - torch.Size([128]): 
+PretrainedInit: load from torchvision://resnet18 
+
+backbone.layer2.1.bn2.bias - torch.Size([128]): 
+PretrainedInit: load from torchvision://resnet18 
+
+backbone.layer3.0.conv1.weight - torch.Size([256, 128, 3, 3]): 
+PretrainedInit: load from torchvision://resnet18 
+
+backbone.layer3.0.bn1.weight - torch.Size([256]): 
+PretrainedInit: load from torchvision://resnet18 
+
+backbone.layer3.0.bn1.bias - torch.Size([256]): 
+PretrainedInit: load from torchvision://resnet18 
+
+backbone.layer3.0.conv2.weight - torch.Size([256, 256, 3, 3]): 
+PretrainedInit: load from torchvision://resnet18 
+
+backbone.layer3.0.bn2.weight - torch.Size([256]): 
+PretrainedInit: load from torchvision://resnet18 
+
+backbone.layer3.0.bn2.bias - torch.Size([256]): 
+PretrainedInit: load from torchvision://resnet18 
+
+backbone.layer3.0.downsample.0.weight - torch.Size([256, 128, 1, 1]): 
+PretrainedInit: load from torchvision://resnet18 
+
+backbone.layer3.0.downsample.1.weight - torch.Size([256]): 
+PretrainedInit: load from torchvision://resnet18 
+
+backbone.layer3.0.downsample.1.bias - torch.Size([256]): 
+PretrainedInit: load from torchvision://resnet18 
+
+backbone.layer3.1.conv1.weight - torch.Size([256, 256, 3, 3]): 
+PretrainedInit: load from torchvision://resnet18 
+
+backbone.layer3.1.bn1.weight - torch.Size([256]): 
+PretrainedInit: load from torchvision://resnet18 
+
+backbone.layer3.1.bn1.bias - torch.Size([256]): 
+PretrainedInit: load from torchvision://resnet18 
+
+backbone.layer3.1.conv2.weight - torch.Size([256, 256, 3, 3]): 
+PretrainedInit: load from torchvision://resnet18 
+
+backbone.layer3.1.bn2.weight - torch.Size([256]): 
+PretrainedInit: load from torchvision://resnet18 
+
+backbone.layer3.1.bn2.bias - torch.Size([256]): 
+PretrainedInit: load from torchvision://resnet18 
+
+backbone.layer4.0.conv1.weight - torch.Size([512, 256, 3, 3]): 
+PretrainedInit: load from torchvision://resnet18 
+
+backbone.layer4.0.bn1.weight - torch.Size([512]): 
+PretrainedInit: load from torchvision://resnet18 
+
+backbone.layer4.0.bn1.bias - torch.Size([512]): 
+PretrainedInit: load from torchvision://resnet18 
+
+backbone.layer4.0.conv2.weight - torch.Size([512, 512, 3, 3]): 
+PretrainedInit: load from torchvision://resnet18 
+
+backbone.layer4.0.bn2.weight - torch.Size([512]): 
+PretrainedInit: load from torchvision://resnet18 
+
+backbone.layer4.0.bn2.bias - torch.Size([512]): 
+PretrainedInit: load from torchvision://resnet18 
+
+backbone.layer4.0.downsample.0.weight - torch.Size([512, 256, 1, 1]): 
+PretrainedInit: load from torchvision://resnet18 
+
+backbone.layer4.0.downsample.1.weight - torch.Size([512]): 
+PretrainedInit: load from torchvision://resnet18 
+
+backbone.layer4.0.downsample.1.bias - torch.Size([512]): 
+PretrainedInit: load from torchvision://resnet18 
+
+backbone.layer4.1.conv1.weight - torch.Size([512, 512, 3, 3]): 
+PretrainedInit: load from torchvision://resnet18 
+
+backbone.layer4.1.bn1.weight - torch.Size([512]): 
+PretrainedInit: load from torchvision://resnet18 
+
+backbone.layer4.1.bn1.bias - torch.Size([512]): 
+PretrainedInit: load from torchvision://resnet18 
+
+backbone.layer4.1.conv2.weight - torch.Size([512, 512, 3, 3]): 
+PretrainedInit: load from torchvision://resnet18 
+
+backbone.layer4.1.bn2.weight - torch.Size([512]): 
+PretrainedInit: load from torchvision://resnet18 
+
+backbone.layer4.1.bn2.bias - torch.Size([512]): 
+PretrainedInit: load from torchvision://resnet18 
+
+neck.convs.0.conv.weight - torch.Size([256, 128, 1, 1]): 
+XavierInit: gain=1, distribution=uniform, bias=0 
+
+neck.convs.0.gn.weight - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+neck.convs.0.gn.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+neck.convs.1.conv.weight - torch.Size([256, 256, 1, 1]): 
+XavierInit: gain=1, distribution=uniform, bias=0 
+
+neck.convs.1.gn.weight - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+neck.convs.1.gn.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+neck.convs.2.conv.weight - torch.Size([256, 512, 1, 1]): 
+XavierInit: gain=1, distribution=uniform, bias=0 
+
+neck.convs.2.gn.weight - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+neck.convs.2.gn.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+neck.extra_convs.0.conv.weight - torch.Size([256, 512, 3, 3]): 
+XavierInit: gain=1, distribution=uniform, bias=0 
+
+neck.extra_convs.0.gn.weight - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+neck.extra_convs.0.gn.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+bbox_head.cls_branches.0.weight - torch.Size([8, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+bbox_head.cls_branches.0.bias - torch.Size([8]): 
+Initialized by user-defined `init_weights` in DeformableDETRHead  
+
+bbox_head.reg_branches.0.0.weight - torch.Size([256, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+bbox_head.reg_branches.0.0.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+bbox_head.reg_branches.0.2.weight - torch.Size([256, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+bbox_head.reg_branches.0.2.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+bbox_head.reg_branches.0.4.weight - torch.Size([4, 256]): 
+Initialized by user-defined `init_weights` in DeformableDETRHead  
+
+bbox_head.reg_branches.0.4.bias - torch.Size([4]): 
+Initialized by user-defined `init_weights` in DeformableDETRHead  
+
+encoder.layers.0.self_attn.sampling_offsets.weight - torch.Size([256, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.0.self_attn.sampling_offsets.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.0.self_attn.attention_weights.weight - torch.Size([128, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.0.self_attn.attention_weights.bias - torch.Size([128]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.0.self_attn.value_proj.weight - torch.Size([256, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.0.self_attn.value_proj.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.0.self_attn.output_proj.weight - torch.Size([256, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.0.self_attn.output_proj.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.0.ffn.layers.0.0.weight - torch.Size([1024, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.0.ffn.layers.0.0.bias - torch.Size([1024]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.0.ffn.layers.1.weight - torch.Size([256, 1024]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.0.ffn.layers.1.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.0.norms.0.weight - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.0.norms.0.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.0.norms.1.weight - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.0.norms.1.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.1.self_attn.sampling_offsets.weight - torch.Size([256, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.1.self_attn.sampling_offsets.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.1.self_attn.attention_weights.weight - torch.Size([128, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.1.self_attn.attention_weights.bias - torch.Size([128]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.1.self_attn.value_proj.weight - torch.Size([256, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.1.self_attn.value_proj.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.1.self_attn.output_proj.weight - torch.Size([256, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.1.self_attn.output_proj.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.1.ffn.layers.0.0.weight - torch.Size([1024, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.1.ffn.layers.0.0.bias - torch.Size([1024]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.1.ffn.layers.1.weight - torch.Size([256, 1024]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.1.ffn.layers.1.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.1.norms.0.weight - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.1.norms.0.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.1.norms.1.weight - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.1.norms.1.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.2.self_attn.sampling_offsets.weight - torch.Size([256, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.2.self_attn.sampling_offsets.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.2.self_attn.attention_weights.weight - torch.Size([128, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.2.self_attn.attention_weights.bias - torch.Size([128]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.2.self_attn.value_proj.weight - torch.Size([256, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.2.self_attn.value_proj.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.2.self_attn.output_proj.weight - torch.Size([256, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.2.self_attn.output_proj.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.2.ffn.layers.0.0.weight - torch.Size([1024, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.2.ffn.layers.0.0.bias - torch.Size([1024]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.2.ffn.layers.1.weight - torch.Size([256, 1024]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.2.ffn.layers.1.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.2.norms.0.weight - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.2.norms.0.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.2.norms.1.weight - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.2.norms.1.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.3.self_attn.sampling_offsets.weight - torch.Size([256, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.3.self_attn.sampling_offsets.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.3.self_attn.attention_weights.weight - torch.Size([128, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.3.self_attn.attention_weights.bias - torch.Size([128]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.3.self_attn.value_proj.weight - torch.Size([256, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.3.self_attn.value_proj.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.3.self_attn.output_proj.weight - torch.Size([256, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.3.self_attn.output_proj.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.3.ffn.layers.0.0.weight - torch.Size([1024, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.3.ffn.layers.0.0.bias - torch.Size([1024]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.3.ffn.layers.1.weight - torch.Size([256, 1024]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.3.ffn.layers.1.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.3.norms.0.weight - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.3.norms.0.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.3.norms.1.weight - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.3.norms.1.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.4.self_attn.sampling_offsets.weight - torch.Size([256, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.4.self_attn.sampling_offsets.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.4.self_attn.attention_weights.weight - torch.Size([128, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.4.self_attn.attention_weights.bias - torch.Size([128]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.4.self_attn.value_proj.weight - torch.Size([256, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.4.self_attn.value_proj.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.4.self_attn.output_proj.weight - torch.Size([256, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.4.self_attn.output_proj.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.4.ffn.layers.0.0.weight - torch.Size([1024, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.4.ffn.layers.0.0.bias - torch.Size([1024]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.4.ffn.layers.1.weight - torch.Size([256, 1024]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.4.ffn.layers.1.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.4.norms.0.weight - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.4.norms.0.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.4.norms.1.weight - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.4.norms.1.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.5.self_attn.sampling_offsets.weight - torch.Size([256, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.5.self_attn.sampling_offsets.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.5.self_attn.attention_weights.weight - torch.Size([128, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.5.self_attn.attention_weights.bias - torch.Size([128]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.5.self_attn.value_proj.weight - torch.Size([256, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.5.self_attn.value_proj.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.5.self_attn.output_proj.weight - torch.Size([256, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.5.self_attn.output_proj.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.5.ffn.layers.0.0.weight - torch.Size([1024, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.5.ffn.layers.0.0.bias - torch.Size([1024]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.5.ffn.layers.1.weight - torch.Size([256, 1024]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.5.ffn.layers.1.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.5.norms.0.weight - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.5.norms.0.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.5.norms.1.weight - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+encoder.layers.5.norms.1.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.0.self_attn.attn.in_proj_weight - torch.Size([768, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.0.self_attn.attn.in_proj_bias - torch.Size([768]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.0.self_attn.attn.out_proj.weight - torch.Size([256, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.0.self_attn.attn.out_proj.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.0.cross_attn.sampling_offsets.weight - torch.Size([256, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.0.cross_attn.sampling_offsets.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.0.cross_attn.attention_weights.weight - torch.Size([128, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.0.cross_attn.attention_weights.bias - torch.Size([128]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.0.cross_attn.value_proj.weight - torch.Size([256, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.0.cross_attn.value_proj.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.0.cross_attn.output_proj.weight - torch.Size([256, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.0.cross_attn.output_proj.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.0.ffn.layers.0.0.weight - torch.Size([1024, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.0.ffn.layers.0.0.bias - torch.Size([1024]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.0.ffn.layers.1.weight - torch.Size([256, 1024]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.0.ffn.layers.1.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.0.norms.0.weight - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.0.norms.0.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.0.norms.1.weight - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.0.norms.1.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.0.norms.2.weight - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.0.norms.2.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.1.self_attn.attn.in_proj_weight - torch.Size([768, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.1.self_attn.attn.in_proj_bias - torch.Size([768]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.1.self_attn.attn.out_proj.weight - torch.Size([256, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.1.self_attn.attn.out_proj.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.1.cross_attn.sampling_offsets.weight - torch.Size([256, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.1.cross_attn.sampling_offsets.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.1.cross_attn.attention_weights.weight - torch.Size([128, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.1.cross_attn.attention_weights.bias - torch.Size([128]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.1.cross_attn.value_proj.weight - torch.Size([256, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.1.cross_attn.value_proj.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.1.cross_attn.output_proj.weight - torch.Size([256, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.1.cross_attn.output_proj.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.1.ffn.layers.0.0.weight - torch.Size([1024, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.1.ffn.layers.0.0.bias - torch.Size([1024]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.1.ffn.layers.1.weight - torch.Size([256, 1024]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.1.ffn.layers.1.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.1.norms.0.weight - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.1.norms.0.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.1.norms.1.weight - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.1.norms.1.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.1.norms.2.weight - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.1.norms.2.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.2.self_attn.attn.in_proj_weight - torch.Size([768, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.2.self_attn.attn.in_proj_bias - torch.Size([768]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.2.self_attn.attn.out_proj.weight - torch.Size([256, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.2.self_attn.attn.out_proj.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.2.cross_attn.sampling_offsets.weight - torch.Size([256, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.2.cross_attn.sampling_offsets.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.2.cross_attn.attention_weights.weight - torch.Size([128, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.2.cross_attn.attention_weights.bias - torch.Size([128]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.2.cross_attn.value_proj.weight - torch.Size([256, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.2.cross_attn.value_proj.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.2.cross_attn.output_proj.weight - torch.Size([256, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.2.cross_attn.output_proj.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.2.ffn.layers.0.0.weight - torch.Size([1024, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.2.ffn.layers.0.0.bias - torch.Size([1024]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.2.ffn.layers.1.weight - torch.Size([256, 1024]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.2.ffn.layers.1.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.2.norms.0.weight - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.2.norms.0.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.2.norms.1.weight - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.2.norms.1.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.2.norms.2.weight - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.2.norms.2.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.3.self_attn.attn.in_proj_weight - torch.Size([768, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.3.self_attn.attn.in_proj_bias - torch.Size([768]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.3.self_attn.attn.out_proj.weight - torch.Size([256, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.3.self_attn.attn.out_proj.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.3.cross_attn.sampling_offsets.weight - torch.Size([256, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.3.cross_attn.sampling_offsets.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.3.cross_attn.attention_weights.weight - torch.Size([128, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.3.cross_attn.attention_weights.bias - torch.Size([128]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.3.cross_attn.value_proj.weight - torch.Size([256, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.3.cross_attn.value_proj.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.3.cross_attn.output_proj.weight - torch.Size([256, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.3.cross_attn.output_proj.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.3.ffn.layers.0.0.weight - torch.Size([1024, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.3.ffn.layers.0.0.bias - torch.Size([1024]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.3.ffn.layers.1.weight - torch.Size([256, 1024]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.3.ffn.layers.1.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.3.norms.0.weight - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.3.norms.0.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.3.norms.1.weight - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.3.norms.1.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.3.norms.2.weight - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.3.norms.2.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.4.self_attn.attn.in_proj_weight - torch.Size([768, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.4.self_attn.attn.in_proj_bias - torch.Size([768]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.4.self_attn.attn.out_proj.weight - torch.Size([256, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.4.self_attn.attn.out_proj.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.4.cross_attn.sampling_offsets.weight - torch.Size([256, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.4.cross_attn.sampling_offsets.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.4.cross_attn.attention_weights.weight - torch.Size([128, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.4.cross_attn.attention_weights.bias - torch.Size([128]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.4.cross_attn.value_proj.weight - torch.Size([256, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.4.cross_attn.value_proj.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.4.cross_attn.output_proj.weight - torch.Size([256, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.4.cross_attn.output_proj.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.4.ffn.layers.0.0.weight - torch.Size([1024, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.4.ffn.layers.0.0.bias - torch.Size([1024]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.4.ffn.layers.1.weight - torch.Size([256, 1024]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.4.ffn.layers.1.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.4.norms.0.weight - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.4.norms.0.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.4.norms.1.weight - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.4.norms.1.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.4.norms.2.weight - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.4.norms.2.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.5.self_attn.attn.in_proj_weight - torch.Size([768, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.5.self_attn.attn.in_proj_bias - torch.Size([768]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.5.self_attn.attn.out_proj.weight - torch.Size([256, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.5.self_attn.attn.out_proj.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.5.cross_attn.sampling_offsets.weight - torch.Size([256, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.5.cross_attn.sampling_offsets.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.5.cross_attn.attention_weights.weight - torch.Size([128, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.5.cross_attn.attention_weights.bias - torch.Size([128]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.5.cross_attn.value_proj.weight - torch.Size([256, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.5.cross_attn.value_proj.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.5.cross_attn.output_proj.weight - torch.Size([256, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.5.cross_attn.output_proj.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.5.ffn.layers.0.0.weight - torch.Size([1024, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.5.ffn.layers.0.0.bias - torch.Size([1024]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.5.ffn.layers.1.weight - torch.Size([256, 1024]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.5.ffn.layers.1.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.5.norms.0.weight - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.5.norms.0.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.5.norms.1.weight - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.5.norms.1.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.5.norms.2.weight - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+decoder.layers.5.norms.2.bias - torch.Size([256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+query_embedding.weight - torch.Size([100, 512]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+reference_points_fc.weight - torch.Size([2, 256]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+
+reference_points_fc.bias - torch.Size([2]): 
+The value is the same before and after calling `init_weights` of DeformableDETR  
+2025/12/14 11:02:23 - mmengine - WARNING - "FileClient" will be deprecated in future. Please use io functions in https://mmengine.readthedocs.io/en/latest/api/fileio.html#file-io
+2025/12/14 11:02:23 - mmengine - WARNING - "HardDiskBackend" is the alias of "LocalBackend" and the former will be deprecated in future.
+2025/12/14 11:02:23 - mmengine - INFO - Checkpoints will be saved to /root/autodl-tmp/DSET/work_dirs/r18_baseline.
+2025/12/14 11:03:27 - mmengine - INFO - Epoch(train)   [1][ 50/631]  base_lr: 1.9820e-05 lr: 9.9098e-06  eta: 1 day, 21:03:30  time: 1.2859  data_time: 0.0320  memory: 23301  grad_norm: nan  loss: 32.9479  loss_cls: 1.4566  loss_bbox: 1.5203  loss_iou: 2.3830  d0.loss_cls: 1.8977  d0.loss_bbox: 1.5335  d0.loss_iou: 2.3965  d1.loss_cls: 1.6692  d1.loss_bbox: 1.5253  d1.loss_iou: 2.3900  d2.loss_cls: 1.5293  d2.loss_bbox: 1.5220  d2.loss_iou: 2.3854  d3.loss_cls: 1.4448  d3.loss_bbox: 1.5198  d3.loss_iou: 2.3833  d4.loss_cls: 1.4878  d4.loss_bbox: 1.5202  d4.loss_iou: 2.3832
+2025/12/14 11:04:15 - mmengine - INFO - Epoch(train)   [1][100/631]  base_lr: 3.9840e-05 lr: 1.9920e-05  eta: 1 day, 15:29:18  time: 0.9689  data_time: 0.0170  memory: 23290  grad_norm: 34.6233  loss: 27.8621  loss_cls: 0.7063  loss_bbox: 1.4933  loss_iou: 2.3856  d0.loss_cls: 1.0069  d0.loss_bbox: 1.5083  d0.loss_iou: 2.3949  d1.loss_cls: 0.7338  d1.loss_bbox: 1.4988  d1.loss_iou: 2.3883  d2.loss_cls: 0.7090  d2.loss_bbox: 1.4974  d2.loss_iou: 2.3862  d3.loss_cls: 0.6989  d3.loss_bbox: 1.4961  d3.loss_iou: 2.3868  d4.loss_cls: 0.6915  d4.loss_bbox: 1.4934  d4.loss_iou: 2.3865
+2025/12/14 11:05:01 - mmengine - INFO - Epoch(train)   [1][150/631]  base_lr: 5.9860e-05 lr: 2.9930e-05  eta: 1 day, 13:04:51  time: 0.9224  data_time: 0.0172  memory: 23303  grad_norm: 38.9903  loss: 25.8175  loss_cls: 0.5307  loss_bbox: 1.2831  loss_iou: 2.4504  d0.loss_cls: 0.6782  d0.loss_bbox: 1.3378  d0.loss_iou: 2.4380  d1.loss_cls: 0.5451  d1.loss_bbox: 1.3065  d1.loss_iou: 2.4418  d2.loss_cls: 0.5337  d2.loss_bbox: 1.3065  d2.loss_iou: 2.4406  d3.loss_cls: 0.5202  d3.loss_bbox: 1.2989  d3.loss_iou: 2.4452  d4.loss_cls: 0.5237  d4.loss_bbox: 1.2875  d4.loss_iou: 2.4497
+2025/12/14 11:05:38 - mmengine - INFO - Epoch(train)   [1][200/631]  base_lr: 7.9880e-05 lr: 3.9940e-05  eta: 1 day, 10:10:26  time: 0.7285  data_time: 0.0171  memory: 23305  grad_norm: inf  loss: 23.5659  loss_cls: 0.5031  loss_bbox: 0.9709  loss_iou: 2.4164  d0.loss_cls: 0.5738  d0.loss_bbox: 1.0463  d0.loss_iou: 2.4300  d1.loss_cls: 0.5108  d1.loss_bbox: 0.9995  d1.loss_iou: 2.4147  d2.loss_cls: 0.5087  d2.loss_bbox: 0.9927  d2.loss_iou: 2.4104  d3.loss_cls: 0.5029  d3.loss_bbox: 0.9884  d3.loss_iou: 2.4061  d4.loss_cls: 0.5018  d4.loss_bbox: 0.9787  d4.loss_iou: 2.4109
