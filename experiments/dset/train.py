@@ -458,23 +458,26 @@ class DSETRTDETR(nn.Module):
                     img_shape = (images.shape[2], images.shape[3])  # (H, W)
                     
                     # Extract gt_bboxes from targets
+                    # Note: boxes from _collate_fn are always normalized (cx, cy, w, h in [0, 1])
                     gt_bboxes = []
                     for t in targets:
                         if t is not None and 'boxes' in t:
                             boxes = t['boxes']
-                            # Check if boxes are normalized (0-1) and convert to absolute
+                            # Convert normalized (cx, cy, w, h) to absolute (x1, y1, x2, y2)
                             if boxes.numel() > 0:
-                                max_val = boxes.max().item() if boxes.numel() > 0 else 0
-                                if max_val <= 1.0 + 1e-6:
-                                    # Convert from normalized to absolute coordinates
-                                    boxes_abs = boxes.clone()
-                                    boxes_abs[:, 0] *= img_shape[1]  # x1
-                                    boxes_abs[:, 1] *= img_shape[0]  # y1
-                                    boxes_abs[:, 2] *= img_shape[1]  # x2
-                                    boxes_abs[:, 3] *= img_shape[0]  # y2
-                                    gt_bboxes.append(boxes_abs)
-                                else:
-                                    gt_bboxes.append(boxes)
+                                boxes_abs = boxes.clone()
+                                cx, cy, w, h = boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 3]
+                                # 转换为归一化的 (x1, y1, x2, y2)
+                                boxes_abs[:, 0] = cx - w / 2  # x1 (归一化)
+                                boxes_abs[:, 1] = cy - h / 2  # y1 (归一化)
+                                boxes_abs[:, 2] = cx + w / 2  # x2 (归一化)
+                                boxes_abs[:, 3] = cy + h / 2  # y2 (归一化)
+                                # 转换为绝对坐标
+                                boxes_abs[:, 0] *= img_shape[1]  # x1 (绝对)
+                                boxes_abs[:, 1] *= img_shape[0]  # y1 (绝对)
+                                boxes_abs[:, 2] *= img_shape[1]  # x2 (绝对)
+                                boxes_abs[:, 3] *= img_shape[0]  # y2 (绝对)
+                                gt_bboxes.append(boxes_abs)
                             else:
                                 gt_bboxes.append(boxes)
                         else:
@@ -1368,6 +1371,128 @@ class DSETTrainer:
                 except:
                     pass
     
+    def _save_token_visualization(self, epoch: int) -> None:
+        """保存Token重要性热力图可视化
+        
+        Args:
+            epoch: 当前epoch编号
+        """
+        try:
+            # 创建输出目录
+            viz_dir = self.log_dir / "visualizations" / f"epoch_{epoch}"
+            viz_dir.mkdir(parents=True, exist_ok=True)
+            
+            # 设置模型为评估模式
+            self.ema.module.eval()
+            if hasattr(self.ema.module, 'set_epoch'):
+                self.ema.module.set_epoch(epoch)
+            
+            # 从验证数据加载器中获取一个batch
+            images, targets = next(iter(self.val_loader))
+            images = images.to(self.device)
+            targets = [{k: v.to(self.device) if isinstance(v, torch.Tensor) else v 
+                       for k, v in t.items()} for t in targets]
+            
+            # 前向传播获取encoder_info
+            with torch.no_grad():
+                outputs = self.ema.module(images, targets)
+            
+            if not isinstance(outputs, dict) or 'encoder_info' not in outputs:
+                self.logger.debug(f"无法生成热力图：outputs中没有encoder_info")
+                return
+            
+            encoder_info = outputs['encoder_info']
+            importance_scores_list = encoder_info.get('importance_scores_list', [])
+            feat_shapes_list = encoder_info.get('feat_shapes_list', [])
+            
+            if not importance_scores_list or not feat_shapes_list:
+                self.logger.debug(f"无法生成热力图：encoder_info中缺少重要性分数或特征形状")
+                return
+            
+            # 获取最后一层的重要性分数（通常是最重要的层）
+            last_layer_scores = importance_scores_list[-1]  # [B, N]
+            last_layer_feat_shape = feat_shapes_list[-1]  # (H, W)
+            
+            # 处理前3张图像
+            num_samples = min(3, len(targets))
+            data_root = Path(self.config['data']['data_root'])
+            
+            for img_idx in range(num_samples):
+                # 获取image_id和原始图像路径
+                target = targets[img_idx]
+                image_id = target['image_id'].item() if 'image_id' in target else img_idx
+                orig_image_path = data_root / "image" / f"{image_id:06d}.jpg"
+                
+                if not orig_image_path.exists():
+                    self.logger.debug(f"图像不存在: {orig_image_path}")
+                    continue
+                
+                # 加载原始图像
+                orig_image = cv2.imread(str(orig_image_path))
+                if orig_image is None:
+                    self.logger.debug(f"无法读取图像: {orig_image_path}")
+                    continue
+                
+                orig_h, orig_w = orig_image.shape[:2]
+                
+                # 获取该图像的重要性分数 [N]
+                scores_1d = last_layer_scores[img_idx].cpu().numpy()  # [N]
+                feat_h, feat_w = last_layer_feat_shape
+                
+                # 还原为2D矩阵
+                if len(scores_1d) == feat_h * feat_w:
+                    scores_2d = scores_1d.reshape(feat_h, feat_w)
+                else:
+                    self.logger.debug(f"分数维度不匹配: {len(scores_1d)} != {feat_h * feat_w}")
+                    continue
+                
+                # 对齐到原始图像尺寸（考虑padding和resize）
+                # 获取图像tensor的实际尺寸（可能包含padding）
+                img_tensor_h, img_tensor_w = images.shape[2], images.shape[3]
+                
+                # 计算缩放比例（特征图 -> 图像tensor）
+                scale_h = img_tensor_h / feat_h
+                scale_w = img_tensor_w / feat_w
+                
+                # 先将特征图尺寸的热力图resize到图像tensor尺寸
+                scores_tensor_size = cv2.resize(scores_2d.astype(np.float32), 
+                                                (img_tensor_w, img_tensor_h), 
+                                                interpolation=cv2.INTER_NEAREST)
+                
+                # 再resize到原始图像尺寸
+                scores_final = cv2.resize(scores_tensor_size.astype(np.float32),
+                                         (orig_w, orig_h),
+                                         interpolation=cv2.INTER_NEAREST)
+                
+                # 生成热力图
+                # 归一化到0-255
+                scores_norm = (scores_final - scores_final.min()) / (scores_final.max() - scores_final.min() + 1e-8)
+                scores_uint8 = (scores_norm * 255).astype(np.uint8)
+                
+                # 应用JET colormap
+                heatmap_color = cv2.applyColorMap(scores_uint8, cv2.COLORMAP_JET)
+                
+                # 以0.6透明度叠加在原始图像上
+                output = cv2.addWeighted(orig_image, 1 - 0.6, heatmap_color, 0.6, 0)
+                
+                # 添加标题文本
+                cv2.putText(output, f"Token Importance Heatmap (Epoch {epoch})", 
+                           (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
+                cv2.putText(output, f"Token Importance Heatmap (Epoch {epoch})", 
+                           (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 0), 1)
+                
+                # 保存图像
+                output_filename = f"{orig_image_path.stem}_heatmap.jpg"
+                output_path = viz_dir / output_filename
+                cv2.imwrite(str(output_path), output)
+            
+            self.logger.info(f"  ✓ Token重要性热力图已保存到: {viz_dir}")
+            
+        except Exception as e:
+            # 可视化失败不应该影响训练
+            if hasattr(self, 'logger'):
+                self.logger.debug(f"保存Token可视化失败（不影响训练）: {e}")
+    
     def _resume_from_checkpoint(self) -> None:
         """从检查点恢复训练。"""
         try:
@@ -2208,6 +2333,13 @@ class DSETTrainer:
             
             # 每个epoch都保存latest用于断点续训（不会堆积文件）
             self.save_latest_checkpoint(epoch)
+            
+            # 每10个epoch保存Token重要性热力图
+            if (epoch + 1) % 10 == 0:
+                try:
+                    self._save_token_visualization(epoch)
+                except Exception as e:
+                    self.logger.debug(f"Token可视化失败（不影响训练）: {e}")
             
             # 绘制训练曲线（每个epoch都更新）
             try:

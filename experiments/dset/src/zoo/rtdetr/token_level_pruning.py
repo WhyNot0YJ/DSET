@@ -7,42 +7,59 @@ import torch.nn.functional as F
 from typing import Tuple, Optional, List, Dict
 
 
-class LearnableImportancePredictor(nn.Module):
-    """Token重要性预测器（轻量级MLP）"""
-    
-    def __init__(self, input_dim: int, hidden_dim: int = 128, dropout: float = 0.1):
-        """
-        Args:
-            input_dim: 输入特征维度
-            hidden_dim: 隐藏层维度
-            dropout: Dropout比率
-        """
+class ConvImportancePredictor(nn.Module):
+    """
+    轻量化卷积预测器 (DSET 专用版)
+    利用 3x3 深度卷积获取局部空间感知能力，解决线性层对绝对坐标的过度依赖。
+    """
+    def __init__(self, input_dim, hidden_dim=128):
         super().__init__()
-        self.input_dim = input_dim
-        self.hidden_dim = hidden_dim
+        # 1. 维度压缩：减少后续卷积的计算压力
+        self.reduce = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.GELU()
+        )
         
-        self.fc1 = nn.Linear(input_dim, hidden_dim)
-        self.activation = nn.GELU()
-        self.dropout = nn.Dropout(dropout)
-        self.fc2 = nn.Linear(hidden_dim, 1)
+        # 2. 核心卷积支路：3x3 深度卷积 (Spatial) + 1x1 逐点卷积 (Channel)
+        self.conv_block = nn.Sequential(
+            # Depthwise: 只看空间形状，不看通道
+            nn.Conv2d(hidden_dim, hidden_dim, kernel_size=3, padding=1, groups=hidden_dim),
+            nn.BatchNorm2d(hidden_dim),
+            nn.GELU(),
+            # Pointwise: 通道特征融合
+            nn.Conv2d(hidden_dim, hidden_dim, kernel_size=1),
+            nn.BatchNorm2d(hidden_dim),
+            nn.GELU()
+        )
         
-        nn.init.xavier_uniform_(self.fc1.weight)
-        nn.init.xavier_uniform_(self.fc2.weight)
-        nn.init.constant_(self.fc1.bias, 0)
-        nn.init.constant_(self.fc2.bias, 0)
-    
-    def forward(self, tokens: torch.Tensor) -> torch.Tensor:
+        # 3. 预测头：输出每个 Token 的重要性分值
+        self.score_head = nn.Sequential(
+            nn.Conv2d(hidden_dim, 1, kernel_size=1),
+            nn.Sigmoid() # 保证分数在 0-1 之间
+        )
+
+    def forward(self, x, H, W):
         """
-        Args:
-            tokens: [B, N, C] token特征
-        
-        Returns:
-            importance_scores: [B, N] 重要性分数
+        x: [B, N, C] 输入的 Token 序列
+        H, W: 特征图的原始高度和宽度
         """
-        x = self.fc1(tokens)
-        x = self.activation(x)
-        x = self.dropout(x)
-        return self.fc2(x).squeeze(-1)
+        B, N, C = x.shape
+        
+        # 1. 降维
+        x = self.reduce(x) # [B, N, hidden_dim]
+        
+        # 2. 还原 2D 空间布局
+        # [B, N, C] -> [B, C, N] -> [B, C, H, W]
+        x = x.transpose(1, 2).reshape(B, -1, H, W)
+        
+        # 3. 卷积特征提取
+        x = self.conv_block(x)
+        
+        # 4. 获取预测分数并展平
+        scores = self.score_head(x) # [B, 1, H, W]
+        scores = scores.reshape(B, -1) # [B, N]
+        
+        return scores
 
 
 class TokenLevelPruner(nn.Module):
@@ -99,7 +116,7 @@ class TokenLevelPruner(nn.Module):
         self.cass_focal_alpha = cass_focal_alpha
         self.cass_focal_beta = cass_focal_beta
         
-        self.importance_predictor = LearnableImportancePredictor(input_dim)
+        self.importance_predictor = ConvImportancePredictor(input_dim)
         self.current_epoch = 0
         self.pruning_enabled = False
     
@@ -138,7 +155,7 @@ class TokenLevelPruner(nn.Module):
         
         # --- 核心修复：即使在 Warmup 期间，训练时也计算分数 ---
         # 这样 CASS Loss 才能在 Pruning 真正开始前就训练 Predictor
-        token_importance_scores = self.importance_predictor(tokens)  # [B, N]
+        token_importance_scores = self.importance_predictor(tokens, H, W)  # [B, N]
 
         # 如果处于 Pruning 的 Warmup 阶段
         if self.training and self.current_epoch < self.warmup_epochs:
