@@ -344,11 +344,14 @@ class DSETRTDETR(nn.Module):
         aux_weight_dict['loss_giou_enc_0'] = 2.0
         
         # Denoising auxiliary loss
+        # [临时诊断] 将所有去噪损失权重设为 0，用于诊断问题
+        # 预判 A: 如果 Loss 降到 2.0-3.0，说明 Predictor 选出的 Token 把去噪分支"饿死"了
+        # 预判 B: 如果 Loss 还是 10+，说明是坐标归一化基准（max_w）不统一导致的数值崩溃
         num_denoising_layers = num_decoder_layers
         for i in range(num_denoising_layers):
-            aux_weight_dict[f'loss_vfl_dn_{i}'] = 1.0
-            aux_weight_dict[f'loss_bbox_dn_{i}'] = 5.0
-            aux_weight_dict[f'loss_giou_dn_{i}'] = 2.0
+            aux_weight_dict[f'loss_vfl_dn_{i}'] = 0.0  # 临时设为 0
+            aux_weight_dict[f'loss_bbox_dn_{i}'] = 0.0  # 临时设为 0
+            aux_weight_dict[f'loss_giou_dn_{i}'] = 0.0  # 临时设为 0
         
         # 合并所有权重
         weight_dict = {**main_weight_dict, **aux_weight_dict}
