@@ -1411,8 +1411,51 @@ class DSETTrainer:
                 return
             
             # 提取分数并转概率
-            scores_prob = torch.sigmoid(outputs['encoder_info']['importance_scores_list'][-1]) 
+            importance_scores = outputs['encoder_info']['importance_scores_list'][-1]
             h_feat, w_feat = outputs['encoder_info']['feat_shapes_list'][-1]
+            
+            # 检查重要性分数的维度并重塑（处理 Linear 模式输出的 [B, N] 格式）
+            if importance_scores.dim() == 2:
+                # Linear 模式：importance_scores 是 [B, N] 格式，其中 N = H * W
+                B, N = importance_scores.shape
+                expected_N = h_feat * w_feat
+                
+                if N == expected_N:
+                    # 重塑为 [B, 1, H, W] 格式以便后续处理
+                    importance_scores = importance_scores.view(B, 1, h_feat, w_feat)
+                else:
+                    # 如果维度不匹配，尝试从输入图像动态计算
+                    # 根据下采样倍率（32x）计算特征图尺寸
+                    H_feat_dynamic = H_tensor // 32
+                    W_feat_dynamic = W_tensor // 32
+                    expected_N_dynamic = H_feat_dynamic * W_feat_dynamic
+                    
+                    if N == expected_N_dynamic:
+                        importance_scores = importance_scores.view(B, 1, H_feat_dynamic, W_feat_dynamic)
+                        h_feat, w_feat = H_feat_dynamic, W_feat_dynamic
+                        self.logger.debug(f"使用动态计算的特征图尺寸: {h_feat}x{w_feat}")
+                    else:
+                        self.logger.warning(f"Token count {N} does not match spatial grid {h_feat}x{w_feat} ({expected_N}) or dynamic {H_feat_dynamic}x{W_feat_dynamic} ({expected_N_dynamic})")
+                        # 尝试自动推断：假设 N 是完全平方数或接近完全平方数
+                        sqrt_N = int(np.sqrt(N))
+                        if sqrt_N * sqrt_N == N:
+                            importance_scores = importance_scores.view(B, 1, sqrt_N, sqrt_N)
+                            h_feat, w_feat = sqrt_N, sqrt_N
+                            self.logger.debug(f"自动推断特征图尺寸: {h_feat}x{w_feat}")
+                        else:
+                            # 如果无法推断，跳过可视化
+                            self.logger.error(f"无法推断特征图尺寸，跳过可视化 (N={N})")
+                            return
+            elif importance_scores.dim() == 4:
+                # CNN 模式：importance_scores 已经是 [B, 1, H, W] 格式
+                # 提取空间维度
+                _, _, h_feat, w_feat = importance_scores.shape
+            else:
+                self.logger.warning(f"不支持的重要性分数维度: {importance_scores.dim()}，期望 2 或 4")
+                return
+            
+            # 转换为概率
+            scores_prob = torch.sigmoid(importance_scores)
             
             for i in range(min(3, len(targets))):
                 img_id = targets[i]['image_id'].item()
@@ -1439,7 +1482,17 @@ class DSETTrainer:
                 valid_h_feat = int(round(orig_h * (h_feat / H_tensor)))
                 valid_w_feat = int(round(orig_w * (w_feat / W_tensor)))
                 
-                s_2d = scores_prob[i].reshape(h_feat, w_feat).cpu().numpy()
+                # 处理 scores_prob 的维度：可能是 [B, 1, H, W] 或 [B, H, W]
+                if scores_prob.dim() == 4:
+                    # [B, 1, H, W] 格式，需要 squeeze 掉通道维度
+                    s_2d = scores_prob[i, 0].cpu().numpy()  # [H, W]
+                elif scores_prob.dim() == 3:
+                    # [B, H, W] 格式
+                    s_2d = scores_prob[i].cpu().numpy()  # [H, W]
+                else:
+                    # 如果是 [B, N] 格式（虽然理论上不应该到这里），尝试 reshape
+                    s_2d = scores_prob[i].reshape(h_feat, w_feat).cpu().numpy()
+                
                 s_valid = s_2d[:valid_h_feat, :valid_w_feat] # 裁剪 Padding 区
                 
                 s_norm = (s_valid - s_valid.min()) / (s_valid.max() - s_valid.min() + 1e-8)
@@ -2294,8 +2347,8 @@ class DSETTrainer:
             # 每个epoch都保存latest用于断点续训（不会堆积文件）
             self.save_latest_checkpoint(epoch)
             
-            # 每10个epoch保存Token重要性热力图
-            if (epoch + 1) % 10 == 0:
+            # 每11个epoch保存Token重要性热力图（第11、21、31...次）
+            if (epoch + 1) % 11 == 0:
                 try:
                     self._save_token_visualization(epoch)
                 except Exception as e:
