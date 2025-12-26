@@ -1410,9 +1410,27 @@ class DSETTrainer:
                 self.logger.warning("可视化中断：EMA模型输出中缺少 encoder_info")
                 return
             
+            # 步骤1：增加判空逻辑，防止 IndexError
+            enc_info = outputs.get('encoder_info', {})
+            scores_list = enc_info.get('importance_scores_list', [])
+            feat_shapes_list = enc_info.get('feat_shapes_list', [])
+            
+            if not scores_list:
+                self.logger.warning(f"📸 Epoch {epoch}: 可视化跳过，importance_scores_list 为空。请检查模型是否在 Linear 模式下正确收集了分数。")
+                return
+            
+            if not feat_shapes_list:
+                self.logger.warning(f"📸 Epoch {epoch}: 可视化跳过，feat_shapes_list 为空。")
+                return
+            
+            # 确保两个列表长度一致
+            if len(scores_list) != len(feat_shapes_list):
+                self.logger.warning(f"📸 Epoch {epoch}: importance_scores_list 和 feat_shapes_list 长度不一致 ({len(scores_list)} vs {len(feat_shapes_list)})，跳过可视化。")
+                return
+            
             # 提取分数并转概率
-            importance_scores = outputs['encoder_info']['importance_scores_list'][-1]
-            h_feat, w_feat = outputs['encoder_info']['feat_shapes_list'][-1]
+            importance_scores = scores_list[-1]
+            h_feat, w_feat = feat_shapes_list[-1]
             
             # 检查重要性分数的维度并重塑（处理 Linear 模式输出的 [B, N] 格式）
             if importance_scores.dim() == 2:
@@ -2348,7 +2366,7 @@ class DSETTrainer:
             self.save_latest_checkpoint(epoch)
             
             # 每11个epoch保存Token重要性热力图（第11、21、31...次）
-            if (epoch + 1) % 11 == 0:
+            if (epoch + 1) % 12 == 0:
                 try:
                     self._save_token_visualization(epoch)
                 except Exception as e:

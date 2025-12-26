@@ -220,6 +220,7 @@ class TokenLevelPruner(nn.Module):
                 'num_pruned_tokens': 0,
                 'num_tokens': num_tokens,
                 'num_kept_tokens_info': num_tokens,
+                'token_importance_scores': token_importance_scores, 
                 'new_spatial_shape': (H, W),
                 'original_spatial_shape': (H, W)
             }
@@ -234,11 +235,10 @@ class TokenLevelPruner(nn.Module):
                 'num_pruned_tokens': 0,
                 'num_tokens': num_tokens,
                 'num_kept_tokens_info': num_tokens,
+                'token_importance_scores': token_importance_scores,
                 'new_spatial_shape': (H, W),
                 'original_spatial_shape': (H, W)
             }
-            if should_compute_scores:
-                info['token_importance_scores'] = token_importance_scores
             kept_indices = None if not return_indices else torch.arange(
                 num_tokens, device=tokens.device).unsqueeze(0).expand(batch_size, -1)
             return tokens, kept_indices, info
