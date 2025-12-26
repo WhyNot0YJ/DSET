@@ -1372,7 +1372,7 @@ class DSETTrainer:
                     pass
     
     def _save_token_visualization(self, epoch: int) -> None:
-        """[修复版] 确保热力图与原图物体像素级对齐"""
+        """增加容错、路径纠偏与物理对齐"""
         try:
             viz_dir = self.log_dir / "visualizations" / f"epoch_{epoch}"
             viz_dir.mkdir(parents=True, exist_ok=True)
@@ -1380,45 +1380,59 @@ class DSETTrainer:
             
             # 获取验证数据
             images, targets = next(iter(self.val_loader))
-            images = images.to(self.device)
             B, _, H_tensor, W_tensor = images.shape
             
             with torch.no_grad():
-                outputs = self.ema.module(images, [{k: v.to(self.device) if isinstance(v, torch.Tensor) else v for k, v in t.items()} for t in targets])
+                # 显式传递 targets 确保 forward 返回 encoder_info
+                outputs = self.ema.module(images.to(self.device), 
+                    [{k: v.to(self.device) if isinstance(v, torch.Tensor) else v for k, v in t.items()} for t in targets])
             
-            if 'encoder_info' not in outputs: return
-            # 获取 Logits 并转为概率
+            if 'encoder_info' not in outputs:
+                self.logger.warning("可视化中断：EMA模型输出中缺少 encoder_info")
+                return
+            
+            # 提取分数并转概率
             scores_prob = torch.sigmoid(outputs['encoder_info']['importance_scores_list'][-1]) 
             h_feat, w_feat = outputs['encoder_info']['feat_shapes_list'][-1]
             
             for i in range(min(3, len(targets))):
                 img_id = targets[i]['image_id'].item()
                 data_root = Path(self.config['data']['data_root'])
-                orig_img = cv2.imread(str(data_root / "image" / f"{img_id:06d}.jpg"))
-                if orig_img is None: continue
+                
+                # 尝试多种命名匹配模式 (DAIR-V2X 兼容性)
+                possible_paths = [
+                    data_root / "image" / f"{img_id:06d}.jpg",
+                    data_root / "image" / f"{img_id}.jpg"
+                ]
+                orig_img = None
+                for p in possible_paths:
+                    if p.exists():
+                        orig_img = cv2.imread(str(p))
+                        break
+                
+                if orig_img is None:
+                    self.logger.warning(f"跳过样本 {img_id}：找不到原始图片或读取失败")
+                    continue
+
                 orig_h, orig_w = orig_img.shape[:2]
 
-                # --- 核心对齐计算 ---
-                # 计算特征图上有效区域的格子数 (只取图像占用的那部分)
+                # --- 核心：物理空间校准 (防止 100w 偏移) ---
                 valid_h_feat = int(round(orig_h * (h_feat / H_tensor)))
                 valid_w_feat = int(round(orig_w * (w_feat / W_tensor)))
                 
-                # 还原2D并裁剪掉右侧/下方的 Padding 格子
                 s_2d = scores_prob[i].reshape(h_feat, w_feat).cpu().numpy()
-                s_valid = s_2d[:valid_h_feat, :valid_w_feat]
+                s_valid = s_2d[:valid_h_feat, :valid_w_feat] # 裁剪 Padding 区
                 
-                # 归一化并渲染
                 s_norm = (s_valid - s_valid.min()) / (s_valid.max() - s_valid.min() + 1e-8)
                 heatmap = cv2.applyColorMap((s_norm * 255).astype(np.uint8), cv2.COLORMAP_JET)
                 heatmap = cv2.resize(heatmap, (orig_w, orig_h), interpolation=cv2.INTER_LINEAR)
                 
-                # 叠加并保存
                 overlay = cv2.addWeighted(orig_img, 0.4, heatmap, 0.6, 0)
-                cv2.imwrite(str(viz_dir / f"{img_id:06d}_aligned.jpg"), overlay)
+                cv2.imwrite(str(viz_dir / f"sample_{img_id}_aligned.jpg"), overlay)
                 
-            self.logger.info(f"  ✓ 对齐热力图已生成: {viz_dir}")
+            self.logger.info(f"📸 Epoch {epoch}: 重要性热力图已校准并保存至 {viz_dir}")
         except Exception as e:
-            self.logger.debug(f"可视化失败: {e}")
+            self.logger.error(f"可视化模块运行崩溃: {e}", exc_info=True)
     
     def _resume_from_checkpoint(self) -> None:
         """从检查点恢复训练。"""
