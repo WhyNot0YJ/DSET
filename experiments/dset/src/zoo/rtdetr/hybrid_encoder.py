@@ -235,6 +235,8 @@ class HybridEncoder(nn.Module):
                  token_pruning_warmup_epochs=10,
                  encoder_moe_num_experts=4,
                  encoder_moe_top_k=2,
+                 # Predictor type selection
+                 predictor_type='cnn',
                  # CASS (Context-Aware Soft Supervision) 参数
                  use_cass=False,
                  cass_expansion_ratio=0.3,
@@ -253,6 +255,7 @@ class HybridEncoder(nn.Module):
             token_pruning_warmup_epochs: Warmup epochs for pruning
             encoder_moe_num_experts: Number of experts for Encoder-MoE
             encoder_moe_top_k: Top-K experts for Encoder-MoE
+            predictor_type: Type of importance predictor ('cnn' or 'linear')
             use_cass: Whether to use Context-Aware Soft Supervision
             cass_expansion_ratio: Context band expansion ratio (0.2-0.3)
             cass_min_size: Minimum box size on feature map (protects small objects)
@@ -273,6 +276,9 @@ class HybridEncoder(nn.Module):
         self.token_pruning_warmup_epochs = token_pruning_warmup_epochs
         self.encoder_moe_num_experts = encoder_moe_num_experts
         self.encoder_moe_top_k = encoder_moe_top_k
+        
+        # Predictor type
+        self.predictor_type = predictor_type
         
         # CASS parameters - 保存参数以便后续使用
         self.use_cass = use_cass
@@ -329,6 +335,8 @@ class HybridEncoder(nn.Module):
                 min_tokens=self._calculate_min_tokens_for_layer(),
                 warmup_epochs=token_pruning_warmup_epochs,
                 prune_in_eval=True,
+                # Predictor type selection
+                predictor_type=predictor_type,
                 # CASS parameters
                 use_cass=use_cass,
                 cass_expansion_ratio=cass_expansion_ratio,

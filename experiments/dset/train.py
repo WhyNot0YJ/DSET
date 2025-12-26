@@ -146,6 +146,8 @@ class DSETRTDETR(nn.Module):
                  decoder_moe_balance_weight: float = None,
                  encoder_moe_balance_weight: float = None,
                  moe_balance_warmup_epochs: int = 0,
+                # Predictor type config
+                predictor_type: str = 'cnn',
                 # CASS (Context-Aware Soft Supervision) config
                 use_cass: bool = False,
                 cass_loss_weight: float = 0.2,
@@ -178,6 +180,7 @@ class DSETRTDETR(nn.Module):
             decoder_moe_balance_weight: Decoder MoE balance loss weight
             encoder_moe_balance_weight: Encoder MoE balance loss weight
             moe_balance_warmup_epochs: Number of epochs before applying MOE balance loss (default: 0)
+            predictor_type: Type of importance predictor ('cnn' or 'linear')
             use_cass: Whether to use Context-Aware Soft Supervision for token pruning
             cass_loss_weight: CASS loss weight
             cass_expansion_ratio: Context band expansion ratio (0.2-0.3)
@@ -206,6 +209,9 @@ class DSETRTDETR(nn.Module):
         self.token_pruning_warmup_epochs = token_pruning_warmup_epochs
         self.encoder_moe_num_experts = encoder_moe_num_experts
         self.encoder_moe_top_k = encoder_moe_top_k
+        
+        # Predictor type configuration
+        self.predictor_type = predictor_type
         
         # CASS configuration
         self.use_cass = use_cass
@@ -301,6 +307,8 @@ class DSETRTDETR(nn.Module):
             token_pruning_warmup_epochs=self.token_pruning_warmup_epochs,
             encoder_moe_num_experts=self.encoder_moe_num_experts,
             encoder_moe_top_k=self.encoder_moe_top_k,
+            # Predictor type selection
+            predictor_type=self.predictor_type,
             # CASS parameters
             use_cass=self.use_cass,
             cass_expansion_ratio=self.cass_expansion_ratio,
@@ -344,14 +352,11 @@ class DSETRTDETR(nn.Module):
         aux_weight_dict['loss_giou_enc_0'] = 2.0
         
         # Denoising auxiliary loss
-        # [临时诊断] 将所有去噪损失权重设为 0，用于诊断问题
-        # 预判 A: 如果 Loss 降到 2.0-3.0，说明 Predictor 选出的 Token 把去噪分支"饿死"了
-        # 预判 B: 如果 Loss 还是 10+，说明是坐标归一化基准（max_w）不统一导致的数值崩溃
         num_denoising_layers = num_decoder_layers
         for i in range(num_denoising_layers):
-            aux_weight_dict[f'loss_vfl_dn_{i}'] = 0.0  # 临时设为 0
-            aux_weight_dict[f'loss_bbox_dn_{i}'] = 0.0  # 临时设为 0
-            aux_weight_dict[f'loss_giou_dn_{i}'] = 0.0  # 临时设为 0
+            aux_weight_dict[f'loss_vfl_dn_{i}'] = 1.0
+            aux_weight_dict[f'loss_bbox_dn_{i}'] = 5.0
+            aux_weight_dict[f'loss_giou_dn_{i}'] = 2.0
         
         # 合并所有权重
         weight_dict = {**main_weight_dict, **aux_weight_dict}
@@ -707,6 +712,9 @@ class DSETTrainer:
         encoder_moe_num_experts = dset_config.get('encoder_moe_num_experts', 4)
         encoder_moe_top_k = dset_config.get('encoder_moe_top_k', 2)
         
+        # Predictor type 配置
+        predictor_type = dset_config.get('predictor_type', 'cnn')  # 默认使用 CNN 版本
+        
         # CASS (Context-Aware Soft Supervision) 配置
         use_cass = dset_config.get('use_cass', False)
         cass_loss_weight = dset_config.get('cass_loss_weight', 0.2)
@@ -747,6 +755,8 @@ class DSETTrainer:
             decoder_moe_balance_weight=decoder_moe_balance_weight,
             encoder_moe_balance_weight=encoder_moe_balance_weight,
             moe_balance_warmup_epochs=moe_balance_warmup_epochs,
+            # Predictor type配置
+            predictor_type=predictor_type,
             # CASS配置
             use_cass=use_cass,
             cass_loss_weight=cass_loss_weight,
@@ -1004,17 +1014,21 @@ class DSETTrainer:
             batch_images[i, :, :h, :w] = img
 
         # 4. Normalize targets based on final Batch size
+        # [修复] 坐标归一化基准不统一问题
+        # 关键：所有样本的 boxes 必须使用相同的归一化基准（batch 的最大尺寸 max_w, max_h）
+        # 这样去噪分支和主分支才能使用相同的归一化基准，避免数值崩溃
         new_targets = []
-        for t in list(targets):
+        for i, t in enumerate(list(targets)):
             # [FIX] Use deepcopy or clone to ensure original data is not modified
             new_t = t.copy()
             # Must clone, otherwise boxes[:, 0] = ... modifies source tensor
             boxes = new_t['boxes'].clone()
             
-            # 手动归一化：除以 max_w 和 max_h
+            # 手动归一化：除以 max_w 和 max_h（batch 最大尺寸，不是单个样本尺寸）
             # 格式是 cx, cy, w, h
             # x轴数据 (cx, w) 除以 max_w
             # y轴数据 (cy, h) 除以 max_h
+            # 注意：所有样本都使用相同的 max_w 和 max_h，确保归一化基准统一
             boxes[:, 0] = boxes[:, 0] / max_w
             boxes[:, 1] = boxes[:, 1] / max_h
             boxes[:, 2] = boxes[:, 2] / max_w
@@ -1024,6 +1038,8 @@ class DSETTrainer:
             boxes = torch.clamp(boxes, 0.0, 1.0)
             
             new_t['boxes'] = boxes
+            # [修复] 保存归一化基准，确保去噪分支和主分支使用相同的基准
+            new_t['normalization_size'] = torch.tensor([max_w, max_h], dtype=torch.float32)
             new_targets.append(new_t)
         
         return batch_images, new_targets

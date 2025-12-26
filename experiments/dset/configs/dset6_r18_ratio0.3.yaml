@@ -22,6 +22,8 @@ model:
     token_pruning_warmup_epochs: 10
     encoder_moe_num_experts: 6
     encoder_moe_top_k: 1
+    # 预测器类型：'cnn' (使用3x3卷积) 或 'linear' (使用MLP)
+    predictor_type: 'linear'  # 默认值，可切换为 'linear'
     use_cass: true
     cass_loss_weight: 0.2
     cass_warmup_epochs: 3

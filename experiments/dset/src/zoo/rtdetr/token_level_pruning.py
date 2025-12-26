@@ -59,6 +59,33 @@ class ConvImportancePredictor(nn.Module):
         return scores
 
 
+class LearnableImportancePredictor(nn.Module):
+    """Token重要性预测器（轻量级MLP）"""
+    def __init__(self, input_dim: int, hidden_dim: int = 128, dropout: float = 0.1):
+        super().__init__()
+        self.fc1 = nn.Linear(input_dim, hidden_dim)
+        self.activation = nn.GELU()
+        self.dropout = nn.Dropout(dropout)
+        self.fc2 = nn.Linear(hidden_dim, 1)
+        nn.init.xavier_uniform_(self.fc1.weight)
+        nn.init.xavier_uniform_(self.fc2.weight)
+
+    def forward(self, tokens: torch.Tensor, H: int, W: int) -> torch.Tensor:
+        """
+        Args:
+            tokens: [B, N, C] 输入的 Token 序列
+            H, W: 特征图的原始高度和宽度（MLP版本不需要，但为接口一致性保留）
+        
+        Returns:
+            scores: [B, N] Token重要性分数（logits，不应用Sigmoid）
+        """
+        # tokens: [B, N, C]
+        x = self.fc1(tokens)
+        x = self.activation(x)
+        x = self.dropout(x)
+        return self.fc2(x).squeeze(-1)  # [B, N]
+
+
 class TokenLevelPruner(nn.Module):
     """Token级别剪枝器，支持CASS监督学习（每个token独立处理）"""
     
@@ -69,6 +96,8 @@ class TokenLevelPruner(nn.Module):
                  min_tokens: int = 10,
                  warmup_epochs: int = 10,
                  prune_in_eval: bool = True,
+                 # Predictor type selection
+                 predictor_type: str = 'cnn',
                  # CASS parameters
                  use_cass: bool = False,
                  cass_expansion_ratio: float = 0.3,
@@ -86,6 +115,7 @@ class TokenLevelPruner(nn.Module):
             min_tokens: Minimum tokens to keep
             warmup_epochs: Warmup epochs
             prune_in_eval: Whether to prune during evaluation
+            predictor_type: Type of importance predictor ('cnn' or 'linear')
             use_cass: Whether to use Context-Aware Soft Supervision
             cass_expansion_ratio: Expansion ratio for context band (0.2-0.3)
             cass_min_size: Minimum box size on feature map (pixels)
@@ -113,7 +143,15 @@ class TokenLevelPruner(nn.Module):
         self.cass_focal_alpha = cass_focal_alpha
         self.cass_focal_beta = cass_focal_beta
         
-        self.importance_predictor = ConvImportancePredictor(input_dim)
+        # Initialize importance predictor based on type
+        if predictor_type == 'linear':
+            self.importance_predictor = LearnableImportancePredictor(input_dim)
+        elif predictor_type == 'cnn':
+            self.importance_predictor = ConvImportancePredictor(input_dim)
+        else:
+            raise ValueError(f"Unsupported predictor_type: {predictor_type}. Must be 'cnn' or 'linear'")
+        
+        self.predictor_type = predictor_type
         self.current_epoch = 0
         self.pruning_enabled = False
     
