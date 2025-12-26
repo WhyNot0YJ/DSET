@@ -1372,126 +1372,53 @@ class DSETTrainer:
                     pass
     
     def _save_token_visualization(self, epoch: int) -> None:
-        """保存Token重要性热力图可视化
-        
-        Args:
-            epoch: 当前epoch编号
-        """
+        """[修复版] 确保热力图与原图物体像素级对齐"""
         try:
-            # 创建输出目录
             viz_dir = self.log_dir / "visualizations" / f"epoch_{epoch}"
             viz_dir.mkdir(parents=True, exist_ok=True)
-            
-            # 设置模型为评估模式
             self.ema.module.eval()
-            if hasattr(self.ema.module, 'set_epoch'):
-                self.ema.module.set_epoch(epoch)
             
-            # 从验证数据加载器中获取一个batch
+            # 获取验证数据
             images, targets = next(iter(self.val_loader))
             images = images.to(self.device)
-            targets = [{k: v.to(self.device) if isinstance(v, torch.Tensor) else v 
-                       for k, v in t.items()} for t in targets]
+            B, _, H_tensor, W_tensor = images.shape
             
-            # 前向传播获取encoder_info
             with torch.no_grad():
-                outputs = self.ema.module(images, targets)
+                outputs = self.ema.module(images, [{k: v.to(self.device) if isinstance(v, torch.Tensor) else v for k, v in t.items()} for t in targets])
             
-            if not isinstance(outputs, dict) or 'encoder_info' not in outputs:
-                self.logger.debug(f"无法生成热力图：outputs中没有encoder_info")
-                return
+            if 'encoder_info' not in outputs: return
+            # 获取 Logits 并转为概率
+            scores_prob = torch.sigmoid(outputs['encoder_info']['importance_scores_list'][-1]) 
+            h_feat, w_feat = outputs['encoder_info']['feat_shapes_list'][-1]
             
-            encoder_info = outputs['encoder_info']
-            importance_scores_list = encoder_info.get('importance_scores_list', [])
-            feat_shapes_list = encoder_info.get('feat_shapes_list', [])
-            
-            if not importance_scores_list or not feat_shapes_list:
-                self.logger.debug(f"无法生成热力图：encoder_info中缺少重要性分数或特征形状")
-                return
-            
-            # 获取最后一层的重要性分数（通常是最重要的层）
-            last_layer_scores = importance_scores_list[-1]  # [B, N]
-            last_layer_feat_shape = feat_shapes_list[-1]  # (H, W)
-            
-            # 处理前3张图像
-            num_samples = min(3, len(targets))
-            data_root = Path(self.config['data']['data_root'])
-            
-            for img_idx in range(num_samples):
-                # 获取image_id和原始图像路径
-                target = targets[img_idx]
-                image_id = target['image_id'].item() if 'image_id' in target else img_idx
-                orig_image_path = data_root / "image" / f"{image_id:06d}.jpg"
+            for i in range(min(3, len(targets))):
+                img_id = targets[i]['image_id'].item()
+                data_root = Path(self.config['data']['data_root'])
+                orig_img = cv2.imread(str(data_root / "image" / f"{img_id:06d}.jpg"))
+                if orig_img is None: continue
+                orig_h, orig_w = orig_img.shape[:2]
+
+                # --- 核心对齐计算 ---
+                # 计算特征图上有效区域的格子数 (只取图像占用的那部分)
+                valid_h_feat = int(round(orig_h * (h_feat / H_tensor)))
+                valid_w_feat = int(round(orig_w * (w_feat / W_tensor)))
                 
-                if not orig_image_path.exists():
-                    self.logger.debug(f"图像不存在: {orig_image_path}")
-                    continue
+                # 还原2D并裁剪掉右侧/下方的 Padding 格子
+                s_2d = scores_prob[i].reshape(h_feat, w_feat).cpu().numpy()
+                s_valid = s_2d[:valid_h_feat, :valid_w_feat]
                 
-                # 加载原始图像
-                orig_image = cv2.imread(str(orig_image_path))
-                if orig_image is None:
-                    self.logger.debug(f"无法读取图像: {orig_image_path}")
-                    continue
+                # 归一化并渲染
+                s_norm = (s_valid - s_valid.min()) / (s_valid.max() - s_valid.min() + 1e-8)
+                heatmap = cv2.applyColorMap((s_norm * 255).astype(np.uint8), cv2.COLORMAP_JET)
+                heatmap = cv2.resize(heatmap, (orig_w, orig_h), interpolation=cv2.INTER_LINEAR)
                 
-                orig_h, orig_w = orig_image.shape[:2]
+                # 叠加并保存
+                overlay = cv2.addWeighted(orig_img, 0.4, heatmap, 0.6, 0)
+                cv2.imwrite(str(viz_dir / f"{img_id:06d}_aligned.jpg"), overlay)
                 
-                # 获取该图像的重要性分数 [N]
-                scores_1d = last_layer_scores[img_idx].cpu().numpy()  # [N]
-                feat_h, feat_w = last_layer_feat_shape
-                
-                # 还原为2D矩阵
-                if len(scores_1d) == feat_h * feat_w:
-                    scores_2d = scores_1d.reshape(feat_h, feat_w)
-                else:
-                    self.logger.debug(f"分数维度不匹配: {len(scores_1d)} != {feat_h * feat_w}")
-                    continue
-                
-                # 对齐到原始图像尺寸（考虑padding和resize）
-                # 获取图像tensor的实际尺寸（可能包含padding）
-                img_tensor_h, img_tensor_w = images.shape[2], images.shape[3]
-                
-                # 计算缩放比例（特征图 -> 图像tensor）
-                scale_h = img_tensor_h / feat_h
-                scale_w = img_tensor_w / feat_w
-                
-                # 先将特征图尺寸的热力图resize到图像tensor尺寸
-                scores_tensor_size = cv2.resize(scores_2d.astype(np.float32), 
-                                                (img_tensor_w, img_tensor_h), 
-                                                interpolation=cv2.INTER_NEAREST)
-                
-                # 再resize到原始图像尺寸
-                scores_final = cv2.resize(scores_tensor_size.astype(np.float32),
-                                         (orig_w, orig_h),
-                                         interpolation=cv2.INTER_NEAREST)
-                
-                # 生成热力图
-                # 归一化到0-255
-                scores_norm = (scores_final - scores_final.min()) / (scores_final.max() - scores_final.min() + 1e-8)
-                scores_uint8 = (scores_norm * 255).astype(np.uint8)
-                
-                # 应用JET colormap
-                heatmap_color = cv2.applyColorMap(scores_uint8, cv2.COLORMAP_JET)
-                
-                # 以0.6透明度叠加在原始图像上
-                output = cv2.addWeighted(orig_image, 1 - 0.6, heatmap_color, 0.6, 0)
-                
-                # 添加标题文本
-                cv2.putText(output, f"Token Importance Heatmap (Epoch {epoch})", 
-                           (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
-                cv2.putText(output, f"Token Importance Heatmap (Epoch {epoch})", 
-                           (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 0), 1)
-                
-                # 保存图像
-                output_filename = f"{orig_image_path.stem}_heatmap.jpg"
-                output_path = viz_dir / output_filename
-                cv2.imwrite(str(output_path), output)
-            
-            self.logger.info(f"  ✓ Token重要性热力图已保存到: {viz_dir}")
-            
+            self.logger.info(f"  ✓ 对齐热力图已生成: {viz_dir}")
         except Exception as e:
-            # 可视化失败不应该影响训练
-            if hasattr(self, 'logger'):
-                self.logger.debug(f"保存Token可视化失败（不影响训练）: {e}")
+            self.logger.debug(f"可视化失败: {e}")
     
     def _resume_from_checkpoint(self) -> None:
         """从检查点恢复训练。"""

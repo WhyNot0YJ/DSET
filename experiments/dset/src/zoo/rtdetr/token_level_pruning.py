@@ -32,11 +32,8 @@ class ConvImportancePredictor(nn.Module):
             nn.GELU()
         )
         
-        # 3. 预测头：输出每个 Token 的重要性分值
-        self.score_head = nn.Sequential(
-            nn.Conv2d(hidden_dim, 1, kernel_size=1),
-            nn.Sigmoid() # 保证分数在 0-1 之间
-        )
+        # 3. 预测头：输出每个 Token 的重要性分值（logits，不应用Sigmoid）
+        self.score_head = nn.Conv2d(hidden_dim, 1, kernel_size=1)
 
     def forward(self, x, H, W):
         """
