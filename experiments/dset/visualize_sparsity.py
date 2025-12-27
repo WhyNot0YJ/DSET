@@ -204,7 +204,6 @@ def run_visualization(model, image_path, device='cuda', output_dir=None, target_
         w_feat = padded_w // 32
 
     # Align Map to Image: Use train.py's physical alignment strategy
-    # [修复] 采用 train.py 的物理空间校准策略：先在特征图层面裁剪，再一次性Resize
     def align_map_to_image(map_2d, h_feat, w_feat, H_tensor, W_tensor, orig_h, orig_w):
         """
         Align feature map to original image using physical space calibration.
