@@ -204,23 +204,25 @@ def run_visualization(model, image_path, device='cuda', output_dir=None, target_
         w_feat = padded_w // 32
 
     # Align Map to Image: Use train.py's physical alignment strategy
-    def align_map_to_image(map_2d, h_feat, w_feat, H_tensor, W_tensor, orig_h, orig_w):
+    def align_map_to_image(map_2d, h_feat, w_feat, H_tensor, W_tensor, orig_h, orig_w, normalize_before_resize=False):
         """
         Align feature map to original image using physical space calibration.
         
         Strategy (matching train.py):
         1. Calculate valid region size in feature map coordinate system
         2. Crop padding at feature map level
-        3. Single resize from feature map to original image
+        3. (Optional) Normalize on cropped valid region (matching train.py exactly)
+        4. Single resize from feature map to original image
         
         Args:
             map_2d: Feature map of shape (h_feat, w_feat)
             h_feat, w_feat: Feature map dimensions
             H_tensor, W_tensor: Padded tensor dimensions (same as padded_h, padded_w)
             orig_h, orig_w: Original image dimensions
+            normalize_before_resize: If True, normalize on cropped region before resize (matches train.py exactly)
         
         Returns:
-            Aligned map of shape (orig_h, orig_w)
+            Aligned map of shape (orig_h, orig_w), values in [0, 1] if normalize_before_resize=True
         """
         # Step 1: Calculate valid region size in feature map coordinate system
         # Formula from train.py: valid_h_feat = round(orig_h × (h_feat / H_tensor))
@@ -230,7 +232,18 @@ def run_visualization(model, image_path, device='cuda', output_dir=None, target_
         # Step 2: Crop padding at feature map level
         map_valid = map_2d[:valid_h_feat, :valid_w_feat]
         
-        # Step 3: Single resize from feature map to original image
+        # Step 3: (Optional) Normalize on cropped valid region (matching train.py exactly)
+        # train.py does: s_norm = (s_valid - s_valid.min()) / (s_valid.max() - s_valid.min() + 1e-8)
+        if normalize_before_resize:
+            map_min = map_valid.min()
+            map_max = map_valid.max()
+            if map_max - map_min > 1e-8:
+                map_valid = (map_valid - map_min) / (map_max - map_min + 1e-8)
+            else:
+                # All values are the same, set to 0
+                map_valid = np.zeros_like(map_valid)
+        
+        # Step 4: Single resize from feature map to original image
         # Use INTER_NEAREST to maintain blocky token appearance
         map_final = cv2.resize(map_valid, (orig_w, orig_h), interpolation=cv2.INTER_NEAREST)
         
@@ -340,6 +353,14 @@ def run_visualization(model, image_path, device='cuda', output_dir=None, target_
             print("Error: No importance scores found for heatmap mode.")
             return
 
+        # causing all regions to appear bright (high intensity) and losing contrast
+        if isinstance(importance_scores_2d, np.ndarray):
+            scores_tensor = torch.from_numpy(importance_scores_2d).float()
+        else:
+            scores_tensor = importance_scores_2d
+        scores_prob = torch.sigmoid(scores_tensor).numpy()
+        importance_scores_2d_prob = scores_prob
+
         # Get feature map dimensions for alignment
         if pruning_hook.spatial_shape:
             h_feat, w_feat = pruning_hook.spatial_shape
@@ -347,8 +368,20 @@ def run_visualization(model, image_path, device='cuda', output_dir=None, target_
             h_feat = padded_h // 32
             w_feat = padded_w // 32
 
-        scores_final = align_map_to_image(importance_scores_2d, h_feat, w_feat, padded_h, padded_w, orig_h, orig_w)
-        fig_heatmap = visualize_heatmap(orig_image.copy(), scores_final)
+        # [FIX] Align with normalization on cropped region BEFORE resize (exactly matching train.py)
+        # train.py flow: Sigmoid → Crop → Normalize → Resize
+        # This ensures normalization statistics are computed on the original feature map scale
+        scores_final = align_map_to_image(
+            importance_scores_2d_prob, h_feat, w_feat, padded_h, padded_w, 
+            orig_h, orig_w, normalize_before_resize=True
+        )
+        
+        # Convert normalized [0,1] scores to uint8 for colormap
+        scores_uint8 = (scores_final * 255).astype(np.uint8)
+        heatmap_color = cv2.applyColorMap(scores_uint8, cv2.COLORMAP_JET)
+        
+        # Overlay (matching train.py alpha=0.6)
+        fig_heatmap = cv2.addWeighted(orig_image.copy(), 0.4, heatmap_color, 0.6, 0)
         
         cv2.putText(fig_heatmap, "Token Importance Heatmap", (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
         
