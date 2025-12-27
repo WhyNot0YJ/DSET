@@ -161,9 +161,6 @@ def run_visualization(model, image_path, device='cuda', output_dir=None, target_
     
     # Dimensions for aligning mask back to original image (crop padding)
     orig_h, orig_w = meta['orig_size'][0].tolist()
-    scale = meta['scale']
-    valid_h = int(round(orig_h * scale))
-    valid_w = int(round(orig_w * scale))
     padded_h, padded_w = meta['padded_h'], meta['padded_w']
 
     # 2. Register Hook & Run Inference
@@ -198,14 +195,49 @@ def run_visualization(model, image_path, device='cuda', output_dir=None, target_
         print("⚠ Failed to capture mask via hook. Falling back to all-ones.")
         feature_mask = np.ones((padded_h // 32, padded_w // 32), dtype=np.float32)
 
-    # Align Mask: Resize to Padded -> Crop Valid -> Resize to Original
-    def align_map_to_image(map_2d):
-        map_padded = cv2.resize(map_2d, (padded_w, padded_h), interpolation=cv2.INTER_NEAREST)
-        map_valid = map_padded[:valid_h, :valid_w]
+    # Get feature map dimensions from hook
+    if pruning_hook.spatial_shape:
+        h_feat, w_feat = pruning_hook.spatial_shape
+    else:
+        # Fallback: calculate from padded dimensions (stride=32)
+        h_feat = padded_h // 32
+        w_feat = padded_w // 32
+
+    # Align Map to Image: Use train.py's physical alignment strategy
+    # [修复] 采用 train.py 的物理空间校准策略：先在特征图层面裁剪，再一次性Resize
+    def align_map_to_image(map_2d, h_feat, w_feat, H_tensor, W_tensor, orig_h, orig_w):
+        """
+        Align feature map to original image using physical space calibration.
+        
+        Strategy (matching train.py):
+        1. Calculate valid region size in feature map coordinate system
+        2. Crop padding at feature map level
+        3. Single resize from feature map to original image
+        
+        Args:
+            map_2d: Feature map of shape (h_feat, w_feat)
+            h_feat, w_feat: Feature map dimensions
+            H_tensor, W_tensor: Padded tensor dimensions (same as padded_h, padded_w)
+            orig_h, orig_w: Original image dimensions
+        
+        Returns:
+            Aligned map of shape (orig_h, orig_w)
+        """
+        # Step 1: Calculate valid region size in feature map coordinate system
+        # Formula from train.py: valid_h_feat = round(orig_h × (h_feat / H_tensor))
+        valid_h_feat = int(round(orig_h * (h_feat / H_tensor)))
+        valid_w_feat = int(round(orig_w * (w_feat / W_tensor)))
+        
+        # Step 2: Crop padding at feature map level
+        map_valid = map_2d[:valid_h_feat, :valid_w_feat]
+        
+        # Step 3: Single resize from feature map to original image
+        # Use INTER_NEAREST to maintain blocky token appearance
         map_final = cv2.resize(map_valid, (orig_w, orig_h), interpolation=cv2.INTER_NEAREST)
+        
         return map_final
 
-    feature_mask_final = align_map_to_image(feature_mask)
+    feature_mask_final = align_map_to_image(feature_mask, h_feat, w_feat, padded_h, padded_w, orig_h, orig_w)
 
     # (B) Get Importance Scores (UPDATED LOGIC)
     importance_scores_2d = None
@@ -309,7 +341,14 @@ def run_visualization(model, image_path, device='cuda', output_dir=None, target_
             print("Error: No importance scores found for heatmap mode.")
             return
 
-        scores_final = align_map_to_image(importance_scores_2d)
+        # Get feature map dimensions for alignment
+        if pruning_hook.spatial_shape:
+            h_feat, w_feat = pruning_hook.spatial_shape
+        else:
+            h_feat = padded_h // 32
+            w_feat = padded_w // 32
+
+        scores_final = align_map_to_image(importance_scores_2d, h_feat, w_feat, padded_h, padded_w, orig_h, orig_w)
         fig_heatmap = visualize_heatmap(orig_image.copy(), scores_final)
         
         cv2.putText(fig_heatmap, "Token Importance Heatmap", (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
