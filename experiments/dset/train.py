@@ -1438,35 +1438,14 @@ class DSETTrainer:
                 B, N = importance_scores.shape
                 expected_N = h_feat * w_feat
                 
-                if N == expected_N:
-                    # 重塑为 [B, 1, H, W] 格式以便后续处理
-                    importance_scores = importance_scores.view(B, 1, h_feat, w_feat)
-                else:
-                    # 如果维度不匹配，尝试从输入图像动态计算
-                    # 根据下采样倍率（32x）计算特征图尺寸
-                    H_feat_dynamic = H_tensor // 32
-                    W_feat_dynamic = W_tensor // 32
-                    expected_N_dynamic = H_feat_dynamic * W_feat_dynamic
-                    
-                    if N == expected_N_dynamic:
-                        importance_scores = importance_scores.view(B, 1, H_feat_dynamic, W_feat_dynamic)
-                        h_feat, w_feat = H_feat_dynamic, W_feat_dynamic
-                        self.logger.debug(f"使用动态计算的特征图尺寸: {h_feat}x{w_feat}")
-                    else:
-                        self.logger.warning(f"Token count {N} does not match spatial grid {h_feat}x{w_feat} ({expected_N}) or dynamic {H_feat_dynamic}x{W_feat_dynamic} ({expected_N_dynamic})")
-                        # 尝试自动推断：假设 N 是完全平方数或接近完全平方数
-                        sqrt_N = int(np.sqrt(N))
-                        if sqrt_N * sqrt_N == N:
-                            importance_scores = importance_scores.view(B, 1, sqrt_N, sqrt_N)
-                            h_feat, w_feat = sqrt_N, sqrt_N
-                            self.logger.debug(f"自动推断特征图尺寸: {h_feat}x{w_feat}")
-                        else:
-                            # 如果无法推断，跳过可视化
-                            self.logger.error(f"无法推断特征图尺寸，跳过可视化 (N={N})")
-                            return
+                if N != expected_N:
+                    self.logger.error(f"Token count {N} does not match spatial grid {h_feat}x{w_feat} ({expected_N})，跳过可视化")
+                    return
+                
+                # 重塑为 [B, 1, H, W] 格式以便后续处理
+                importance_scores = importance_scores.view(B, 1, h_feat, w_feat)
             elif importance_scores.dim() == 4:
                 # CNN 模式：importance_scores 已经是 [B, 1, H, W] 格式
-                # 提取空间维度
                 _, _, h_feat, w_feat = importance_scores.shape
             else:
                 self.logger.warning(f"不支持的重要性分数维度: {importance_scores.dim()}，期望 2 或 4")
@@ -1496,20 +1475,12 @@ class DSETTrainer:
 
                 orig_h, orig_w = orig_img.shape[:2]
 
-                # --- 核心：物理空间校准 (防止 100w 偏移) ---
+                # --- 核心：物理空间校准---
                 valid_h_feat = int(round(orig_h * (h_feat / H_tensor)))
                 valid_w_feat = int(round(orig_w * (w_feat / W_tensor)))
                 
-                # 处理 scores_prob 的维度：可能是 [B, 1, H, W] 或 [B, H, W]
-                if scores_prob.dim() == 4:
-                    # [B, 1, H, W] 格式，需要 squeeze 掉通道维度
-                    s_2d = scores_prob[i, 0].cpu().numpy()  # [H, W]
-                elif scores_prob.dim() == 3:
-                    # [B, H, W] 格式
-                    s_2d = scores_prob[i].cpu().numpy()  # [H, W]
-                else:
-                    # 如果是 [B, N] 格式（虽然理论上不应该到这里），尝试 reshape
-                    s_2d = scores_prob[i].reshape(h_feat, w_feat).cpu().numpy()
+                # 提取单个样本的分数 [H, W]
+                s_2d = scores_prob[i, 0].cpu().numpy()  # [B, 1, H, W] -> [H, W]
                 
                 s_valid = s_2d[:valid_h_feat, :valid_w_feat] # 裁剪 Padding 区
                 
