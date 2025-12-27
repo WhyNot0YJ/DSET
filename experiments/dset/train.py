@@ -1515,7 +1515,8 @@ class DSETTrainer:
                 
                 s_norm = (s_valid - s_valid.min()) / (s_valid.max() - s_valid.min() + 1e-8)
                 heatmap = cv2.applyColorMap((s_norm * 255).astype(np.uint8), cv2.COLORMAP_JET)
-                heatmap = cv2.resize(heatmap, (orig_w, orig_h), interpolation=cv2.INTER_LINEAR)
+                # 使用最近邻插值
+                heatmap = cv2.resize(heatmap, (orig_w, orig_h), interpolation=cv2.INTER_NEAREST)
                 
                 overlay = cv2.addWeighted(orig_img, 0.4, heatmap, 0.6, 0)
                 cv2.imwrite(str(viz_dir / f"sample_{img_id}_aligned.jpg"), overlay)
@@ -2366,7 +2367,7 @@ class DSETTrainer:
             self.save_latest_checkpoint(epoch)
             
             # 每11个epoch保存Token重要性热力图（第11、21、31...次）
-            if (epoch + 1) % 12 == 0:
+            if (epoch + 1) % 10 == 0:
                 try:
                     self._save_token_visualization(epoch)
                 except Exception as e:
