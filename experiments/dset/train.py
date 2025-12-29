@@ -1408,7 +1408,7 @@ class DSETTrainer:
             feat_shapes_list = enc_info.get('feat_shapes_list', [])
             
             if not scores_list:
-                self.logger.warning(f"📸 Epoch {epoch}: 可视化跳过，importance_scores_list 为空。请检查模型是否在 Linear 模式下正确收集了分数。")
+                self.logger.warning(f"📸 Epoch {epoch}: 可视化跳过，importance_scores_list 为空。请检查模型是否正确收集了重要性分数。")
                 return
             
             if not feat_shapes_list:
@@ -1424,24 +1424,21 @@ class DSETTrainer:
             importance_scores = scores_list[-1]
             h_feat, w_feat = feat_shapes_list[-1]
             
-            # 检查重要性分数的维度并重塑（处理 Linear 模式输出的 [B, N] 格式）
-            if importance_scores.dim() == 2:
-                # Linear 模式：importance_scores 是 [B, N] 格式，其中 N = H * W
-                B, N = importance_scores.shape
-                expected_N = h_feat * w_feat
-                
-                if N != expected_N:
-                    self.logger.error(f"Token count {N} does not match spatial grid {h_feat}x{w_feat} ({expected_N})，跳过可视化")
-                    return
-                
-                # 重塑为 [B, 1, H, W] 格式以便后续处理
-                importance_scores = importance_scores.view(B, 1, h_feat, w_feat)
-            elif importance_scores.dim() == 4:
-                # CNN 模式：importance_scores 已经是 [B, 1, H, W] 格式
-                _, _, h_feat, w_feat = importance_scores.shape
-            else:
-                self.logger.warning(f"不支持的重要性分数维度: {importance_scores.dim()}，期望 2 或 4")
+            # 检查重要性分数的维度并重塑（Linear 预测器输出 [B, N] 格式）
+            if importance_scores.dim() != 2:
+                self.logger.error(f"不支持的重要性分数维度: {importance_scores.dim()}，期望 2 (Linear 预测器输出 [B, N])")
                 return
+            
+            # Linear 预测器：importance_scores 是 [B, N] 格式，其中 N = H * W
+            B, N = importance_scores.shape
+            expected_N = h_feat * w_feat
+            
+            if N != expected_N:
+                self.logger.error(f"Token count {N} does not match spatial grid {h_feat}x{w_feat} ({expected_N})，跳过可视化")
+                return
+            
+            # 重塑为 [B, 1, H, W] 格式以便后续处理
+            importance_scores = importance_scores.view(B, 1, h_feat, w_feat)
             
             # 转换为概率
             scores_prob = torch.sigmoid(importance_scores)
