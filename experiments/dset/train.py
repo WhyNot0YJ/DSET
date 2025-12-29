@@ -146,16 +146,14 @@ class DSETRTDETR(nn.Module):
                  decoder_moe_balance_weight: float = None,
                  encoder_moe_balance_weight: float = None,
                  moe_balance_warmup_epochs: int = 0,
-                # Predictor type config
-                predictor_type: str = 'cnn',
                 # CASS (Context-Aware Soft Supervision) config
                 use_cass: bool = False,
                 cass_loss_weight: float = 0.2,
                 cass_expansion_ratio: float = 0.3,
                 cass_min_size: float = 1.0,
                 cass_warmup_epochs: int = 3,
-                # CASS Varifocal Loss config
-                use_focal_loss: bool = True,
+                # CASS Loss config
+                cass_loss_type: str = 'vfl',  # 'focal' or 'vfl'
                 cass_focal_alpha: float = 0.75,
                 cass_focal_beta: float = 2.0,
                 # MoE noise_std config
@@ -180,11 +178,13 @@ class DSETRTDETR(nn.Module):
             decoder_moe_balance_weight: Decoder MoE balance loss weight
             encoder_moe_balance_weight: Encoder MoE balance loss weight
             moe_balance_warmup_epochs: Number of epochs before applying MOE balance loss (default: 0)
-            predictor_type: Type of importance predictor ('cnn' or 'linear')
             use_cass: Whether to use Context-Aware Soft Supervision for token pruning
             cass_loss_weight: CASS loss weight
-            cass_expansion_ratio: Context band expansion ratio (0.2-0.3)
+            cass_expansion_ratio: Context band expansion ratio (0.2-0.8)
             cass_min_size: Minimum box size on feature map (protects small objects)
+            cass_loss_type: Loss type ('focal' for Focal Loss, 'vfl' for Varifocal Loss)
+            cass_focal_alpha: Focal/VFL alpha parameter (positive sample weight)
+            cass_focal_beta: Focal/VFL beta/gamma parameter (hard example mining strength)
             
         Note:
             - Encoder-MoE and Token-level Pruning are always enabled (DSET core features)
@@ -210,17 +210,14 @@ class DSETRTDETR(nn.Module):
         self.encoder_moe_num_experts = encoder_moe_num_experts
         self.encoder_moe_top_k = encoder_moe_top_k
         
-        # Predictor type configuration
-        self.predictor_type = predictor_type
-        
         # CASS configuration
         self.use_cass = use_cass
         self.cass_loss_weight = cass_loss_weight
         self.cass_expansion_ratio = cass_expansion_ratio
         self.cass_min_size = cass_min_size
         self.cass_warmup_epochs = cass_warmup_epochs
-        # CASS Varifocal Loss (VFL) configuration
-        self.use_focal_loss = use_focal_loss
+        # CASS Loss configuration
+        self.cass_loss_type = cass_loss_type
         self.cass_focal_alpha = cass_focal_alpha
         self.cass_focal_beta = cass_focal_beta
         
@@ -307,15 +304,13 @@ class DSETRTDETR(nn.Module):
             token_pruning_warmup_epochs=self.token_pruning_warmup_epochs,
             encoder_moe_num_experts=self.encoder_moe_num_experts,
             encoder_moe_top_k=self.encoder_moe_top_k,
-            # Predictor type selection
-            predictor_type=self.predictor_type,
             # CASS parameters
             use_cass=self.use_cass,
             cass_expansion_ratio=self.cass_expansion_ratio,
             cass_min_size=self.cass_min_size,
             cass_decay_type='gaussian',
-            # CASS Varifocal Loss (VFL) parameters
-            use_focal_loss=self.use_focal_loss,
+            # CASS Loss parameters
+            cass_loss_type=self.cass_loss_type,
             cass_focal_alpha=self.cass_focal_alpha,
             cass_focal_beta=self.cass_focal_beta,
             # MoE noise_std parameter
@@ -712,17 +707,14 @@ class DSETTrainer:
         encoder_moe_num_experts = dset_config.get('encoder_moe_num_experts', 4)
         encoder_moe_top_k = dset_config.get('encoder_moe_top_k', 2)
         
-        # Predictor type 配置
-        predictor_type = dset_config.get('predictor_type', 'cnn')  # 默认使用 CNN 版本
-        
         # CASS (Context-Aware Soft Supervision) 配置
         use_cass = dset_config.get('use_cass', False)
         cass_loss_weight = dset_config.get('cass_loss_weight', 0.2)
         cass_expansion_ratio = dset_config.get('cass_expansion_ratio', 0.3)
         cass_min_size = dset_config.get('cass_min_size', 1.0)
         cass_warmup_epochs = dset_config.get('cass_warmup_epochs', 3)  # 默认第 3 个 epoch 开始
-        # CASS Varifocal Loss (VFL) 配置
-        use_focal_loss = dset_config.get('use_focal_loss', True)
+        # CASS Loss 配置
+        cass_loss_type = dset_config.get('cass_loss_type', 'vfl')  # 'focal' or 'vfl'
         cass_focal_alpha = dset_config.get('cass_focal_alpha', 0.75)
         cass_focal_beta = dset_config.get('cass_focal_beta', 2.0)
         
@@ -755,16 +747,14 @@ class DSETTrainer:
             decoder_moe_balance_weight=decoder_moe_balance_weight,
             encoder_moe_balance_weight=encoder_moe_balance_weight,
             moe_balance_warmup_epochs=moe_balance_warmup_epochs,
-            # Predictor type配置
-            predictor_type=predictor_type,
             # CASS配置
             use_cass=use_cass,
             cass_loss_weight=cass_loss_weight,
             cass_expansion_ratio=cass_expansion_ratio,
             cass_min_size=cass_min_size,
             cass_warmup_epochs=cass_warmup_epochs,
-            # CASS Varifocal Loss (VFL) 配置
-            use_focal_loss=use_focal_loss,
+            # CASS Loss配置
+            cass_loss_type=cass_loss_type,
             cass_focal_alpha=cass_focal_alpha,
             cass_focal_beta=cass_focal_beta,
             # MoE noise_std 配置
@@ -797,7 +787,9 @@ class DSETTrainer:
         self.logger.info(f"    - Patch-level Pruning: 启用（与 Patch-MoE 兼容）")
         self.logger.info(f"      → keep_ratio={token_keep_ratio}, warmup={token_pruning_warmup_epochs}")
         self.logger.info(f"  损失权重配置:")
-        self.logger.info(f"    - CASS Supervision: {use_cass} (weight={cass_loss_weight}, expansion={cass_expansion_ratio}, min_size={cass_min_size}, warmup={cass_warmup_epochs} epochs)")
+        self.logger.info(f"    - CASS Supervision: {use_cass} (loss_type={cass_loss_type}, weight={cass_loss_weight}, expansion={cass_expansion_ratio}, min_size={cass_min_size}, warmup={cass_warmup_epochs} epochs)")
+        if use_cass:
+            self.logger.info(f"      → CASS Loss params: alpha={cass_focal_alpha}, beta={cass_focal_beta}")
         self.logger.info(f"    - Decoder MoE: {decoder_moe_balance_weight if decoder_moe_balance_weight else 'auto'}")
         self.logger.info(f"    - Encoder MoE: {encoder_moe_balance_weight if encoder_moe_balance_weight else 'auto'}")
         if moe_balance_warmup_epochs > 0:

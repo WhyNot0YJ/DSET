@@ -235,15 +235,13 @@ class HybridEncoder(nn.Module):
                  token_pruning_warmup_epochs=10,
                  encoder_moe_num_experts=4,
                  encoder_moe_top_k=2,
-                 # Predictor type selection
-                 predictor_type='cnn',
                  # CASS (Context-Aware Soft Supervision) 参数
                  use_cass=False,
                  cass_expansion_ratio=0.3,
                  cass_min_size=1.0,
                  cass_decay_type='gaussian',
-                 # CASS Varifocal Loss 参数
-                 use_focal_loss=True,
+                 # CASS Loss 参数
+                 cass_loss_type='vfl',  # 'focal' or 'vfl'
                  cass_focal_alpha=0.75,
                  cass_focal_beta=2.0,
                  # MoE noise_std parameter
@@ -255,11 +253,13 @@ class HybridEncoder(nn.Module):
             token_pruning_warmup_epochs: Warmup epochs for pruning
             encoder_moe_num_experts: Number of experts for Encoder-MoE
             encoder_moe_top_k: Top-K experts for Encoder-MoE
-            predictor_type: Type of importance predictor ('cnn' or 'linear')
             use_cass: Whether to use Context-Aware Soft Supervision
-            cass_expansion_ratio: Context band expansion ratio (0.2-0.3)
+            cass_expansion_ratio: Context band expansion ratio (0.2-0.8)
             cass_min_size: Minimum box size on feature map (protects small objects)
             cass_decay_type: Decay type for context band ('gaussian' or 'linear')
+            cass_loss_type: Loss type ('focal' for Focal Loss, 'vfl' for Varifocal Loss)
+            cass_focal_alpha: Focal/VFL alpha parameter (positive sample weight)
+            cass_focal_beta: Focal/VFL beta/gamma parameter (hard example mining strength)
         """
         super().__init__()
         self.in_channels = in_channels
@@ -277,16 +277,13 @@ class HybridEncoder(nn.Module):
         self.encoder_moe_num_experts = encoder_moe_num_experts
         self.encoder_moe_top_k = encoder_moe_top_k
         
-        # Predictor type
-        self.predictor_type = predictor_type
-        
         # CASS parameters - 保存参数以便后续使用
         self.use_cass = use_cass
         self.cass_expansion_ratio = cass_expansion_ratio
         self.cass_min_size = cass_min_size
         self.cass_decay_type = cass_decay_type
-        # CASS Varifocal Loss (VFL) parameters
-        self.use_focal_loss = use_focal_loss
+        # CASS Loss parameters
+        self.cass_loss_type = cass_loss_type
         self.cass_focal_alpha = cass_focal_alpha
         self.cass_focal_beta = cass_focal_beta
         
@@ -335,15 +332,13 @@ class HybridEncoder(nn.Module):
                 min_tokens=self._calculate_min_tokens_for_layer(),
                 warmup_epochs=token_pruning_warmup_epochs,
                 prune_in_eval=True,
-                # Predictor type selection
-                predictor_type=predictor_type,
                 # CASS parameters
                 use_cass=use_cass,
                 cass_expansion_ratio=cass_expansion_ratio,
                 cass_min_size=cass_min_size,
                 cass_decay_type=cass_decay_type,
-                # CASS Varifocal Loss (VFL) parameters
-                use_focal_loss=use_focal_loss,
+                # CASS Loss parameters
+                cass_loss_type=cass_loss_type,
                 cass_focal_alpha=cass_focal_alpha,
                 cass_focal_beta=cass_focal_beta
             )

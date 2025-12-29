@@ -7,60 +7,11 @@ import torch.nn.functional as F
 from typing import Tuple, Optional, List, Dict
 
 
-class ConvImportancePredictor(nn.Module):
+class LinearImportancePredictor(nn.Module):
     """
-    轻量化卷积预测器 (DSET 专用版)
-    利用 3x3 深度卷积获取局部空间感知能力，解决线性层对绝对坐标的过度依赖。
+    Token重要性预测器（极简Linear版本）
+    输出维度严格对应特征图的 Token 序列 [B, H*W]
     """
-    def __init__(self, input_dim, hidden_dim=128):
-        super().__init__()
-        # 1. 维度压缩：减少后续卷积的计算压力
-        self.reduce = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.GELU()
-        )
-        
-        # 2. 核心卷积支路：3x3 深度卷积 (Spatial) + 1x1 逐点卷积 (Channel)
-        self.conv_block = nn.Sequential(
-            # Depthwise: 只看空间形状，不看通道
-            nn.Conv2d(hidden_dim, hidden_dim, kernel_size=3, padding=1, groups=hidden_dim),
-            nn.BatchNorm2d(hidden_dim),
-            nn.GELU(),
-            # Pointwise: 通道特征融合
-            nn.Conv2d(hidden_dim, hidden_dim, kernel_size=1),
-            nn.BatchNorm2d(hidden_dim),
-            nn.GELU()
-        )
-        
-        # 3. 预测头：输出每个 Token 的重要性分值（logits，不应用Sigmoid）
-        self.score_head = nn.Conv2d(hidden_dim, 1, kernel_size=1)
-
-    def forward(self, x, H, W):
-        """
-        x: [B, N, C] 输入的 Token 序列
-        H, W: 特征图的原始高度和宽度
-        """
-        B, N, C = x.shape
-        
-        # 1. 降维
-        x = self.reduce(x) # [B, N, hidden_dim]
-        
-        # 2. 还原 2D 空间布局
-        # [B, N, C] -> [B, C, N] -> [B, C, H, W]
-        x = x.transpose(1, 2).reshape(B, -1, H, W)
-        
-        # 3. 卷积特征提取
-        x = self.conv_block(x)
-        
-        # 4. 获取预测分数并展平
-        scores = self.score_head(x) # [B, 1, H, W]
-        scores = scores.reshape(B, -1) # [B, N]
-        
-        return scores
-
-
-class LearnableImportancePredictor(nn.Module):
-    """Token重要性预测器（轻量级MLP）"""
     def __init__(self, input_dim: int, hidden_dim: int = 128, dropout: float = 0.1):
         super().__init__()
         self.fc1 = nn.Linear(input_dim, hidden_dim)
@@ -73,17 +24,19 @@ class LearnableImportancePredictor(nn.Module):
     def forward(self, tokens: torch.Tensor, H: int, W: int) -> torch.Tensor:
         """
         Args:
-            tokens: [B, N, C] 输入的 Token 序列
-            H, W: 特征图的原始高度和宽度（MLP版本不需要，但为接口一致性保留）
+            tokens: [B, N, C] 输入的 Token 序列，其中 N = H*W
+            H, W: 特征图的原始高度和宽度（用于验证，不参与计算）
         
         Returns:
             scores: [B, N] Token重要性分数（logits，不应用Sigmoid）
+                   严格对应特征图的每个格子（Token）
         """
-        # tokens: [B, N, C]
-        x = self.fc1(tokens)
+        # tokens: [B, N, C] where N = H*W
+        x = self.fc1(tokens)  # [B, N, hidden_dim]
         x = self.activation(x)
         x = self.dropout(x)
-        return self.fc2(x).squeeze(-1)  # [B, N]
+        scores = self.fc2(x).squeeze(-1)  # [B, N] = [B, H*W]
+        return scores
 
 
 class TokenLevelPruner(nn.Module):
@@ -96,15 +49,13 @@ class TokenLevelPruner(nn.Module):
                  min_tokens: int = 10,
                  warmup_epochs: int = 10,
                  prune_in_eval: bool = True,
-                 # Predictor type selection
-                 predictor_type: str = 'cnn',
                  # CASS parameters
                  use_cass: bool = False,
                  cass_expansion_ratio: float = 0.3,
                  cass_min_size: float = 1.0,
                  cass_decay_type: str = 'gaussian',
                  use_subpixel_offset: bool = True,
-                 use_focal_loss: bool = True,
+                 cass_loss_type: str = 'vfl',  # 'focal' or 'vfl'
                  cass_focal_alpha: float = 0.75,
                  cass_focal_beta: float = 2.0):
         """
@@ -115,15 +66,14 @@ class TokenLevelPruner(nn.Module):
             min_tokens: Minimum tokens to keep
             warmup_epochs: Warmup epochs
             prune_in_eval: Whether to prune during evaluation
-            predictor_type: Type of importance predictor ('cnn' or 'linear')
             use_cass: Whether to use Context-Aware Soft Supervision
-            cass_expansion_ratio: Expansion ratio for context band (0.2-0.3)
+            cass_expansion_ratio: Expansion ratio for context band (0.2-0.8)
             cass_min_size: Minimum box size on feature map (pixels)
             cass_decay_type: Decay type for context band ('gaussian' or 'linear')
             use_subpixel_offset: Whether to use sub-pixel offset compensation
-            use_focal_loss: Whether to use Varifocal Loss (VFL) instead of MSE
-            cass_focal_alpha: VFL alpha parameter (default: 0.75)
-            cass_focal_beta: VFL gamma parameter (default: 2.0)
+            cass_loss_type: Loss type ('focal' for Focal Loss, 'vfl' for Varifocal Loss)
+            cass_focal_alpha: Focal/VFL alpha parameter (positive sample weight)
+            cass_focal_beta: Focal/VFL beta/gamma parameter (hard example mining strength)
         """
         super().__init__()
         self.input_dim = input_dim
@@ -139,19 +89,13 @@ class TokenLevelPruner(nn.Module):
         self.cass_min_size = cass_min_size
         self.cass_decay_type = cass_decay_type
         self.use_subpixel_offset = use_subpixel_offset
-        self.use_focal_loss = use_focal_loss
+        self.cass_loss_type = cass_loss_type
         self.cass_focal_alpha = cass_focal_alpha
         self.cass_focal_beta = cass_focal_beta
         
-        # Initialize importance predictor based on type
-        if predictor_type == 'linear':
-            self.importance_predictor = LearnableImportancePredictor(input_dim)
-        elif predictor_type == 'cnn':
-            self.importance_predictor = ConvImportancePredictor(input_dim)
-        else:
-            raise ValueError(f"Unsupported predictor_type: {predictor_type}. Must be 'cnn' or 'linear'")
+        # 只使用 Linear 预测器
+        self.importance_predictor = LinearImportancePredictor(input_dim)
         
-        self.predictor_type = predictor_type
         self.current_epoch = 0
         self.pruning_enabled = False
     
@@ -634,6 +578,71 @@ class TokenLevelPruner(nn.Module):
         
         return all_obj_masks, batch_indices
     
+    def _compute_focal_loss(
+        self,
+        pred_scores: torch.Tensor,
+        target_mask: torch.Tensor,
+        reduction: str = 'mean'
+    ) -> torch.Tensor:
+        """
+        Token-level Focal Loss for CASS supervision.
+        
+        Formula:
+        - For positive samples (y > 0): Loss = -α * (1-p)^γ * log(p)
+        - For negative samples (y = 0): Loss = -α * p^γ * log(1-p)
+        
+        where p = sigmoid(pred_scores), y = target_mask, α = cass_focal_alpha, γ = cass_focal_beta
+        
+        Args:
+            pred_scores: Predicted importance logits [B, num_tokens] (before sigmoid)
+            target_mask: Target soft mask [B, num_tokens] with values 0.0 to 1.0
+            reduction: Loss reduction method ('mean', 'sum', 'none')
+        
+        Returns:
+            loss: Token-level loss tensor [B, num_tokens] (if reduction='none') or scalar
+        """
+        # Numerical safety: Clamp logits to prevent extreme gradients in FP16 training
+        pred_scores = torch.clamp(pred_scores, min=-10.0, max=10.0)
+        pred_probs = torch.sigmoid(pred_scores)
+        
+        # Add epsilon for numerical stability in log computation
+        epsilon = 1e-8
+        log_p = torch.log(pred_probs + epsilon)
+        log_one_minus_p = torch.log(1.0 - pred_probs + epsilon)
+        
+        # Identify positive and negative samples
+        is_positive = target_mask > 0
+        
+        alpha = self.cass_focal_alpha
+        gamma = self.cass_focal_beta
+        
+        # Optimize power computation for common values
+        if gamma == 2.0:
+            p_gamma = pred_probs * pred_probs
+            one_minus_p_gamma = (1.0 - pred_probs) * (1.0 - pred_probs)
+        elif gamma == 1.0:
+            p_gamma = pred_probs
+            one_minus_p_gamma = 1.0 - pred_probs
+        else:
+            p_gamma = torch.pow(pred_probs, gamma)
+            one_minus_p_gamma = torch.pow(1.0 - pred_probs, gamma)
+        
+        # For positive samples: Loss = -α * (1-p)^γ * log(p)
+        pos_loss = -alpha * one_minus_p_gamma * log_p
+        
+        # For negative samples: Loss = -α * p^γ * log(1-p)
+        neg_loss = -alpha * p_gamma * log_one_minus_p
+        
+        # Combine losses: use positive loss where y > 0, negative loss where y = 0
+        loss = torch.where(is_positive, pos_loss, neg_loss)
+        
+        if reduction == 'mean':
+            return loss.mean()
+        elif reduction == 'sum':
+            return loss.sum()
+        else:
+            return loss
+    
     def _compute_vfl(
         self,
         pred_scores: torch.Tensor,
@@ -641,7 +650,7 @@ class TokenLevelPruner(nn.Module):
         reduction: str = 'mean'
     ) -> torch.Tensor:
         """
-        Varifocal Loss (VFL) for CASS supervision.
+        Token-level Varifocal Loss (VFL) for CASS supervision.
         
         Formula:
         - For positive samples (y > 0): Loss = -y * [y * log(p) + (1-y) * log(1-p)]
@@ -655,7 +664,7 @@ class TokenLevelPruner(nn.Module):
             reduction: Loss reduction method ('mean', 'sum', 'none')
         
         Returns:
-            loss: Scalar loss tensor (if reduction != 'none')
+            loss: Token-level loss tensor [B, num_tokens] (if reduction='none') or scalar
         """
         # Numerical safety: Clamp logits to prevent extreme gradients in FP16 training
         pred_scores = torch.clamp(pred_scores, min=-10.0, max=10.0)
@@ -667,18 +676,16 @@ class TokenLevelPruner(nn.Module):
         log_one_minus_p = torch.log(1.0 - pred_probs + epsilon)
         
         # Identify positive and negative samples
-        # Positive samples: y > 0
-        # Negative samples: y = 0
         is_positive = target_mask > 0
         
         # For positive samples: Loss = -y * [y * log(p) + (1-y) * log(1-p)]
         pos_loss = -target_mask * (target_mask * log_p + (1.0 - target_mask) * log_one_minus_p)
         
         # For negative samples: Loss = -α * p^γ * log(1-p)
-        # Optimize power computation for common values
         alpha = self.cass_focal_alpha
         gamma = self.cass_focal_beta
         
+        # Optimize power computation for common values
         if gamma == 2.0:
             p_gamma = pred_probs * pred_probs
         elif gamma == 1.0:
@@ -705,7 +712,7 @@ class TokenLevelPruner(nn.Module):
         reduction: str = 'mean'
     ) -> torch.Tensor:
         """
-        Computes the CASS supervision loss using MSE or Varifocal Loss (VFL).
+        Computes Token-level CASS supervision loss (Focal Loss or Varifocal Loss).
         
         Args:
             pred_scores: Predicted importance logits [B, num_tokens] (before sigmoid)
@@ -713,18 +720,17 @@ class TokenLevelPruner(nn.Module):
             reduction: Loss reduction method ('mean', 'sum', 'none')
         
         Returns:
-            loss: Scalar loss tensor (if reduction != 'none')
+            loss: Token-level loss tensor [B, num_tokens] (if reduction='none') or scalar
         """
-        # Numerical Fuse: Clamp logits to prevent extreme gradients in FP16 training
+        # Numerical safety: Clamp logits to prevent extreme gradients in FP16 training
         pred_scores = torch.clamp(pred_scores, min=-10.0, max=10.0)
         
-        if self.use_focal_loss:
+        if self.cass_loss_type == 'focal':
+            return self._compute_focal_loss(pred_scores, target_mask, reduction)
+        elif self.cass_loss_type == 'vfl':
             return self._compute_vfl(pred_scores, target_mask, reduction)
         else:
-            # Original MSE implementation
-            pred_probs = torch.sigmoid(pred_scores)
-            loss = F.mse_loss(pred_probs, target_mask, reduction=reduction)
-            return loss
+            raise ValueError(f"Unsupported cass_loss_type: {self.cass_loss_type}. Must be 'focal' or 'vfl'")
     
     def compute_cass_loss_from_info(
         self,
@@ -734,29 +740,12 @@ class TokenLevelPruner(nn.Module):
         img_shape: Tuple[int, int]
     ) -> torch.Tensor:
         """
-        Compute CASS loss with double normalization (vectorized version).
+        Compute Token-level dense CASS supervision loss.
         
-        Double Normalization Strategy:
-        1. First normalization (within-object): Compute average loss per token for each object.
-           This ensures that regardless of object size, each object's raw contribution is at the same scale.
-        2. Second normalization (between-objects): Average the per-object mean losses across all objects.
-           This ensures that small objects (e.g., traffic cones) have equal "voice" as large objects
-           (e.g., trucks) in the final gradient.
-        
-        This prevents numerical explosion (nan) in FP16 mixed precision training by:
-        - Avoiding sum-based reduction that scales with object size
-        - Ensuring all objects contribute equally regardless of their token coverage
-        
-        Performance optimization: Uses vectorized batch processing to avoid repeated
-        meshgrid computations. Instead of calling generate_soft_target_mask N times (once per object),
-        we generate all masks in a single pass.
-        
-        Core logic:
-        1. Generate all object masks in one vectorized call: [Total_Objects, num_tokens]
-        2. Expand pred_scores to match each object's batch index: [Total_Objects, num_tokens]
-        3. Compute Varifocal Loss (VFL) for all objects at once (reduction='none')
-        4. First normalization: per_object_mean_loss = sum(loss) / num_tokens_in_object
-        5. Second normalization: final_loss = mean(per_object_mean_loss)
+        Token-level Dense Supervision Strategy:
+        - Directly compute loss for each token (grid cell) in the feature map
+        - No object-level aggregation or pooling
+        - Element-wise loss: pred_scores [B, H*W] vs target_mask [B, H*W]
         
         Args:
             info: Info dict from forward() containing 'token_importance_scores'
@@ -765,45 +754,30 @@ class TokenLevelPruner(nn.Module):
             img_shape: (H, W) of the original image
         
         Returns:
-            loss: CASS supervision loss with double normalization
+            loss: Token-level dense CASS supervision loss (scalar)
         """
         if 'token_importance_scores' not in info or info['token_importance_scores'] is None:
             return torch.tensor(0.0, device=info.get('device', torch.device('cpu')), requires_grad=False)
         
-        pred_scores = info['token_importance_scores']
+        pred_scores = info['token_importance_scores']  # [B, H*W]
         device = pred_scores.device
         
-        # 1. Generate all object masks in one vectorized call
-        # Returns: [Total_Objects, num_tokens], [Total_Objects]
-        all_obj_masks, batch_indices = self.generate_all_object_masks(
+        # Generate dense target mask: [B, H*W]
+        # This mask aggregates all objects in each image, creating a soft supervision signal
+        target_mask = self.generate_soft_target_mask(
             gt_bboxes=gt_bboxes,
             feat_shape=feat_shape,
             img_shape=img_shape,
             device=device
+        )  # [B, num_tokens] = [B, H*W]
+        
+        # Token-level dense loss: Element-wise computation
+        # pred_scores: [B, H*W], target_mask: [B, H*W]
+        # Each token gets its own loss value, no aggregation
+        loss = self.compute_cass_loss(
+            pred_scores,
+            target_mask,
+            reduction='mean'  # Average over all tokens in batch
         )
         
-        total_objects = all_obj_masks.shape[0]
-        if total_objects == 0:
-            return torch.tensor(0.0, device=device, requires_grad=False)
-        
-        # 2. Expand pred_scores to match each object's batch index
-        # pred_scores: [B, num_tokens]
-        # batch_indices: [Total_Objects] -> indices into batch dimension
-        # expanded_preds: [Total_Objects, num_tokens]
-        expanded_preds = pred_scores[batch_indices]  # [Total_Objects, num_tokens]
-        
-        # 3. Vectorized loss computation for all objects
-        # Use reduction='none' to get per-token losses: [Total_Objects, num_tokens]
-        per_token_loss = self.compute_cass_loss(
-            expanded_preds,
-            all_obj_masks,
-            reduction='none'
-        )
-        
-        obj_areas = all_obj_masks.sum(dim=1).clamp(min=1.0)
-        
-        per_obj_total_loss = per_token_loss.sum(dim=1)
-        
-        total_loss = (per_obj_total_loss / obj_areas).mean()
-        
-        return total_loss
+        return loss
