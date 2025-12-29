@@ -381,7 +381,9 @@ class TokenLevelPruner(nn.Module):
             # for thin objects (e.g., traffic cones) which would cause zero decay values
             expand_dist = torch.sqrt(expand_w**2 + expand_h**2)
             expand_dist = torch.clamp(expand_dist, min=1.0)  # Ensure minimum radius of 1 pixel
-            normalized_dist = dist_to_core / expand_dist
+            # Add epsilon to denominator for numerical stability
+            epsilon = 1e-6
+            normalized_dist = dist_to_core / (expand_dist + epsilon)
             
             if decay_type == 'gaussian':
                 sigma = 0.5
@@ -559,7 +561,9 @@ class TokenLevelPruner(nn.Module):
         dist_to_core = torch.sqrt(dist_x**2 + dist_y**2)
         expand_dist = torch.sqrt(expand_w**2 + expand_h**2)
         expand_dist = torch.clamp(expand_dist, min=1.0)
-        normalized_dist = dist_to_core / expand_dist
+        # Add epsilon to denominator for numerical stability
+        epsilon = 1e-6
+        normalized_dist = dist_to_core / (expand_dist + epsilon)
         
         if decay_type == 'gaussian':
             sigma = 0.5
@@ -602,39 +606,33 @@ class TokenLevelPruner(nn.Module):
             loss: Token-level loss tensor [B, num_tokens] (if reduction='none') or scalar
         """
         # Numerical safety: Clamp logits to prevent extreme gradients in FP16 training
-        pred_scores = torch.clamp(pred_scores, min=-10.0, max=10.0)
-        pred_probs = torch.sigmoid(pred_scores)
+        # Tightened clamp range: [-8, 8] ensures p won't be too small, preventing log(p) explosion
+        pred_scores = torch.clamp(pred_scores, min=-8.0, max=8.0)
         
-        # Add epsilon for numerical stability in log computation
-        epsilon = 1e-8
-        log_p = torch.log(pred_probs + epsilon)
-        log_one_minus_p = torch.log(1.0 - pred_probs + epsilon)
+        # Use PyTorch's built-in binary_cross_entropy_with_logits for numerical stability
+        # It internally optimizes log(sigmoid) computation, extremely stable
+        bce_loss = F.binary_cross_entropy_with_logits(pred_scores, target_mask, reduction='none')
         
-        # Identify positive and negative samples
-        is_positive = target_mask > 0
+        # Compute probability p = sigmoid(pred_scores)
+        p = torch.sigmoid(pred_scores)
         
+        # Compute target probability: p_t = p * y + (1-p) * (1-y)
+        p_t = p * target_mask + (1.0 - p) * (1.0 - target_mask)
+        
+        # Compute focal weight: α * (1 - p_t)^γ
         alpha = self.cass_focal_alpha
         gamma = self.cass_focal_beta
         
         # Optimize power computation for common values
         if gamma == 2.0:
-            p_gamma = pred_probs * pred_probs
-            one_minus_p_gamma = (1.0 - pred_probs) * (1.0 - pred_probs)
+            focal_weight = alpha * (1.0 - p_t) * (1.0 - p_t)
         elif gamma == 1.0:
-            p_gamma = pred_probs
-            one_minus_p_gamma = 1.0 - pred_probs
+            focal_weight = alpha * (1.0 - p_t)
         else:
-            p_gamma = torch.pow(pred_probs, gamma)
-            one_minus_p_gamma = torch.pow(1.0 - pred_probs, gamma)
+            focal_weight = alpha * torch.pow(1.0 - p_t, gamma)
         
-        # For positive samples: Loss = -α * (1-p)^γ * log(p)
-        pos_loss = -alpha * one_minus_p_gamma * log_p
-        
-        # For negative samples: Loss = -α * p^γ * log(1-p)
-        neg_loss = -alpha * p_gamma * log_one_minus_p
-        
-        # Combine losses: use positive loss where y > 0, negative loss where y = 0
-        loss = torch.where(is_positive, pos_loss, neg_loss)
+        # Focal Loss: focal_weight * bce_loss
+        loss = focal_weight * bce_loss
         
         if reduction == 'mean':
             return loss.mean()
@@ -667,7 +665,8 @@ class TokenLevelPruner(nn.Module):
             loss: Token-level loss tensor [B, num_tokens] (if reduction='none') or scalar
         """
         # Numerical safety: Clamp logits to prevent extreme gradients in FP16 training
-        pred_scores = torch.clamp(pred_scores, min=-10.0, max=10.0)
+        # Tightened clamp range: [-8, 8] ensures p won't be too small, preventing log(p) explosion
+        pred_scores = torch.clamp(pred_scores, min=-8.0, max=8.0)
         pred_probs = torch.sigmoid(pred_scores)
         
         # Add epsilon for numerical stability in log computation
@@ -723,14 +722,20 @@ class TokenLevelPruner(nn.Module):
             loss: Token-level loss tensor [B, num_tokens] (if reduction='none') or scalar
         """
         # Numerical safety: Clamp logits to prevent extreme gradients in FP16 training
-        pred_scores = torch.clamp(pred_scores, min=-10.0, max=10.0)
+        # Tightened clamp range: [-8, 8] ensures p won't be too small, preventing log(p) explosion
+        pred_scores = torch.clamp(pred_scores, min=-8.0, max=8.0)
         
         if self.cass_loss_type == 'focal':
-            return self._compute_focal_loss(pred_scores, target_mask, reduction)
+            loss = self._compute_focal_loss(pred_scores, target_mask, reduction)
         elif self.cass_loss_type == 'vfl':
-            return self._compute_vfl(pred_scores, target_mask, reduction)
+            loss = self._compute_vfl(pred_scores, target_mask, reduction)
         else:
             raise ValueError(f"Unsupported cass_loss_type: {self.cass_loss_type}. Must be 'focal' or 'vfl'")
+        
+        # Final safety check: replace NaN with zeros
+        loss = torch.where(torch.isnan(loss), torch.zeros_like(loss), loss)
+        
+        return loss
     
     def compute_cass_loss_from_info(
         self,
