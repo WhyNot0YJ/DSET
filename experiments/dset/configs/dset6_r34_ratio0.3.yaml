@@ -26,7 +26,7 @@ model:
     cass_loss_weight: 0.05
     cass_warmup_epochs: 5
     cass_expansion_ratio: 0.8
-    cass_min_size: 1.0
+    cass_min_size: 2.0
     use_subpixel_offset: true
     cass_loss_type: vfl
     cass_focal_alpha: 2.0
