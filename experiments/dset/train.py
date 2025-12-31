@@ -10,6 +10,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import re
+import gc
 from torch.utils.data import DataLoader
 from pathlib import Path
 import logging
@@ -1552,7 +1553,8 @@ class DSETTrainer:
                        for k, v in t.items()} for t in targets]
             
             # 前向传播
-            self.optimizer.zero_grad()
+            # [内存优化] 使用 set_to_none=True 提升内存效率
+            self.optimizer.zero_grad(set_to_none=True)
             
             with torch.amp.autocast('cuda'):
                 outputs = self.model(images, targets)
@@ -1598,13 +1600,15 @@ class DSETTrainer:
                 # Encoder专家使用率统计（即产即清）
                 enc_logits = enc_info.get('moe_router_logits', [])
                 if enc_logits and isinstance(enc_logits, list) and len(enc_logits) > 0:
-                    # 仅在GPU上计算TopK索引并计数，完成后Logits即可被释放
-                    enc_logits_tensor = torch.cat(enc_logits, dim=0)
+                    # [安全脱钩] 使用 detach() 创建统计副本，确保不影响反向传播
+                    enc_logits_detached = [logits.detach() if isinstance(logits, torch.Tensor) else logits for logits in enc_logits]
+                    enc_logits_tensor = torch.cat(enc_logits_detached, dim=0)
                     enc_top_k = self.model.encoder_moe_top_k if hasattr(self.model, 'encoder_moe_top_k') else 2
                     _, enc_indices = torch.topk(enc_logits_tensor, enc_top_k, dim=-1)
                     encoder_expert_usage_total.add_(torch.bincount(enc_indices.flatten(), minlength=num_encoder_experts))
                     total_enc_tokens += enc_indices.numel()
-                    # Logits tensor在此处自动释放（无引用）
+                    # 显式释放临时张量
+                    del enc_logits_detached, enc_logits_tensor, enc_indices
             
             # 处理Decoder MoE统计（即产即清）
             if self.model.decoder.use_moe:
@@ -1614,9 +1618,13 @@ class DSETTrainer:
                         if dec_logits:
                             # 处理列表格式的logits
                             if isinstance(dec_logits, list) and len(dec_logits) > 0:
-                                dec_logits_tensor = torch.cat(dec_logits, dim=0)
+                                # [安全脱钩] 使用 detach() 创建统计副本，确保不影响反向传播
+                                dec_logits_detached = [logits.detach() if isinstance(logits, torch.Tensor) else logits for logits in dec_logits]
+                                dec_logits_tensor = torch.cat(dec_logits_detached, dim=0)
+                                del dec_logits_detached
                             elif isinstance(dec_logits, torch.Tensor) and dec_logits.numel() > 0:
-                                dec_logits_tensor = dec_logits
+                                # [安全脱钩] 使用 detach() 创建统计副本
+                                dec_logits_tensor = dec_logits.detach()
                             else:
                                 continue
                             
@@ -1624,7 +1632,8 @@ class DSETTrainer:
                             _, dec_indices = torch.topk(dec_logits_tensor, self.model.decoder.moe_top_k, dim=-1)
                             decoder_expert_usage_total.add_(torch.bincount(dec_indices.flatten(), minlength=num_decoder_experts))
                             total_dec_tokens += dec_indices.numel()
-                            # Logits tensor在此处自动释放（无引用）
+                            # 显式释放临时张量
+                            del dec_logits_tensor, dec_indices
             
             # [优化] 日志打印逻辑：每100个batch只显示基本loss信息
             if batch_idx % 100 == 0:
@@ -1665,7 +1674,16 @@ class DSETTrainer:
         # 计算平均Token Pruning比例
         avg_token_pruning_ratio = sum(token_pruning_ratios) / len(token_pruning_ratios) if token_pruning_ratios else 0.0
         
-        return {
+        # [内存优化] 统计完专家使用率后，手动清空 router_logits_cache（即产即清）
+        # 确保这只是针对统计日志的清理，不影响 detr_criterion 的计算
+        if self.model.decoder.use_moe:
+            for layer in self.model.decoder.decoder.layers:
+                if hasattr(layer, 'adaptive_expert_layer'):
+                    if hasattr(layer.adaptive_expert_layer, 'router_logits_cache'):
+                        layer.adaptive_expert_layer.router_logits_cache = []
+        
+        # 准备返回结果
+        result = {
             'total_loss': avg_loss,
             'detection_loss': avg_detection_loss,
             'decoder_moe_loss': avg_decoder_moe_lb_loss,
@@ -1677,6 +1695,12 @@ class DSETTrainer:
             'expert_usage_rate': expert_usage_rate,
             'encoder_expert_usage_rate': encoder_expert_usage_rate
         }
+        
+        # [内存优化] 释放临时统计变量
+        del decoder_expert_usage_total, encoder_expert_usage_total
+        del decoder_expert_usage_count, encoder_expert_usage_count
+        
+        return result
     
     def validate(self) -> Dict[str, float]:
         """验证模型并计算mAP。"""
@@ -2170,6 +2194,12 @@ class DSETTrainer:
             best_path = self.log_dir / 'best_model.pth'
             self._safe_save(checkpoint, best_path, "最佳模型")
             
+            # [内存优化] Checkpoint 原子化管理：保存后立即回收临时对象
+            del checkpoint
+            if best_ema_state is not None:
+                del best_ema_state
+            gc.collect()
+            
             # 在best_model时重新计算并打印详细的每类mAP（8类）
             self._print_best_model_per_category_map()
     
@@ -2195,6 +2225,10 @@ class DSETTrainer:
         
         latest_path = self.log_dir / 'latest_checkpoint.pth'
         self._safe_save(checkpoint, latest_path, "最新检查点")
+        
+        # [内存优化] Checkpoint 原子化管理：保存后立即回收临时对象
+        del checkpoint
+        gc.collect()
     
     def train(self) -> None:
         """主训练循环。"""
@@ -2325,6 +2359,17 @@ class DSETTrainer:
             
             # 每个epoch都保存latest用于断点续训（不会堆积文件）
             self.save_latest_checkpoint(epoch)
+            
+            # [内存优化] 在每个 Epoch 结束、保存完模型后，显式清理临时指标变量
+            del train_metrics, val_metrics
+            if should_validate:
+                # 验证时会产生额外的临时变量，也需要清理
+                pass
+            # 强制垃圾回收，释放内存
+            gc.collect()
+            # 如果使用CUDA，清空缓存
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
             
             # 每11个epoch保存Token重要性热力图（第11、21、31...次）
             if (epoch + 1) % 10 == 0:
