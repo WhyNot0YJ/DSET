@@ -39,13 +39,14 @@ if [ -n "$RESUME_CHECKPOINT" ]; then
     if [ "$RESUME_CHECKPOINT" == "AUTO" ]; then
         # 自动查找最新的检查点
         # 查找所有 latest_checkpoint.pth 文件，按修改时间排序
-        if command -v find >/dev/null 2>&1; then
-            LATEST_CHECKPOINT=$(find logs -name "latest_checkpoint.pth" -type f 2>/dev/null | while IFS= read -r file; do
-                echo "$(stat -c %Y "$file" 2>/dev/null || stat -f %m "$file" 2>/dev/null || echo 0) $file"
-            done | sort -rn | head -1 | cut -d' ' -f2-)
-        else
-            # fallback: 使用 ls -t
-            LATEST_CHECKPOINT=$(find logs -name "latest_checkpoint.pth" -type f 2>/dev/null | xargs ls -t 2>/dev/null | head -1)
+        if [ -d "logs" ]; then
+            # 尝试使用 find + ls -t（适用于大多数 Unix 系统）
+            LATEST_CHECKPOINT=$(find logs -name "latest_checkpoint.pth" -type f 2>/dev/null | \
+                while IFS= read -r file; do
+                    if [ -f "$file" ]; then
+                        echo "$file"
+                    fi
+                done | xargs ls -t 2>/dev/null | head -1)
         fi
         
         if [ -n "$LATEST_CHECKPOINT" ] && [ -f "$LATEST_CHECKPOINT" ]; then
