@@ -18,8 +18,11 @@ class LinearImportancePredictor(nn.Module):
         self.activation = nn.GELU()
         self.dropout = nn.Dropout(dropout)
         self.fc2 = nn.Linear(hidden_dim, 1)
+        # 权重初始化
         nn.init.xavier_uniform_(self.fc1.weight)
         nn.init.xavier_uniform_(self.fc2.weight)
+        nn.init.zeros_(self.fc1.bias)
+        nn.init.zeros_(self.fc2.bias)
 
     def forward(self, tokens: torch.Tensor, H: int, W: int) -> torch.Tensor:
         """
