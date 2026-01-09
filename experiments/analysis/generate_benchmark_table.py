@@ -277,29 +277,30 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 12
             # 先测量整个 encoder_model 的 total_enc_base
             total_enc_base, _ = profile(encoder_model, inputs=(encoder_input,), verbose=False)
             
+            # 1. 明确定义隐藏维度（DSET 标准是 256）
+            hidden_dim = config.get('model', {}).get('hidden_dim', 256)
+            
             enc_attn_base = 0
             enc_ffn_base = 0
             
             # 遍历 encoder 的子模块，识别 Attention 和 FFN
             for name, module in encoder_model.named_modules():
-                # 识别 MultiheadAttention 或相关 Attention 类
+                # 针对 Attention 层
                 if isinstance(module, nn.MultiheadAttention) or "Attention" in module.__class__.__name__:
-                    # 准备输入：需要将特征图转换为序列格式
-                    B, C, H, W = encoder_feat.shape
-                    seq_feat = encoder_feat.flatten(2).permute(0, 2, 1)  # [B, H*W, C]
+                    B, _, H, W = encoder_feat.shape  # 只取 Batch, Height, Width
+                    # 修复点：构造 inputs 时，最后一维必须是 hidden_dim (256)
+                    dummy_seq = torch.randn(B, H * W, hidden_dim).to(device)
                     
-                    # Profile Attention 层
-                    attn_flops, _ = profile(module, inputs=(seq_feat, seq_feat, seq_feat), verbose=False)
+                    attn_flops, _ = profile(module, inputs=(dummy_seq, dummy_seq, dummy_seq), verbose=False)
                     enc_attn_base += attn_flops
                 
-                # 识别 FFN/MoE 层（Linear 层且包含 expert 或 ffn 关键字）
+                # 针对 FFN/MoE 层
                 elif isinstance(module, nn.Linear) and any(k in name.lower() for k in ['expert', 'ffn', 'moe']):
-                    # 准备输入：平铺后的 token
-                    B, C, H, W = encoder_feat.shape
-                    flat_feat = encoder_feat.flatten(2).permute(0, 2, 1)  # [B, H*W, C]
+                    B, _, H, W = encoder_feat.shape
+                    # 修复点：输入维度对齐 256
+                    dummy_flat = torch.randn(B, H * W, hidden_dim).to(device)
                     
-                    # Profile FFN 层
-                    ffn_flops, _ = profile(module, inputs=(flat_feat,), verbose=False)
+                    ffn_flops, _ = profile(module, inputs=(dummy_flat,), verbose=False)
                     enc_ffn_base += ffn_flops
             
             if enc_attn_base == 0 and enc_ffn_base == 0:
@@ -787,6 +788,13 @@ def _collect_predictions_for_coco(outputs: Dict, targets: List[Dict], batch_idx:
     batch_size_actual = pred_logits.shape[0]
     
     for i in range(batch_size_actual):
+        # 尝试从 target 中直接获取原始 ID
+        if i < len(targets) and 'image_id' in targets[i]:
+            img_id = int(targets[i]['image_id'].item())
+        else:
+            # 如果没有，再退回到索引计算逻辑，但要确保 batch_size 正确
+            img_id = batch_idx * batch_size + i
+        
         if use_sigmoid:
             pred_scores = torch.sigmoid(pred_logits[i])
         else:
@@ -819,7 +827,7 @@ def _collect_predictions_for_coco(outputs: Dict, targets: List[Dict], batch_idx:
                 for j in range(boxes_coco.shape[0]):
                     x, y, w, h = boxes_coco[j].cpu().numpy()
                     all_predictions.append({
-                        'image_id': batch_idx * batch_size + i,
+                        'image_id': img_id,
                         'category_id': int(filtered_classes[j].item()) + 1,
                         'bbox': [float(x), float(y), float(w), float(h)],
                         'score': float(filtered_scores[j].item())
@@ -854,7 +862,7 @@ def _collect_predictions_for_coco(outputs: Dict, targets: List[Dict], batch_idx:
                     x, y, w, h = true_boxes_coco[j].cpu().numpy()
                     ann_dict = {
                         'id': len(all_targets),
-                        'image_id': batch_idx * batch_size + i,
+                        'image_id': img_id,
                         'category_id': int(true_labels[j].item()) + 1,
                         'bbox': [float(x), float(y), float(w), float(h)],
                         'area': float(w * h)
