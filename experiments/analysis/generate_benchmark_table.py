@@ -380,6 +380,9 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 12
             print(f"    - Backbone: {backbone_flops/1e9:.2f} G")
             print(f"    - Encoder (r={token_keep_ratio:.2f}, e={encoder_experts}): {theory_enc_flops/1e9:.2f} G")
             print(f"    - Decoder (e={decoder_experts}, top-3): {theory_dec_flops/1e9:.2f} G")
+        except Exception as e:
+            print(f"  ⚠ 理论 FLOPs 计算失败，使用基准 FLOPs: {e}")
+            theory_flops_g = base_flops_g
     else:
         # 非 DSET 模型或没有 thop：理论 FLOPs = 基准 FLOPs
         theory_flops_g = base_flops_g
