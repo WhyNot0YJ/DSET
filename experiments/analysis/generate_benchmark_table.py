@@ -6,7 +6,7 @@
 1. 自动从 logs/ 目录查找最新的 best_model.pth 或使用指定的检查点
 2. 使用 pycocotools 在验证集上运行 COCO 评估（仅精度指标）
 3. 计算模型参数量和理论 FLOPs（考虑 token pruning 和 MoE 稀疏性）
-4. 所有评估在 batch_size=1 条件下进行（学术论文标准）
+4. 使用配置文件中的 batch_size（COCO 评估结果与 batch_size 无关，可使用更大 batch_size 加速）
 
 使用方法：
     python generate_benchmark_table.py --model_type dset
@@ -325,7 +325,9 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 12
             # 构造 dummy_queries 模拟 Object Queries，不要传 None
             B, C, H, W = encoder_feat.shape
             num_queries = getattr(decoder_model, 'num_queries', 100)
-            dummy_queries = torch.randn(B, num_queries, C).to(device)
+            # 使用 decoder 的 hidden_dim，而不是 encoder 特征图的通道数
+            hidden_dim = getattr(decoder_model, 'hidden_dim', getattr(model, 'hidden_dim', 256))
+            dummy_queries = torch.randn(B, num_queries, hidden_dim).to(device)
             
             # 统计整个 decoder 的 FLOPs
             # Decoder 通常需要 encoder_features 和 queries
@@ -729,14 +731,9 @@ def evaluate_deformable_detr_full(config_path: str,
     if checkpoint_path:
         cfg.load_from = checkpoint_path
     
-    # 强制 batch_size=1（benchmark 标准）。
+    # 使用配置文件中的 batch_size（不强制为 1，COCO 评估结果与 batch_size 无关）
     # 其余配置（pipeline/resize/evaluator/proposal_nums/metric_items/num_workers 等）
     # 严格沿用训练脚本（如 train_deformable_r18.py）生成的 config，保证一致性。
-    for dl_key in ['test_dataloader', 'val_dataloader']:
-        if hasattr(cfg, dl_key):
-            dl = getattr(cfg, dl_key)
-            if isinstance(dl, dict):
-                dl['batch_size'] = 1
     
     # 避免写日志到 work_dir（Runner 需要但我们不关心）
     try:
@@ -882,7 +879,7 @@ def evaluate_accuracy(model, config_path: str, device: str = "cuda",
         else:
             raise ValueError(f"不支持的模型类型: {model_type}")
         
-        # 加载配置并强制覆盖所有可能的 batch_size 配置项为 1
+        # 加载配置（不强制 batch_size，使用配置文件中的设置以加速评估）
         with open(config_path, 'r', encoding='utf-8') as f:
             config = yaml.safe_load(f)
         
@@ -890,19 +887,7 @@ def evaluate_accuracy(model, config_path: str, device: str = "cuda",
             config['misc'] = {}
         config['misc']['device'] = device
         
-        # 强制覆盖所有可能的 batch_size 配置键
-        if 'dataset' not in config:
-            config['dataset'] = {}
-        config['dataset']['val_batch_size'] = 1
-        
-        if 'val' not in config:
-            config['val'] = {}
-        config['val']['batch_size'] = 1
-        
-        if 'dataloader' in config and 'test_dataloader' in config['dataloader']:
-            config['dataloader']['test_dataloader']['batch_size'] = 1
-        
-        # 创建 DataLoader
+        # 创建 DataLoader（使用配置文件中的 batch_size）
         if model_type == "dset":
             trainer = TrainerClass(config, config_file_path=str(config_path))
             _, val_loader = trainer._create_data_loaders()
@@ -912,30 +897,11 @@ def evaluate_accuracy(model, config_path: str, device: str = "cuda",
             trainer.criterion = trainer.create_criterion()
             _, val_loader = trainer.create_datasets()
         
-        # 强制重构 DataLoader：如果 batch_size 不为 1，则重新包装
-        actual_batch_size = val_loader.batch_size if hasattr(val_loader, 'batch_size') else None
-        if actual_batch_size != 1:
-            print(f"  ⚠ 发现加载器 batch_size={actual_batch_size}，正在强行重构为 1...")
-            val_loader = torch.utils.data.DataLoader(
-                val_loader.dataset,
-                batch_size=1,
-                shuffle=False,
-                num_workers=val_loader.num_workers if hasattr(val_loader, 'num_workers') else 0,
-                pin_memory=val_loader.pin_memory if hasattr(val_loader, 'pin_memory') else False,
-                collate_fn=val_loader.collate_fn if hasattr(val_loader, 'collate_fn') else None
-            )
-        
         dataset_size = len(val_loader.dataset)
         dataloader_length = len(val_loader)
+        actual_batch_size = val_loader.batch_size if hasattr(val_loader, 'batch_size') else None
         
-        # 断言检查：重构后 batch_size 必须为 1
-        final_batch_size = val_loader.batch_size if hasattr(val_loader, 'batch_size') else None
-        assert final_batch_size == 1, \
-            f"错误: 重构后 DataLoader batch_size={final_batch_size}，仍不为 1。"
-        assert dataloader_length == dataset_size, \
-            f"错误: DataLoader 长度 ({dataloader_length}) != 数据集大小 ({dataset_size})。"
-        
-        print(f"  ✓ DataLoader: {dataloader_length}/{dataset_size} (batch_size=1 已确认)")
+        print(f"  ✓ DataLoader: {dataloader_length} batches, {dataset_size} samples (batch_size={actual_batch_size})")
         
         model.eval()
         model = model.to(device)
