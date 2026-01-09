@@ -950,9 +950,12 @@ def evaluate_accuracy(model, config_path: str, device: str = "cuda",
                 )
                 
                 if has_predictions:
+                    # 动态获取当前 batch 的真实图片数量 B
+                    current_batch_actual_size = images.shape[0]
+                    
                     _collect_predictions_for_coco(
                         outputs, targets, batch_idx, all_predictions, all_targets,
-                        W_tensor, H_tensor, 1
+                        W_tensor, H_tensor, current_batch_actual_size  # 修复：传入真实的 B
                     )
                 
                 # 进度打印：每 100 个样本打印一次
