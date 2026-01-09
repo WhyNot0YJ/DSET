@@ -94,10 +94,12 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 12
     # 计算激活参数量（考虑 MoE）
     active_params = total_params
     if model_type == "dset" and config is not None:
-        # 从配置获取 num_experts
+        # 从配置获取 num_experts 和 top_k
         dset_config = config.get('model', {}).get('dset', {})
         encoder_experts = dset_config.get('encoder_moe_num_experts', 1)
+        encoder_top_k = dset_config.get('encoder_moe_top_k', 1)
         decoder_experts = config.get('model', {}).get('num_experts', 1)
+        decoder_top_k = config.get('model', {}).get('top_k', 3)
         
         # 分别统计 Encoder 和 Decoder 的专家参数
         encoder_expert_params = 0
@@ -113,10 +115,12 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 12
                 decoder_expert_params += param.numel()
         
         # 计算激活参数
-        # Encoder: Top-1 路由，激活参数 = Expert_Params / Num_Experts
-        # Decoder: Top-3 路由，激活参数 = (Expert_Params * 3) / Num_Experts
-        encoder_active = encoder_expert_params / max(encoder_experts, 1) if encoder_experts > 1 else encoder_expert_params
-        decoder_active = (decoder_expert_params * 3) / max(decoder_experts, 1) if decoder_experts > 1 else decoder_expert_params
+        # Encoder: Top-K 路由，激活参数 = Expert_Params × min(top_k, experts) / Num_Experts
+        # Decoder: Top-K 路由，激活参数 = Expert_Params × min(top_k, experts) / Num_Experts
+        encoder_active_ratio = min(encoder_top_k, encoder_experts) / max(encoder_experts, 1) if encoder_experts > 1 else 1.0
+        decoder_active_ratio = min(decoder_top_k, decoder_experts) / max(decoder_experts, 1) if decoder_experts > 1 else 1.0
+        encoder_active = encoder_expert_params * encoder_active_ratio
+        decoder_active = decoder_expert_params * decoder_active_ratio
         
         # 总激活参数 = 总参数 - 专家总参数 + Encoder激活部分 + Decoder激活部分
         total_expert_params = encoder_expert_params + decoder_expert_params
@@ -219,7 +223,9 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 12
         dset_config = config.get('model', {}).get('dset', {})
         token_keep_ratio = dset_config.get('token_keep_ratio', 1.0)
         encoder_experts = dset_config.get('encoder_moe_num_experts', 1)
+        encoder_top_k = dset_config.get('encoder_moe_top_k', 1)
         decoder_experts = config.get('model', {}).get('num_experts', 1)
+        decoder_top_k = config.get('model', {}).get('top_k', 3)
         
         # 如果 token_keep_ratio 是字典，取平均值或主要层的值
         if isinstance(token_keep_ratio, dict):
@@ -307,8 +313,9 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 12
             # Encoder 理论值：完善公式，确保 Norm 层和 Add 层也被考虑
             # Others (Norm, Add): FLOPs ∝ N，随 r 线性缩放
             # Attention: FLOPs ∝ N²，随 r² 缩放
-            # FFN: FLOPs ∝ N，且 MoE 只激活 Top-1 expert，所以随 r/experts 缩放
-            theory_enc_flops = (enc_others_base * token_keep_ratio) + (enc_attn_base * (token_keep_ratio ** 2)) + (enc_ffn_base * (token_keep_ratio / max(encoder_experts, 1)))
+            # FFN: FLOPs ∝ N，且 MoE 激活 Top-K experts，所以随 r × min(top_k, experts) / experts 缩放
+            encoder_moe_ratio = min(encoder_top_k, encoder_experts) / max(encoder_experts, 1)
+            theory_enc_flops = (enc_others_base * token_keep_ratio) + (enc_attn_base * (token_keep_ratio ** 2)) + (enc_ffn_base * token_keep_ratio * encoder_moe_ratio)
             
             # ========== 4. Decoder: 只有 FFN 部分是 MoE (Top-3) ==========
             if not hasattr(model, 'decoder'):
@@ -316,22 +323,17 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 12
             
             decoder_model = deepcopy(model.decoder).eval()
             
-            # 准备 decoder 输入：encoder 特征（多尺度）
-            if isinstance(backbone_feats, (list, tuple)):
-                decoder_feat_input = backbone_feats
-            else:
-                decoder_feat_input = [backbone_feats]
+            # 准备 decoder 输入：先通过 encoder 处理 backbone 特征，得到 encoder_features
+            # decoder.forward(feats, targets=None) 期望的是经过 encoder 处理后的特征
+            with torch.no_grad():
+                encoder_features, _ = model.encoder(backbone_feats, return_encoder_info=True)
             
-            # 构造 dummy_queries 模拟 Object Queries，不要传 None
-            B, C, H, W = encoder_feat.shape
-            num_queries = getattr(decoder_model, 'num_queries', 100)
-            # 使用 decoder 的 hidden_dim，而不是 encoder 特征图的通道数
-            hidden_dim = getattr(decoder_model, 'hidden_dim', getattr(model, 'hidden_dim', 256))
-            dummy_queries = torch.randn(B, num_queries, hidden_dim).to(device)
+            # 从配置中读取 hidden_dim（decoder 的隐藏维度，通常是 256）
+            hidden_dim = config.get('model', {}).get('hidden_dim', 256)
             
             # 统计整个 decoder 的 FLOPs
-            # Decoder 通常需要 encoder_features 和 queries
-            dec_base_flops, _ = profile(decoder_model, inputs=(decoder_feat_input, dummy_queries), verbose=False)
+            # decoder.forward(feats, targets=None) 只需要 encoder_features
+            dec_base_flops, _ = profile(decoder_model, inputs=(encoder_features, None), verbose=False)
             
             dec_moe_flops = 0
             processed_moe_paths = set()  # 记录已处理的 MoE 模块路径，避免重复统计
@@ -357,8 +359,14 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 12
                         is_moe_layer = True
                 
                 if is_moe_layer:
-                    # Profile MoE 层，使用与 decoder 相同的 query 输入
-                    moe_flops, _ = profile(module, inputs=(dummy_queries,), verbose=False)
+                    # Profile MoE 层
+                    # MoE 层在 decoder 的 FFN 部分，输入维度应该与 decoder hidden_dim 一致
+                    # 构造 dummy 输入：MoE 层期望的输入是 [B, num_tokens, hidden_dim]
+                    B = 1
+                    # 从 decoder 的输出维度推断（通常是 num_queries）
+                    num_queries = getattr(decoder_model, 'num_queries', 300)
+                    dummy_moe_input = torch.randn(B, num_queries, hidden_dim).to(device)
+                    moe_flops, _ = profile(module, inputs=(dummy_moe_input,), verbose=False)
                     dec_moe_flops += moe_flops
                     processed_moe_paths.add(name)  # 记录已处理的 MoE 模块路径
             
@@ -368,10 +376,10 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 12
             dec_other_flops = max(0, dec_base_flops - dec_moe_flops)
             print(f"  ✓ Decoder 解构: Total={dec_base_flops/1e9:.2f}G, MoE={dec_moe_flops/1e9:.2f}G, Other={dec_other_flops/1e9:.2f}G")
             
-            # Decoder 理论值：MoE 部分按 Top-3 路由折算，其余部分不变
-            # Top-3 路由：激活 min(3, experts) 个专家，所以 FLOPs = 原始值 × min(3, experts) / experts
+            # Decoder 理论值：MoE 部分按 Top-K 路由折算，其余部分不变
+            # Top-K 路由：激活 min(top_k, experts) 个专家，所以 FLOPs = 原始值 × min(top_k, experts) / experts
             # 加固边界检查：确保比例计算正确
-            dec_moe_ratio = min(3, decoder_experts) / max(decoder_experts, 1)
+            dec_moe_ratio = min(decoder_top_k, decoder_experts) / max(decoder_experts, 1)
             theory_dec_flops = dec_other_flops + (dec_moe_flops * dec_moe_ratio)
             
             # ========== 5. 汇总：最终 T-GFLOPs ==========
@@ -380,8 +388,8 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 12
             
             print(f"  ✓ Theory FLOPs (分模块): {theory_flops_g:.2f} G")
             print(f"    - Backbone: {backbone_flops/1e9:.2f} G")
-            print(f"    - Encoder (r={token_keep_ratio:.2f}, e={encoder_experts}): {theory_enc_flops/1e9:.2f} G")
-            print(f"    - Decoder (e={decoder_experts}, top-3): {theory_dec_flops/1e9:.2f} G")
+            print(f"    - Encoder (r={token_keep_ratio:.2f}, e={encoder_experts}, top-{encoder_top_k}): {theory_enc_flops/1e9:.2f} G")
+            print(f"    - Decoder (e={decoder_experts}, top-{decoder_top_k}): {theory_dec_flops/1e9:.2f} G")
         except Exception as e:
             print(f"  ⚠ 理论 FLOPs 计算失败，使用基准 FLOPs: {e}")
             theory_flops_g = base_flops_g
