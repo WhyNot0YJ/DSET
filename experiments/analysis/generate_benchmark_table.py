@@ -73,7 +73,8 @@ def _extract_state_dict(checkpoint: dict) -> dict:
 
 
 def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 1280), 
-                   is_yolo: bool = False, config: Dict = None, model_type: str = "dset") -> Tuple[float, float, float, float]:
+                   is_yolo: bool = False, config: Dict = None, model_type: str = "dset",
+                   debug: bool = False) -> Tuple[float, float, float, float]:
     """
     计算模型的参数量和理论 FLOPs
     
@@ -283,6 +284,18 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 12
             enc_attn_base = 0
             enc_ffn_base = 0
             
+            # 调试模式：打印所有 Encoder 层名
+            if debug:
+                print("\n" + "=" * 80)
+                print("🔍 [DEBUG] 正在扫描 Encoder 所有子模块名称")
+                print("=" * 80)
+                for name, module in encoder_model.named_modules():
+                    if isinstance(module, nn.Linear):
+                        print(f"  Linear层: {name:<60} | 类名: {module.__class__.__name__}")
+                    elif isinstance(module, nn.MultiheadAttention) or "Attention" in module.__class__.__name__:
+                        print(f"  Attention层: {name:<60} | 类名: {module.__class__.__name__}")
+                print("=" * 80 + "\n")
+            
             # 遍历 encoder 的子模块，识别 Attention 和 FFN
             for name, module in encoder_model.named_modules():
                 # 针对 Attention 层
@@ -338,6 +351,18 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 12
             
             dec_moe_flops = 0
             processed_moe_paths = set()  # 记录已处理的 MoE 模块路径，避免重复统计
+            
+            # 调试模式：打印所有 Decoder 层名
+            if debug:
+                print("\n" + "=" * 80)
+                print("🔍 [DEBUG] 正在扫描 Decoder 所有子模块名称")
+                print("=" * 80)
+                for name, module in decoder_model.named_modules():
+                    if isinstance(module, nn.Linear):
+                        print(f"  Linear层: {name:<60} | 类名: {module.__class__.__name__}")
+                    elif 'moe' in name.lower() or 'MoE' in module.__class__.__name__:
+                        print(f"  ⭐ MoE相关层: {name:<60} | 类名: {module.__class__.__name__}")
+                print("=" * 80 + "\n")
             
             # 遍历 decoder 的子模块，识别 MoE 层
             for name, module in decoder_model.named_modules():
@@ -1061,7 +1086,7 @@ def _get_yolo_data_path(model, model_config: Dict, project_root: Path) -> Option
     return None
 
 
-def evaluate_single_model(model_name: str, model_config: Dict, args, project_root: Path) -> Optional[Dict]:
+def evaluate_single_model(model_name: str, model_config: Dict, args, project_root: Path, debug: bool = False) -> Optional[Dict]:
     """评估单个模型"""
     print("\n" + "=" * 80)
     print(f"评估模型: {model_name}")
@@ -1130,7 +1155,7 @@ def evaluate_single_model(model_name: str, model_config: Dict, args, project_roo
     # 计算参数量和理论 FLOPs
     input_size_tuple = (1, 3, input_size[0], input_size[1])
     total_params_m, active_params_m, base_flops_g, theory_flops_g = get_model_info(
-        model, input_size_tuple, is_yolo=is_yolo_model, config=config, model_type=model_type
+        model, input_size_tuple, is_yolo=is_yolo_model, config=config, model_type=model_type, debug=debug
     )
     print(f"  ✓ Total Params: {total_params_m:.2f}M, Active Params: {active_params_m:.2f}M")
     print(f"  ✓ Base FLOPs: {base_flops_g:.2f}G, Theory FLOPs: {theory_flops_g:.2f}G")
@@ -1330,6 +1355,7 @@ def main():
     parser.add_argument('--deformable_work_dir', type=str, default=None)
     parser.add_argument('--deformable_config', type=str, default=None)
     parser.add_argument('--models_config', type=str, default=None)
+    parser.add_argument('--debug', action='store_true', help='启用调试模式：打印所有模块层名以便调试 MoE 层识别')
     
     args = parser.parse_args()
     
@@ -1374,7 +1400,7 @@ def main():
     for model_name, model_config in json_config.items():
         if not isinstance(model_config, dict):
             continue
-        result = evaluate_single_model(model_name, model_config, args, project_root)
+        result = evaluate_single_model(model_name, model_config, args, project_root, debug=args.debug)
         if result:
             all_results.append(result)
     
