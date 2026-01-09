@@ -691,7 +691,7 @@ def evaluate_yolo_accuracy(model, config_path: str, device: str = "cuda", max_sa
             if hasattr(results.box, 'maps') and len(results.box.maps) > 1:
                 metrics['APS'] = float(results.box.maps[1])
         
-        print(f"  ✓ mAP: {metrics['mAP']:.4f}, AP50: {metrics['AP50']:.4f}, APS: {metrics['APS']:.4f}")
+        print(f"  ✓ mAP: {metrics['mAP']:.3f}, AP50: {metrics['AP50']:.3f}, APS: {metrics['APS']:.3f}")
         return metrics
         
     except Exception as e:
@@ -1051,7 +1051,7 @@ def _compute_coco_metrics(predictions: List[Dict], targets: List[Dict],
             'APS': float(stats[3]) if len(stats) > 3 else 0.0
         }
         
-        print(f"  ✓ mAP: {metrics['mAP']:.4f}, AP50: {metrics['AP50']:.4f}, APS: {metrics['APS']:.4f}")
+        print(f"  ✓ mAP: {metrics['mAP']:.3f}, AP50: {metrics['AP50']:.3f}, APS: {metrics['APS']:.3f}")
         return metrics
         
     except Exception as e:
@@ -1204,30 +1204,20 @@ def print_summary_table(results: List[Dict], gpu_name: str = "GPU", save_csv: bo
         print("\n⚠ 没有评估结果")
         return
     
-    # 找到 baseline（RT-DETR R18，如果存在）
-    baseline_flops = None
-    baseline_resolution = None
-    for r in results:
-        if r.get('model_type') == 'rtdetr' and 'r18' in r.get('model_name', '').lower():
-            baseline_flops = r.get('base_flops_g', r.get('theory_flops_g', None))
-            baseline_resolution = r.get('input_size', None)
-            break
+    print("\n" + "=" * 140)
+    print("THEORETICAL EFFICIENCY".center(140))
+    print("=" * 140)
     
-    print("\n" + "=" * 160)
-    print("THEORETICAL EFFICIENCY".center(160))
-    print("=" * 160)
-    
-    header = f"{'Model':<25} {'Total':<10} {'Active':<10} {'Theory':<10} {'Saving':<10} {'Resolution':<12} {'mAP':<8} {'AP50':<8} {'APS':<8}"
+    header = f"{'Model':<25} {'Total':<10} {'Active':<10} {'Theory':<10} {'Resolution':<12} {'mAP':<8} {'AP50':<8} {'APS':<8}"
     print(header)
-    print("-" * 160)
-    print(f"{'':<25} {'Params':<10} {'Params':<10} {'GFLOPs':<10} {'(%)':<10} {'':<12} {'':<8} {'':<8} {'':<8}")
-    print(f"{'':<25} {'(M)':<10} {'(M)':<10} {'':<10} {'':<10} {'':<12} {'':<8} {'':<8} {'':<8}")
-    print("-" * 160)
+    print("-" * 140)
+    print(f"{'':<25} {'Params':<10} {'Params':<10} {'GFLOPs':<10} {'':<12} {'':<8} {'':<8} {'':<8}")
+    print(f"{'':<25} {'(M)':<10} {'(M)':<10} {'':<10} {'':<12} {'':<8} {'':<8} {'':<8}")
+    print("-" * 140)
     
     csv_rows = [['Model', 'Type', 'Total Params(M)', 'Active Params(M)', 'Theory GFLOPs', 
-                 'Compute Saving(%)', 'Resolution', 'mAP', 'AP50', 'APS', 'Input']]
+                 'Resolution', 'mAP', 'AP50', 'APS', 'Input']]
     
-    has_resolution_diff = False
     for r in results:
         name = r.get('model_name', 'Unknown')[:24]
         total_params = f"{r.get('total_params_m', 0):.2f}" if r.get('total_params_m', 0) > 0 else "N/A"
@@ -1235,35 +1225,18 @@ def print_summary_table(results: List[Dict], gpu_name: str = "GPU", save_csv: bo
         theory_flops = f"{r.get('theory_flops_g', 0):.2f}" if r.get('theory_flops_g', 0) > 0 else "N/A"
         resolution = r.get('input_size', 'N/A')
         
-        # 计算计算节省率（相对于 baseline）
-        compute_saving = "N/A"
-        resolution_note = ""
-        if baseline_flops and r.get('theory_flops_g', 0) > 0:
-            saving = (1 - r.get('theory_flops_g', 0) / baseline_flops) * 100
-            compute_saving = f"{saving:.1f}"
-            
-            # 检查分辨率是否与 baseline 不同
-            if baseline_resolution and resolution != baseline_resolution:
-                compute_saving += "*"
-                resolution_note = "*"
-                has_resolution_diff = True
+        mAP = f"{r.get('mAP', 0):.3f}" if r.get('mAP', 0) > 0 else "N/A"
+        ap50 = f"{r.get('AP50', 0):.3f}" if r.get('AP50', 0) > 0 else "N/A"
+        aps = f"{r.get('APS', 0):.3f}" if r.get('APS', 0) > 0 else "N/A"
         
-        mAP = f"{r.get('mAP', 0):.4f}" if r.get('mAP', 0) > 0 else "N/A"
-        ap50 = f"{r.get('AP50', 0):.4f}" if r.get('AP50', 0) > 0 else "N/A"
-        aps = f"{r.get('APS', 0):.4f}" if r.get('APS', 0) > 0 else "N/A"
-        
-        print(f"{name:<25} {total_params:<10} {active_params:<10} {theory_flops:<10} {compute_saving:<10} {resolution:<12} {mAP:<8} {ap50:<8} {aps:<8}")
+        print(f"{name:<25} {total_params:<10} {active_params:<10} {theory_flops:<10} {resolution:<12} {mAP:<8} {ap50:<8} {aps:<8}")
         
         csv_rows.append([name, r.get('model_type', ''), total_params, active_params, theory_flops, 
-                        compute_saving, resolution, mAP, ap50, aps, r.get('input_size', '')])
+                        resolution, mAP, ap50, aps, r.get('input_size', '')])
     
-    print("-" * 160)
-    print("Note: Theoretical FLOPs are calculated based on sparsity-aware projection (Top-1 expert and token pruning ratio).")
-    if baseline_flops:
-        print(f"Baseline: RT-DETR R18 (Theory FLOPs = {baseline_flops:.2f}G, Resolution = {baseline_resolution})")
-    if has_resolution_diff:
-        print("* Compute Saving marked with '*' indicates different resolution from baseline.")
-    print("=" * 160)
+    print("-" * 140)
+    print("Note: Theoretical FLOPs are calculated based on sparsity-aware projection (Top-K expert and token pruning ratio).")
+    print("=" * 140)
     
     if save_csv:
         import csv
@@ -1336,7 +1309,7 @@ def _format_evaluation_results(model_type: str, total_params_m: float, active_pa
     print("-" * 70)
     print(f"Total Params: {total_params_m:.2f}M | Active Params: {active_params_m:.2f}M")
     print(f"Base FLOPs: {base_flops_g:.2f}G | Theory FLOPs: {theory_flops_g:.2f}G")
-    print(f"mAP: {metrics['mAP']:.4f} | AP50: {metrics['AP50']:.4f} | APS: {metrics['APS']:.4f}")
+    print(f"mAP: {metrics['mAP']:.3f} | AP50: {metrics['AP50']:.3f} | APS: {metrics['APS']:.3f}")
     print("=" * 70)
     print("Note: Theoretical FLOPs are calculated based on sparsity-aware projection (Top-1 expert and token pruning ratio).")
 
