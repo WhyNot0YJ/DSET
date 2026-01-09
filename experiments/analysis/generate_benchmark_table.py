@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """
-模型性能评估脚本 - 支持 DSET, RT-DETR, Deformable-DETR, YOLOv8, YOLOv10
+模型理论效率评估脚本 - 支持 DSET, RT-DETR, Deformable-DETR, YOLOv8, YOLOv10
 
 功能：
 1. 自动从 logs/ 目录查找最新的 best_model.pth 或使用指定的检查点
-2. 使用 pycocotools 在验证集上运行 COCO 评估
-3. 计算模型参数量和 FLOPs
-4. 基于验证集样本测量性能（FPS 和延迟）
-5. 所有性能测试在 batch_size=1 条件下进行（学术论文标准）
+2. 使用 pycocotools 在验证集上运行 COCO 评估（仅精度指标）
+3. 计算模型参数量和理论 FLOPs（考虑 token pruning 和 MoE 稀疏性）
+4. 所有评估在 batch_size=1 条件下进行（学术论文标准）
 
 使用方法：
     python generate_benchmark_table.py --model_type dset
@@ -1202,7 +1201,7 @@ def print_summary_table(results: List[Dict], gpu_name: str = "GPU", save_csv: bo
             break
     
     print("\n" + "=" * 160)
-    print("THEORETICAL EFFICIENCY EVALUATION".center(160))
+    print("THEORETICAL EFFICIENCY".center(160))
     print("=" * 160)
     
     header = f"{'Model':<25} {'Total':<10} {'Active':<10} {'Theory':<10} {'Saving':<10} {'Resolution':<12} {'mAP':<8} {'AP50':<8} {'APS':<8}"
