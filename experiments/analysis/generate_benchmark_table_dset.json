@@ -16,8 +16,8 @@
   },
   "dset6-r18-0.9": {
     "type":"dset",
-    "config": "/root/autodl-tmp/DSET/experiments/dset/logs/dset6_r18_20260106_192941/config.yaml",
-    "checkpoint": "/root/autodl-tmp/DSET/experiments/dset/logs/dset6_r18_20260106_192941/best_model.pth"
+    "config": "/root/autodl-tmp/DSET/experiments/dset/logs/dset6_r18_0.9/config.yaml",
+    "checkpoint": "/root/autodl-tmp/DSET/experiments/dset/logs/dset6_r18_0.9/best_model.pth"
   }
 }
 
