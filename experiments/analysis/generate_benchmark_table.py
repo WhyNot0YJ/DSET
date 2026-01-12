@@ -376,15 +376,59 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 12
                 if is_child_of_processed:
                     continue
                 
-                # 针对 Attention 层
-                if isinstance(module, nn.MultiheadAttention):
-                    B, _, H, W = encoder_feat.shape  # 只取 Batch, Height, Width
-                    # 修复点：构造 inputs 时，最后一维必须是 hidden_dim (256)
+                # [Cursor Fix] 宽松识别 Attention 层 (String Match + 多种输入尝试)
+                class_name = module.__class__.__name__
+                
+                # 宽松匹配：只要类名包含 Attention, Attn, AIFI 或者是标准 MultiheadAttention
+                is_attention = (
+                    isinstance(module, nn.MultiheadAttention) or 
+                    "Attention" in class_name or 
+                    "Attn" in class_name or
+                    "Self" in class_name
+                )
+                
+                if is_attention:
+                    # 避免重复计算：如果该模块是已处理模块的子模块，跳过
+                    if any(name.startswith(p + ".") for p in processed_attn_paths):
+                        continue
+                    
+                    if debug:
+                        print(f"  🔍 [DEBUG] 尝试 Profile Attention 层: {name} (Type: {class_name})")
+                    
+                    B, _, H, W = encoder_feat.shape
+                    # DSET/RT-DETR Encoder 通常将特征展平: [B, H*W, C]
                     dummy_seq = torch.randn(B, H * W, hidden_dim).to(device)
                     
-                    attn_flops, _ = profile(module, inputs=(dummy_seq, dummy_seq, dummy_seq), verbose=False)
-                    enc_attn_base += attn_flops
-                    processed_attn_paths.add(name)
+                    # 尝试多种输入方式
+                    # 注意：TransformerEncoderLayer.self_attn 是 nn.MultiheadAttention
+                    # 根据 hybrid_encoder.py:179，调用方式是 self.self_attn(q, k, value=src, ...)
+                    # 所以应该优先尝试 (q, k, v) 三输入格式
+                    attn_flops = 0
+                    try:
+                        # 尝试 1: 标准 (q, k, v) -> nn.MultiheadAttention 的标准格式
+                        # 注意：q 和 k 在 TransformerEncoderLayer 中是相同的（都加了 pos_embed）
+                        attn_flops, _ = profile(module, inputs=(dummy_seq, dummy_seq, dummy_seq), verbose=False)
+                    except Exception as e1:
+                        try:
+                            # 尝试 2: 单输入 (x,) -> 可能某些自定义 Attention 层只需要一个输入
+                            attn_flops, _ = profile(module, inputs=(dummy_seq,), verbose=False)
+                        except Exception as e2:
+                            try:
+                                # 尝试 3: 双输入 (q, k) -> 某些自定义 Attention 可能只需要 q 和 k
+                                attn_flops, _ = profile(module, inputs=(dummy_seq, dummy_seq), verbose=False)
+                            except Exception as e3:
+                                if debug:
+                                    print(f"  ⚠ 无法 Profile {name}: 所有输入格式都失败")
+                                    print(f"      - (q,k,v) 错误: {e1}")
+                                    print(f"      - (x,) 错误: {e2}")
+                                    print(f"      - (q,k) 错误: {e3}")
+                                attn_flops = 0
+                    
+                    if attn_flops > 0:
+                        enc_attn_base += attn_flops
+                        processed_attn_paths.add(name)
+                        if debug:
+                            print(f"    -> 成功: {attn_flops/1e9:.4f}G")
                 
                 # 针对 FFN/MoE 层：检查 MoELayer 实例
                 elif HAS_MOELAYER and isinstance(module, MoELayer):
