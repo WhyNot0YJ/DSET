@@ -76,15 +76,9 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 12
                    is_yolo: bool = False, config: Dict = None, model_type: str = "dset",
                    debug: bool = False) -> Tuple[float, float, float, float]:
     """
-    计算模型的参数量和理论 FLOPs
-    
-    Returns:
-        total_params_m: 总参数量 (M)
-        active_params_m: 激活参数量 (M) - 考虑 MoE 后的实际参数
-        base_flops_g: 基准 FLOPs (G) - 全量运行时的计算量
-        theory_flops_g: 理论 FLOPs (G) - 考虑 token pruning 和 MoE 后的理论计算量
+    计算模型的参数量和理论 FLOPs (Hook 捕获真值版 - 拒绝猜测)
     """
-    # 计算参数量
+    # ========================== 1. 参数量计算 (保持原逻辑) ==========================
     if is_yolo and hasattr(model, 'model'):
         pytorch_model = model.model
     else:
@@ -92,471 +86,198 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 12
     total_params = sum(p.numel() for p in pytorch_model.parameters())
     total_params_m = total_params / 1e6
     
-    # 计算激活参数量（考虑 MoE）
+    # 计算激活参数量
     active_params = total_params
     if model_type == "dset" and config is not None:
-        # 从配置获取 num_experts 和 top_k
         dset_config = config.get('model', {}).get('dset', {})
         encoder_experts = dset_config.get('encoder_moe_num_experts', 1)
         encoder_top_k = dset_config.get('encoder_moe_top_k', 1)
         decoder_experts = config.get('model', {}).get('num_experts', 1)
         decoder_top_k = config.get('model', {}).get('top_k', 3)
         
-        print(f"\n  📊 Active Params 计算过程:")
-        print(f"    - Encoder MoE: {encoder_experts} experts, top-{encoder_top_k}")
-        print(f"    - Decoder MoE: {decoder_experts} experts, top-{decoder_top_k}")
-        
-        # 分别统计 Encoder 和 Decoder 的专家参数
         encoder_expert_params = 0
         decoder_expert_params = 0
-        encoder_expert_names = []
-        decoder_expert_names = []
         
-        # 遍历所有参数，识别专家参数
-        # MoELayer 的参数包括: router.weight, expert_w1, expert_b1, expert_w2, expert_b2
         for name, param in pytorch_model.named_parameters():
-            param_size = param.numel()
-            is_encoder_expert = False
-            is_decoder_expert = False
-            
-            # Encoder 专家参数：参数名包含 'encoder' 且包含 'moe_layer'
-            # MoELayer 的参数: router.weight, expert_w1, expert_b1, expert_w2, expert_b2
-            if 'encoder' in name.lower() and 'moe_layer' in name.lower():
-                encoder_expert_params += param_size
-                encoder_expert_names.append(f"{name} ({param_size:,})")
-                is_encoder_expert = True
-            
-            # Decoder 专家参数：参数名包含 'decoder' 且包含 'adaptive_expert_layer'
-            # 注意：Decoder 使用的是 adaptive_expert_layer，不是 moe_layer
+            if 'encoder' in name.lower() and ('expert' in name.lower() or 'encoder_moe' in name.lower()):
+                encoder_expert_params += param.numel()
+            elif 'decoder' in name.lower() and 'moe_layer' in name.lower():
+                decoder_expert_params += param.numel()
             elif 'decoder' in name.lower() and 'adaptive_expert_layer' in name.lower():
-                decoder_expert_params += param_size
-                decoder_expert_names.append(f"{name} ({param_size:,})")
-                is_decoder_expert = True
+                decoder_expert_params += param.numel()
         
-        print(f"\n    Encoder Expert Params: {encoder_expert_params:,} ({encoder_expert_params/1e6:.2f}M)")
-        if encoder_expert_names:
-            for name in encoder_expert_names[:5]:  # 只打印前5个
-                print(f"      - {name}")
-            if len(encoder_expert_names) > 5:
-                print(f"      ... 还有 {len(encoder_expert_names)-5} 个参数")
-        else:
-            print(f"      ⚠ 未找到 Encoder 专家参数！")
-        
-        print(f"\n    Decoder Expert Params: {decoder_expert_params:,} ({decoder_expert_params/1e6:.2f}M)")
-        if decoder_expert_names:
-            for name in decoder_expert_names[:5]:  # 只打印前5个
-                print(f"      - {name}")
-            if len(decoder_expert_names) > 5:
-                print(f"      ... 还有 {len(decoder_expert_names)-5} 个参数")
-        else:
-            print(f"      ⚠ 未找到 Decoder 专家参数！")
-        
-        # 计算激活参数
-        # Encoder: Top-K 路由，激活参数 = Expert_Params × min(top_k, experts) / Num_Experts
-        # Decoder: Top-K 路由，激活参数 = Expert_Params × min(top_k, experts) / Num_Experts
         encoder_active_ratio = min(encoder_top_k, encoder_experts) / max(encoder_experts, 1) if encoder_experts > 1 else 1.0
         decoder_active_ratio = min(decoder_top_k, decoder_experts) / max(decoder_experts, 1) if decoder_experts > 1 else 1.0
         
         encoder_active = encoder_expert_params * encoder_active_ratio
         decoder_active = decoder_expert_params * decoder_active_ratio
-        
-        print(f"\n    Activation Ratios:")
-        print(f"      - Encoder: {encoder_active_ratio:.4f} (top-{encoder_top_k} / {encoder_experts} experts)")
-        print(f"      - Decoder: {decoder_active_ratio:.4f} (top-{decoder_top_k} / {decoder_experts} experts)")
-        
-        print(f"\n    Active Expert Params:")
-        print(f"      - Encoder: {encoder_active:,} ({encoder_active/1e6:.2f}M) = {encoder_expert_params:,} × {encoder_active_ratio:.4f}")
-        print(f"      - Decoder: {decoder_active:,} ({decoder_active/1e6:.2f}M) = {decoder_expert_params:,} × {decoder_active_ratio:.4f}")
-        
-        # 总激活参数 = 总参数 - 专家总参数 + Encoder激活部分 + Decoder激活部分
         total_expert_params = encoder_expert_params + decoder_expert_params
-        non_expert_params = total_params - total_expert_params
-        active_params = non_expert_params + encoder_active + decoder_active
+        active_params = (total_params - total_expert_params) + encoder_active + decoder_active
         
-        print(f"\n    Final Calculation:")
-        print(f"      - Total Params: {total_params:,} ({total_params/1e6:.2f}M)")
-        print(f"      - Total Expert Params: {total_expert_params:,} ({total_expert_params/1e6:.2f}M)")
-        print(f"      - Non-Expert Params: {non_expert_params:,} ({non_expert_params/1e6:.2f}M)")
-        print(f"      - Active Params: {active_params:,} ({active_params/1e6:.2f}M)")
-        print(f"        = {non_expert_params:,} (non-expert) + {encoder_active:,} (encoder active) + {decoder_active:,} (decoder active)")
-        print()
+        print(f"\n  📊 参数统计: Total={total_params_m:.2f}M, Active={active_params/1e6:.2f}M")
     
     active_params_m = active_params / 1e6
-    
-    # 计算基准 FLOPs（全量运行）
+
+    # ========================== 2. Base FLOPs (全量计算) ==========================
     base_flops_g = 0.0
-    if is_yolo:
-        try:
-            from copy import deepcopy
-            if hasattr(model, 'model'):
-                pytorch_model = model.model
-                h, w = input_size[2], input_size[3]
-                imgsz = [h, w] if h != w else h
-                try:
-                    from ultralytics.utils.torch_utils import get_flops
-                    base_flops_g = get_flops(pytorch_model, imgsz=imgsz)
-                except (ImportError, AttributeError):
-                    if HAS_THOP:
-                        pytorch_model = pytorch_model.eval()
-                        device = next(pytorch_model.parameters()).device
-                        dummy_input = torch.randn(input_size).to(device)
-                        flops, _ = profile(deepcopy(pytorch_model), inputs=(dummy_input,), verbose=False)
-                        base_flops_g = flops / 1e9
-        except Exception as e:
-            print(f"  ⚠ YOLO FLOPs 计算失败: {e}")
-    elif HAS_THOP:
+    if HAS_THOP:
         try:
             model.eval()
             device = next(model.parameters()).device
             dummy_input = torch.randn(input_size).to(device)
+            # 全局跑一次，作为一个基准参考
             flops, _ = profile(model, inputs=(dummy_input,), verbose=False)
             base_flops_g = flops / 1e9
-            print(f"  ✓ Base FLOPs: {base_flops_g:.2f} G")
+            print(f"  ✓ Base FLOPs (Global): {base_flops_g:.2f} G")
         except Exception as e:
-            # mmdet 模型通常无法直接 profile(model, (tensor,))，需要构造 wrapper
-            try:
-                is_mmdet_model = isinstance(getattr(model, '__class__', None), type) and \
-                                ('mmdet' in getattr(model.__class__, '__module__', ''))
-            except Exception:
-                is_mmdet_model = False
-            
-            if is_mmdet_model:
-                try:
-                    # 优先使用 mmengine 的复杂度分析工具（如果存在）
-                    from mmengine.analysis import get_model_complexity_info
-                    _, _, H, W = input_size
-                    # get_model_complexity_info 的 input_shape 一般是 (C, H, W)
-                    analysis = get_model_complexity_info(
-                        model, (3, int(H), int(W)),
-                        as_strings=False,
-                        print_per_layer_stat=False
-                    )
-                    # 不同版本返回值可能是 (flops, params) 或 dict
-                    if isinstance(analysis, tuple) and len(analysis) >= 1:
-                        flops = analysis[0]
-                        base_flops_g = float(flops) / 1e9
-                        print(f"  ✓ Base FLOPs(mmengine): {base_flops_g:.2f} G")
-                    elif isinstance(analysis, dict) and 'flops' in analysis:
-                        base_flops_g = float(analysis['flops']) / 1e9
-                        print(f"  ✓ Base FLOPs(mmengine): {base_flops_g:.2f} G")
-                except Exception:
-                    try:
-                        # 回退：用 thop 对 mmdet detector 做 wrapper profile（构造最小 data_samples）
-                        from copy import deepcopy
-                        from mmdet.structures import DetDataSample
-                        _, _, H, W = input_size
-                        sample = DetDataSample()
-                        sample.set_metainfo({
-                            'ori_shape': (int(H), int(W), 3),
-                            'img_shape': (int(H), int(W), 3),
-                            'pad_shape': (int(H), int(W), 3),
-                            'scale_factor': (1.0, 1.0),
-                            'batch_input_shape': (int(H), int(W)),
-                        })
-                        
-                        class _MMDetWrapper(nn.Module):
-                            def __init__(self, det_model, data_sample):
-                                super().__init__()
-                                self.det_model = det_model
-                                self.data_sample = data_sample
-                            def forward(self, x):
-                                # mode='tensor' 通常返回 head 的原始 tensor 输出（便于 profile）
-                                return self.det_model(x, [self.data_sample], mode='tensor')
-                        
-                        wrapped = _MMDetWrapper(deepcopy(model).eval().to(device), sample)
-                        flops, _ = profile(wrapped, inputs=(dummy_input,), verbose=False)
-                        base_flops_g = flops / 1e9
-                        print(f"  ✓ Base FLOPs(thop+mmdet wrapper): {base_flops_g:.2f} G")
-                    except Exception as e2:
-                        print(f"  ⚠ FLOPs 计算失败(mmdet): {e2!r}")
-            else:
-                print(f"  ⚠ FLOPs 计算失败: {e!r}")
-    
-    # 计算理论 FLOPs（考虑 token pruning 和 MoE）
+            print(f"  ⚠ Base FLOPs 计算失败: {e}")
+
+    # ========================== 3. Theory FLOPs (Hook 核心修复) ==========================
     theory_flops_g = base_flops_g
+    
     if model_type == "dset" and config is not None and HAS_THOP:
-        # 尝试导入 MoELayer 类（用于识别 MoE 层）
-        try:
-            from experiments.dset.src.zoo.rtdetr.moe_components import MoELayer
-            HAS_MOELAYER = True
-        except ImportError:
-            try:
-                from src.zoo.rtdetr.moe_components import MoELayer
-                HAS_MOELAYER = True
-            except ImportError:
-                MoELayer = None
-                HAS_MOELAYER = False
+        print("\n  🔍 [精确分析] 启动 Hook 机制拆解 Encoder FLOPs...")
         
         dset_config = config.get('model', {}).get('dset', {})
         token_keep_ratio = dset_config.get('token_keep_ratio', 1.0)
+        if isinstance(token_keep_ratio, dict):
+            token_keep_ratio = max(token_keep_ratio.values()) if token_keep_ratio else 1.0
+            
         encoder_experts = dset_config.get('encoder_moe_num_experts', 1)
         encoder_top_k = dset_config.get('encoder_moe_top_k', 1)
         decoder_experts = config.get('model', {}).get('num_experts', 1)
         decoder_top_k = config.get('model', {}).get('top_k', 3)
-        
-        # 如果 token_keep_ratio 是字典，取平均值或主要层的值
-        if isinstance(token_keep_ratio, dict):
-            # 取最大 key 对应的值（通常是 P5 层，即 layer 2）
-            if token_keep_ratio:
-                token_keep_ratio = max(token_keep_ratio.values())
-            else:
-                token_keep_ratio = 1.0
-        
+
         try:
-            model.eval()
-            device = next(model.parameters()).device
-            dummy_img = torch.randn(input_size).to(device)
-            
             from copy import deepcopy
-            
-            # ========== 1. Backbone: 密集计算 ==========
-            if not hasattr(model, 'backbone'):
-                raise AttributeError("模型缺少 backbone 属性")
-            
-            backbone_model = deepcopy(model.backbone).eval()
+            model_clone = deepcopy(model).eval()
+            device = next(model_clone.parameters()).device
+            dummy_img = torch.randn(input_size).to(device)
+
+            # --- 1. 单独算 Backbone ---
+            backbone_model = deepcopy(model_clone.backbone).eval()
             backbone_flops, _ = profile(backbone_model, inputs=(dummy_img,), verbose=False)
             print(f"  ✓ Backbone FLOPs: {backbone_flops / 1e9:.2f} G")
+
+            # --- 2. 准备 Hook 抓取 Encoder 内部输入 ---
+            enc_layer_inputs = {} 
+            enc_hooks = []
+            target_modules = {} 
             
-            # ========== 2. 获取特征图作为 Encoder 的输入 ==========
-            with torch.no_grad():
-                backbone_feats = model.backbone(dummy_img)
-                # Encoder 通常处理最后一个特征图（S5/P5）
-                if isinstance(backbone_feats, (list, tuple)):
-                    encoder_feat = backbone_feats[-1]  # 使用最后一个特征图
-                else:
-                    encoder_feat = backbone_feats
-            
-            # ========== 3. 解构 Encoder (针对 AIFI 模块) ==========
-            if not hasattr(model, 'encoder'):
-                raise AttributeError("模型缺少 encoder 属性")
-            
-            if encoder_feat is None:
-                raise ValueError("无法获取 encoder 输入特征图")
-            
-            encoder_model = deepcopy(model.encoder).eval()
-            
-            # 准备 encoder 输入
-            if isinstance(backbone_feats, (list, tuple)):
-                encoder_input = backbone_feats
-            else:
-                encoder_input = [backbone_feats]
-            
-            # 先测量整个 encoder_model 的 total_enc_base
-            total_enc_base, _ = profile(encoder_model, inputs=(encoder_input,), verbose=False)
-            
-            # 1. 明确定义隐藏维度（DSET 标准是 256）
-            hidden_dim = config.get('model', {}).get('hidden_dim', 256)
-            
-            enc_attn_base = 0
-            enc_ffn_base = 0
-            
-            # 调试模式：打印所有 Encoder 层名
-            if debug:
-                print("\n" + "=" * 80)
-                print("🔍 [DEBUG] 正在扫描 Encoder 所有子模块名称")
-                print("=" * 80)
-                for name, module in encoder_model.named_modules():
-                    if isinstance(module, nn.Linear):
-                        print(f"  Linear层: {name:<60} | 类名: {module.__class__.__name__}")
-                    elif isinstance(module, nn.MultiheadAttention) or "Attention" in module.__class__.__name__:
-                        print(f"  Attention层: {name:<60} | 类名: {module.__class__.__name__}")
-                    elif HAS_MOELAYER and isinstance(module, MoELayer):
-                        print(f"  ⭐ MoE层: {name:<60} | 类名: {module.__class__.__name__}")
-                print("=" * 80 + "\n")
-            
-            # 遍历 encoder 的子模块，识别 Attention 和 FFN
-            processed_attn_paths = set()  # 避免重复统计
-            processed_moe_paths = set()   # 避免重复统计
-            for name, module in encoder_model.named_modules():
-                # 检查是否是已处理模块的子模块
-                is_child_of_processed = any(
-                    name.startswith(processed_path + '.') 
-                    for processed_path in list(processed_attn_paths) + list(processed_moe_paths)
-                )
-                if is_child_of_processed:
-                    continue
-                
-                # [Cursor Fix] 宽松识别 Attention 层 (String Match + 多种输入尝试)
+            for name, module in model_clone.encoder.named_modules():
                 class_name = module.__class__.__name__
+                # 识别 Attention (包含 AIFI, MSDeformAttn, BiMultiHead 等)
+                is_attn = "Attention" in class_name or "Attn" in class_name or "AIFI" in class_name
+                # 识别 FFN / MoE (包含 MLP, FFN, FeedForward, MoELayer)
+                is_ffn = "Mlp" in class_name or "MoE" in class_name or "FeedForward" in class_name or "FFN" in class_name
                 
-                # 宽松匹配：只要类名包含 Attention, Attn, AIFI 或者是标准 MultiheadAttention
-                is_attention = (
-                    isinstance(module, nn.MultiheadAttention) or 
-                    "Attention" in class_name or 
-                    "Attn" in class_name or
-                    "Self" in class_name
-                )
-                
-                if is_attention:
-                    # 避免重复计算：如果该模块是已处理模块的子模块，跳过
-                    if any(name.startswith(p + ".") for p in processed_attn_paths):
-                        continue
+                # 排除容器类
+                if isinstance(module, (nn.ModuleList, nn.Sequential)): continue
+
+                if is_attn or is_ffn:
+                    m_type = "attn" if is_attn else "ffn"
+                    target_modules[name] = (module, m_type)
                     
-                    if debug:
-                        print(f"  🔍 [DEBUG] 尝试 Profile Attention 层: {name} (Type: {class_name})")
-                    
-                    B, _, H, W = encoder_feat.shape
-                    # DSET/RT-DETR Encoder 通常将特征展平: [B, H*W, C]
-                    dummy_seq = torch.randn(B, H * W, hidden_dim).to(device)
-                    
-                    # 尝试多种输入方式
-                    # 注意：TransformerEncoderLayer.self_attn 是 nn.MultiheadAttention
-                    # 根据 hybrid_encoder.py:179，调用方式是 self.self_attn(q, k, value=src, ...)
-                    # 所以应该优先尝试 (q, k, v) 三输入格式
-                    attn_flops = 0
-                    try:
-                        # 尝试 1: 标准 (q, k, v) -> nn.MultiheadAttention 的标准格式
-                        # 注意：q 和 k 在 TransformerEncoderLayer 中是相同的（都加了 pos_embed）
-                        attn_flops, _ = profile(module, inputs=(dummy_seq, dummy_seq, dummy_seq), verbose=False)
-                    except Exception as e1:
-                        try:
-                            # 尝试 2: 单输入 (x,) -> 可能某些自定义 Attention 层只需要一个输入
-                            attn_flops, _ = profile(module, inputs=(dummy_seq,), verbose=False)
-                        except Exception as e2:
-                            try:
-                                # 尝试 3: 双输入 (q, k) -> 某些自定义 Attention 可能只需要 q 和 k
-                                attn_flops, _ = profile(module, inputs=(dummy_seq, dummy_seq), verbose=False)
-                            except Exception as e3:
-                                if debug:
-                                    print(f"  ⚠ 无法 Profile {name}: 所有输入格式都失败")
-                                    print(f"      - (q,k,v) 错误: {e1}")
-                                    print(f"      - (x,) 错误: {e2}")
-                                    print(f"      - (q,k) 错误: {e3}")
-                                attn_flops = 0
-                    
-                    if attn_flops > 0:
-                        enc_attn_base += attn_flops
-                        processed_attn_paths.add(name)
-                        if debug:
-                            print(f"    -> 成功: {attn_flops/1e9:.4f}G")
-                
-                # 针对 FFN/MoE 层：检查 MoELayer 实例
-                elif HAS_MOELAYER and isinstance(module, MoELayer):
-                    B, _, H, W = encoder_feat.shape
-                    # 修复点：输入维度对齐 256
-                    dummy_flat = torch.randn(B, H * W, hidden_dim).to(device)
-                    
-                    ffn_flops, _ = profile(module, inputs=(dummy_flat,), verbose=False)
-                    enc_ffn_base += ffn_flops
-                    processed_moe_paths.add(name)
-            
-            if enc_attn_base == 0 and enc_ffn_base == 0:
-                raise RuntimeError("无法识别 Encoder 中的 Attention 或 FFN 层，解构失败")
-            
-            # 计算其他部分（Norm 层、Add 层等）：total_enc_base - enc_attn_base - enc_ffn_base
-            enc_others_base = max(0, total_enc_base - enc_attn_base - enc_ffn_base)
-            
-            print(f"  ✓ Encoder 解构: Total={total_enc_base/1e9:.2f}G, Attn={enc_attn_base/1e9:.2f}G, FFN={enc_ffn_base/1e9:.2f}G, Others={enc_others_base/1e9:.2f}G")
-            
-            # Encoder 理论值：完善公式，确保 Norm 层和 Add 层也被考虑
-            # Others (Norm, Add): FLOPs ∝ N，随 r 线性缩放
-            # Attention: FLOPs ∝ N²，随 r² 缩放
-            # FFN: FLOPs ∝ N，且 MoE 激活 Top-K experts，所以随 r × min(top_k, experts) / experts 缩放
-            encoder_moe_ratio = min(encoder_top_k, encoder_experts) / max(encoder_experts, 1)
-            theory_enc_flops = (enc_others_base * token_keep_ratio) + (enc_attn_base * (token_keep_ratio ** 2)) + (enc_ffn_base * token_keep_ratio * encoder_moe_ratio)
-            
-            # ========== 4. Decoder: 只有 FFN 部分是 MoE (Top-3) ==========
-            if not hasattr(model, 'decoder'):
-                raise AttributeError("模型缺少 decoder 属性")
-            
-            decoder_model = deepcopy(model.decoder).eval()
-            
-            # 准备 decoder 输入：先通过 encoder 处理 backbone 特征，得到 encoder_features
-            # decoder.forward(feats, targets=None) 期望的是经过 encoder 处理后的特征
+                    def get_input_hook(module, inputs, outputs, layer_name=name):
+                        if layer_name not in enc_layer_inputs: 
+                            enc_layer_inputs[layer_name] = inputs
+                    h = module.register_forward_hook(get_input_hook)
+                    enc_hooks.append(h)
+
+            # --- 3. 运行一次 Forward (触发 Hook) ---
             with torch.no_grad():
-                encoder_features, _ = model.encoder(backbone_feats, return_encoder_info=True)
+                feats = model_clone.backbone(dummy_img)
+                enc_out = model_clone.encoder(feats)
+
+            for h in enc_hooks: h.remove()
+
+            # --- 4. 基于抓到的真值进行 Profile ---
+            enc_attn_flops = 0
+            enc_ffn_flops = 0
+            processed_names = set()
             
-            # 从配置中读取 hidden_dim（decoder 的隐藏维度，通常是 256）
-            hidden_dim = config.get('model', {}).get('hidden_dim', 256)
+            # 按名字长度排序，优先计算父模块（名字短的）
+            sorted_names = sorted(target_modules.keys(), key=len)
+
+            for name in sorted_names:
+                # 去重：如果父模块已处理，跳过子模块
+                if any(name.startswith(p + ".") for p in processed_names): continue
+
+                module, m_type = target_modules[name]
+                if name not in enc_layer_inputs: continue
+
+                try:
+                    # 使用真实输入计算
+                    layer_flops, _ = profile(module, inputs=enc_layer_inputs[name], verbose=False)
+                    
+                    if layer_flops > 0:
+                        if m_type == "attn": enc_attn_flops += layer_flops
+                        else: enc_ffn_flops += layer_flops
+                        
+                        processed_names.add(name)
+                        if debug: print(f"    + [{m_type.upper()}] {name}: {layer_flops/1e9:.4f}G")
+                except: pass
+
+            # --- 5. Encoder 汇总 ---
+            # 再次单独 profile 整个 encoder 得到 total
+            enc_in = feats if isinstance(feats, (list, tuple)) else [feats]
+            total_enc_flops, _ = profile(model_clone.encoder, inputs=(enc_in,), verbose=False)
             
-            # 统计整个 decoder 的 FLOPs
-            # decoder.forward(feats, targets=None) 只需要 encoder_features
-            dec_base_flops, _ = profile(decoder_model, inputs=(encoder_features, None), verbose=False)
-            
+            enc_others_flops = max(0, total_enc_flops - enc_attn_flops - enc_ffn_flops)
+            print(f"  ✓ Encoder 拆解: Total={total_enc_flops/1e9:.2f}G | Attn={enc_attn_flops/1e9:.2f}G | FFN={enc_ffn_flops/1e9:.2f}G")
+
+            encoder_moe_ratio = min(encoder_top_k, encoder_experts) / max(encoder_experts, 1)
+            theory_enc_flops = (enc_others_flops * token_keep_ratio) + \
+                               (enc_attn_flops * (token_keep_ratio ** 2)) + \
+                               (enc_ffn_flops * token_keep_ratio * encoder_moe_ratio)
+
+            # --- 6. Decoder 部分 (Hook MoE) ---
+            # Decoder forward 可能需要 targets 参数，eval模式传 None
             dec_moe_flops = 0
-            processed_moe_paths = set()  # 记录已处理的 MoE 模块路径，避免重复统计
+            dec_layer_inputs = {}
+            dec_hooks = []
             
-            # 调试模式：打印所有 Decoder 层名
-            if debug:
-                print("\n" + "=" * 80)
-                print("🔍 [DEBUG] 正在扫描 Decoder 所有子模块名称")
-                print("=" * 80)
-                for name, module in decoder_model.named_modules():
-                    if isinstance(module, nn.Linear):
-                        print(f"  Linear层: {name:<60} | 类名: {module.__class__.__name__}")
-                    elif HAS_MOELAYER and isinstance(module, MoELayer):
-                        print(f"  ⭐ MoE层: {name:<60} | 类名: {module.__class__.__name__}")
-                    elif 'moe' in name.lower() or 'adaptive_expert' in name.lower() or 'MoE' in module.__class__.__name__:
-                        print(f"  ⭐ MoE相关层: {name:<60} | 类名: {module.__class__.__name__}")
-                print("=" * 80 + "\n")
+            for name, module in model_clone.decoder.named_modules():
+                if "MoE" in module.__class__.__name__ or "Expert" in module.__class__.__name__:
+                    def get_dec_input(module, inputs, outputs, n=name):
+                        if n not in dec_layer_inputs: dec_layer_inputs[n] = inputs
+                    dec_hooks.append(module.register_forward_hook(get_dec_input))
             
-            # 遍历 decoder 的子模块，识别 MoE 层
-            for name, module in decoder_model.named_modules():
-                # 检查当前模块是否是已处理 MoE 模块的子模块
-                # 如果当前路径是已处理路径的子路径（前缀匹配），则跳过
-                is_child_of_processed = any(
-                    name.startswith(processed_path + '.') for processed_path in processed_moe_paths
-                )
-                
-                if is_child_of_processed:
-                    continue  # 跳过已处理 MoE 模块的子模块
-                
-                # 识别 MoE 层：优先使用 isinstance 检查，然后检查名称
-                is_moe_layer = False
-                
-                # 方法1：直接检查是否是 MoELayer 实例（最可靠）
-                if HAS_MOELAYER and isinstance(module, MoELayer):
-                    is_moe_layer = True
-                # 方法2：检查名称（兼容旧代码）
-                elif 'moe_layer' in name.lower() or 'adaptive_expert_layer' in name.lower():
-                    is_moe_layer = True
-                # 方法3：检查类名（兜底）
-                elif hasattr(module, '__class__'):
-                    class_name = module.__class__.__name__
-                    if 'MoE' in class_name or 'MoELayer' in class_name:
-                        is_moe_layer = True
-                
-                if is_moe_layer:
-                    # Profile MoE 层
-                    # MoE 层在 decoder 的 FFN 部分，输入维度应该与 decoder hidden_dim 一致
-                    # 构造 dummy 输入：MoE 层期望的输入是 [B, num_tokens, hidden_dim]
-                    B = 1
-                    # 从 decoder 的输出维度推断（通常是 num_queries）
-                    num_queries = getattr(decoder_model, 'num_queries', 300)
-                    dummy_moe_input = torch.randn(B, num_queries, hidden_dim).to(device)
-                    moe_flops, _ = profile(module, inputs=(dummy_moe_input,), verbose=False)
-                    dec_moe_flops += moe_flops
-                    processed_moe_paths.add(name)  # 记录已处理的 MoE 模块路径
-                    if debug:
-                        print(f"  ✓ 识别到 MoE 层: {name}, FLOPs: {moe_flops/1e9:.2f}G")
+            try:
+                model_clone.decoder(enc_out, None) 
+            except: pass
+
+            for h in dec_hooks: h.remove()
+
+            for name, inputs in dec_layer_inputs.items():
+                module = dict(model_clone.decoder.named_modules())[name]
+                try:
+                    f, _ = profile(module, inputs=inputs, verbose=False)
+                    dec_moe_flops += f
+                except: pass
             
-            if dec_moe_flops == 0:
-                raise RuntimeError("无法识别 Decoder 中的 MoE 层，解构失败")
-            
-            dec_other_flops = max(0, dec_base_flops - dec_moe_flops)
-            print(f"  ✓ Decoder 解构: Total={dec_base_flops/1e9:.2f}G, MoE={dec_moe_flops/1e9:.2f}G, Other={dec_other_flops/1e9:.2f}G")
-            
-            # Decoder 理论值：MoE 部分按 Top-K 路由折算，其余部分不变
-            # Top-K 路由：激活 min(top_k, experts) 个专家，所以 FLOPs = 原始值 × min(top_k, experts) / experts
-            # 加固边界检查：确保比例计算正确
+            # 近似计算 Decoder Total
+            total_dec_flops = max(0, (base_flops_g * 1e9) - backbone_flops - total_enc_flops)
+            dec_others_flops = max(0, total_dec_flops - dec_moe_flops)
+            print(f"  ✓ Decoder 拆解: Total={total_dec_flops/1e9:.2f}G | MoE={dec_moe_flops/1e9:.2f}G")
+
             dec_moe_ratio = min(decoder_top_k, decoder_experts) / max(decoder_experts, 1)
-            theory_dec_flops = dec_other_flops + (dec_moe_flops * dec_moe_ratio)
-            
-            # ========== 5. 汇总：最终 T-GFLOPs ==========
-            total_theory_flops = backbone_flops + theory_enc_flops + theory_dec_flops
-            theory_flops_g = total_theory_flops / 1e9
-            
-            print(f"  ✓ Theory FLOPs (分模块): {theory_flops_g:.2f} G")
-            print(f"    - Backbone: {backbone_flops/1e9:.2f} G")
-            print(f"    - Encoder (r={token_keep_ratio:.2f}, e={encoder_experts}, top-{encoder_top_k}): {theory_enc_flops/1e9:.2f} G")
-            print(f"    - Decoder (e={decoder_experts}, top-{decoder_top_k}): {theory_dec_flops/1e9:.2f} G")
+            theory_dec_flops = dec_others_flops + (dec_moe_flops * dec_moe_ratio)
+
+            # --- 7. 最终汇总 ---
+            theory_flops_g = (backbone_flops + theory_enc_flops + theory_dec_flops) / 1e9
+            print(f"  ✓ 最终 Theory FLOPs: {theory_flops_g:.2f} G (Encoder r={token_keep_ratio:.2f})")
+
+            # 清理
+            del model_clone
+            if torch.cuda.is_available(): torch.cuda.empty_cache()
+
         except Exception as e:
-            print(f"  ⚠ 理论 FLOPs 计算失败，使用基准 FLOPs: {e}")
+            print(f"  ⚠ 理论计算发生意外: {e}")
+            import traceback
+            traceback.print_exc()
             theory_flops_g = base_flops_g
-    else:
-        # 非 DSET 模型或没有 thop：理论 FLOPs = 基准 FLOPs
-        theory_flops_g = base_flops_g
-    
+
     return total_params_m, active_params_m, base_flops_g, theory_flops_g
 
 
