@@ -221,6 +221,18 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 12
     # 计算理论 FLOPs（考虑 token pruning 和 MoE）
     theory_flops_g = base_flops_g
     if model_type == "dset" and config is not None and HAS_THOP:
+        # 尝试导入 MoELayer 类（用于识别 MoE 层）
+        try:
+            from experiments.dset.src.zoo.rtdetr.moe_components import MoELayer
+            HAS_MOELAYER = True
+        except ImportError:
+            try:
+                from src.zoo.rtdetr.moe_components import MoELayer
+                HAS_MOELAYER = True
+            except ImportError:
+                MoELayer = None
+                HAS_MOELAYER = False
+        
         dset_config = config.get('model', {}).get('dset', {})
         token_keep_ratio = dset_config.get('token_keep_ratio', 1.0)
         encoder_experts = dset_config.get('encoder_moe_num_experts', 1)
@@ -294,27 +306,41 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 12
                         print(f"  Linear层: {name:<60} | 类名: {module.__class__.__name__}")
                     elif isinstance(module, nn.MultiheadAttention) or "Attention" in module.__class__.__name__:
                         print(f"  Attention层: {name:<60} | 类名: {module.__class__.__name__}")
+                    elif HAS_MOELAYER and isinstance(module, MoELayer):
+                        print(f"  ⭐ MoE层: {name:<60} | 类名: {module.__class__.__name__}")
                 print("=" * 80 + "\n")
             
             # 遍历 encoder 的子模块，识别 Attention 和 FFN
+            processed_attn_paths = set()  # 避免重复统计
+            processed_moe_paths = set()   # 避免重复统计
             for name, module in encoder_model.named_modules():
+                # 检查是否是已处理模块的子模块
+                is_child_of_processed = any(
+                    name.startswith(processed_path + '.') 
+                    for processed_path in list(processed_attn_paths) + list(processed_moe_paths)
+                )
+                if is_child_of_processed:
+                    continue
+                
                 # 针对 Attention 层
-                if isinstance(module, nn.MultiheadAttention) or "Attention" in module.__class__.__name__:
+                if isinstance(module, nn.MultiheadAttention):
                     B, _, H, W = encoder_feat.shape  # 只取 Batch, Height, Width
                     # 修复点：构造 inputs 时，最后一维必须是 hidden_dim (256)
                     dummy_seq = torch.randn(B, H * W, hidden_dim).to(device)
                     
                     attn_flops, _ = profile(module, inputs=(dummy_seq, dummy_seq, dummy_seq), verbose=False)
                     enc_attn_base += attn_flops
+                    processed_attn_paths.add(name)
                 
-                # 针对 FFN/MoE 层
-                elif isinstance(module, nn.Linear) and any(k in name.lower() for k in ['expert', 'ffn', 'moe']):
+                # 针对 FFN/MoE 层：检查 MoELayer 实例
+                elif HAS_MOELAYER and isinstance(module, MoELayer):
                     B, _, H, W = encoder_feat.shape
                     # 修复点：输入维度对齐 256
                     dummy_flat = torch.randn(B, H * W, hidden_dim).to(device)
                     
                     ffn_flops, _ = profile(module, inputs=(dummy_flat,), verbose=False)
                     enc_ffn_base += ffn_flops
+                    processed_moe_paths.add(name)
             
             if enc_attn_base == 0 and enc_ffn_base == 0:
                 raise RuntimeError("无法识别 Encoder 中的 Attention 或 FFN 层，解构失败")
@@ -360,7 +386,9 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 12
                 for name, module in decoder_model.named_modules():
                     if isinstance(module, nn.Linear):
                         print(f"  Linear层: {name:<60} | 类名: {module.__class__.__name__}")
-                    elif 'moe' in name.lower() or 'MoE' in module.__class__.__name__:
+                    elif HAS_MOELAYER and isinstance(module, MoELayer):
+                        print(f"  ⭐ MoE层: {name:<60} | 类名: {module.__class__.__name__}")
+                    elif 'moe' in name.lower() or 'adaptive_expert' in name.lower() or 'MoE' in module.__class__.__name__:
                         print(f"  ⭐ MoE相关层: {name:<60} | 类名: {module.__class__.__name__}")
                 print("=" * 80 + "\n")
             
@@ -375,10 +403,16 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 12
                 if is_child_of_processed:
                     continue  # 跳过已处理 MoE 模块的子模块
                 
-                # 识别 MoE 层：检查类名或参数名
+                # 识别 MoE 层：优先使用 isinstance 检查，然后检查名称
                 is_moe_layer = False
-                if 'moe_layer' in name.lower():
+                
+                # 方法1：直接检查是否是 MoELayer 实例（最可靠）
+                if HAS_MOELAYER and isinstance(module, MoELayer):
                     is_moe_layer = True
+                # 方法2：检查名称（兼容旧代码）
+                elif 'moe_layer' in name.lower() or 'adaptive_expert_layer' in name.lower():
+                    is_moe_layer = True
+                # 方法3：检查类名（兜底）
                 elif hasattr(module, '__class__'):
                     class_name = module.__class__.__name__
                     if 'MoE' in class_name or 'MoELayer' in class_name:
@@ -395,6 +429,8 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 12
                     moe_flops, _ = profile(module, inputs=(dummy_moe_input,), verbose=False)
                     dec_moe_flops += moe_flops
                     processed_moe_paths.add(name)  # 记录已处理的 MoE 模块路径
+                    if debug:
+                        print(f"  ✓ 识别到 MoE 层: {name}, FLOPs: {moe_flops/1e9:.2f}G")
             
             if dec_moe_flops == 0:
                 raise RuntimeError("无法识别 Decoder 中的 MoE 层，解构失败")
