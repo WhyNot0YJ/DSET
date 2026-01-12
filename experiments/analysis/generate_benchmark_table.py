@@ -102,30 +102,84 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 12
         decoder_experts = config.get('model', {}).get('num_experts', 1)
         decoder_top_k = config.get('model', {}).get('top_k', 3)
         
+        print(f"\n  📊 Active Params 计算过程:")
+        print(f"    - Encoder MoE: {encoder_experts} experts, top-{encoder_top_k}")
+        print(f"    - Decoder MoE: {decoder_experts} experts, top-{decoder_top_k}")
+        
         # 分别统计 Encoder 和 Decoder 的专家参数
         encoder_expert_params = 0
         decoder_expert_params = 0
+        encoder_expert_names = []
+        decoder_expert_names = []
         
         # 遍历所有参数，识别专家参数
+        # MoELayer 的参数包括: router.weight, expert_w1, expert_b1, expert_w2, expert_b2
         for name, param in pytorch_model.named_parameters():
-            # Encoder 专家参数：参数名包含 'encoder' 且含 'expert' 或 'encoder_moe'
-            if 'encoder' in name.lower() and ('expert' in name.lower() or 'encoder_moe' in name.lower()):
-                encoder_expert_params += param.numel()
-            # Decoder 专家参数：参数名包含 'decoder' 且含 'moe_layer'
-            elif 'decoder' in name.lower() and 'moe_layer' in name.lower():
-                decoder_expert_params += param.numel()
+            param_size = param.numel()
+            is_encoder_expert = False
+            is_decoder_expert = False
+            
+            # Encoder 专家参数：参数名包含 'encoder' 且包含 'moe_layer'
+            # MoELayer 的参数: router.weight, expert_w1, expert_b1, expert_w2, expert_b2
+            if 'encoder' in name.lower() and 'moe_layer' in name.lower():
+                encoder_expert_params += param_size
+                encoder_expert_names.append(f"{name} ({param_size:,})")
+                is_encoder_expert = True
+            
+            # Decoder 专家参数：参数名包含 'decoder' 且包含 'adaptive_expert_layer'
+            # 注意：Decoder 使用的是 adaptive_expert_layer，不是 moe_layer
+            elif 'decoder' in name.lower() and 'adaptive_expert_layer' in name.lower():
+                decoder_expert_params += param_size
+                decoder_expert_names.append(f"{name} ({param_size:,})")
+                is_decoder_expert = True
+        
+        print(f"\n    Encoder Expert Params: {encoder_expert_params:,} ({encoder_expert_params/1e6:.2f}M)")
+        if encoder_expert_names:
+            for name in encoder_expert_names[:5]:  # 只打印前5个
+                print(f"      - {name}")
+            if len(encoder_expert_names) > 5:
+                print(f"      ... 还有 {len(encoder_expert_names)-5} 个参数")
+        else:
+            print(f"      ⚠ 未找到 Encoder 专家参数！")
+        
+        print(f"\n    Decoder Expert Params: {decoder_expert_params:,} ({decoder_expert_params/1e6:.2f}M)")
+        if decoder_expert_names:
+            for name in decoder_expert_names[:5]:  # 只打印前5个
+                print(f"      - {name}")
+            if len(decoder_expert_names) > 5:
+                print(f"      ... 还有 {len(decoder_expert_names)-5} 个参数")
+        else:
+            print(f"      ⚠ 未找到 Decoder 专家参数！")
         
         # 计算激活参数
         # Encoder: Top-K 路由，激活参数 = Expert_Params × min(top_k, experts) / Num_Experts
         # Decoder: Top-K 路由，激活参数 = Expert_Params × min(top_k, experts) / Num_Experts
         encoder_active_ratio = min(encoder_top_k, encoder_experts) / max(encoder_experts, 1) if encoder_experts > 1 else 1.0
         decoder_active_ratio = min(decoder_top_k, decoder_experts) / max(decoder_experts, 1) if decoder_experts > 1 else 1.0
+        
         encoder_active = encoder_expert_params * encoder_active_ratio
         decoder_active = decoder_expert_params * decoder_active_ratio
         
+        print(f"\n    Activation Ratios:")
+        print(f"      - Encoder: {encoder_active_ratio:.4f} (top-{encoder_top_k} / {encoder_experts} experts)")
+        print(f"      - Decoder: {decoder_active_ratio:.4f} (top-{decoder_top_k} / {decoder_experts} experts)")
+        
+        print(f"\n    Active Expert Params:")
+        print(f"      - Encoder: {encoder_active:,} ({encoder_active/1e6:.2f}M) = {encoder_expert_params:,} × {encoder_active_ratio:.4f}")
+        print(f"      - Decoder: {decoder_active:,} ({decoder_active/1e6:.2f}M) = {decoder_expert_params:,} × {decoder_active_ratio:.4f}")
+        
         # 总激活参数 = 总参数 - 专家总参数 + Encoder激活部分 + Decoder激活部分
         total_expert_params = encoder_expert_params + decoder_expert_params
-        active_params = (total_params - total_expert_params) + encoder_active + decoder_active
+        non_expert_params = total_params - total_expert_params
+        active_params = non_expert_params + encoder_active + decoder_active
+        
+        print(f"\n    Final Calculation:")
+        print(f"      - Total Params: {total_params:,} ({total_params/1e6:.2f}M)")
+        print(f"      - Total Expert Params: {total_expert_params:,} ({total_expert_params/1e6:.2f}M)")
+        print(f"      - Non-Expert Params: {non_expert_params:,} ({non_expert_params/1e6:.2f}M)")
+        print(f"      - Active Params: {active_params:,} ({active_params/1e6:.2f}M)")
+        print(f"        = {non_expert_params:,} (non-expert) + {encoder_active:,} (encoder active) + {decoder_active:,} (decoder active)")
+        print()
     
     active_params_m = active_params / 1e6
     
