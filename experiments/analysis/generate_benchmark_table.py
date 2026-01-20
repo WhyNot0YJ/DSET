@@ -268,6 +268,7 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 12
             print(f"  ✓ Base FLOPs (Dense, r=1.0): {base_flops_g:.2f} G")
             
             # --- B. Measure Theory FLOPs (With Pruning) ---
+            r = 1.0  # 默认值，用于非 DSET 模型
             if model_type == "dset":
                 # Re-Enable Pruning (if config says so)
                 dset_cfg = config.get('model', {}).get('dset', {})
@@ -287,14 +288,102 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 12
                     if hasattr(m, 'current_epoch'):
                         m.current_epoch = 999
                 
-                # Profile again!
-                # Since Pruning physically reduces token count N,
-                # our custom ops (which use x.shape) will automatically calculate reduced FLOPs!
-                # Attention will see smaller N -> N^2 reduced
-                # MoE will see smaller N -> Linear reduced
+                # =========================================================
+                # 模块拆分：Backbone + Encoder + Head + Decoder
+                # =========================================================
+                
+                # 1. Backbone (CNN) - 独立测量
+                bb_macs = 0
+                if hasattr(model_eval, 'backbone'):
+                    bb_macs, _ = profile(model_eval.backbone, inputs=(dummy_img,), verbose=False)
+                
+                # 2. Encoder (Transformer) - 独立测量
+                enc_macs = 0
+                if hasattr(model_eval, 'encoder'):
+                    # 需要先通过 backbone 获取特征
+                    with torch.no_grad():
+                        feats = model_eval.backbone(dummy_img) if hasattr(model_eval, 'backbone') else dummy_img
+                        if isinstance(feats, (list, tuple)):
+                            enc_inputs = feats
+                        else:
+                            enc_inputs = [feats]
+                    enc_macs, _ = profile(model_eval.encoder, inputs=(enc_inputs,), custom_ops=custom_ops_map, verbose=False)
+                
+                # =========================================================
+                # 3. 预测头 (Prediction Heads) - 独立测量
+                # =========================================================
+                
+                num_queries = 100  # 默认兜底值
+                
+                # 1. 尝试从 decoder 获取 (RT-DETR 标准位置)
+                if hasattr(model_eval, 'decoder') and hasattr(model_eval.decoder, 'num_queries'):
+                    num_queries = model_eval.decoder.num_queries
+                # 2. 尝试从模型顶层获取
+                elif hasattr(model_eval, 'num_queries'):
+                    num_queries = model_eval.num_queries
+                # 3. 尝试从 transformer 获取 (旧版兼容)
+                elif hasattr(model_eval, 'transformer') and hasattr(model_eval.transformer, 'num_queries'):
+                    num_queries = model_eval.transformer.num_queries
+                
+                # 再次确认：如果是 DSET/RT-DETR，config 里也有
+                if config:
+                    cfg_queries = config.get('model', {}).get('num_queries', None)
+                    if cfg_queries:
+                        num_queries = cfg_queries
+                
+                hidden_dim = getattr(model_eval, 'hidden_dim', 256)
+                
+                # 构造符合实际 Query 数量的输入: [1, num_queries, hidden_dim]
+                dummy_head_in = torch.randn(1, num_queries, hidden_dim).to(device)
+                
+                head_macs = 0
+                # 累加 Class Head (Score)
+                # RT-DETR 每一层 Decoder 都有 Aux Head，所以是一个 ModuleList
+                if hasattr(model_eval, 'dec_score_head'):
+                    for layer in model_eval.dec_score_head:
+                        h_macs, _ = profile(layer, inputs=(dummy_head_in,), verbose=False)
+                        head_macs += h_macs
+                # 如果是单个 Linear (非 ModuleList)
+                elif hasattr(model_eval, 'class_embed'):
+                    h_macs, _ = profile(model_eval.class_embed, inputs=(dummy_head_in,), verbose=False)
+                    head_macs += h_macs
+                
+                # 累加 Bbox Head (Reg)
+                if hasattr(model_eval, 'dec_bbox_head'):
+                    for layer in model_eval.dec_bbox_head:
+                        h_macs, _ = profile(layer, inputs=(dummy_head_in,), verbose=False)
+                        head_macs += h_macs
+                elif hasattr(model_eval, 'bbox_embed'):
+                    h_macs, _ = profile(model_eval.bbox_embed, inputs=(dummy_head_in,), verbose=False)
+                    head_macs += h_macs
+                
+                # 4. 解码器 (Transformer Decoder Only) - 倒推法
+                # 全量 - 骨干 - 编码 - 头 = 纯 Decoder (SelfAttn + CrossAttn + FFN)
                 theory_macs, _ = profile(model_eval, inputs=(dummy_img,), custom_ops=custom_ops_map, verbose=False)
+                
+                # 使用 max(0, ...) 防止因浮点误差出现负数，但在正确 num_queries 下应该不会有问题了
+                dec_trans_macs = max(0, theory_macs - bb_macs - enc_macs - head_macs)
+                
                 theory_flops_g = theory_macs / 1e9
-                print(f"  ✓ Theory FLOPs (Sparse, r={r:.2f}): {theory_flops_g:.2f} G")
+                
+                print(f"    ----------------------------------------------------------------")
+                print(f"    模块 (Module)        FLOPs (G)    占比      状态")
+                print(f"    ----------------------------------------------------------------")
+                if theory_macs > 0:
+                    print(f"    Backbone (CNN)      {bb_macs/1e9:6.2f} G    {bb_macs/theory_macs:6.1%}    🔒 死值 (ResNet)")
+                    print(f"    Heads (MLP)         {head_macs/1e9:6.2f} G    {head_macs/theory_macs:6.1%}    🔒 死值 ({num_queries} Queries)")
+                    print(f"    ----------------------------------------------------------------")
+                    print(f"    Encoder (Trans)     {enc_macs/1e9:6.2f} G    {enc_macs/theory_macs:6.1%}    🔥 核心优化区 (N -> N*r)")
+                    print(f"    Decoder (Trans)     {dec_trans_macs/1e9:6.2f} G    {dec_trans_macs/theory_macs:6.1%}    ✨ 关联优化区 (Mem -> Mem*r)")
+                else:
+                    print(f"    Backbone (CNN)      {bb_macs/1e9:6.2f} G    N/A         🔒 死值 (ResNet)")
+                    print(f"    Heads (MLP)         {head_macs/1e9:6.2f} G    N/A         🔒 死值 ({num_queries} Queries)")
+                    print(f"    ----------------------------------------------------------------")
+                    print(f"    Encoder (Trans)     {enc_macs/1e9:6.2f} G    N/A         🔥 核心优化区 (N -> N*r)")
+                    print(f"    Decoder (Trans)     {dec_trans_macs/1e9:6.2f} G    N/A         ✨ 关联优化区 (Mem -> Mem*r)")
+                print(f"    ----------------------------------------------------------------")
+                print(f"    Total Theory        {theory_flops_g:6.2f} G (r={r:.2f})")
+                print(f"    ----------------------------------------------------------------")
             else:
                 theory_flops_g = base_flops_g
                 
