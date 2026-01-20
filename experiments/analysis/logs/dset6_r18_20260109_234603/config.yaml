@@ -1,0 +1,79 @@
+checkpoint:
+  log_dir: logs
+  resume_mode: auto
+data:
+  data_root: /root/autodl-tmp/datasets/DAIR-V2X
+data_augmentation:
+  brightness: 0.15
+  contrast: 0.15
+  crop_max: 1.0
+  crop_min: 0.1
+  flip_prob: 0.5
+  hue: 0.05
+  max_size: 1280
+  mixup: 0.0
+  mosaic: 0.0
+  saturation: 0.1
+  scales_max: 800
+  scales_min: 480
+  scales_step: 32
+dataset:
+  val_batch_size: 1
+misc:
+  device: cuda
+  num_workers: 16
+  pin_memory: true
+  prefetch_factor: 4
+model:
+  backbone: presnet18
+  dset:
+    cass_expansion_ratio: 0.8
+    cass_focal_alpha: 2.0
+    cass_focal_beta: 4.0
+    cass_loss_type: vfl
+    cass_loss_weight: 0.05
+    cass_min_size: 1.0
+    cass_warmup_epochs: 5
+    encoder_moe_num_experts: 6
+    encoder_moe_top_k: 1
+    token_keep_ratio:
+      2: 0.3
+    token_pruning_warmup_epochs: 10
+    use_cass: true
+    use_subpixel_offset: true
+  encoder:
+    expansion: 0.5
+    in_channels:
+    - 128
+    - 256
+    - 512
+    num_encoder_layers: 1
+    use_encoder_idx:
+    - 2
+  hidden_dim: 256
+  moe_noise_std: 0.1
+  num_decoder_layers: 3
+  num_experts: 6
+  num_queries: 100
+  pretrained_weights: pretrained/rtdetrv2_r18vd_120e_coco_rerun_48.1.pth
+  top_k: 3
+training:
+  batch_size: 24
+  clip_max_norm: 10.0
+  decoder_moe_balance_weight: 0.01
+  deterministic: false
+  early_stopping_metric: mAP_0.5_0.95
+  early_stopping_patience: 20
+  ema_decay: 0.9999
+  encoder_moe_balance_weight: 0.001
+  epochs: 200
+  eta_min: 1.0e-06
+  moe_balance_warmup_epochs: 0
+  new_lr: 0.0001
+  pretrained_lr: 1.0e-05
+  scheduler: cosine
+  seed: 42
+  warmup_epochs: 3
+  weight_decay: 0.0001
+val:
+  batch_size: 1

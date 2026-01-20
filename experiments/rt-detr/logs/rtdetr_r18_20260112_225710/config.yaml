@@ -1,0 +1,52 @@
+checkpoint:
+  log_dir: logs
+  resume_mode: auto
+data:
+  data_root: /root/autodl-tmp/datasets/DAIR-V2X
+data_augmentation:
+  brightness: 0.15
+  close_mosaic_epochs: 20
+  contrast: 0.15
+  crop_max: 1.0
+  crop_min: 0.1
+  flip_prob: 0.5
+  hue: 0.05
+  max_size: 1280
+  mixup: 0.0
+  mosaic: 0.0
+  saturation: 0.1
+  scales_max: 800
+  scales_min: 480
+  scales_step: 32
+misc:
+  device: cuda
+  num_workers: 16
+  pin_memory: true
+  prefetch_factor: 4
+model:
+  backbone: presnet18
+  encoder:
+    expansion: 0.5
+    in_channels:
+    - 128
+    - 256
+    - 512
+  hidden_dim: 256
+  num_decoder_layers: 3
+  num_queries: 100
+  pretrained_weights: pretrained/rtdetrv2_r18vd_120e_coco_rerun_48.1.pth
+training:
+  batch_size: 24
+  clip_max_norm: 10.0
+  deterministic: false
+  early_stopping_metric: mAP_0.5_0.95
+  early_stopping_patience: 0
+  ema_decay: 0.9999
+  epochs: 200
+  eta_min: 1.0e-06
+  new_lr: 0.0001
+  pretrained_lr: 1.0e-05
+  scheduler: cosine
+  seed: 42
+  warmup_epochs: 3
+  weight_decay: 0.0001
