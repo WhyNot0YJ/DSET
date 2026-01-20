@@ -310,22 +310,20 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 12
                     enc_macs, _ = profile(model_eval.encoder, inputs=(enc_inputs,), custom_ops=custom_ops_map, verbose=False)
                 
                 # =========================================================
-                # 3. 预测头 (Prediction Heads) - 独立测量
+                # 3. 预测头 (Prediction Heads) - 独立测量 (增强版)
                 # =========================================================
                 
-                num_queries = 100  # 默认兜底值
+                # 自动查找真实的 num_queries
+                num_queries = 100  # 默认值
                 
-                # 1. 尝试从 decoder 获取 (RT-DETR 标准位置)
                 if hasattr(model_eval, 'decoder') and hasattr(model_eval.decoder, 'num_queries'):
                     num_queries = model_eval.decoder.num_queries
-                # 2. 尝试从模型顶层获取
                 elif hasattr(model_eval, 'num_queries'):
                     num_queries = model_eval.num_queries
-                # 3. 尝试从 transformer 获取 (旧版兼容)
                 elif hasattr(model_eval, 'transformer') and hasattr(model_eval.transformer, 'num_queries'):
                     num_queries = model_eval.transformer.num_queries
                 
-                # 再次确认：如果是 DSET/RT-DETR，config 里也有
+                # 从配置文件获取
                 if config:
                     cfg_queries = config.get('model', {}).get('num_queries', None)
                     if cfg_queries:
@@ -333,35 +331,85 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 12
                 
                 hidden_dim = getattr(model_eval, 'hidden_dim', 256)
                 
-                # 构造符合实际 Query 数量的输入: [1, num_queries, hidden_dim]
+                # 构造符合实际 Query 数量的输入: [1, num_queries, 256]
                 dummy_head_in = torch.randn(1, num_queries, hidden_dim).to(device)
                 
                 head_macs = 0
-                # 累加 Class Head (Score)
-                # RT-DETR 每一层 Decoder 都有 Aux Head，所以是一个 ModuleList
-                if hasattr(model_eval, 'dec_score_head'):
+                found_heads = False  # 标记是否成功找到并计算了 Heads
+                
+                # 策略 A: RT-DETR/DSET 命名 (dec_score_head, dec_bbox_head)
+                # 注意：在 DSET/RT-DETR 中，heads 位于 decoder 子模块中
+                decoder_obj = getattr(model_eval, 'decoder', None)
+                if decoder_obj and hasattr(decoder_obj, 'dec_score_head') and hasattr(decoder_obj, 'dec_bbox_head'):
+                    for layer in decoder_obj.dec_score_head:
+                        h_macs, _ = profile(layer, inputs=(dummy_head_in,), verbose=False)
+                        head_macs += h_macs
+                    
+                    for layer in decoder_obj.dec_bbox_head:
+                        h_macs, _ = profile(layer, inputs=(dummy_head_in,), verbose=False)
+                        head_macs += h_macs
+                    
+                    # Encoder Auxiliary Head (也在 decoder 中)
+                    if hasattr(decoder_obj, 'enc_score_head'):
+                        h_macs, _ = profile(decoder_obj.enc_score_head, inputs=(dummy_head_in,), verbose=False)
+                        head_macs += h_macs
+                    if hasattr(decoder_obj, 'enc_bbox_head'):
+                        h_macs, _ = profile(decoder_obj.enc_bbox_head, inputs=(dummy_head_in,), verbose=False)
+                        head_macs += h_macs
+                    
+                    found_heads = True
+                # 兼容：如果 heads 直接在 model_eval 上（某些变体）
+                elif hasattr(model_eval, 'dec_score_head') and hasattr(model_eval, 'dec_bbox_head'):
                     for layer in model_eval.dec_score_head:
                         h_macs, _ = profile(layer, inputs=(dummy_head_in,), verbose=False)
                         head_macs += h_macs
-                # 如果是单个 Linear (非 ModuleList)
-                elif hasattr(model_eval, 'class_embed'):
-                    h_macs, _ = profile(model_eval.class_embed, inputs=(dummy_head_in,), verbose=False)
-                    head_macs += h_macs
-                
-                # 累加 Bbox Head (Reg)
-                if hasattr(model_eval, 'dec_bbox_head'):
+                    
                     for layer in model_eval.dec_bbox_head:
                         h_macs, _ = profile(layer, inputs=(dummy_head_in,), verbose=False)
                         head_macs += h_macs
-                elif hasattr(model_eval, 'bbox_embed'):
-                    h_macs, _ = profile(model_eval.bbox_embed, inputs=(dummy_head_in,), verbose=False)
-                    head_macs += h_macs
+                    
+                    if hasattr(model_eval, 'enc_score_head'):
+                        h_macs, _ = profile(model_eval.enc_score_head, inputs=(dummy_head_in,), verbose=False)
+                        head_macs += h_macs
+                    if hasattr(model_eval, 'enc_bbox_head'):
+                        h_macs, _ = profile(model_eval.enc_bbox_head, inputs=(dummy_head_in,), verbose=False)
+                        head_macs += h_macs
+                    
+                    found_heads = True
+                
+                # 策略 B: DETR/Deformable-DETR 命名 (class_embed, bbox_embed)
+                if not found_heads:
+                    if hasattr(model_eval, 'class_embed'):
+                        if isinstance(model_eval.class_embed, nn.ModuleList):
+                            for layer in model_eval.class_embed:
+                                h_macs, _ = profile(layer, inputs=(dummy_head_in,), verbose=False)
+                                head_macs += h_macs
+                        else:
+                            num_dec_layers = getattr(model_eval.decoder, 'num_layers', 6)
+                            h_macs, _ = profile(model_eval.class_embed, inputs=(dummy_head_in,), verbose=False)
+                            head_macs += h_macs * num_dec_layers
+                    
+                    if hasattr(model_eval, 'bbox_embed'):
+                        if isinstance(model_eval.bbox_embed, nn.ModuleList):
+                            for layer in model_eval.bbox_embed:
+                                h_macs, _ = profile(layer, inputs=(dummy_head_in,), verbose=False)
+                                head_macs += h_macs
+                        else:
+                            num_dec_layers = getattr(model_eval.decoder, 'num_layers', 6)
+                            h_macs, _ = profile(model_eval.bbox_embed, inputs=(dummy_head_in,), verbose=False)
+                            head_macs += h_macs * num_dec_layers
+                
+                # Debug 模式：兜底查找
+                if head_macs == 0 and debug:
+                    print("  ⚠ 警告: 未找到预测头 (Heads)，尝试遍历查找 Linear...")
+                    for name, module in model_eval.named_modules():
+                        if ('score_head' in name or 'bbox_head' in name or 'class_embed' in name or 'bbox_embed' in name) and isinstance(module, nn.Linear):
+                            h_macs, _ = profile(module, inputs=(dummy_head_in,), verbose=False)
+                            head_macs += h_macs
+                            print(f"    + Found Head: {name}, FLOPs={h_macs/1e9:.4f}G")
                 
                 # 4. 解码器 (Transformer Decoder Only) - 倒推法
-                # 全量 - 骨干 - 编码 - 头 = 纯 Decoder (SelfAttn + CrossAttn + FFN)
                 theory_macs, _ = profile(model_eval, inputs=(dummy_img,), custom_ops=custom_ops_map, verbose=False)
-                
-                # 使用 max(0, ...) 防止因浮点误差出现负数，但在正确 num_queries 下应该不会有问题了
                 dec_trans_macs = max(0, theory_macs - bb_macs - enc_macs - head_macs)
                 
                 theory_flops_g = theory_macs / 1e9
@@ -369,18 +417,11 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 12
                 print(f"    ----------------------------------------------------------------")
                 print(f"    模块 (Module)        FLOPs (G)    占比      状态")
                 print(f"    ----------------------------------------------------------------")
-                if theory_macs > 0:
-                    print(f"    Backbone (CNN)      {bb_macs/1e9:6.2f} G    {bb_macs/theory_macs:6.1%}    🔒 死值 (ResNet)")
-                    print(f"    Heads (MLP)         {head_macs/1e9:6.2f} G    {head_macs/theory_macs:6.1%}    🔒 死值 ({num_queries} Queries)")
-                    print(f"    ----------------------------------------------------------------")
-                    print(f"    Encoder (Trans)     {enc_macs/1e9:6.2f} G    {enc_macs/theory_macs:6.1%}    🔥 核心优化区 (N -> N*r)")
-                    print(f"    Decoder (Trans)     {dec_trans_macs/1e9:6.2f} G    {dec_trans_macs/theory_macs:6.1%}    ✨ 关联优化区 (Mem -> Mem*r)")
-                else:
-                    print(f"    Backbone (CNN)      {bb_macs/1e9:6.2f} G    N/A         🔒 死值 (ResNet)")
-                    print(f"    Heads (MLP)         {head_macs/1e9:6.2f} G    N/A         🔒 死值 ({num_queries} Queries)")
-                    print(f"    ----------------------------------------------------------------")
-                    print(f"    Encoder (Trans)     {enc_macs/1e9:6.2f} G    N/A         🔥 核心优化区 (N -> N*r)")
-                    print(f"    Decoder (Trans)     {dec_trans_macs/1e9:6.2f} G    N/A         ✨ 关联优化区 (Mem -> Mem*r)")
+                print(f"    Backbone (CNN)      {bb_macs/1e9:6.2f} G    {bb_macs/theory_macs:6.1%}    🔒 死值 (ResNet)")
+                print(f"    Heads (MLP)         {head_macs/1e9:6.2f} G    {head_macs/theory_macs:6.1%}    🔒 死值 ({num_queries} Queries)")
+                print(f"    ----------------------------------------------------------------")
+                print(f"    Encoder (Trans)     {enc_macs/1e9:6.2f} G    {enc_macs/theory_macs:6.1%}    🔥 核心优化区 (N -> N*r)")
+                print(f"    Decoder (Trans)     {dec_trans_macs/1e9:6.2f} G    {dec_trans_macs/theory_macs:6.1%}    ✨ 关联优化区 (Mem -> Mem*r)")
                 print(f"    ----------------------------------------------------------------")
                 print(f"    Total Theory        {theory_flops_g:6.2f} G (r={r:.2f})")
                 print(f"    ----------------------------------------------------------------")
