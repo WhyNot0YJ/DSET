@@ -10,6 +10,7 @@ import torch
 import torch.nn as nn 
 import torch.nn.functional as F 
 import torch.nn.init as init 
+import torch.utils.checkpoint as cp
 from typing import List
 
 from .denoising import get_contrastive_denoising_training_group
