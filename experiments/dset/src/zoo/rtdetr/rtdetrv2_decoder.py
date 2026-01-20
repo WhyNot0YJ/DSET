@@ -288,7 +288,21 @@ class TransformerDecoder(nn.Module):
             ref_points_input = ref_points_detach.unsqueeze(2)
             query_pos_embed = query_pos_head(ref_points_detach)
 
-            output = layer(output, ref_points_input, memory, memory_spatial_shapes, attn_mask, memory_mask, query_pos_embed)
+            if self.training:
+                # [HSP 核心修改] 为 Decoder 开启梯度检查点以节省显存
+                output = cp.checkpoint(
+                    layer, 
+                    output, 
+                    ref_points_input, 
+                    memory, 
+                    memory_spatial_shapes, 
+                    attn_mask, 
+                    memory_mask, 
+                    query_pos_embed,
+                    use_reentrant=False
+                )
+            else:
+                output = layer(output, ref_points_input, memory, memory_spatial_shapes, attn_mask, memory_mask, query_pos_embed)
 
             inter_ref_bbox = F.sigmoid(bbox_head[i](output) + inverse_sigmoid(ref_points_detach))
 
