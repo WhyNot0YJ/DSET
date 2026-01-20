@@ -1369,7 +1369,7 @@ class DSETTrainer:
                     pass
     
     def _save_token_visualization(self, epoch: int) -> None:
-        """增加容错、路径纠偏与物理对齐"""
+        """保存 Token 重要性热力图（适配全局多尺度剪枝）。"""
         try:
             viz_dir = self.log_dir / "visualizations" / f"epoch_{epoch}"
             viz_dir.mkdir(parents=True, exist_ok=True)
@@ -1384,72 +1384,24 @@ class DSETTrainer:
                 outputs = self.ema.module(images.to(self.device), 
                     [{k: v.to(self.device) if isinstance(v, torch.Tensor) else v for k, v in t.items()} for t in targets])
             
-            if 'encoder_info' not in outputs:
-                self.logger.warning("可视化中断：EMA模型输出中缺少 encoder_info")
-                return
-            
-            # 步骤1：增加判空逻辑，防止 IndexError
             enc_info = outputs.get('encoder_info', {})
-            scores_list = enc_info.get('importance_scores_list', [])
-            feat_shapes_list = enc_info.get('feat_shapes_list', [])
+            # 🚀 核心修改：直接使用 HybridEncoder 准备好的 layer_wise_heatmaps
+            heatmaps_2d_list = enc_info.get('layer_wise_heatmaps', [])
             
-            if not scores_list:
-                self.logger.warning(f"📸 Epoch {epoch}: 可视化跳过，importance_scores_list 为空。请检查模型是否正确收集了重要性分数。")
+            if not heatmaps_2d_list:
+                self.logger.warning(f"📸 Epoch {epoch}: 可视化跳过，layer_wise_heatmaps 为空。")
                 return
-            
-            if not feat_shapes_list:
-                self.logger.warning(f"📸 Epoch {epoch}: 可视化跳过，feat_shapes_list 为空。")
-                return
-            
-            # 确保两个列表长度一致
-            if len(scores_list) != len(feat_shapes_list):
-                self.logger.warning(f"📸 Epoch {epoch}: importance_scores_list 和 feat_shapes_list 长度不一致 ({len(scores_list)} vs {len(feat_shapes_list)})，跳过可视化。")
-                return
-            
-            # 提取分数并转概率
-            importance_scores = scores_list[-1]
-            feat_shape = feat_shapes_list[-1]
 
-            if isinstance(feat_shape, (list, tuple)) and len(feat_shape) > 0 \
-               and isinstance(feat_shape[0], (list, tuple)):
-                spatial_shapes = [(int(s[0]), int(s[1])) for s in feat_shape]
-                level_sizes = [h * w for h, w in spatial_shapes]
-                expected_N = sum(level_sizes)
-                if importance_scores.shape[1] != expected_N:
-                    self.logger.error(f"Token count {importance_scores.shape[1]} does not match multi-scale tokens {expected_N}，跳过可视化")
-                    return
-                # Visualize the highest-resolution level
-                max_idx = level_sizes.index(max(level_sizes))
-                start = sum(level_sizes[:max_idx])
-                end = start + level_sizes[max_idx]
-                importance_scores = importance_scores[:, start:end]
-                h_feat, w_feat = spatial_shapes[max_idx]
-            else:
-                h_feat, w_feat = feat_shape
-            
-            # 检查重要性分数的维度并重塑（Linear 预测器输出 [B, N] 格式）
-            if importance_scores.dim() != 2:
-                self.logger.error(f"不支持的重要性分数维度: {importance_scores.dim()}，期望 2 (Linear 预测器输出 [B, N])")
-                return
-            
-            # Linear 预测器：importance_scores 是 [B, N] 格式，其中 N = H * W
-            B, N = importance_scores.shape
-            expected_N = h_feat * w_feat
-            if N != expected_N:
-                self.logger.error(f"Token count {N} does not match spatial grid {h_feat}x{w_feat} ({expected_N})，跳过可视化")
-                return
-            
-            # 重塑为 [B, 1, H, W] 格式以便后续处理
-            importance_scores = importance_scores.view(B, 1, h_feat, w_feat)
-            
-            # 转换为概率
-            scores_prob = torch.sigmoid(importance_scores)
+            # 我们通常只可视化分辨率最高的那一层 (通常是第一层 S4)
+            # heatmaps_2d_list 里的形状是 [B, 1, H_i, W_i]
+            scores_prob = torch.sigmoid(heatmaps_2d_list[0]) 
+            h_feat, w_feat = scores_prob.shape[2], scores_prob.shape[3]
             
             for i in range(min(3, len(targets))):
                 img_id = targets[i]['image_id'].item()
                 data_root = Path(self.config['data']['data_root'])
                 
-                # 尝试多种命名匹配模式 (DAIR-V2X 兼容性)
+                # 尝试命名匹配
                 possible_paths = [
                     data_root / "image" / f"{img_id:06d}.jpg",
                     data_root / "image" / f"{img_id}.jpg"
@@ -1460,30 +1412,27 @@ class DSETTrainer:
                         orig_img = cv2.imread(str(p))
                         break
                 
-                if orig_img is None:
-                    self.logger.warning(f"跳过样本 {img_id}：找不到原始图片或读取失败")
-                    continue
+                if orig_img is None: continue
 
                 orig_h, orig_w = orig_img.shape[:2]
 
-                # --- 核心：物理空间校准---
+                # 物理空间校准
                 valid_h_feat = int(round(orig_h * (h_feat / H_tensor)))
                 valid_w_feat = int(round(orig_w * (w_feat / W_tensor)))
                 
-                # 提取单个样本的分数 [H, W]
-                s_2d = scores_prob[i, 0].cpu().numpy()  # [B, 1, H, W] -> [H, W]
-                
-                s_valid = s_2d[:valid_h_feat, :valid_w_feat] # 裁剪 Padding 区
+                s_2d = scores_prob[i, 0].cpu().numpy()
+                s_valid = s_2d[:valid_h_feat, :valid_w_feat]
                 
                 s_norm = (s_valid - s_valid.min()) / (s_valid.max() - s_valid.min() + 1e-8)
                 heatmap = cv2.applyColorMap((s_norm * 255).astype(np.uint8), cv2.COLORMAP_JET)
-                # 使用最近邻插值
                 heatmap = cv2.resize(heatmap, (orig_w, orig_h), interpolation=cv2.INTER_NEAREST)
                 
                 overlay = cv2.addWeighted(orig_img, 0.4, heatmap, 0.6, 0)
-                cv2.imwrite(str(viz_dir / f"sample_{img_id}_aligned.jpg"), overlay)
+                cv2.imwrite(str(viz_dir / f"sample_{img_id}_S4_heatmap.jpg"), overlay)
                 
-            self.logger.info(f"📸 Epoch {epoch}: 重要性热力图已校准并保存至 {viz_dir}")
+            self.logger.info(f"📸 Epoch {epoch}: 已保存 S4 尺度重要性热力图至 {viz_dir}")
+        except Exception as e:
+            self.logger.error(f"可视化模块运行崩溃: {e}", exc_info=True)
         except Exception as e:
             self.logger.error(f"可视化模块运行崩溃: {e}", exc_info=True)
     
