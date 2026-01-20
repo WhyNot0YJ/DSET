@@ -1528,16 +1528,12 @@ class DSETTrainer:
             self.scaler.update()
             self.ema.update(self.model)
             
-            # 统计各种Loss（在删除之前先统计）
-            loss_value = loss.item() if isinstance(loss, torch.Tensor) else float(loss)
-            total_loss += loss_value
-            
-            # [内存优化] 立即释放 loss 以节省显存
-            del loss
-            
-            # [内存优化] 每个 batch 后立即清理显存（而不是每 20 个）
+            # 显存清理（每个 batch 后执行，防止碎片化）
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+            
+            # 统计各种Loss
+            total_loss += loss.item() if isinstance(loss, torch.Tensor) else float(loss)
             if isinstance(outputs, dict):
                 if 'detection_loss' in outputs:
                     det_loss_val = outputs['detection_loss']
