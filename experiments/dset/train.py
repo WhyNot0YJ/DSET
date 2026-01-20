@@ -886,54 +886,19 @@ class DSETTrainer:
             self.logger.info("将从随机初始化开始训练")
     
     def _create_data_loaders(self) -> Tuple[DataLoader, DataLoader]:
-        """创建数据加载器。"""
-        # 修改：移除不必要的max()，使用配置值
-        batch_size = self.config['training']['batch_size']
+        """创建初始数据加载器。"""
+        # 初始加载时，检查是否处于预热期
+        token_pruning_warmup_epochs = self.config['model'].get('dset', {}).get('token_pruning_warmup_epochs', 10)
+        base_batch_size = self.config['training']['batch_size']
         
-        # 获取数据增强配置
-        aug_config = self.config.get('data_augmentation', {})
-        # 默认使用Unified Task-Adapted Augmentation的参数
-        aug_brightness = aug_config.get('brightness', 0.15)
-        aug_contrast = aug_config.get('contrast', 0.15)
-        aug_saturation = aug_config.get('saturation', 0.1)
-        aug_hue = aug_config.get('hue', 0.05)
-        aug_color_jitter_prob = aug_config.get('color_jitter_prob', 0.0)
-        aug_crop_min = aug_config.get('crop_min', 0.3)
-        aug_crop_max = aug_config.get('crop_max', 1.0)
-        aug_flip_prob = aug_config.get('flip_prob', 0.5)
+        # 🚀 逻辑修改：一开始跟着配置文件，预热期结束后翻倍 (* 2)
+        current_batch_size = base_batch_size if self.current_epoch < token_pruning_warmup_epochs else base_batch_size * 2
         
-        # Mosaic 和 Mixup (新增)
-        aug_mosaic_prob = aug_config.get('mosaic', 0.0)
-        aug_mixup_prob = aug_config.get('mixup', 0.0)
+        self.logger.info(f"📦 初始化训练: epoch={self.current_epoch}, 当前使用 batch_size={current_batch_size} (基准={base_batch_size})")
         
-        if aug_mosaic_prob > 0 or aug_mixup_prob > 0:
-            self.logger.info(f"🛠️  高级增强已启用: Mosaic={aug_mosaic_prob}, Mixup={aug_mixup_prob}")
+        train_loader = self._build_train_loader(current_batch_size)
         
-        # 读取多尺度训练配置
-        train_scales_min = aug_config.get('scales_min', 480)
-        train_scales_max = aug_config.get('scales_max', 800)
-        train_scales_step = aug_config.get('scales_step', 32)
-        train_max_size = aug_config.get('max_size', 1333)
-        
-        train_dataset = DAIRV2XDetection(
-            data_root=self.config['data']['data_root'],
-            split='train',
-            aug_brightness=aug_brightness,
-            aug_contrast=aug_contrast,
-            aug_saturation=aug_saturation,
-            aug_hue=aug_hue,
-            aug_color_jitter_prob=aug_color_jitter_prob,
-            aug_crop_min=aug_crop_min,
-            aug_crop_max=aug_crop_max,
-            aug_flip_prob=aug_flip_prob,
-            train_scales_min=train_scales_min,
-            train_scales_max=train_scales_max,
-            train_scales_step=train_scales_step,
-            train_max_size=train_max_size,
-            aug_mosaic_prob=aug_mosaic_prob,
-            aug_mixup_prob=aug_mixup_prob
-        )
-        
+        # 验证集通常不剪枝或保持稳定，可以使用固定 batch_size（或者也随之调整）
         val_dataset = DAIRV2XDetection(
             data_root=self.config['data']['data_root'],
             split='val',
@@ -943,14 +908,52 @@ class DSETTrainer:
             aug_hue=0.0,
             aug_color_jitter_prob=0.0
         )
+        self.val_dataset = val_dataset
         
-        # 从misc配置中读取num_workers和pin_memory
         num_workers = self.config.get('misc', {}).get('num_workers', 16)
         pin_memory = self.config.get('misc', {}).get('pin_memory', True)
-        # 增加预取因子：让 CPU 始终领先 GPU 4-8 个 Batch 的进度
         prefetch_factor = self.config.get('misc', {}).get('prefetch_factor', 4)
         
-        train_loader = DataLoader(
+        val_loader = DataLoader(
+            val_dataset, 
+            batch_size=target_batch_size, # 验证集可以使用配置的最大值
+            shuffle=False,
+            num_workers=num_workers,
+            collate_fn=self._collate_fn,
+            pin_memory=pin_memory,
+            persistent_workers=True if num_workers > 0 else False,
+            prefetch_factor=prefetch_factor if num_workers > 0 else None
+        )
+        
+        return train_loader, val_loader
+
+    def _build_train_loader(self, batch_size: int) -> DataLoader:
+        """根据指定的 batch_size 构建训练加载器。"""
+        aug_config = self.config.get('data_augmentation', {})
+        train_dataset = DAIRV2XDetection(
+            data_root=self.config['data']['data_root'],
+            split='train',
+            aug_brightness=aug_config.get('brightness', 0.15),
+            aug_contrast=aug_config.get('contrast', 0.15),
+            aug_saturation=aug_config.get('saturation', 0.1),
+            aug_hue=aug_config.get('hue', 0.05),
+            aug_color_jitter_prob=aug_config.get('color_jitter_prob', 0.0),
+            aug_crop_min=aug_config.get('crop_min', 0.3),
+            aug_crop_max=aug_config.get('crop_max', 1.0),
+            aug_flip_prob=aug_config.get('flip_prob', 0.5),
+            train_scales_min=aug_config.get('scales_min', 480),
+            train_scales_max=aug_config.get('scales_max', 800),
+            train_scales_step=aug_config.get('scales_step', 32),
+            train_max_size=aug_config.get('max_size', 1333),
+            aug_mosaic_prob=aug_config.get('mosaic', 0.0),
+            aug_mixup_prob=aug_config.get('mixup', 0.0)
+        )
+        
+        num_workers = self.config.get('misc', {}).get('num_workers', 16)
+        pin_memory = self.config.get('misc', {}).get('pin_memory', True)
+        prefetch_factor = self.config.get('misc', {}).get('prefetch_factor', 4)
+        
+        return DataLoader(
             train_dataset, 
             batch_size=batch_size, 
             shuffle=True,
@@ -960,25 +963,6 @@ class DSETTrainer:
             persistent_workers=True if num_workers > 0 else False,
             prefetch_factor=prefetch_factor if num_workers > 0 else None
         )
-        
-        val_loader = DataLoader(
-            val_dataset, 
-            batch_size=batch_size, 
-            shuffle=False,
-            num_workers=num_workers,
-            collate_fn=self._collate_fn,
-            pin_memory=pin_memory,
-            persistent_workers=True if num_workers > 0 else False,
-            prefetch_factor=prefetch_factor if num_workers > 0 else None
-        )
-        
-        self.val_dataset = val_dataset
-        
-        self.logger.info(f"✓ 创建数据加载器")
-        self.logger.info(f"  训练集: {len(train_dataset)} | 验证集: {len(val_dataset)}")
-        self.logger.info(f"  数据加载配置: num_workers={num_workers}, prefetch_factor={prefetch_factor}, pin_memory={pin_memory}")
-        
-        return train_loader, val_loader
     
     def _collate_fn(self, batch: List[Tuple]) -> Tuple[torch.Tensor, List[Dict]]:
         """数据整理函数。"""
@@ -2255,6 +2239,22 @@ class DSETTrainer:
         
         for epoch in range(self.current_epoch, epochs):
             self.current_epoch = epoch
+
+            # 🚀 动态调整 Batch Size 逻辑
+            token_pruning_warmup_epochs = self.config['model'].get('dset', {}).get('token_pruning_warmup_epochs', 10)
+            base_batch_size = self.config['training']['batch_size']
+            
+            # 计算当前 epoch 应该使用的 batch_size：一开始跟着配置文件，10 epoch 之后翻倍
+            current_target_batch_size = base_batch_size if epoch < token_pruning_warmup_epochs else base_batch_size * 2
+            
+            # 如果当前加载器的 batch_size 与目标不一致，则重建加载器
+            if self.train_loader.batch_size != current_target_batch_size:
+                self.logger.info(f"🔄 动态调整 Batch Size: {self.train_loader.batch_size} -> {current_target_batch_size} (Epoch {epoch})")
+                # 销毁旧的迭代器（如果有）并重建
+                del self.train_loader
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                self.train_loader = self._build_train_loader(current_target_batch_size)
 
             # CASS Loss warmup结束提示
             if hasattr(self.model, 'use_cass') and self.model.use_cass and hasattr(self.model, 'cass_warmup_epochs'):
