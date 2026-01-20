@@ -7,7 +7,7 @@ from typing import Dict
 import torch 
 import torch.nn as nn 
 import torch.nn.functional as F 
-from torch.utils.checkpoint import checkpoint
+import torch.utils.checkpoint as cp
 
 from .utils import get_activation
 from .token_level_pruning import TokenLevelPruner
@@ -205,17 +205,11 @@ class TransformerEncoder(nn.Module):
     def forward(self, src, src_mask=None, pos_embed=None, spatial_shape=None) -> torch.Tensor:
         output = src
         for layer in self.layers:
-            # use_reentrant=False 是 PyTorch 推荐的新版方式，更稳定且支持更多功能
             if self.training:
-                output = checkpoint(
-                    layer, 
-                    output, 
-                    src_mask, 
-                    pos_embed, 
-                    spatial_shape, 
-                    use_reentrant=False
-                )
+                # Gradient Checkpointing to save memory
+                output = cp.checkpoint(layer, output, src_mask, pos_embed, spatial_shape, use_reentrant=False)
             else:
+                # Standard execution during inference/eval
                 output = layer(output, src_mask=src_mask, pos_embed=pos_embed, spatial_shape=spatial_shape)
 
         if self.norm is not None:
