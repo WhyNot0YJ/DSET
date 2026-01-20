@@ -843,45 +843,43 @@ class DSETTrainer:
                     continue
                 filtered_state_dict[k] = v
             
-            # 加载过滤后的参数
-            missing_keys, unexpected_keys = model.load_state_dict(filtered_state_dict, strict=False)
+            # [优化] 手动逐个参数加载，解决维度不匹配导致整个加载失败的问题
+            model_state_dict = model.state_dict()
+            load_count = 0
+            mismatch_count = 0
             
-            # 统计加载结果
-            # 注意：missing_keys 可能包含预训练模型中不存在的参数（如 dset8 的 experts.6/7）
-            # 只统计预训练模型中实际存在的 missing_keys
-            actual_missing_keys = [k for k in missing_keys if k in filtered_state_dict]
-            total_params = len(filtered_state_dict)
-            loaded_params = total_params - len(actual_missing_keys)
-            
-            self.logger.info(f"✓ 成功加载预训练权重: {loaded_params}/{total_params} 个参数")
-            
-            # 报告跳过的类别参数
-            if skipped_class_params > 0:
-                self.logger.info(f"  - 跳过类别相关参数: {skipped_class_params} 个（COCO 80类 → DAIR-V2X 8类）")
-            
-            # 统计各部分的参数（只统计预训练模型中实际存在的参数）
-            backbone_loaded = sum(1 for k in filtered_state_dict.keys() if k not in actual_missing_keys and 'backbone' in k)
-            encoder_loaded = sum(1 for k in filtered_state_dict.keys() if k not in actual_missing_keys and 'encoder' in k)
-            decoder_loaded = sum(1 for k in filtered_state_dict.keys() if k not in actual_missing_keys and 'decoder' in k)
-            
-            self.logger.info(f"  - Backbone: {backbone_loaded} 个参数")
-            self.logger.info(f"  - Encoder: {encoder_loaded} 个参数")
-            self.logger.info(f"  - Decoder: {decoder_loaded} 个参数")
-            
-            if len(actual_missing_keys) > 0:
-                self.logger.info(f"  - 预训练模型缺少参数: {len(actual_missing_keys)} 个（当前模型新增）")
-                if len(actual_missing_keys) <= 5:
-                    self.logger.info(f"    示例: {list(actual_missing_keys)}")
+            final_state_dict = {}
+            for k, v in filtered_state_dict.items():
+                if k in model_state_dict:
+                    if v.shape == model_state_dict[k].shape:
+                        final_state_dict[k] = v
+                        load_count += 1
+                    else:
+                        mismatch_count += 1
+                        # 只在调试级别打印，避免日志刷屏
+                        # self.logger.debug(f"维度不匹配跳过: {k} {v.shape} -> {model_state_dict[k].shape}")
                 else:
-                    self.logger.info(f"    示例: {list(actual_missing_keys)[:3]} ...")
+                    # 预训练权重中有，但模型中没有（可能是 unexpected_keys）
+                    pass
             
-            # 如果 missing_keys 中有预训练模型中不存在的参数，说明是模型结构差异
-            model_only_missing = [k for k in missing_keys if k not in filtered_state_dict]
-            if len(model_only_missing) > 0:
-                self.logger.debug(f"  - 模型结构差异导致的 missing_keys: {len(model_only_missing)} 个（预训练模型中不存在，不影响加载统计）")
+            # 使用 strict=False 加载匹配的部分
+            missing_keys, unexpected_keys = model.load_state_dict(final_state_dict, strict=False)
             
-            if len(unexpected_keys) > 0:
-                self.logger.info(f"  - 模型新增参数: {len(unexpected_keys)} 个（将随机初始化）")
+            self.logger.info(f"✓ 成功加载权重参数: {load_count} 个")
+            if mismatch_count > 0:
+                self.logger.info(f"  - 维度不匹配跳过: {mismatch_count} 个参数 (主要集中在 128 维的 Decoder 部分)")
+            
+            # 统计各部分的加载情况
+            backbone_loaded = sum(1 for k in final_state_dict.keys() if 'backbone' in k)
+            encoder_loaded = sum(1 for k in final_state_dict.keys() if 'encoder' in k)
+            decoder_loaded = sum(1 for k in final_state_dict.keys() if 'decoder' in k)
+            
+            self.logger.info(f"  - Backbone 加载: {backbone_loaded} 个参数")
+            self.logger.info(f"  - Encoder 加载: {encoder_loaded} 个参数")
+            self.logger.info(f"  - Decoder 加载: {decoder_loaded} 个参数 (预计较少)")
+            
+            if len(missing_keys) > 0:
+                self.logger.info(f"  - 未加载的参数 (Missing): {len(missing_keys)} 个 (包含 ASB-Gate 等新组件)")
                 
         except Exception as e:
             self.logger.error(f"✗ 加载预训练权重失败: {e}")
