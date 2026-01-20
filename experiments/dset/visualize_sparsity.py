@@ -70,6 +70,9 @@ class PruningHook:
             H, W = info['original_spatial_shape']
         else:
             return
+        if H <= 0 or W <= 0:
+            self.spatial_shape = None
+            return
 
         # Initialize binary mask (0 = Pruned/Background)
         # Flattened size: H * W
@@ -167,10 +170,10 @@ def run_visualization(model, image_path, device='cuda', output_dir=None, target_
     hook_handle = None
     pruning_hook = PruningHook()
     
-    if hasattr(model, 'encoder') and hasattr(model.encoder, 'token_pruners'):
-        if len(model.encoder.token_pruners) > 0:
-            # Hook the first pruner layer
-            hook_handle = model.encoder.token_pruners[0].register_forward_hook(pruning_hook)
+    if hasattr(model, 'encoder') and hasattr(model.encoder, 'shared_token_pruner'):
+        if model.encoder.shared_token_pruner is not None:
+            # Hook the shared pruner layer
+            hook_handle = model.encoder.shared_token_pruner.register_forward_hook(pruning_hook)
         else:
             print("⚠ No token pruners found.")
     
@@ -265,9 +268,17 @@ def run_visualization(model, image_path, device='cuda', output_dir=None, target_
     
     # Priority 2: Fallback to existing logic (Encoder Info)
     if importance_scores_2d is None:
+        def _pick_layer_wise_heatmap(encoder_info_out):
+            heatmaps = encoder_info_out.get('layer_wise_heatmaps', [])
+            if heatmaps:
+                heatmap = max(heatmaps, key=lambda t: t.shape[-2] * t.shape[-1])
+                return heatmap[0, 0].detach().cpu().numpy()
+            return None
+
         # 尝试从 outputs 中提取 encoder_info (Training mode 返回 tuple)
         if isinstance(outputs, tuple) and len(outputs) == 2:
              _, encoder_info_out = outputs
+             importance_scores_2d = _pick_layer_wise_heatmap(encoder_info_out)
              if 'importance_scores_list' in encoder_info_out:
                  scores_list = encoder_info_out['importance_scores_list']
                  if scores_list:
@@ -281,6 +292,7 @@ def run_visualization(model, image_path, device='cuda', output_dir=None, target_
         # 尝试从 tensor 属性中提取 (Inference mode hack)
         elif isinstance(outputs, list) and len(outputs) > 0 and hasattr(outputs[0], 'encoder_info'):
             encoder_info_out = getattr(outputs[0], 'encoder_info')
+            importance_scores_2d = _pick_layer_wise_heatmap(encoder_info_out)
             if 'importance_scores_list' in encoder_info_out:
                  scores_list = encoder_info_out['importance_scores_list']
                  if scores_list:
@@ -294,6 +306,7 @@ def run_visualization(model, image_path, device='cuda', output_dir=None, target_
         # 原有逻辑：直接检查 'encoder_info' key (如果 outputs 是 dict)
         elif isinstance(outputs, dict) and 'encoder_info' in outputs:
             scores_list = outputs['encoder_info'].get('importance_scores_list', [])
+            importance_scores_2d = _pick_layer_wise_heatmap(outputs['encoder_info'])
             if scores_list:
                 scores = scores_list[0].cpu().numpy()
                 if scores.ndim == 2: scores = scores[0] # Take batch 0

@@ -114,9 +114,9 @@ class TokenLevelPruner(nn.Module):
         progress = min(1.0, (self.current_epoch - self.warmup_epochs + 1) / max(1, self.warmup_epochs))
         return 1.0 - progress * (1.0 - self.keep_ratio)
     
-    def forward(self, 
-                tokens: torch.Tensor, 
-                spatial_shape: Tuple[int, int],
+    def forward(self,
+                tokens: torch.Tensor,
+                spatial_shape: Optional[Tuple[int, int]],
                 return_indices: bool = False) -> Tuple[torch.Tensor, Optional[torch.Tensor], dict]:
         """
         Args:
@@ -130,10 +130,12 @@ class TokenLevelPruner(nn.Module):
             info: dict 统计信息
         """
         batch_size, num_tokens, channels = tokens.shape
-        H, W = spatial_shape
-        
-        if H * W != num_tokens:
-            raise ValueError(f"spatial_shape {spatial_shape} does not match num_tokens {num_tokens}")
+        if spatial_shape is not None:
+            H, W = spatial_shape
+            if H * W != num_tokens:
+                raise ValueError(f"spatial_shape {spatial_shape} does not match num_tokens {num_tokens}")
+        else:
+            H, W = 0, 0
         
         # --- 核心修复：即使在 Warmup 期间，训练时也计算分数 ---
         # 这样 CASS Loss 才能在 Pruning 真正开始前就训练 Predictor
@@ -148,8 +150,8 @@ class TokenLevelPruner(nn.Module):
                 'num_tokens': num_tokens,
                 'num_kept_tokens_info': num_tokens,
                 'token_importance_scores': token_importance_scores, # 必须传出分数！
-                'new_spatial_shape': (H, W),
-                'original_spatial_shape': (H, W)
+                'new_spatial_shape': (H, W) if spatial_shape is not None else (-1, -1),
+                'original_spatial_shape': (H, W) if spatial_shape is not None else (-1, -1)
             }
             # 返回全部索引，不执行剪枝
             kept_indices = None if not return_indices else torch.arange(
@@ -168,8 +170,8 @@ class TokenLevelPruner(nn.Module):
                 'num_tokens': num_tokens,
                 'num_kept_tokens_info': num_tokens,
                 'token_importance_scores': token_importance_scores, 
-                'new_spatial_shape': (H, W),
-                'original_spatial_shape': (H, W)
+                'new_spatial_shape': (H, W) if spatial_shape is not None else (-1, -1),
+                'original_spatial_shape': (H, W) if spatial_shape is not None else (-1, -1)
             }
             kept_indices = None if not return_indices else torch.arange(
                 num_tokens, device=tokens.device).unsqueeze(0).expand(batch_size, -1)
@@ -183,8 +185,8 @@ class TokenLevelPruner(nn.Module):
                 'num_tokens': num_tokens,
                 'num_kept_tokens_info': num_tokens,
                 'token_importance_scores': token_importance_scores,
-                'new_spatial_shape': (H, W),
-                'original_spatial_shape': (H, W)
+                'new_spatial_shape': (H, W) if spatial_shape is not None else (-1, -1),
+                'original_spatial_shape': (H, W) if spatial_shape is not None else (-1, -1)
             }
             kept_indices = None if not return_indices else torch.arange(
                 num_tokens, device=tokens.device).unsqueeze(0).expand(batch_size, -1)
@@ -202,8 +204,8 @@ class TokenLevelPruner(nn.Module):
                 'num_tokens': num_tokens,
                 'num_kept_tokens_info': num_tokens,
                 'token_importance_scores': token_importance_scores,
-                'new_spatial_shape': (H, W),
-                'original_spatial_shape': (H, W)
+                'new_spatial_shape': (H, W) if spatial_shape is not None else (-1, -1),
+                'original_spatial_shape': (H, W) if spatial_shape is not None else (-1, -1)
             }
             kept_indices = None if not return_indices else torch.arange(
                 num_tokens, device=tokens.device).unsqueeze(0).expand(batch_size, -1)
@@ -233,8 +235,8 @@ class TokenLevelPruner(nn.Module):
             'num_tokens': num_tokens,
             'num_kept_tokens_info': num_keep_tokens,
             'token_importance_scores': token_importance_scores,
-            'new_spatial_shape': (H_pruned_approx, W_pruned_approx),
-            'original_spatial_shape': (H, W)
+            'new_spatial_shape': (H_pruned_approx, W_pruned_approx) if spatial_shape is not None else (-1, -1),
+            'original_spatial_shape': (H, W) if spatial_shape is not None else (-1, -1)
         }
         
         return pruned_tokens, kept_indices, info
@@ -404,6 +406,39 @@ class TokenLevelPruner(nn.Module):
         target_mask = target_mask_2d.view(B, -1)
         
         return target_mask
+
+    def generate_multiscale_target_mask(
+        self,
+        gt_bboxes: List[torch.Tensor],
+        spatial_shapes: List[Tuple[int, int]],
+        img_shape: Tuple[int, int],
+        device: torch.device,
+        expansion_ratio: Optional[float] = None,
+        min_size: Optional[float] = None,
+        decay_type: Optional[str] = None
+    ) -> torch.Tensor:
+        """
+        Generate concatenated target masks for multiple feature levels.
+        """
+        if not spatial_shapes:
+            return torch.zeros((len(gt_bboxes), 0), device=device, dtype=torch.float32)
+
+        masks = []
+        for shape in spatial_shapes:
+            h, w = int(shape[0]), int(shape[1])
+            masks.append(
+                self.generate_soft_target_mask(
+                    gt_bboxes=gt_bboxes,
+                    feat_shape=(h, w),
+                    img_shape=img_shape,
+                    device=device,
+                    expansion_ratio=expansion_ratio,
+                    min_size=min_size,
+                    decay_type=decay_type
+                )
+            )
+
+        return torch.cat(masks, dim=1)
     
     def generate_all_object_masks(
         self,
@@ -744,7 +779,7 @@ class TokenLevelPruner(nn.Module):
         self,
         info: Dict,
         gt_bboxes: List[torch.Tensor],
-        feat_shape: Tuple[int, int],
+        feat_shape,
         img_shape: Tuple[int, int]
     ) -> torch.Tensor:
         """
@@ -758,7 +793,7 @@ class TokenLevelPruner(nn.Module):
         Args:
             info: Info dict from forward() containing 'token_importance_scores'
             gt_bboxes: List of ground truth boxes [N, 4] in (x1, y1, x2, y2) format
-            feat_shape: (h, w) of the feature map
+            feat_shape: (h, w) of the feature map, or list of shapes for multi-scale
             img_shape: (H, W) of the original image
         
         Returns:
@@ -770,14 +805,23 @@ class TokenLevelPruner(nn.Module):
         pred_scores = info['token_importance_scores']  # [B, H*W]
         device = pred_scores.device
         
-        # Generate dense target mask: [B, H*W]
-        # This mask aggregates all objects in each image, creating a soft supervision signal
-        target_mask = self.generate_soft_target_mask(
-            gt_bboxes=gt_bboxes,
-            feat_shape=feat_shape,
-            img_shape=img_shape,
-            device=device
-        )  # [B, num_tokens] = [B, H*W]
+        # Generate dense target mask: [B, num_tokens]
+        if isinstance(feat_shape, (list, tuple)) and len(feat_shape) > 0 \
+           and isinstance(feat_shape[0], (list, tuple)):
+            spatial_shapes = [(int(s[0]), int(s[1])) for s in feat_shape]
+            target_mask = self.generate_multiscale_target_mask(
+                gt_bboxes=gt_bboxes,
+                spatial_shapes=spatial_shapes,
+                img_shape=img_shape,
+                device=device
+            )
+        else:
+            target_mask = self.generate_soft_target_mask(
+                gt_bboxes=gt_bboxes,
+                feat_shape=feat_shape,
+                img_shape=img_shape,
+                device=device
+            )
         
         # Token-level dense loss: Element-wise computation
         # pred_scores: [B, H*W], target_mask: [B, H*W]

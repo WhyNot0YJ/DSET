@@ -223,7 +223,7 @@ class HybridEncoder(nn.Module):
                  dim_feedforward = 1024,
                  dropout=0.0,
                  enc_act='gelu',
-                 use_encoder_idx=[2],
+                 use_encoder_idx=[1, 2],
                  num_encoder_layers=1,
                  pe_temperature=10000,
                  expansion=1.0,
@@ -311,38 +311,30 @@ class HybridEncoder(nn.Module):
                 
             self.input_proj.append(proj)
 
-        # [HSP 核心修改] Support hierarchical scale-aware pruning
-        self.token_pruners = nn.ModuleList()
-        for enc_ind in use_encoder_idx:
-            # 1. Determine keep_ratio for current layer
-            if isinstance(token_keep_ratio, dict):
-                # If dict, get by layer index (0=P3, 1=P4, 2=P5), default to 0.7
-                current_keep_ratio = token_keep_ratio.get(enc_ind, 0.7)
-            else:
-                # If single float, keep old behavior
-                current_keep_ratio = token_keep_ratio
+        # [HSP 核心修改] Shared global multi-scale pruning
+        if isinstance(token_keep_ratio, dict):
+            ratios = [token_keep_ratio.get(enc_ind, 0.7) for enc_ind in use_encoder_idx]
+            global_keep_ratio = sum(ratios) / max(1, len(ratios))
+        else:
+            global_keep_ratio = token_keep_ratio
 
-            # 2. Log HSP strategy (optional)
-            
-            # 3. Create pruner with CASS support
-            pruner = TokenLevelPruner(
-                input_dim=hidden_dim,
-                keep_ratio=current_keep_ratio,  # Use layer-specific ratio
-                adaptive=True,
-                min_tokens=self._calculate_min_tokens_for_layer(),
-                warmup_epochs=token_pruning_warmup_epochs,
-                prune_in_eval=True,
-                # CASS parameters
-                use_cass=use_cass,
-                cass_expansion_ratio=cass_expansion_ratio,
-                cass_min_size=cass_min_size,
-                cass_decay_type=cass_decay_type,
-                # CASS Loss parameters
-                cass_loss_type=cass_loss_type,
-                cass_focal_alpha=cass_focal_alpha,
-                cass_focal_beta=cass_focal_beta
-            )
-            self.token_pruners.append(pruner)
+        self.shared_token_pruner = TokenLevelPruner(
+            input_dim=hidden_dim,
+            keep_ratio=global_keep_ratio,
+            adaptive=True,
+            min_tokens=self._calculate_min_tokens_for_layer(),
+            warmup_epochs=token_pruning_warmup_epochs,
+            prune_in_eval=True,
+            # CASS parameters
+            use_cass=use_cass,
+            cass_expansion_ratio=cass_expansion_ratio,
+            cass_min_size=cass_min_size,
+            cass_decay_type=cass_decay_type,
+            # CASS Loss parameters
+            cass_loss_type=cass_loss_type,
+            cass_focal_alpha=cass_focal_alpha,
+            cass_focal_beta=cass_focal_beta
+        )
         
         encoder_layer = TransformerEncoderLayer(
             hidden_dim, 
@@ -356,9 +348,7 @@ class HybridEncoder(nn.Module):
             moe_noise_std=moe_noise_std,
             router_init_std=router_init_std) # [新增]
 
-        self.encoder = nn.ModuleList([
-            TransformerEncoder(encoder_layer, num_encoder_layers) for _ in range(len(use_encoder_idx))
-        ])
+        self.encoder = TransformerEncoder(encoder_layer, num_encoder_layers)
         
         # top-down fpn
         self.lateral_convs = nn.ModuleList()
@@ -407,12 +397,79 @@ class HybridEncoder(nn.Module):
         out_h = grid_h.flatten()[..., None] @ omega[None]
 
         return torch.concat([out_w.sin(), out_w.cos(), out_h.sin(), out_h.cos()], dim=1)[None, :, :]
+
+    @staticmethod
+    def _normalize_kept_indices(kept_indices: torch.Tensor, batch_size: int) -> torch.Tensor:
+        """Ensure kept_indices shape is [B, N_kept] for gather/scatter."""
+        if kept_indices is None:
+            return None
+        if kept_indices.dim() == 1:
+            return kept_indices.unsqueeze(0).expand(batch_size, -1)
+        if kept_indices.dim() == 2 and kept_indices.shape[0] == 1:
+            return kept_indices.expand(batch_size, -1)
+        return kept_indices
+
+    @staticmethod
+    def _gather_pos_embed(pos_embed_full: torch.Tensor,
+                          kept_indices: torch.Tensor,
+                          batch_size: int,
+                          total_tokens: int) -> torch.Tensor:
+        """Gather positional embeddings for kept tokens from full grid."""
+        if kept_indices is None:
+            return pos_embed_full.unsqueeze(0).expand(batch_size, -1, -1)
+
+        kept_indices = HybridEncoder._normalize_kept_indices(kept_indices, batch_size)
+        valid_mask = (kept_indices >= 0) & (kept_indices < total_tokens)
+        kept_indices_clean = kept_indices.clamp(0, total_tokens - 1)
+
+        pos_embed_full_batch = pos_embed_full.unsqueeze(0).expand(batch_size, -1, -1)
+        batch_indices = torch.arange(batch_size, device=kept_indices.device).unsqueeze(1).expand_as(kept_indices)
+        pos_embed = pos_embed_full_batch[batch_indices, kept_indices_clean]
+
+        return pos_embed * valid_mask.unsqueeze(-1)
+
+    @staticmethod
+    def _scatter_tokens_to_feature_map(memory: torch.Tensor,
+                                       kept_indices: torch.Tensor,
+                                       h: int,
+                                       w: int,
+                                       hidden_dim: int) -> torch.Tensor:
+        """Scatter pruned tokens back to full spatial grid."""
+        B = memory.shape[0]
+        total_tokens = h * w
+        memory_2d_flat = torch.zeros(
+            B, total_tokens, hidden_dim,
+            device=memory.device, dtype=memory.dtype
+        )
+
+        if kept_indices is not None:
+            kept_indices = HybridEncoder._normalize_kept_indices(kept_indices, B)
+            valid_mask = (kept_indices >= 0) & (kept_indices < total_tokens)
+            kept_indices_clean = kept_indices.clamp(0, total_tokens - 1)
+
+            if B == 1:
+                valid_indices = kept_indices_clean.view(-1)[valid_mask.view(-1)]
+                valid_features = memory.view(-1, hidden_dim)[valid_mask.view(-1)]
+            else:
+                batch_offsets = torch.arange(B, device=memory.device).view(B, 1) * total_tokens
+                global_indices = (kept_indices_clean + batch_offsets).view(-1)
+                valid_mask_flat = valid_mask.view(-1)
+                valid_indices = global_indices[valid_mask_flat]
+                valid_features = memory.view(-1, hidden_dim)[valid_mask_flat]
+
+            memory_2d_flat.view(-1, hidden_dim).index_copy_(0, valid_indices, valid_features)
+        else:
+            if memory.shape[1] == total_tokens:
+                memory_2d_flat = memory
+            else:
+                memory_2d_flat[:, :memory.shape[1]] = memory
+
+        return memory_2d_flat
     
     def set_epoch(self, epoch: int):
         """设置当前epoch"""
-        if self.token_pruners is not None:
-            for pruner in self.token_pruners:
-                pruner.set_epoch(epoch)
+        if self.shared_token_pruner is not None:
+            self.shared_token_pruner.set_epoch(epoch)
     
     def get_encoder_moe_loss(self, encoder_info: dict) -> Dict[str, torch.Tensor]:
         """Compute Encoder Patch-MoE balance loss."""
@@ -440,10 +497,9 @@ class HybridEncoder(nn.Module):
         proj_feats = [self.input_proj[i](feat) for i, feat in enumerate(feats)]
         
         # [修复] 共享层模式下，每个 Batch 开始前清空 MoE 记录
-        for encoder in self.encoder:
-            for layer in encoder.layers:
-                if hasattr(layer, 'moe_layer') and hasattr(layer.moe_layer, 'reset_cache'):
-                    layer.moe_layer.reset_cache()
+        for layer in self.encoder.layers:
+            if hasattr(layer, 'moe_layer') and hasattr(layer.moe_layer, 'reset_cache'):
+                layer.moe_layer.reset_cache()
         
         encoder_info = {
             'token_pruning_ratios': [],
@@ -453,110 +509,124 @@ class HybridEncoder(nn.Module):
             'moe_expert_indices': []
         }
         
-        if self.num_encoder_layers > 0:
-            for i, enc_ind in enumerate(self.use_encoder_idx):
+        if self.num_encoder_layers > 0 and self.use_encoder_idx:
+            src_flatten_list = []
+            pos_embed_list = []
+            spatial_shapes = []
+            level_sizes = []
+
+            for enc_ind in self.use_encoder_idx:
                 h, w = proj_feats[enc_ind].shape[2:]
-                h_original, w_original = h, w
-                src_flatten = proj_feats[enc_ind].flatten(2).permute(0, 2, 1)  # [B, H*W, C]
-                
-                # 1. 生成完整原始分辨率的 PosEmbed
+                spatial_shapes.append((h, w))
+                level_sizes.append(h * w)
+                src_flatten_list.append(
+                    proj_feats[enc_ind].flatten(2).permute(0, 2, 1)
+                )  # [B, H*W, C]
+
                 pos_embed_full = self.build_2d_sincos_position_embedding(
-                    w_original, h_original, self.hidden_dim, self.pe_temperature
-                ).to(src_flatten.device)  # [1, H*W, C]
-                pos_embed_full = pos_embed_full.squeeze(0)  # [H*W, C]
-                
-                # 2. 执行 Token Pruning
-                src_flatten, kept_indices, prune_info = self.token_pruners[i](
-                    src_flatten, 
-                    spatial_shape=(h, w),
-                    return_indices=True
+                    w, h, self.hidden_dim, self.pe_temperature
+                ).to(proj_feats[enc_ind].device).squeeze(0)  # [H*W, C]
+                pos_embed_list.append(pos_embed_full.unsqueeze(0))
+
+            src_flatten_total = torch.cat(src_flatten_list, dim=1)
+            pos_embed_total = torch.cat(pos_embed_list, dim=1)
+
+            # Global pruning across all levels
+            src_pruned, kept_indices, prune_info = self.shared_token_pruner(
+                src_flatten_total,
+                spatial_shape=None,
+                return_indices=True
+            )
+            encoder_info['token_pruning_ratios'].append(prune_info.get('pruning_ratio', 0.0))
+
+            if 'token_importance_scores' in prune_info and prune_info['token_importance_scores'] is not None:
+                global_scores = prune_info['token_importance_scores']
+                encoder_info['importance_scores_list'].append(global_scores)
+                encoder_info['feat_shapes_list'].append(spatial_shapes)
+
+                # Prepare per-level heatmaps for debugging visualization
+                if level_sizes:
+                    scores_per_level = torch.split(global_scores, level_sizes, dim=1)
+                    heatmaps = []
+                    for scores, (h, w) in zip(scores_per_level, spatial_shapes):
+                        heatmaps.append(scores.view(scores.shape[0], 1, h, w))
+                    encoder_info['layer_wise_heatmaps'] = heatmaps
+
+            if level_sizes:
+                level_sizes_tensor = torch.as_tensor(
+                    level_sizes, device=src_flatten_total.device
                 )
-                encoder_info['token_pruning_ratios'].append(prune_info.get('pruning_ratio', 0.0))
-                
-                # 关键修复：只要 info 里有分数，就收集，不管当前是否在进行物理剪枝
-                if 'token_importance_scores' in prune_info and prune_info['token_importance_scores'] is not None:
-                    encoder_info['importance_scores_list'].append(prune_info['token_importance_scores'])
-                    encoder_info['feat_shapes_list'].append((h, w))  # Store corresponding feature shape
-                
-                # 3. 使用 Gather 提取对应的 PosEmbed
-                # kept_indices: [B, N_kept] (可能包含 -1 作为填充值)
-                B = src_flatten.shape[0]
-                N_kept = src_flatten.shape[1]
-                
-                if kept_indices is not None:
-                    # 确保 kept_indices 是 2D: [B, N_kept]
-                    if kept_indices.dim() == 1:
-                        kept_indices = kept_indices.unsqueeze(0).expand(B, -1)
-                    elif kept_indices.dim() == 2 and kept_indices.shape[0] == 1:
-                        kept_indices = kept_indices.expand(B, -1)
-                    
-                    # 处理 -1 填充值：将 -1 替换为 0（安全值，实际不会使用）
-                    valid_mask = (kept_indices >= 0) & (kept_indices < h_original * w_original)
-                    kept_indices_clean = kept_indices.clamp(0, h_original * w_original - 1)
-                    
-                    # Gather: 从完整PosEmbed中提取对应位置
-                    pos_embed_full_batch = pos_embed_full.unsqueeze(0).expand(B, -1, -1)  # [B, H*W, C]
-                    batch_indices = torch.arange(B, device=kept_indices.device).unsqueeze(1).expand(-1, N_kept)  # [B, N_kept]
-                    pos_embed = pos_embed_full_batch[batch_indices, kept_indices_clean]  # [B, N_kept, C]
-                    
-                    # 将无效位置的位置编码设为0
-                    pos_embed = pos_embed * valid_mask.unsqueeze(-1)
+                level_start_index = torch.cat([
+                    level_sizes_tensor.new_zeros(1),
+                    level_sizes_tensor.cumsum(0)[:-1]
+                ])
+                encoder_info['spatial_shapes'] = spatial_shapes
+                encoder_info['level_start_index'] = level_start_index
+
+            # Gather positional embeddings for kept tokens
+            total_tokens = src_flatten_total.shape[1]
+            pos_embed_pruned = self._gather_pos_embed(
+                pos_embed_total.squeeze(0), kept_indices, src_pruned.shape[0], total_tokens
+            )
+
+            memory: torch.Tensor = self.encoder(
+                src_pruned,
+                pos_embed=pos_embed_pruned,
+                spatial_shape=None
+            )
+
+            # Collect MoE info
+            for layer in self.encoder.layers:
+                if hasattr(layer, 'moe_layer'):
+                    moe_layer = layer.moe_layer
+                    if hasattr(moe_layer, 'router_logits_cache') and moe_layer.router_logits_cache:
+                        encoder_info['moe_router_logits'].extend(moe_layer.router_logits_cache)
+                    if hasattr(moe_layer, 'expert_indices_cache') and moe_layer.expert_indices_cache:
+                        encoder_info['moe_expert_indices'].extend(moe_layer.expert_indices_cache)
+
+            # Scatter back into full sequence
+            B = memory.shape[0]
+            total_tokens = src_flatten_total.shape[1]
+            memory_full = torch.zeros(
+                B, total_tokens, self.hidden_dim,
+                device=memory.device, dtype=memory.dtype
+            )
+            if kept_indices is not None:
+                kept_indices = self._normalize_kept_indices(kept_indices, B)
+                valid_mask = (kept_indices >= 0) & (kept_indices < total_tokens)
+                kept_indices_clean = kept_indices.clamp(0, total_tokens - 1)
+
+                if B == 1:
+                    valid_indices = kept_indices_clean.view(-1)[valid_mask.view(-1)]
+                    valid_features = memory.view(-1, self.hidden_dim)[valid_mask.view(-1)]
                 else:
-                    # 如果没有 kept_indices（warmup期间），使用所有位置
-                    pos_embed = pos_embed_full.unsqueeze(0).expand(B, -1, -1)  # [B, H*W, C]
-                
-                # 4. Encoder 处理（spatial_shape 仅作为元数据，不再用于计算）
-                memory :torch.Tensor = self.encoder[i](
-                    src_flatten, 
-                    pos_embed=pos_embed, 
-                    spatial_shape=None  # 不再用于reshape
-                )
-                
-                # 5. 收集 MoE 信息（支持列表化的缓存）
-                for layer in self.encoder[i].layers:
-                    if hasattr(layer, 'moe_layer'):
-                        moe_layer = layer.moe_layer
-                        # 使用 extend 将列表内容合并
-                        if hasattr(moe_layer, 'router_logits_cache') and moe_layer.router_logits_cache:
-                            encoder_info['moe_router_logits'].extend(moe_layer.router_logits_cache)
-                        if hasattr(moe_layer, 'expert_indices_cache') and moe_layer.expert_indices_cache:
-                            encoder_info['moe_expert_indices'].extend(moe_layer.expert_indices_cache)
-                
-                # 6. 特征还原：极致向量化 Scatter 模式
-                # memory: [B, N_kept, C]
-                memory_2d_flat = torch.zeros(
-                    B, h_original * w_original, self.hidden_dim,
-                    device=memory.device, dtype=memory.dtype
-                )
-                
-                if kept_indices is not None:
-                    # 彻底消除 Python 循环，并针对单 Batch 进一步简化
-                    valid_mask = (kept_indices >= 0)
-                    
-                    if B == 1:
-                        # 针对推理（BS=1）的极简路径
-                        valid_indices = kept_indices.view(-1)[valid_mask.view(-1)]
-                        valid_features = memory.view(-1, self.hidden_dim)[valid_mask.view(-1)]
-                    else:
-                        # 针对训练（BS>1）的向量化路径
-                        batch_offsets = torch.arange(B, device=memory.device).view(B, 1) * (h_original * w_original)
-                        global_indices = (kept_indices + batch_offsets).view(-1)
-                        
-                        valid_mask_flat = valid_mask.view(-1)
-                        valid_indices = global_indices[valid_mask_flat]
-                        valid_features = memory.view(-1, self.hidden_dim)[valid_mask_flat]
-                    
-                    # 使用 index_copy_ 或 index_put_ 进行高速填充
-                    memory_2d_flat.view(-1, self.hidden_dim).index_copy_(0, valid_indices, valid_features)
+                    batch_offsets = torch.arange(B, device=memory.device).view(B, 1) * total_tokens
+                    global_indices = (kept_indices_clean + batch_offsets).view(-1)
+                    valid_mask_flat = valid_mask.view(-1)
+                    valid_indices = global_indices[valid_mask_flat]
+                    valid_features = memory.view(-1, self.hidden_dim)[valid_mask_flat]
+
+                memory_full.view(-1, self.hidden_dim).index_copy_(0, valid_indices, valid_features)
+            else:
+                if memory.shape[1] == total_tokens:
+                    memory_full = memory
                 else:
-                    # 如果没有 kept_indices（warmup期间），直接填充
-                    if memory.shape[1] == h_original * w_original:
-                        memory_2d_flat = memory
-                    else:
-                        memory_2d_flat[:, :N_kept] = memory
-                
-                # Reshape 回 [B, C, H_original, W_original]
-                memory_2d = memory_2d_flat.permute(0, 2, 1).reshape(B, self.hidden_dim, h_original, w_original).contiguous()
+                    memory_full[:, :memory.shape[1]] = memory
+
+            memory_splits = torch.split(memory_full, level_sizes, dim=1)
+            for idx, enc_ind in enumerate(self.use_encoder_idx):
+                h, w = spatial_shapes[idx]
+                memory_level = memory_splits[idx]
+                # Verify shape consistency: memory_level should be [B, h*w, C]
+                expected_tokens = h * w
+                if memory_level.shape[1] != expected_tokens:
+                    raise ValueError(
+                        f"Shape mismatch in level {idx}: memory_level.shape[1]={memory_level.shape[1]}, "
+                        f"expected h*w={expected_tokens} (h={h}, w={w})"
+                    )
+                memory_2d = memory_level.permute(0, 2, 1).reshape(
+                    memory_level.shape[0], self.hidden_dim, h, w
+                ).contiguous()
                 proj_feats[enc_ind] = memory_2d
 
         # broadcasting and fusion

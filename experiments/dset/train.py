@@ -30,7 +30,7 @@ sys.path.insert(0, str(project_root.parent))
 from seed_utils import set_seed, seed_worker
 from src.misc.training_visualizer import TrainingVisualizer
 from src.misc.early_stopping import EarlyStopping
-from src.zoo.rtdetr import HybridEncoder, RTDETRTransformerv2, RTDETRCriterionv2, HungarianMatcher
+from src.zoo.rtdetr import HybridEncoder, RTDETRTransformerv2, RTDETRCriterionv2, HungarianMatcher, ASBGate
 from src.nn.backbone.presnet import PResNet
 from src.nn.backbone.hgnetv2 import HGNetv2
 from src.nn.backbone.csp_resnet import CSPResNet
@@ -133,7 +133,8 @@ class DSETRTDETR(nn.Module):
     4. Unified Output: Directly outputs detection results
     """
     
-    def __init__(self, hidden_dim: int = 256, 
+    def __init__(self, hidden_dim: int = 256,
+                 decoder_hidden_dim: Optional[int] = None,
                  num_queries: int = 300, top_k: int = 2, backbone_type: str = "presnet34",
                  num_decoder_layers: int = 3, encoder_in_channels: list = None, 
                  encoder_expansion: float = 1.0, num_experts: int = 6,
@@ -162,7 +163,8 @@ class DSETRTDETR(nn.Module):
         """Initialize DSET RT-DETR model.
         
         Args:
-            hidden_dim: Hidden dimension
+            hidden_dim: Encoder hidden dimension
+            decoder_hidden_dim: Decoder hidden dimension (after ASB-Gate)
             num_queries: Number of queries
             top_k: Top-K experts for router
             backbone_type: Backbone type
@@ -194,6 +196,7 @@ class DSETRTDETR(nn.Module):
         super().__init__()
         
         self.hidden_dim = hidden_dim
+        self.decoder_hidden_dim = decoder_hidden_dim or hidden_dim
         self.num_queries = num_queries
         self.top_k = top_k
         self.backbone_type = backbone_type
@@ -243,20 +246,25 @@ class DSETRTDETR(nn.Module):
         # ========== Shared Components ==========
         self.backbone = self._build_backbone()
         self.encoder = self._build_encoder()
+        self.asb_gate = ASBGate(
+            in_channels=self.hidden_dim,
+            out_channels=self.decoder_hidden_dim,
+            mid_channels=max(1, self.hidden_dim // 4)
+        )
         
         # ========== Fine-grained MoE Decoder ==========
         # Use passed decoder layers argument
         
         self.decoder = RTDETRTransformerv2(
             num_classes=8,  # 8 classes
-            hidden_dim=hidden_dim,
+            hidden_dim=self.decoder_hidden_dim,
             num_queries=num_queries,
             num_layers=num_decoder_layers,
             nhead=8,
             dim_feedforward=1024,
             dropout=0.1,
             activation='relu',
-            feat_channels=[hidden_dim, hidden_dim, hidden_dim],
+            feat_channels=[self.decoder_hidden_dim, self.decoder_hidden_dim, self.decoder_hidden_dim],
             feat_strides=[8, 16, 32],
             num_levels=3,
             # Fine-grained MoE config
@@ -388,6 +396,7 @@ class DSETRTDETR(nn.Module):
         # DSET Encoder（双稀疏：Patch-level Pruning + Patch-MoE）
         # ⚠️ Patch-MoE 和 Patch-level Pruning 必然启用（DSET核心特性）
         encoder_features, encoder_info = self.encoder(backbone_features, return_encoder_info=True)
+        encoder_features = [self.asb_gate(feat) for feat in encoder_features]
         
         # MoE Decoder前向（内部自动处理路由和专家融合）
         decoder_output = self.decoder(encoder_features, targets)
@@ -455,7 +464,7 @@ class DSETRTDETR(nn.Module):
                 feat_shapes_list = encoder_info.get('feat_shapes_list', [])
                 
                 if importance_scores_list and feat_shapes_list and \
-                   hasattr(self.encoder, 'token_pruners') and self.encoder.token_pruners:
+                   hasattr(self.encoder, 'shared_token_pruner') and self.encoder.shared_token_pruner:
                     cass_loss = torch.tensor(0.0, device=images.device)
                     
                     # Get image shape (assuming all images in batch have same size)
@@ -487,26 +496,18 @@ class DSETRTDETR(nn.Module):
                         else:
                             gt_bboxes.append(torch.empty(0, 4, device=images.device))
                     
-                    # Compute CASS loss for each encoder layer
-                    num_valid_layers = 0
-                    for i, (scores, feat_shape) in enumerate(zip(importance_scores_list, feat_shapes_list)):
-                        if i < len(self.encoder.token_pruners):
-                            pruner = self.encoder.token_pruners[i]
-                            if pruner.use_cass:
-                                layer_cass_loss = pruner.compute_cass_loss_from_info(
-                                    info={'token_importance_scores': scores},
-                                    gt_bboxes=gt_bboxes,
-                                    feat_shape=feat_shape,
-                                    img_shape=img_shape
-                                )
-                                if layer_cass_loss.device != images.device:
-                                    layer_cass_loss = layer_cass_loss.to(images.device)
-                                cass_loss = cass_loss + layer_cass_loss
-                                num_valid_layers += 1
-                    
-                    # Average over layers
-                    if num_valid_layers > 0:
-                        cass_loss = cass_loss / num_valid_layers
+                    pruner = self.encoder.shared_token_pruner
+                    scores = importance_scores_list[0]
+                    feat_shape = feat_shapes_list[0]
+                    if pruner.use_cass:
+                        cass_loss = pruner.compute_cass_loss_from_info(
+                            info={'token_importance_scores': scores},
+                            gt_bboxes=gt_bboxes,
+                            feat_shape=feat_shape,
+                            img_shape=img_shape
+                        )
+                        if cass_loss.device != images.device:
+                            cass_loss = cass_loss.to(images.device)
                 else:
                     cass_loss = torch.tensor(0.0, device=images.device)
             else:
@@ -692,7 +693,7 @@ class DSETTrainer:
         encoder_config = self.config['model']['encoder']
         encoder_in_channels = encoder_config['in_channels']
         encoder_expansion = encoder_config['expansion']
-        use_encoder_idx = encoder_config.get('use_encoder_idx', [0, 1, 2])
+        use_encoder_idx = encoder_config.get('use_encoder_idx', [1, 2])
         
         # 从配置文件读取专家数量
         num_experts = self.config['model'].get('num_experts', 6)
@@ -727,9 +728,11 @@ class DSETTrainer:
         
         # 从配置文件读取num_encoder_layers，默认为1
         num_encoder_layers = self.config.get('model', {}).get('encoder', {}).get('num_encoder_layers', 1)
+        decoder_hidden_dim = self.config['model'].get('decoder_hidden_dim', None)
         
         model = DSETRTDETR(
             hidden_dim=self.config['model']['hidden_dim'],
+            decoder_hidden_dim=decoder_hidden_dim,
             num_queries=self.config['model']['num_queries'],
             top_k=self.config['model']['top_k'],
             backbone_type=self.config['model']['backbone'],
@@ -1051,12 +1054,12 @@ class DSETTrainer:
         # 基于实际代码中的模块命名：
         # - decoder.layers.X.adaptive_expert_layer.* (DSET的decoder MoE)
         # - encoder.layers.X.encoder_moe_layer.* (DSET的encoder Encoder-MoE)
-        # - encoder.token_pruners.* (DSET的token pruning)
+        # - encoder.shared_token_pruner.* (DSET的token pruning)
         # - importance_predictor (token pruning中的重要性预测器)
         new_structure_keywords = [
             'adaptive_expert_layer',  # decoder中的MoE层
             'encoder_moe_layer',        # encoder中的Encoder-MoE层
-            'token_pruners',          # token pruning模块
+            'shared_token_pruner',    # token pruning模块
             'importance_predictor'     # importance predictor
         ]
         
@@ -1423,7 +1426,24 @@ class DSETTrainer:
             
             # 提取分数并转概率
             importance_scores = scores_list[-1]
-            h_feat, w_feat = feat_shapes_list[-1]
+            feat_shape = feat_shapes_list[-1]
+
+            if isinstance(feat_shape, (list, tuple)) and len(feat_shape) > 0 \
+               and isinstance(feat_shape[0], (list, tuple)):
+                spatial_shapes = [(int(s[0]), int(s[1])) for s in feat_shape]
+                level_sizes = [h * w for h, w in spatial_shapes]
+                expected_N = sum(level_sizes)
+                if importance_scores.shape[1] != expected_N:
+                    self.logger.error(f"Token count {importance_scores.shape[1]} does not match multi-scale tokens {expected_N}，跳过可视化")
+                    return
+                # Visualize the highest-resolution level
+                max_idx = level_sizes.index(max(level_sizes))
+                start = sum(level_sizes[:max_idx])
+                end = start + level_sizes[max_idx]
+                importance_scores = importance_scores[:, start:end]
+                h_feat, w_feat = spatial_shapes[max_idx]
+            else:
+                h_feat, w_feat = feat_shape
             
             # 检查重要性分数的维度并重塑（Linear 预测器输出 [B, N] 格式）
             if importance_scores.dim() != 2:
@@ -1433,7 +1453,6 @@ class DSETTrainer:
             # Linear 预测器：importance_scores 是 [B, N] 格式，其中 N = H * W
             B, N = importance_scores.shape
             expected_N = h_feat * w_feat
-            
             if N != expected_N:
                 self.logger.error(f"Token count {N} does not match spatial grid {h_feat}x{w_feat} ({expected_N})，跳过可视化")
                 return
@@ -1720,8 +1739,8 @@ class DSETTrainer:
         if hasattr(self.ema.module, 'set_epoch'):
             self.ema.module.set_epoch(self.current_epoch)
             # 调试：验证EMA模型的pruning_enabled状态
-            if hasattr(self.ema.module, 'encoder') and hasattr(self.ema.module.encoder, 'token_pruners') and self.ema.module.encoder.token_pruners:
-                pruner = self.ema.module.encoder.token_pruners[0]
+            if hasattr(self.ema.module, 'encoder') and hasattr(self.ema.module.encoder, 'shared_token_pruner') and self.ema.module.encoder.shared_token_pruner:
+                pruner = self.ema.module.encoder.shared_token_pruner
                 if self.current_epoch >= 10:  # 只在warmup后打印
                     self.logger.debug(f"[验证] Epoch {self.current_epoch}: EMA pruner.pruning_enabled={pruner.pruning_enabled}, "
                                    f"current_epoch={pruner.current_epoch}, warmup_epochs={pruner.warmup_epochs}")
@@ -2498,6 +2517,7 @@ def main() -> None:
             'model': {
                 'config': args.config,
                 'hidden_dim': 256,
+                'decoder_hidden_dim': 128,
                 'num_queries': 300,
                 'top_k': args.top_k,
                 'backbone': args.backbone,
@@ -2505,7 +2525,8 @@ def main() -> None:
                 'encoder': {
                     'in_channels': [512, 1024, 2048],
                     'expansion': 1.0,
-                    'num_encoder_layers': 1
+                    'num_encoder_layers': 1,
+                    'use_encoder_idx': [1, 2]
                 }
             },
             'data': {
