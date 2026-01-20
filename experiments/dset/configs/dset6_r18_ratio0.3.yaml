@@ -34,7 +34,7 @@ model:
     cass_focal_beta: 4.0
 training:
   epochs: 200
-  batch_size: 4
+  batch_size: 16
   warmup_epochs: 3
   pretrained_lr: 0.00001
   new_lr: 0.0001

@@ -891,10 +891,16 @@ class DSETTrainer:
         token_pruning_warmup_epochs = self.config['model'].get('dset', {}).get('token_pruning_warmup_epochs', 10)
         base_batch_size = self.config['training']['batch_size']
         
-        # 🚀 逻辑修改：一开始跟着配置文件，预热期结束后翻倍 (* 4)
-        current_batch_size = base_batch_size if self.current_epoch < token_pruning_warmup_epochs else base_batch_size * 4
+        # 🚀 动态 Batch Size 策略：
+        # - 预热期 (0-9 轮)：使用配置文件中的 batch_size
+        # - 预热期后：翻 2 倍
+        warmup_batch_size = base_batch_size
+        if self.current_epoch < token_pruning_warmup_epochs:
+            current_batch_size = warmup_batch_size
+        else:
+            current_batch_size = warmup_batch_size * 2  # 翻 2 倍
         
-        self.logger.info(f"📦 初始化训练: epoch={self.current_epoch}, 当前使用 batch_size={current_batch_size} (基准={base_batch_size})")
+        self.logger.info(f"📦 初始化训练: epoch={self.current_epoch}, 当前使用 batch_size={current_batch_size} (预热期={warmup_batch_size}, 配置文件基准={base_batch_size})")
         
         train_loader = self._build_train_loader(current_batch_size)
         
@@ -1521,6 +1527,11 @@ class DSETTrainer:
             self.scaler.step(self.optimizer)
             self.scaler.update()
             self.ema.update(self.model)
+            
+            # 显存定期清理
+            if batch_idx % 20 == 0:
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
             
             # 统计各种Loss
             total_loss += loss.item() if isinstance(loss, torch.Tensor) else float(loss)
@@ -2193,8 +2204,14 @@ class DSETTrainer:
             token_pruning_warmup_epochs = self.config['model'].get('dset', {}).get('token_pruning_warmup_epochs', 10)
             base_batch_size = self.config['training']['batch_size']
             
-            # 计算当前 epoch 应该使用的 batch_size：一开始跟着配置文件，10 epoch 之后翻 4 倍
-            current_target_batch_size = base_batch_size if epoch < token_pruning_warmup_epochs else base_batch_size * 4
+            # 动态 Batch Size 策略：
+            # - 预热期 (0-9 轮)：使用配置文件中的 batch_size
+            # - 预热期后：翻 2 倍
+            warmup_batch_size = base_batch_size
+            if epoch < token_pruning_warmup_epochs:
+                current_target_batch_size = warmup_batch_size
+            else:
+                current_target_batch_size = warmup_batch_size * 2  # 翻 2 倍
             
             # 如果当前加载器的 batch_size 与目标不一致，则重建加载器
             if self.train_loader.batch_size != current_target_batch_size:
@@ -2415,6 +2432,13 @@ def main() -> None:
     print("\n" + "="*60)
     print("🔧 初始化训练环境")
     print("="*60)
+
+    if torch.cuda.is_available():
+        import os
+        os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+        torch.cuda.empty_cache()
+        print("✓ 已启用显存碎片整理策略: expandable_segments=True")
+
     set_seed(args.seed, deterministic=args.deterministic)
     
     # 加载配置
