@@ -72,208 +72,238 @@ def _extract_state_dict(checkpoint: dict) -> dict:
     return checkpoint
 
 
+# ==============================================================================
+# Custom Ops Definitions (Based on Audit Report)
+# ==============================================================================
+
+def count_moe_layer(m, x, y):
+    """
+    MoELayer Custom Op
+    Logic: Router (Dense) + TopK Experts (Sparse)
+    Ref: Audit Report Section 3.1
+    
+    Formula:
+    - Router: B * N * C * E
+    - Experts: B * N * TopK * (2 * C * D_ffn)
+    """
+    # x[0]: [B, N, C] - N is already pruned if inside Encoder
+    inp = x[0]
+    if not torch.is_tensor(inp):
+        return
+    
+    B, N, C = inp.shape
+    
+    num_experts = getattr(m, 'num_experts', 1)
+    top_k = getattr(m, 'top_k', 1)
+    dim_feedforward = getattr(m, 'dim_feedforward', 2048)
+    
+    # 1. Router: Linear(C, E) -> B*N*C*E
+    router_flops = B * N * C * num_experts
+    
+    # 2. Experts: TopK * MLP(C->D->C)
+    # MLP = 2 * C * D_ffn (approx: Linear1 + Linear2)
+    expert_flops = B * N * top_k * (2 * C * dim_feedforward)
+    
+    total = router_flops + expert_flops
+    m.total_ops += torch.DoubleTensor([int(total)])
+
+
+def count_ms_deform_attn(m, x, y):
+    """
+    MSDeformableAttention Custom Op
+    Ref: Audit Report Section 2.1
+    
+    Formula includes:
+    - Linear Projections (Offset, Weights, Value, Output)
+    - Core Sampling (Bilinear Interpolation + Weighted Sum)
+    """
+    # x: (query, reference_points, value, value_spatial_shapes, value_mask)
+    query = x[0]  # [B, Nq, C]
+    value = x[2]  # [B, Nv, C] - Nv is Memory size
+    
+    if not torch.is_tensor(query) or not torch.is_tensor(value):
+        return
+    
+    B, Nq, C = query.shape
+    _, Nv, _ = value.shape
+    
+    heads = getattr(m, 'num_heads', 8)
+    levels = getattr(m, 'num_levels', 4)
+    # Use total_points if available, otherwise calculate from num_points_list
+    # Note: total_points = num_heads * sum(num_points_list) in MSDeformableAttention
+    total_points = getattr(m, 'total_points', None)
+    if total_points is None:
+        num_points_list = getattr(m, 'num_points_list', [4] * levels)
+        total_points = heads * sum(num_points_list)
+    # total_points already includes num_heads, so use it directly
+    
+    # 1. Linear Projections
+    # Sampling Offsets: C -> total_points*2 (total_points already includes num_heads)
+    flops_offset = Nq * C * (total_points * 2)
+    # Attn Weights: C -> total_points
+    flops_weights = Nq * C * total_points
+    # Output Proj: C -> C
+    flops_out = Nq * C * C
+    # Value Proj: Nv * C * C (Applied on Memory)
+    flops_value = Nv * C * C
+    
+    # 2. Core Sampling
+    # Bilinear Interpolation (4 mul) + Weighted Sum (1 mul) per point
+    # Each point samples head_dim features
+    # total_points = num_heads * sum(num_points_list), already includes all heads
+    head_dim = C // heads
+    flops_core = Nq * total_points * head_dim * 5  # 4 for bilinear + 1 for weighted sum
+    
+    total = B * (flops_offset + flops_weights + flops_out + flops_value + flops_core)
+    m.total_ops += torch.DoubleTensor([int(total)])
+
+
+def count_standard_attention(m, x, y):
+    """
+    Standard MultiheadAttention Custom Op (for Encoder)
+    Ref: Audit Report Section 1.1
+    Formula: 4*N*C^2 + 2*N^2*C
+    """
+    # x: (query, key, value, ...)
+    # In Encoder Self-Attn: query=key=value=src [B, N, C]
+    q = x[0]
+    if not torch.is_tensor(q):
+        return
+    
+    # Handle batch_first=True/False
+    if getattr(m, 'batch_first', True):
+        B, N, C = q.shape
+    else:
+        N, B, C = q.shape
+    
+    # 1. Linear Projections (Q, K, V, Out) -> 4 * N * C^2
+    flops_linear = 4 * N * (C ** 2)
+    
+    # 2. Attention Matrix (Q*K, Score*V) -> 2 * N^2 * C
+    flops_attn = 2 * (N ** 2) * C
+    
+    total = B * (flops_linear + flops_attn)
+    m.total_ops += torch.DoubleTensor([int(total)])
+
+
 def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 1280), 
                    is_yolo: bool = False, config: Dict = None, model_type: str = "dset",
                    debug: bool = False) -> Tuple[float, float, float, float]:
     """
-    计算模型的参数量和理论 FLOPs (Hook 捕获真值版 - 拒绝猜测)
+    计算模型的参数量和理论 FLOPs (Physics-Level Accurate)
+    
+    使用 thop custom_ops 实现物理级精确计算：
+    - MoE Layer: Router (Dense) + TopK Experts (Sparse)
+    - MSDeformableAttention: 包含所有 Linear Projections 和 Core Sampling
+    - Standard Attention: 4NC^2 + 2N^2C
+    
+    关键：Token Pruning 是物理剪枝（改变 Tensor Shape），
+    所以全量 Profile 得到的结果就是理论 FLOPs。
     """
-    # ========================== 1. 参数量计算 (保持原逻辑) ==========================
+    # ========================== 1. 参数量计算 ==========================
     if is_yolo and hasattr(model, 'model'):
         pytorch_model = model.model
     else:
         pytorch_model = model
     total_params = sum(p.numel() for p in pytorch_model.parameters())
-    total_params_m = total_params / 1e6
     
-    # 计算激活参数量
+    # Active Params (Simple Estimation based on config)
     active_params = total_params
-    if model_type == "dset" and config is not None:
-        dset_config = config.get('model', {}).get('dset', {})
-        encoder_experts = dset_config.get('encoder_moe_num_experts', 1)
-        encoder_top_k = dset_config.get('encoder_moe_top_k', 1)
-        decoder_experts = config.get('model', {}).get('num_experts', 1)
-        decoder_top_k = config.get('model', {}).get('top_k', 3)
+    if model_type == "dset" and config:
+        dset_cfg = config.get('model', {}).get('dset', {})
+        enc_k = dset_cfg.get('encoder_moe_top_k', 1)
+        enc_e = dset_cfg.get('encoder_moe_num_experts', 1)
+        dec_k = config.get('model', {}).get('top_k', 3)
+        dec_e = config.get('model', {}).get('num_experts', 1)
         
-        encoder_expert_params = 0
-        decoder_expert_params = 0
+        enc_r = min(enc_k, enc_e) / max(enc_e, 1) if enc_e > 0 else 1
+        dec_r = min(dec_k, dec_e) / max(dec_e, 1) if dec_e > 0 else 1
         
-        for name, param in pytorch_model.named_parameters():
-            if 'encoder' in name.lower() and ('expert' in name.lower() or 'encoder_moe' in name.lower()):
-                encoder_expert_params += param.numel()
-            elif 'decoder' in name.lower() and 'moe_layer' in name.lower():
-                decoder_expert_params += param.numel()
-            elif 'decoder' in name.lower() and 'adaptive_expert_layer' in name.lower():
-                decoder_expert_params += param.numel()
-        
-        encoder_active_ratio = min(encoder_top_k, encoder_experts) / max(encoder_experts, 1) if encoder_experts > 1 else 1.0
-        decoder_active_ratio = min(decoder_top_k, decoder_experts) / max(decoder_experts, 1) if decoder_experts > 1 else 1.0
-        
-        encoder_active = encoder_expert_params * encoder_active_ratio
-        decoder_active = decoder_expert_params * decoder_active_ratio
-        total_expert_params = encoder_expert_params + decoder_expert_params
-        active_params = (total_params - total_expert_params) + encoder_active + decoder_active
-        
-        print(f"\n  📊 参数统计: Total={total_params_m:.2f}M, Active={active_params/1e6:.2f}M")
+        p_moe = 0
+        for n, p in pytorch_model.named_parameters():
+            if 'expert' in n.lower() or 'moe' in n.lower():
+                ratio = enc_r if 'encoder' in n.lower() else dec_r
+                active_params -= p.numel() * (1 - ratio)
     
+    total_params_m = total_params / 1e6
     active_params_m = active_params / 1e6
+    print(f"\n  📊 Params: Total={total_params_m:.2f}M, Active={active_params_m:.2f}M")
 
-    # ========================== 2. Base FLOPs (全量计算) ==========================
+    # ========================== 2. FLOPs Calculation (Physics-Level Accurate) ==========================
     base_flops_g = 0.0
+    theory_flops_g = 0.0
+    
     if HAS_THOP:
         try:
-            model.eval()
-            device = next(model.parameters()).device
-            dummy_input = torch.randn(input_size).to(device)
-            # 全局跑一次，作为一个基准参考
-            flops, _ = profile(model, inputs=(dummy_input,), verbose=False)
-            base_flops_g = flops / 1e9
-            print(f"  ✓ Base FLOPs (Global): {base_flops_g:.2f} G")
-        except Exception as e:
-            print(f"  ⚠ Base FLOPs 计算失败: {e}")
-
-    # ========================== 3. Theory FLOPs (Hook 核心修复) ==========================
-    theory_flops_g = base_flops_g
-    
-    if model_type == "dset" and config is not None and HAS_THOP:
-        print("\n  🔍 [精确分析] 启动 Hook 机制拆解 Encoder FLOPs...")
-        
-        dset_config = config.get('model', {}).get('dset', {})
-        token_keep_ratio = dset_config.get('token_keep_ratio', 1.0)
-        if isinstance(token_keep_ratio, dict):
-            token_keep_ratio = max(token_keep_ratio.values()) if token_keep_ratio else 1.0
-            
-        encoder_experts = dset_config.get('encoder_moe_num_experts', 1)
-        encoder_top_k = dset_config.get('encoder_moe_top_k', 1)
-        decoder_experts = config.get('model', {}).get('num_experts', 1)
-        decoder_top_k = config.get('model', {}).get('top_k', 3)
-
-        try:
             from copy import deepcopy
-            model_clone = deepcopy(model).eval()
-            device = next(model_clone.parameters()).device
+            model_eval = deepcopy(model).eval()
+            device = next(model_eval.parameters()).device
             dummy_img = torch.randn(input_size).to(device)
-
-            # --- 1. 单独算 Backbone ---
-            backbone_model = deepcopy(model_clone.backbone).eval()
-            backbone_flops, _ = profile(backbone_model, inputs=(dummy_img,), verbose=False)
-            print(f"  ✓ Backbone FLOPs: {backbone_flops / 1e9:.2f} G")
-
-            # --- 2. 准备 Hook 抓取 Encoder 内部输入 ---
-            enc_layer_inputs = {} 
-            enc_hooks = []
-            target_modules = {} 
             
-            for name, module in model_clone.encoder.named_modules():
-                class_name = module.__class__.__name__
-                # 识别 Attention (包含 AIFI, MSDeformAttn, BiMultiHead 等)
-                is_attn = "Attention" in class_name or "Attn" in class_name or "AIFI" in class_name
-                # 识别 FFN / MoE (包含 MLP, FFN, FeedForward, MoELayer)
-                is_ffn = "Mlp" in class_name or "MoE" in class_name or "FeedForward" in class_name or "FFN" in class_name
+            # --- Auto-Register Custom Ops ---
+            custom_ops_map = {}
+            for m in model_eval.modules():
+                name = m.__class__.__name__
+                if "MoELayer" in name:
+                    custom_ops_map[m.__class__] = count_moe_layer
+                elif "MSDeformableAttention" in name:
+                    custom_ops_map[m.__class__] = count_ms_deform_attn
+                elif isinstance(m, nn.MultiheadAttention):
+                    custom_ops_map[m.__class__] = count_standard_attention
+            
+            if debug:
+                print(f"  🔍 Custom Ops Registered: {list(k.__name__ for k in custom_ops_map.keys())}")
+
+            # --- A. Measure Base FLOPs (Dense, r=1.0) ---
+            # Disable Pruning for Base calculation
+            for m in model_eval.modules():
+                if hasattr(m, 'pruning_enabled'):
+                    m.pruning_enabled = False
+                if hasattr(m, 'set_epoch'):
+                    # Set epoch to 0 to disable pruning
+                    m.set_epoch(0)
+            
+            base_macs, _ = profile(model_eval, inputs=(dummy_img,), custom_ops=custom_ops_map, verbose=False)
+            base_flops_g = base_macs / 1e9
+            print(f"  ✓ Base FLOPs (Dense, r=1.0): {base_flops_g:.2f} G")
+            
+            # --- B. Measure Theory FLOPs (With Pruning) ---
+            if model_type == "dset":
+                # Re-Enable Pruning (if config says so)
+                dset_cfg = config.get('model', {}).get('dset', {})
+                r = dset_cfg.get('token_keep_ratio', 1.0)
+                if isinstance(r, dict):
+                    r = max(r.values())
                 
-                # 排除容器类
-                if isinstance(module, (nn.ModuleList, nn.Sequential)): continue
-
-                if is_attn or is_ffn:
-                    m_type = "attn" if is_attn else "ffn"
-                    target_modules[name] = (module, m_type)
-                    
-                    def get_input_hook(module, inputs, outputs, layer_name=name):
-                        if layer_name not in enc_layer_inputs: 
-                            enc_layer_inputs[layer_name] = inputs
-                    h = module.register_forward_hook(get_input_hook)
-                    enc_hooks.append(h)
-
-            # --- 3. 运行一次 Forward (触发 Hook) ---
-            with torch.no_grad():
-                feats = model_clone.backbone(dummy_img)
-                enc_out = model_clone.encoder(feats)
-
-            for h in enc_hooks: h.remove()
-
-            # --- 4. 基于抓到的真值进行 Profile ---
-            enc_attn_flops = 0
-            enc_ffn_flops = 0
-            processed_names = set()
+                # Force Enable Pruning with correct ratio
+                # Set epoch to a large value to ensure pruning is fully enabled
+                for m in model_eval.modules():
+                    if hasattr(m, 'set_epoch'):
+                        m.set_epoch(999)  # Large epoch to ensure warmup is done
+                    if hasattr(m, 'pruning_enabled'):
+                        m.pruning_enabled = True
+                    if hasattr(m, 'keep_ratio'):
+                        m.keep_ratio = r
+                    if hasattr(m, 'current_epoch'):
+                        m.current_epoch = 999
+                
+                # Profile again!
+                # Since Pruning physically reduces token count N,
+                # our custom ops (which use x.shape) will automatically calculate reduced FLOPs!
+                # Attention will see smaller N -> N^2 reduced
+                # MoE will see smaller N -> Linear reduced
+                theory_macs, _ = profile(model_eval, inputs=(dummy_img,), custom_ops=custom_ops_map, verbose=False)
+                theory_flops_g = theory_macs / 1e9
+                print(f"  ✓ Theory FLOPs (Sparse, r={r:.2f}): {theory_flops_g:.2f} G")
+            else:
+                theory_flops_g = base_flops_g
+                
+            del model_eval
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
             
-            # 按名字长度排序，优先计算父模块（名字短的）
-            sorted_names = sorted(target_modules.keys(), key=len)
-
-            for name in sorted_names:
-                # 去重：如果父模块已处理，跳过子模块
-                if any(name.startswith(p + ".") for p in processed_names): continue
-
-                module, m_type = target_modules[name]
-                if name not in enc_layer_inputs: continue
-
-                try:
-                    # 使用真实输入计算
-                    layer_flops, _ = profile(module, inputs=enc_layer_inputs[name], verbose=False)
-                    
-                    if layer_flops > 0:
-                        if m_type == "attn": enc_attn_flops += layer_flops
-                        else: enc_ffn_flops += layer_flops
-                        
-                        processed_names.add(name)
-                        if debug: print(f"    + [{m_type.upper()}] {name}: {layer_flops/1e9:.4f}G")
-                except: pass
-
-            # --- 5. Encoder 汇总 ---
-            # 再次单独 profile 整个 encoder 得到 total
-            enc_in = feats if isinstance(feats, (list, tuple)) else [feats]
-            total_enc_flops, _ = profile(model_clone.encoder, inputs=(enc_in,), verbose=False)
-            
-            enc_others_flops = max(0, total_enc_flops - enc_attn_flops - enc_ffn_flops)
-            print(f"  ✓ Encoder 拆解: Total={total_enc_flops/1e9:.2f}G | Attn={enc_attn_flops/1e9:.2f}G | FFN={enc_ffn_flops/1e9:.2f}G")
-
-            encoder_moe_ratio = min(encoder_top_k, encoder_experts) / max(encoder_experts, 1)
-            theory_enc_flops = (enc_others_flops * token_keep_ratio) + \
-                               (enc_attn_flops * (token_keep_ratio ** 2)) + \
-                               (enc_ffn_flops * token_keep_ratio * encoder_moe_ratio)
-
-            # --- 6. Decoder 部分 (Hook MoE) ---
-            # Decoder forward 可能需要 targets 参数，eval模式传 None
-            dec_moe_flops = 0
-            dec_layer_inputs = {}
-            dec_hooks = []
-            
-            for name, module in model_clone.decoder.named_modules():
-                if "MoE" in module.__class__.__name__ or "Expert" in module.__class__.__name__:
-                    def get_dec_input(module, inputs, outputs, n=name):
-                        if n not in dec_layer_inputs: dec_layer_inputs[n] = inputs
-                    dec_hooks.append(module.register_forward_hook(get_dec_input))
-            
-            try:
-                model_clone.decoder(enc_out, None) 
-            except: pass
-
-            for h in dec_hooks: h.remove()
-
-            for name, inputs in dec_layer_inputs.items():
-                module = dict(model_clone.decoder.named_modules())[name]
-                try:
-                    f, _ = profile(module, inputs=inputs, verbose=False)
-                    dec_moe_flops += f
-                except: pass
-            
-            # 近似计算 Decoder Total
-            total_dec_flops = max(0, (base_flops_g * 1e9) - backbone_flops - total_enc_flops)
-            dec_others_flops = max(0, total_dec_flops - dec_moe_flops)
-            print(f"  ✓ Decoder 拆解: Total={total_dec_flops/1e9:.2f}G | MoE={dec_moe_flops/1e9:.2f}G")
-
-            dec_moe_ratio = min(decoder_top_k, decoder_experts) / max(decoder_experts, 1)
-            theory_dec_flops = dec_others_flops + (dec_moe_flops * dec_moe_ratio)
-
-            # --- 7. 最终汇总 ---
-            theory_flops_g = (backbone_flops + theory_enc_flops + theory_dec_flops) / 1e9
-            print(f"  ✓ 最终 Theory FLOPs: {theory_flops_g:.2f} G (Encoder r={token_keep_ratio:.2f})")
-
-            # 清理
-            del model_clone
-            if torch.cuda.is_available(): torch.cuda.empty_cache()
-
         except Exception as e:
-            print(f"  ⚠ 理论计算发生意外: {e}")
+            print(f"  ⚠ FLOPs Calculation Failed: {e}")
             import traceback
             traceback.print_exc()
             theory_flops_g = base_flops_g
