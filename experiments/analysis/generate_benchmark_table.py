@@ -297,17 +297,52 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 12
                 if hasattr(model_eval, 'backbone'):
                     bb_macs, _ = profile(model_eval.backbone, inputs=(dummy_img,), verbose=False)
                 
-                # 2. Encoder (Transformer) - 独立测量
-                enc_macs = 0
-                if hasattr(model_eval, 'encoder'):
-                    # 需要先通过 backbone 获取特征
-                    with torch.no_grad():
-                        feats = model_eval.backbone(dummy_img) if hasattr(model_eval, 'backbone') else dummy_img
-                        if isinstance(feats, (list, tuple)):
-                            enc_inputs = feats
-                        else:
-                            enc_inputs = [feats]
-                    enc_macs, _ = profile(model_eval.encoder, inputs=(enc_inputs,), custom_ops=custom_ops_map, verbose=False)
+                # =========================================================
+                # 2. 编码器 (Transformer Encoder) - 深度拆解 CNN vs Trans
+                # =========================================================
+                # 需先跑一遍 backbone 拿到特征图
+                with torch.no_grad():
+                    feats = model_eval.backbone(dummy_img)
+                
+                # HybridEncoder = Proj(CNN) + Transformer(Attn) + Fusion(CNN)
+                # 我们想知道真正的 Transformer 部分是多少
+                
+                # A. 测量 Encoder 整体 (HybridEncoder)
+                enc_in = feats if isinstance(feats, (list, tuple)) else [feats]
+                enc_total_macs, _ = profile(model_eval.encoder, inputs=(enc_in,), custom_ops=custom_ops_map, verbose=False)
+                
+                # B. 通过极限稀疏分离 CNN 和 Transformer
+                # 设置 r=0.001 (极限剪枝)，此时 Transformer ≈ 0，剩下的就是纯 CNN (Fixed) 开销
+                enc_cnn_fixed_macs = 0
+                enc_trans_dynamic_macs = 0
+                
+                if hasattr(model_eval.encoder, 'token_pruners') and model_eval.encoder.token_pruners:
+                    # 1. 保存当前状态
+                    current_r = getattr(model_eval.encoder.token_pruners[0], 'keep_ratio', r)
+                    
+                    # 2. 设置为极限稀疏 (r -> 0.001)
+                    for m in model_eval.encoder.token_pruners:
+                        m.keep_ratio = 0.001
+                        if hasattr(m, 'min_tokens'):
+                            m.min_tokens = 1  # 允许只留 1 个 token
+                    
+                    enc_cnn_fixed_macs, _ = profile(model_eval.encoder, inputs=(enc_in,), custom_ops=custom_ops_map, verbose=False)
+                    
+                    # 3. 恢复状态
+                    for m in model_eval.encoder.token_pruners:
+                        m.keep_ratio = current_r
+                        if hasattr(m, 'min_tokens'):
+                            m.min_tokens = 1  # 保持一致
+                    
+                    # 4. 计算 Transformer 的动态部分
+                    enc_trans_dynamic_macs = max(0, enc_total_macs - enc_cnn_fixed_macs)
+                else:
+                    # 如果没有 token_pruners，无法分离，使用总量
+                    enc_cnn_fixed_macs = 0
+                    enc_trans_dynamic_macs = enc_total_macs
+                
+                # 重新赋值给展示变量
+                enc_macs = enc_total_macs  # 总量
                 
                 # =========================================================
                 # 3. 预测头 (Prediction Heads) - 独立测量 (增强版)
@@ -417,14 +452,25 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 12
                 print(f"    ----------------------------------------------------------------")
                 print(f"    模块 (Module)        FLOPs (G)    占比      状态")
                 print(f"    ----------------------------------------------------------------")
-                print(f"    Backbone (CNN)      {bb_macs/1e9:6.2f} G    {bb_macs/theory_macs:6.1%}    🔒 死值 (ResNet)")
-                print(f"    Heads (MLP)         {head_macs/1e9:6.2f} G    {head_macs/theory_macs:6.1%}    🔒 死值 ({num_queries} Queries)")
+                print(f"    Backbone (CNN)      {bb_macs/1e9:6.2f} G    {bb_macs/theory_macs:6.1%}    🔒 死值")
+                print(f"    Heads (MLP)         {head_macs/1e9:6.2f} G    {head_macs/theory_macs:6.1%}    🔒 死值")
                 print(f"    ----------------------------------------------------------------")
-                print(f"    Encoder (Trans)     {enc_macs/1e9:6.2f} G    {enc_macs/theory_macs:6.1%}    🔥 核心优化区 (N -> N*r)")
-                print(f"    Decoder (Trans)     {dec_trans_macs/1e9:6.2f} G    {dec_trans_macs/theory_macs:6.1%}    ✨ 关联优化区 (Mem -> Mem*r)")
+                print(f"    [Encoder 内部拆解]")
+                print(f"      ├─ CNN (FPN/Proj) {enc_cnn_fixed_macs/1e9:6.2f} G    {(enc_cnn_fixed_macs)/theory_macs:6.1%}    🔒 死值 (占比巨大!)")
+                print(f"      └─ Trans (AIFI)   {enc_trans_dynamic_macs/1e9:6.2f} G    {enc_trans_dynamic_macs/theory_macs:6.1%}    🔥 核心优化区 (r={r:.2f})")
                 print(f"    ----------------------------------------------------------------")
-                print(f"    Total Theory        {theory_flops_g:6.2f} G (r={r:.2f})")
+                print(f"    Decoder (Trans)     {dec_trans_macs/1e9:6.2f} G    {dec_trans_macs/theory_macs:6.1%}    ✨ 关联优化区")
                 print(f"    ----------------------------------------------------------------")
+                print(f"    Total Theory        {theory_flops_g:6.2f} G")
+                
+                # 计算优化收益
+                if r > 0 and enc_trans_dynamic_macs > 0:
+                    base_trans_est = enc_trans_dynamic_macs / r
+                    saving = (base_trans_est - enc_trans_dynamic_macs) / 1e9
+                    trans_ratio = enc_trans_dynamic_macs / enc_macs if enc_macs > 0 else 0
+                    print(f"    💡 [真相] 你的优化在 Transformer 层实现了约 {1-r:.0%} 的计算量削减！")
+                    print(f"       但由于 Transformer 仅占 Encoder 的 {trans_ratio:.1%}，")
+                    print(f"       所以整体 Encoder 的 FLOPs 下降看起来不明显。")
             else:
                 theory_flops_g = base_flops_g
                 
