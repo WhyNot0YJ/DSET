@@ -891,8 +891,8 @@ class DSETTrainer:
         token_pruning_warmup_epochs = self.config['model'].get('dset', {}).get('token_pruning_warmup_epochs', 10)
         base_batch_size = self.config['training']['batch_size']
         
-        # 🚀 逻辑修改：一开始跟着配置文件，预热期结束后翻倍 (* 2)
-        current_batch_size = base_batch_size if self.current_epoch < token_pruning_warmup_epochs else base_batch_size * 2
+        # 🚀 逻辑修改：一开始跟着配置文件，预热期结束后翻倍 (* 4)
+        current_batch_size = base_batch_size if self.current_epoch < token_pruning_warmup_epochs else base_batch_size * 4
         
         self.logger.info(f"📦 初始化训练: epoch={self.current_epoch}, 当前使用 batch_size={current_batch_size} (基准={base_batch_size})")
         
@@ -2244,8 +2244,8 @@ class DSETTrainer:
             token_pruning_warmup_epochs = self.config['model'].get('dset', {}).get('token_pruning_warmup_epochs', 10)
             base_batch_size = self.config['training']['batch_size']
             
-            # 计算当前 epoch 应该使用的 batch_size：一开始跟着配置文件，10 epoch 之后翻倍
-            current_target_batch_size = base_batch_size if epoch < token_pruning_warmup_epochs else base_batch_size * 2
+            # 计算当前 epoch 应该使用的 batch_size：一开始跟着配置文件，10 epoch 之后翻 4 倍
+            current_target_batch_size = base_batch_size if epoch < token_pruning_warmup_epochs else base_batch_size * 4
             
             # 如果当前加载器的 batch_size 与目标不一致，则重建加载器
             if self.train_loader.batch_size != current_target_batch_size:
