@@ -916,7 +916,7 @@ class DSETTrainer:
         
         val_loader = DataLoader(
             val_dataset, 
-            batch_size=target_batch_size, # 验证集可以使用配置的最大值
+            batch_size=base_batch_size, # 验证集可以使用基准尺寸
             shuffle=False,
             num_workers=num_workers,
             collate_fn=self._collate_fn,
