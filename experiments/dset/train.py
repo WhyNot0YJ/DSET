@@ -2206,12 +2206,12 @@ class DSETTrainer:
             
             # 动态 Batch Size 策略：
             # - 预热期 (0-9 轮)：使用配置文件中的 batch_size
-            # - 预热期后：翻 2 倍
+            # - 预热期后：翻 4 倍
             warmup_batch_size = base_batch_size
             if epoch < token_pruning_warmup_epochs:
                 current_target_batch_size = warmup_batch_size
             else:
-                current_target_batch_size = warmup_batch_size * 2  # 翻 2 倍
+                current_target_batch_size = warmup_batch_size * 4
             
             # 如果当前加载器的 batch_size 与目标不一致，则重建加载器
             if self.train_loader.batch_size != current_target_batch_size:
