@@ -88,7 +88,7 @@ class PruningHook:
             # Set kept locations to 1 (Foreground)
             mask_flat[indices] = 1.0
         else:
-            # No pruning (Dense Mode or Warmup) - Set all to 1
+            # No pruning (Dense Mode or keep_ratio >= 1.0) - Set all to 1
             mask_flat[:] = 1.0
 
         # Reshape to 2D feature map
@@ -180,9 +180,9 @@ def run_visualization(model, image_path, device='cuda', output_dir=None, target_
     print("Running inference...")
     model.eval()
     
-    # Force enable pruning (bypass warmup) for visualization
+    # Pruning is always enabled from epoch 0, but we still call set_epoch for interface compatibility
     if hasattr(model, 'encoder') and hasattr(model.encoder, 'set_epoch'):
-        model.encoder.set_epoch(100)
+        model.encoder.set_epoch(0)
     
     with torch.no_grad():
         outputs = model(img_tensor)

@@ -141,7 +141,6 @@ class DSETRTDETR(nn.Module):
                  num_encoder_layers: int = 1,
                  use_encoder_idx: list = None,
                  token_keep_ratio: Union[float, Dict[int, float]] = None,
-                 token_pruning_warmup_epochs: int = 10,
                  encoder_moe_num_experts: int = 4,
                  encoder_moe_top_k: int = 2,
                  # MoE weight config
@@ -175,7 +174,6 @@ class DSETRTDETR(nn.Module):
             num_encoder_layers: Number of encoder transformer layers
             use_encoder_idx: Which feature pyramid levels (P3, P4, P5) to process with Transformer Encoder
             token_keep_ratio: Patch retention ratio, can be float (uniform) or dict mapping layer index to ratio (e.g., {2: 0.9})
-            token_pruning_warmup_epochs: Pruning warmup epochs
             encoder_moe_num_experts: Number of Encoder-MoE experts
             encoder_moe_top_k: Encoder-MoE top-k
             decoder_moe_balance_weight: Decoder MoE balance loss weight
@@ -210,7 +208,6 @@ class DSETRTDETR(nn.Module):
         
         # DSET双稀疏配置（Patch-MoE 必然启用，无需存储）
         self.token_keep_ratio = token_keep_ratio
-        self.token_pruning_warmup_epochs = token_pruning_warmup_epochs
         self.encoder_moe_num_experts = encoder_moe_num_experts
         self.encoder_moe_top_k = encoder_moe_top_k
         
@@ -240,7 +237,7 @@ class DSETRTDETR(nn.Module):
         # 设置专家数量
         self.num_experts = num_experts
         
-        # Current epoch for warmup control (Token Pruning Loss and CASS Loss)
+        # Current epoch for warmup control (CASS Loss warmup, Token Pruning is always enabled from epoch 0)
         self.current_epoch = 0
         
         # ========== Shared Components ==========
@@ -310,7 +307,6 @@ class DSETRTDETR(nn.Module):
             act='silu',
             # DSET dual-sparse params
             token_keep_ratio=self.token_keep_ratio,
-            token_pruning_warmup_epochs=self.token_pruning_warmup_epochs,
             encoder_moe_num_experts=self.encoder_moe_num_experts,
             encoder_moe_top_k=self.encoder_moe_top_k,
             # CASS parameters
@@ -705,7 +701,6 @@ class DSETTrainer:
         dset_config = self.config['model'].get('dset', {})
         # ⚠️ 注意：Patch-MoE 和 Patch-level Pruning 必然启用（DSET核心特性），无需配置
         token_keep_ratio = dset_config.get('token_keep_ratio', 0.7)
-        token_pruning_warmup_epochs = dset_config.get('token_pruning_warmup_epochs', 10)
         encoder_moe_num_experts = dset_config.get('encoder_moe_num_experts', 4)
         encoder_moe_top_k = dset_config.get('encoder_moe_top_k', 2)
         
@@ -744,7 +739,6 @@ class DSETTrainer:
             use_encoder_idx=use_encoder_idx,
             # DSET双稀疏参数（Patch-MoE 必然启用，无需传递）
             token_keep_ratio=token_keep_ratio,
-            token_pruning_warmup_epochs=token_pruning_warmup_epochs,
             encoder_moe_num_experts=encoder_moe_num_experts,
             encoder_moe_top_k=encoder_moe_top_k,
             # MoE权重配置
@@ -789,7 +783,7 @@ class DSETTrainer:
         self.logger.info(f"  双稀疏配置（DSET核心特性，必然启用）:")
         self.logger.info(f"    - Encoder-MoE: 启用 (experts={encoder_moe_num_experts}, top_k={encoder_moe_top_k})")
         self.logger.info(f"    - Patch-level Pruning: 启用（与 Patch-MoE 兼容）")
-        self.logger.info(f"      → keep_ratio={token_keep_ratio}, warmup={token_pruning_warmup_epochs}")
+        self.logger.info(f"      → keep_ratio={token_keep_ratio}")
         self.logger.info(f"  损失权重配置:")
         self.logger.info(f"    - CASS Supervision: {use_cass} (loss_type={cass_loss_type}, weight={cass_loss_weight}, expansion={cass_expansion_ratio}, min_size={cass_min_size}, warmup={cass_warmup_epochs} epochs)")
         if use_cass:
@@ -887,20 +881,11 @@ class DSETTrainer:
     
     def _create_data_loaders(self) -> Tuple[DataLoader, DataLoader]:
         """创建初始数据加载器。"""
-        # 初始加载时，检查是否处于预热期
-        token_pruning_warmup_epochs = self.config['model'].get('dset', {}).get('token_pruning_warmup_epochs', 10)
+        # 使用配置文件中的 batch_size（不再有预热期）
         base_batch_size = self.config['training']['batch_size']
+        current_batch_size = base_batch_size
         
-        # 🚀 动态 Batch Size 策略：
-        # - 预热期 (0-9 轮)：使用配置文件中的 batch_size
-        # - 预热期后：翻 2 倍
-        warmup_batch_size = base_batch_size
-        if self.current_epoch < token_pruning_warmup_epochs:
-            current_batch_size = warmup_batch_size
-        else:
-            current_batch_size = warmup_batch_size * 2  # 翻 2 倍
-        
-        self.logger.info(f"📦 初始化训练: epoch={self.current_epoch}, 当前使用 batch_size={current_batch_size} (预热期={warmup_batch_size}, 配置文件基准={base_batch_size})")
+        self.logger.info(f"📦 初始化训练: epoch={self.current_epoch}, 当前使用 batch_size={current_batch_size} (配置文件基准={base_batch_size})")
         
         train_loader = self._build_train_loader(current_batch_size)
         
@@ -1481,7 +1466,7 @@ class DSETTrainer:
         """训练一个epoch（支持DSET渐进式训练，采用即产即清原则优化）。"""
         self.model.train()
         
-        # 设置模型的epoch（用于Token Pruning Loss和CASS Loss的Warmup控制）
+        # 设置模型的epoch（用于CASS Loss的Warmup控制，Token Pruning从epoch 0开始就启用）
         if hasattr(self.model, 'set_epoch'):
             self.model.set_epoch(self.current_epoch)
         
@@ -1666,9 +1651,9 @@ class DSETTrainer:
         """验证模型并计算mAP。"""
         self.ema.module.eval()
         
-        # 设置encoder的epoch（用于Token Pruning渐进式启用，验证时也需要）
+        # 设置encoder的epoch（验证时也需要，虽然Token Pruning从epoch 0就启用）
         # 1. 更新训练模型 (保持原样)
-        # 设置模型的epoch（用于Token Pruning Loss和CASS Loss的Warmup控制）
+        # 设置模型的epoch（用于CASS Loss的Warmup控制，Token Pruning从epoch 0开始就启用）
         # 这会同时更新encoder的epoch（在model.set_epoch内部调用）
         if hasattr(self.model, 'set_epoch'):
             self.model.set_epoch(self.current_epoch)
@@ -1679,12 +1664,11 @@ class DSETTrainer:
         # =========================================================
         if hasattr(self.ema.module, 'set_epoch'):
             self.ema.module.set_epoch(self.current_epoch)
-            # 调试：验证EMA模型的pruning_enabled状态
+            # 调试：验证EMA模型的pruning状态（pruning现在从epoch 0开始就启用）
             if hasattr(self.ema.module, 'encoder') and hasattr(self.ema.module.encoder, 'shared_token_pruner') and self.ema.module.encoder.shared_token_pruner:
                 pruner = self.ema.module.encoder.shared_token_pruner
-                if self.current_epoch >= 10:  # 只在warmup后打印
-                    self.logger.debug(f"[验证] Epoch {self.current_epoch}: EMA pruner.pruning_enabled={pruner.pruning_enabled}, "
-                                   f"current_epoch={pruner.current_epoch}, warmup_epochs={pruner.warmup_epochs}")
+                keep_ratio = pruner.keep_ratio if hasattr(pruner, 'keep_ratio') else 'N/A'
+                self.logger.debug(f"[验证] Epoch {self.current_epoch}: EMA pruner.keep_ratio={keep_ratio}")
         
         total_loss = 0.0
         all_predictions = []
@@ -1741,11 +1725,8 @@ class DSETTrainer:
         if avg_val_pruning_ratio > 0.0:
             self.logger.info(f"  ✓ 验证时Token Pruning生效: {avg_val_pruning_ratio:.2%} tokens被剪枝")
         else:
-            # Warmup期间pruning_ratio=0.0是正常的，只在warmup后警告
-            if self.current_epoch >= 10:
-                self.logger.warning(f"  ⚠ 验证时Token Pruning未生效 (pruning_ratio=0.0)! 可能EMA模型epoch未设置")
-            else:
-                self.logger.debug(f"  验证时Token Pruning: Warmup阶段 (epoch {self.current_epoch} < warmup_epochs), pruning_ratio=0.0 (正常)")
+            # pruning_ratio=0.0 可能是因为 keep_ratio >= 1.0 或配置问题
+            self.logger.warning(f"  ⚠ 验证时Token Pruning未生效 (pruning_ratio=0.0)! 请检查keep_ratio配置或EMA模型epoch设置")
         
         # [修复] 计算 mAP 时，传递 image_id_to_size 以支持多尺度验证精度
         mAP_metrics = self._compute_map_metrics(all_predictions, all_targets, 
@@ -2199,18 +2180,8 @@ class DSETTrainer:
         for epoch in range(self.current_epoch, epochs):
             self.current_epoch = epoch
 
-            # 🚀 动态调整 Batch Size 逻辑
-            token_pruning_warmup_epochs = self.config['model'].get('dset', {}).get('token_pruning_warmup_epochs', 10)
             base_batch_size = self.config['training']['batch_size']
-            
-            # 动态 Batch Size 策略：
-            # - 预热期 (0-9 轮)：使用配置文件中的 batch_size
-            # - 预热期后：翻 4 倍
-            warmup_batch_size = base_batch_size
-            if epoch < token_pruning_warmup_epochs:
-                current_target_batch_size = warmup_batch_size
-            else:
-                current_target_batch_size = warmup_batch_size * 4
+            current_target_batch_size = base_batch_size
             
             # 如果当前加载器的 batch_size 与目标不一致，则重建加载器
             if self.train_loader.batch_size != current_target_batch_size:

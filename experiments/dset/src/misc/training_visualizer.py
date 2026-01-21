@@ -508,16 +508,16 @@ class TrainingVisualizer:
             
             # 如果ratio都是0但loss存在，添加说明文本
             if has_ratio_data and max(self.history['token_pruning_ratio']) == 0 and has_loss_data:
-                ax.text(0.5, 0.95, 'Warmup phase: Loss training (ratio = 0)', 
+                ax.text(0.5, 0.95, 'CASS Loss training (pruning ratio = 0, keep_ratio >= 1.0)', 
                        ha='center', va='top', fontsize=10, color='gray',
                        transform=ax.transAxes, bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
             elif has_ratio_data and max(self.history['token_pruning_ratio']) == 0:
-                ax.text(0.5, 0.95, 'Pruning in warmup phase (ratio = 0)', 
+                ax.text(0.5, 0.95, 'Pruning disabled (keep_ratio >= 1.0, ratio = 0)', 
                        ha='center', va='top', fontsize=10, color='gray',
                        transform=ax.transAxes, bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
         else:
             # 如果没有token pruning数据，显示说明
-            ax.text(0.5, 0.5, 'Token Pruning data not available\n(pruning may be disabled or in warmup)', 
+            ax.text(0.5, 0.5, 'Token Pruning data not available\n(pruning may be disabled or keep_ratio >= 1.0)', 
                    ha='center', va='center', fontsize=12, color='gray',
                    transform=ax.transAxes)
             ax.set_xlabel('Epoch', fontsize=12)
@@ -617,8 +617,8 @@ class TrainingVisualizer:
                        label='Token Pruning Loss', linewidth=2, marker='s', markersize=3)
                 ax.legend(fontsize=10)
             else:
-                # 如果没有数据（warmup期间），显示说明
-                ax.text(0.5, 0.5, 'Token Pruning Loss = 0\n(Will be enabled after Epoch 10 during warmup)', 
+                # 如果没有数据，显示说明
+                ax.text(0.5, 0.5, 'Token Pruning Loss = 0\n(CASS Loss may be disabled or in warmup)', 
                        ha='center', va='center', fontsize=11, color='gray',
                        transform=ax.transAxes)
             # 无论是否有数据，都设置标签和标题

@@ -50,7 +50,6 @@ class TokenLevelPruner(nn.Module):
                  keep_ratio: float = 0.7,
                  adaptive: bool = True,
                  min_tokens: int = 10,
-                 warmup_epochs: int = 10,
                  prune_in_eval: bool = True,
                  # CASS parameters
                  use_cass: bool = False,
@@ -67,7 +66,6 @@ class TokenLevelPruner(nn.Module):
             keep_ratio: Retention ratio (0.5-0.7)
             adaptive: Whether to use adaptive pruning
             min_tokens: Minimum tokens to keep
-            warmup_epochs: Warmup epochs
             prune_in_eval: Whether to prune during evaluation
             use_cass: Whether to use Context-Aware Soft Supervision
             cass_expansion_ratio: Expansion ratio for context band (0.2-0.8)
@@ -83,7 +81,6 @@ class TokenLevelPruner(nn.Module):
         self.keep_ratio = keep_ratio
         self.adaptive = adaptive
         self.min_tokens = min_tokens
-        self.warmup_epochs = warmup_epochs
         self.prune_in_eval = prune_in_eval
         
         # CASS parameters
@@ -98,21 +95,16 @@ class TokenLevelPruner(nn.Module):
         
         # 只使用 Linear 预测器
         self.importance_predictor = LinearImportancePredictor(input_dim)
-        
-        self.current_epoch = 0
-        self.pruning_enabled = False
     
     def set_epoch(self, epoch: int):
-        """设置当前epoch"""
-        self.current_epoch = epoch
-        self.pruning_enabled = epoch >= self.warmup_epochs
+        """设置当前epoch（保留接口兼容性，但不再用于warmup逻辑）"""
+        # No-op: warmup mechanism removed, pruning is always enabled if keep_ratio < 1.0
+        pass
     
     def get_current_keep_ratio(self) -> float:
         """获取当前保留比例"""
-        if not self.pruning_enabled or self.current_epoch < self.warmup_epochs:
-            return 1.0
-        progress = min(1.0, (self.current_epoch - self.warmup_epochs + 1) / max(1, self.warmup_epochs))
-        return 1.0 - progress * (1.0 - self.keep_ratio)
+        # Always return keep_ratio directly, no warmup interpolation
+        return self.keep_ratio
     
     def forward(self,
                 tokens: torch.Tensor,
@@ -137,32 +129,15 @@ class TokenLevelPruner(nn.Module):
         else:
             H, W = 0, 0
         
-        # --- 核心修复：即使在 Warmup 期间，训练时也计算分数 ---
-        # 这样 CASS Loss 才能在 Pruning 真正开始前就训练 Predictor
+        # Compute importance scores (always computed for CASS Loss)
         token_importance_scores = self.importance_predictor(tokens, H, W)  # [B, N]
 
-        # 如果处于 Pruning 的 Warmup 阶段
-        if self.training and self.current_epoch < self.warmup_epochs:
-            info = {
-                'pruning_ratio': 0.0,
-                'num_kept_tokens': num_tokens,
-                'num_pruned_tokens': 0,
-                'num_tokens': num_tokens,
-                'num_kept_tokens_info': num_tokens,
-                'token_importance_scores': token_importance_scores, # 必须传出分数！
-                'new_spatial_shape': (H, W) if spatial_shape is not None else (-1, -1),
-                'original_spatial_shape': (H, W) if spatial_shape is not None else (-1, -1)
-            }
-            # 返回全部索引，不执行剪枝
-            kept_indices = None if not return_indices else torch.arange(
-                num_tokens, device=tokens.device).unsqueeze(0).expand(batch_size, -1)
-            return tokens, kept_indices, info
+        # Determine if pruning should be applied
+        # Pruning is enabled immediately if keep_ratio < 1.0 (no warmup)
+        should_prune = (self.keep_ratio < 1.0) and (self.training or self.prune_in_eval)
         
-        # --- 原有的正常剪枝逻辑 (Warmup 结束后执行) ---
-        should_prune = self.pruning_enabled and (self.training or self.prune_in_eval)
-        should_compute_scores = self.training
-        
-        if not should_prune and not should_compute_scores:
+        # If pruning is disabled (keep_ratio >= 1.0), return all tokens
+        if not should_prune:
             info = {
                 'pruning_ratio': 0.0,
                 'num_kept_tokens': num_tokens,
@@ -192,24 +167,10 @@ class TokenLevelPruner(nn.Module):
                 num_tokens, device=tokens.device).unsqueeze(0).expand(batch_size, -1)
             return tokens, kept_indices, info
         
+        # Get keep ratio and calculate number of tokens to keep
         current_keep_ratio = self.get_current_keep_ratio()
         num_keep_tokens_by_ratio = int(num_tokens * current_keep_ratio)
         num_keep_tokens = min(max(self.min_tokens, num_keep_tokens_by_ratio), num_tokens)
-        
-        if not should_prune:
-            info = {
-                'pruning_ratio': 0.0,
-                'num_kept_tokens': num_tokens,
-                'num_pruned_tokens': 0,
-                'num_tokens': num_tokens,
-                'num_kept_tokens_info': num_tokens,
-                'token_importance_scores': token_importance_scores,
-                'new_spatial_shape': (H, W) if spatial_shape is not None else (-1, -1),
-                'original_spatial_shape': (H, W) if spatial_shape is not None else (-1, -1)
-            }
-            kept_indices = None if not return_indices else torch.arange(
-                num_tokens, device=tokens.device).unsqueeze(0).expand(batch_size, -1)
-            return tokens, kept_indices, info
         
         # 选择top-k tokens
         _, top_token_indices = torch.topk(token_importance_scores, num_keep_tokens, dim=-1)

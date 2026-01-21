@@ -238,7 +238,6 @@ class HybridEncoder(nn.Module):
                  version='v2',
                  # DSET 双稀疏参数
                  token_keep_ratio=0.7,
-                 token_pruning_warmup_epochs=10,
                  encoder_moe_num_experts=4,
                  encoder_moe_top_k=2,
                  # CASS (Context-Aware Soft Supervision) 参数
@@ -252,11 +251,11 @@ class HybridEncoder(nn.Module):
                  cass_focal_beta=2.0,
                  # MoE noise_std parameter
                  moe_noise_std=0.1,
-                 router_init_std=0.02): # [修复] 恢复为冠军版本值
+                 router_init_std=0.02,
+                 **kwargs):  # **kwargs for backward compatibility (accepts but ignores token_pruning_warmup_epochs)
         """
         Args:
             token_keep_ratio: Patch retention ratio (0.5-0.7)
-            token_pruning_warmup_epochs: Warmup epochs for pruning
             encoder_moe_num_experts: Number of experts for Encoder-MoE
             encoder_moe_top_k: Top-K experts for Encoder-MoE
             use_cass: Whether to use Context-Aware Soft Supervision
@@ -279,7 +278,6 @@ class HybridEncoder(nn.Module):
         
         # DSET dual-sparse parameters - 保存参数以便后续使用
         self.token_keep_ratio = token_keep_ratio
-        self.token_pruning_warmup_epochs = token_pruning_warmup_epochs
         self.encoder_moe_num_experts = encoder_moe_num_experts
         self.encoder_moe_top_k = encoder_moe_top_k
         
@@ -329,7 +327,6 @@ class HybridEncoder(nn.Module):
             keep_ratio=global_keep_ratio,
             adaptive=True,
             min_tokens=self._calculate_min_tokens_for_layer(),
-            warmup_epochs=token_pruning_warmup_epochs,
             prune_in_eval=True,
             # CASS parameters
             use_cass=use_cass,

@@ -20,7 +20,6 @@ model:
   num_queries: 100
   dset:
     token_keep_ratio: 0.3
-    token_pruning_warmup_epochs: 10
     encoder_moe_num_experts: 6
     encoder_moe_top_k: 1
     use_cass: true
@@ -34,7 +33,7 @@ model:
     cass_focal_beta: 4.0
 training:
   epochs: 200
-  batch_size: 8
+  batch_size: 16
   warmup_epochs: 3
   pretrained_lr: 0.00001
   new_lr: 0.0001
