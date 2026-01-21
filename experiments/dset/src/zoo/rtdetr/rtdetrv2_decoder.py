@@ -189,11 +189,11 @@ class TransformerDecoderLayer(nn.Module):
         self.dropout2 = nn.Dropout(dropout)
         self.norm2 = nn.LayerNorm(d_model)
 
-        # ffn (Supports Adaptive Expert Layer)
+        # ffn (Supports Decoder MoE Layer)
         self.use_moe = use_moe
         if use_moe:
-            # Use Adaptive Expert Layer
-            self.adaptive_expert_layer = MoELayer(
+            # Use Decoder MoE Layer
+            self.decoder_moe_layer = MoELayer(
                 d_model=d_model,
                 dim_feedforward=dim_feedforward,
                 num_experts=num_experts,
@@ -224,7 +224,7 @@ class TransformerDecoderLayer(nn.Module):
 
     def forward_ffn(self, tgt):
         if self.use_moe:
-            return self.adaptive_expert_layer(tgt)
+            return self.decoder_moe_layer(tgt)
         else:
             return self.linear2(self.dropout3(self.activation(self.linear1(tgt))))
 
@@ -615,8 +615,8 @@ class RTDETRTransformerv2(nn.Module):
         # [修复] 共享层模式下，每个 Batch 开始前清空 MoE 记录
         if self.use_moe:
             for layer in self.decoder.layers:
-                if hasattr(layer, 'adaptive_expert_layer') and hasattr(layer.adaptive_expert_layer, 'reset_cache'):
-                    layer.adaptive_expert_layer.reset_cache()
+                if hasattr(layer, 'decoder_moe_layer') and hasattr(layer.decoder_moe_layer, 'reset_cache'):
+                    layer.decoder_moe_layer.reset_cache()
                     
         # input projection and embedding
         memory, spatial_shapes = self._get_encoder_input(feats)
@@ -689,8 +689,8 @@ class RTDETRTransformerv2(nn.Module):
         
         router_logits_list = []
         for layer in self.decoder.layers:
-            if hasattr(layer, 'adaptive_expert_layer'):
-                ael = layer.adaptive_expert_layer
+            if hasattr(layer, 'decoder_moe_layer'):
+                ael = layer.decoder_moe_layer
                 if ael.router_logits_cache:
                     router_logits_list.extend(ael.router_logits_cache)
         

@@ -715,9 +715,9 @@ class AdaptiveExpertTrainer:
         
         # 定义新增结构的关键词（MoE、DSET等）
         # 基于实际代码中的模块命名：
-        # - decoder.layers.X.adaptive_expert_layer.* (MoE-RTDETR的decoder MoE)
+        # - decoder.layers.X.decoder_moe_layer.* (MoE-RTDETR的decoder MoE)
         new_structure_keywords = [
-            'adaptive_expert_layer'   # decoder中的MoE层
+            'decoder_moe_layer'   # decoder中的MoE层
         ]
         
         # 1. 预训练参数组（backbone、encoder、decoder的标准层，排除norm层和新增结构）
@@ -1153,8 +1153,8 @@ class AdaptiveExpertTrainer:
             # 收集细粒度MoE的专家使用统计（使用torch.bincount向量化）
             if self.model.decoder.use_moe:
                 for layer in self.model.decoder.decoder.layers:
-                    if hasattr(layer, 'adaptive_expert_layer') and layer.adaptive_expert_layer.router_logits_cache is not None:
-                        router_logits = layer.adaptive_expert_layer.router_logits_cache  # [N, num_experts]
+                    if hasattr(layer, 'decoder_moe_layer') and layer.decoder_moe_layer.router_logits_cache is not None:
+                        router_logits = layer.decoder_moe_layer.router_logits_cache  # [N, num_experts]
                         # 计算每个token选择的top-k专家
                         _, top_indices = torch.topk(router_logits, self.model.decoder.moe_top_k, dim=-1)  # [N, K]
                         

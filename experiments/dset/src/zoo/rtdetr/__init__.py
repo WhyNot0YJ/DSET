@@ -10,7 +10,7 @@ from .rtdetr_postprocessor import RTDETRPostProcessor
 from .rtdetrv2_decoder import RTDETRTransformerv2
 from .rtdetrv2_criterion import RTDETRCriterionv2
 
-# Adaptive Expert Components (Fine-grained MoE)
+# MoE Components (Token-level MoE for Decoder and Encoder)
 from .moe_components import MoELayer, compute_moe_balance_loss
 
 # Token Pruning Components (DSET)

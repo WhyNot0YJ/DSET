@@ -190,7 +190,7 @@ class TransformerDecoderLayer(nn.Module):
         self.use_moe = use_moe
         if use_moe:
             # 使用自适应专家层
-            self.adaptive_expert_layer = MoELayer(
+            self.decoder_moe_layer = MoELayer(
                 d_model=d_model,
                 dim_feedforward=dim_feedforward,
                 num_experts=num_experts,
@@ -219,7 +219,7 @@ class TransformerDecoderLayer(nn.Module):
 
     def forward_ffn(self, tgt):
         if self.use_moe:
-            return self.adaptive_expert_layer(tgt)
+            return self.decoder_moe_layer(tgt)
         else:
             return self.linear2(self.dropout3(self.activation(self.linear1(tgt))))
 
@@ -660,8 +660,8 @@ class RTDETRTransformerv2(nn.Module):
         expert_indices_list = []
         for layer in self.decoder.layers:
             if hasattr(layer, 'use_moe') and layer.use_moe:
-                if hasattr(layer, 'adaptive_expert_layer'):
-                    ael = layer.adaptive_expert_layer
+                if hasattr(layer, 'decoder_moe_layer'):
+                    ael = layer.decoder_moe_layer
                     if hasattr(ael, 'router_logits_cache') and ael.router_logits_cache is not None:
                         router_logits_list.append(ael.router_logits_cache)
                         # 收集expert_indices（如果可用）

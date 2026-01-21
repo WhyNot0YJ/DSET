@@ -1025,12 +1025,12 @@ class DSETTrainer:
         
         # 定义新增结构的关键词（MoE、DSET等）
         # 基于实际代码中的模块命名：
-        # - decoder.layers.X.adaptive_expert_layer.* (DSET的decoder MoE)
+        # - decoder.layers.X.decoder_moe_layer.* (DSET的decoder MoE)
         # - encoder.layers.X.encoder_moe_layer.* (DSET的encoder Encoder-MoE)
         # - encoder.shared_token_pruner.* (DSET的token pruning)
         # - importance_predictor (token pruning中的重要性预测器)
         new_structure_keywords = [
-            'adaptive_expert_layer',  # decoder中的MoE层
+            'decoder_moe_layer',  # decoder中的MoE层
             'encoder_moe_layer',        # encoder中的Encoder-MoE层
             'shared_token_pruner',    # token pruning模块
             'importance_predictor'     # importance predictor
@@ -1558,8 +1558,8 @@ class DSETTrainer:
             # 处理Decoder MoE统计（即产即清）
             if self.model.decoder.use_moe:
                 for layer in self.model.decoder.decoder.layers:
-                    if hasattr(layer, 'adaptive_expert_layer'):
-                        dec_logits = layer.adaptive_expert_layer.router_logits_cache
+                    if hasattr(layer, 'decoder_moe_layer'):
+                        dec_logits = layer.decoder_moe_layer.router_logits_cache
                         if dec_logits:
                             # 处理列表格式的logits
                             if isinstance(dec_logits, list) and len(dec_logits) > 0:
@@ -1623,9 +1623,9 @@ class DSETTrainer:
         # 确保这只是针对统计日志的清理，不影响 detr_criterion 的计算
         if self.model.decoder.use_moe:
             for layer in self.model.decoder.decoder.layers:
-                if hasattr(layer, 'adaptive_expert_layer'):
-                    if hasattr(layer.adaptive_expert_layer, 'router_logits_cache'):
-                        layer.adaptive_expert_layer.router_logits_cache = []
+                if hasattr(layer, 'decoder_moe_layer'):
+                    if hasattr(layer.decoder_moe_layer, 'router_logits_cache'):
+                        layer.decoder_moe_layer.router_logits_cache = []
         
         # 准备返回结果
         result = {
