@@ -24,7 +24,6 @@ model:
     encoder_moe_top_k: 1
     use_cass: true
     cass_loss_weight: 0.05
-    cass_warmup_epochs: 5
     cass_expansion_ratio: 0.8
     cass_min_size: 1.0
     use_subpixel_offset: true
@@ -33,7 +32,7 @@ model:
     cass_focal_beta: 4.0
 training:
   epochs: 200
-  batch_size: 16
+  batch_size: 24
   warmup_epochs: 3
   pretrained_lr: 0.00001
   new_lr: 0.0001

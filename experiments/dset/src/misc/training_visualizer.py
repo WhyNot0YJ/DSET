@@ -618,7 +618,7 @@ class TrainingVisualizer:
                 ax.legend(fontsize=10)
             else:
                 # 如果没有数据，显示说明
-                ax.text(0.5, 0.5, 'Token Pruning Loss = 0\n(CASS Loss may be disabled or in warmup)', 
+                ax.text(0.5, 0.5, 'Token Pruning Loss = 0\n(CASS Loss may be disabled)', 
                        ha='center', va='center', fontsize=11, color='gray',
                        transform=ax.transAxes)
             # 无论是否有数据，都设置标签和标题
