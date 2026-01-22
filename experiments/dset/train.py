@@ -30,7 +30,7 @@ sys.path.insert(0, str(project_root.parent))
 from seed_utils import set_seed, seed_worker
 from src.misc.training_visualizer import TrainingVisualizer
 from src.misc.early_stopping import EarlyStopping
-from src.zoo.rtdetr import HybridEncoder, RTDETRTransformerv2, RTDETRCriterionv2, HungarianMatcher, ASBGate
+from src.zoo.rtdetr import HybridEncoder, RTDETRTransformerv2, RTDETRCriterionv2, HungarianMatcher
 from src.nn.backbone.presnet import PResNet
 from src.nn.backbone.hgnetv2 import HGNetv2
 from src.nn.backbone.csp_resnet import CSPResNet
@@ -162,7 +162,7 @@ class DSETRTDETR(nn.Module):
         
         Args:
             hidden_dim: Encoder hidden dimension
-            decoder_hidden_dim: Decoder hidden dimension (after ASB-Gate)
+            decoder_hidden_dim: Decoder hidden dimension (defaults to hidden_dim if None)
             num_queries: Number of queries
             top_k: Top-K experts for router
             backbone_type: Backbone type
@@ -241,11 +241,6 @@ class DSETRTDETR(nn.Module):
         # ========== Shared Components ==========
         self.backbone = self._build_backbone()
         self.encoder = self._build_encoder()
-        self.asb_gate = ASBGate(
-            in_channels=self.hidden_dim,
-            out_channels=self.decoder_hidden_dim,
-            mid_channels=max(1, self.hidden_dim // 4)
-        )
         
         # ========== Fine-grained MoE Decoder ==========
         # Use passed decoder layers argument
@@ -390,7 +385,6 @@ class DSETRTDETR(nn.Module):
         # DSET Encoder（双稀疏：Patch-level Pruning + Patch-MoE）
         # ⚠️ Patch-MoE 和 Patch-level Pruning 必然启用（DSET核心特性）
         encoder_features, encoder_info = self.encoder(backbone_features, return_encoder_info=True)
-        encoder_features = [self.asb_gate(feat) for feat in encoder_features]
         
         # MoE Decoder前向（内部自动处理路由和专家融合）
         decoder_output = self.decoder(encoder_features, targets)
@@ -831,12 +825,47 @@ class DSETTrainer:
                 filtered_state_dict[k] = v
             
             # [优化] 手动逐个参数加载，解决维度不匹配导致整个加载失败的问题
+            # [新增] 实现专家克隆：将标准FFN权重复制到MoE专家
             model_state_dict = model.state_dict()
             load_count = 0
             mismatch_count = 0
+            expert_clone_count = 0
             
             final_state_dict = {}
+            # 第一步：收集需要克隆的FFN权重
+            decoder_ffn_weights_to_clone = {}  # {layer_idx: {'linear1.weight': tensor, 'linear1.bias': tensor, ...}}
+            encoder_ffn_weights_to_clone = {}  # {layer_idx: {'linear1.weight': tensor, 'linear1.bias': tensor, ...}}
+            
             for k, v in filtered_state_dict.items():
+                # 检测Decoder层的FFN权重（标准结构：decoder.layers.X.linear1.weight/bias, linear2.weight/bias）
+                if 'decoder.layers.' in k and ('linear1' in k or 'linear2' in k):
+                    # 提取层索引：decoder.layers.0.linear1.weight -> layer_idx=0
+                    match = re.search(r'decoder\.layers\.(\d+)\.(linear\d)\.(weight|bias)', k)
+                    if match:
+                        layer_idx = int(match.group(1))
+                        linear_name = match.group(2)  # 'linear1' or 'linear2'
+                        param_type = match.group(3)  # 'weight' or 'bias'
+                        
+                        if layer_idx not in decoder_ffn_weights_to_clone:
+                            decoder_ffn_weights_to_clone[layer_idx] = {}
+                        decoder_ffn_weights_to_clone[layer_idx][f'{linear_name}.{param_type}'] = v
+                    continue  # 暂时跳过，稍后处理
+                
+                # 检测Encoder层的FFN权重（标准结构：encoder.layers.X.linear1.weight/bias, linear2.weight/bias）
+                if 'encoder.layers.' in k and ('linear1' in k or 'linear2' in k):
+                    # 提取层索引：encoder.layers.0.linear1.weight -> layer_idx=0
+                    match = re.search(r'encoder\.layers\.(\d+)\.(linear\d)\.(weight|bias)', k)
+                    if match:
+                        layer_idx = int(match.group(1))
+                        linear_name = match.group(2)  # 'linear1' or 'linear2'
+                        param_type = match.group(3)  # 'weight' or 'bias'
+                        
+                        if layer_idx not in encoder_ffn_weights_to_clone:
+                            encoder_ffn_weights_to_clone[layer_idx] = {}
+                        encoder_ffn_weights_to_clone[layer_idx][f'{linear_name}.{param_type}'] = v
+                    continue  # 暂时跳过，稍后处理
+                
+                # 其他权重正常处理
                 if k in model_state_dict:
                     if v.shape == model_state_dict[k].shape:
                         final_state_dict[k] = v
@@ -849,12 +878,184 @@ class DSETTrainer:
                     # 预训练权重中有，但模型中没有（可能是 unexpected_keys）
                     pass
             
+            # 第二步：将Decoder FFN权重复制到MoE专家
+            decoder_num_experts = model.num_experts
+            for layer_idx, ffn_params in decoder_ffn_weights_to_clone.items():
+                # 检查是否有完整的FFN参数
+                if 'linear1.weight' in ffn_params and 'linear1.bias' in ffn_params and \
+                   'linear2.weight' in ffn_params and 'linear2.bias' in ffn_params:
+                    
+                    linear1_weight = ffn_params['linear1.weight']  # [dim_feedforward, d_model]
+                    linear1_bias = ffn_params['linear1.bias']  # [dim_feedforward]
+                    linear2_weight = ffn_params['linear2.weight']  # [d_model, dim_feedforward]
+                    linear2_bias = ffn_params['linear2.bias']  # [d_model]
+                    
+                    # 克隆到每个专家
+                    for expert_idx in range(decoder_num_experts):
+                        # MoE层参数命名：decoder.layers.X.decoder_moe_layer.expert_w1[Y]
+                        expert_w1_key = f'decoder.layers.{layer_idx}.decoder_moe_layer.expert_w1'
+                        expert_b1_key = f'decoder.layers.{layer_idx}.decoder_moe_layer.expert_b1'
+                        expert_w2_key = f'decoder.layers.{layer_idx}.decoder_moe_layer.expert_w2'
+                        expert_b2_key = f'decoder.layers.{layer_idx}.decoder_moe_layer.expert_b2'
+                        
+                        # 检查这些键是否存在于模型中
+                        if expert_w1_key in model_state_dict:
+                            # 获取模型中的参数（用于形状检查）
+                            model_w1 = model_state_dict[expert_w1_key]
+                            model_b1 = model_state_dict[expert_b1_key]
+                            model_w2 = model_state_dict[expert_w2_key]
+                            model_b2 = model_state_dict[expert_b2_key]
+                            
+                            # 检查形状是否匹配
+                            # model_w1 shape: [num_experts, dim_feedforward, d_model]
+                            # linear1_weight shape: [dim_feedforward, d_model]
+                            if (model_w1.shape[1:] == linear1_weight.shape and 
+                                model_b1.shape[1:] == linear1_bias.shape and
+                                model_w2.shape[1:] == linear2_weight.shape and
+                                model_b2.shape[1:] == linear2_bias.shape):
+                                
+                                # 复制权重并添加噪声
+                                cloned_w1 = linear1_weight.clone()
+                                cloned_w1 += torch.randn_like(cloned_w1) * 0.01
+                                cloned_b1 = linear1_bias.clone()
+                                cloned_b1 += torch.randn_like(cloned_b1) * 0.01
+                                cloned_w2 = linear2_weight.clone()
+                                cloned_w2 += torch.randn_like(cloned_w2) * 0.01
+                                cloned_b2 = linear2_bias.clone()
+                                cloned_b2 += torch.randn_like(cloned_b2) * 0.01
+                                
+                                # 直接赋值（因为expert_w1是Parameter，需要按索引赋值）
+                                # 注意：这里我们需要在加载后手动赋值，因为state_dict不支持索引赋值
+                                # 所以我们先存储这些值，在load_state_dict之后赋值
+                                if not hasattr(self, '_expert_clone_params'):
+                                    self._expert_clone_params = []
+                                
+                                self._expert_clone_params.append({
+                                    'type': 'decoder',
+                                    'layer_idx': layer_idx,
+                                    'expert_idx': expert_idx,
+                                    'w1': cloned_w1,
+                                    'b1': cloned_b1,
+                                    'w2': cloned_w2,
+                                    'b2': cloned_b2
+                                })
+                                expert_clone_count += 4  # 4个参数：w1, b1, w2, b2
+            
+            # 第二步（续）：将Encoder FFN权重复制到MoE专家
+            encoder_num_experts = model.encoder_moe_num_experts
+            for layer_idx, ffn_params in encoder_ffn_weights_to_clone.items():
+                # 检查是否有完整的FFN参数
+                if 'linear1.weight' in ffn_params and 'linear1.bias' in ffn_params and \
+                   'linear2.weight' in ffn_params and 'linear2.bias' in ffn_params:
+                    
+                    linear1_weight = ffn_params['linear1.weight']  # [dim_feedforward, d_model]
+                    linear1_bias = ffn_params['linear1.bias']  # [dim_feedforward]
+                    linear2_weight = ffn_params['linear2.weight']  # [d_model, dim_feedforward]
+                    linear2_bias = ffn_params['linear2.bias']  # [d_model]
+                    
+                    # 克隆到每个专家
+                    for expert_idx in range(encoder_num_experts):
+                        # MoE层参数命名：encoder.layers.X.moe_layer.expert_w1[Y]
+                        expert_w1_key = f'encoder.layers.{layer_idx}.moe_layer.expert_w1'
+                        expert_b1_key = f'encoder.layers.{layer_idx}.moe_layer.expert_b1'
+                        expert_w2_key = f'encoder.layers.{layer_idx}.moe_layer.expert_w2'
+                        expert_b2_key = f'encoder.layers.{layer_idx}.moe_layer.expert_b2'
+                        
+                        # 检查这些键是否存在于模型中
+                        if expert_w1_key in model_state_dict:
+                            # 获取模型中的参数（用于形状检查）
+                            model_w1 = model_state_dict[expert_w1_key]
+                            model_b1 = model_state_dict[expert_b1_key]
+                            model_w2 = model_state_dict[expert_w2_key]
+                            model_b2 = model_state_dict[expert_b2_key]
+                            
+                            # 检查形状是否匹配
+                            # model_w1 shape: [num_experts, dim_feedforward, d_model]
+                            # linear1_weight shape: [dim_feedforward, d_model]
+                            if (model_w1.shape[1:] == linear1_weight.shape and 
+                                model_b1.shape[1:] == linear1_bias.shape and
+                                model_w2.shape[1:] == linear2_weight.shape and
+                                model_b2.shape[1:] == linear2_bias.shape):
+                                
+                                # 复制权重并添加噪声
+                                cloned_w1 = linear1_weight.clone()
+                                cloned_w1 += torch.randn_like(cloned_w1) * 0.01
+                                cloned_b1 = linear1_bias.clone()
+                                cloned_b1 += torch.randn_like(cloned_b1) * 0.01
+                                cloned_w2 = linear2_weight.clone()
+                                cloned_w2 += torch.randn_like(cloned_w2) * 0.01
+                                cloned_b2 = linear2_bias.clone()
+                                cloned_b2 += torch.randn_like(cloned_b2) * 0.01
+                                
+                                # 存储克隆参数
+                                if not hasattr(self, '_expert_clone_params'):
+                                    self._expert_clone_params = []
+                                
+                                self._expert_clone_params.append({
+                                    'type': 'encoder',
+                                    'layer_idx': layer_idx,
+                                    'expert_idx': expert_idx,
+                                    'w1': cloned_w1,
+                                    'b1': cloned_b1,
+                                    'w2': cloned_w2,
+                                    'b2': cloned_b2
+                                })
+                                expert_clone_count += 4  # 4个参数：w1, b1, w2, b2
+            
             # 使用 strict=False 加载匹配的部分
             missing_keys, unexpected_keys = model.load_state_dict(final_state_dict, strict=False)
             
+            # 第三步：手动赋值MoE专家权重（在load_state_dict之后）
+            if hasattr(self, '_expert_clone_params') and self._expert_clone_params:
+                decoder_clone_count = 0
+                encoder_clone_count = 0
+                
+                for clone_info in self._expert_clone_params:
+                    layer_idx = clone_info['layer_idx']
+                    expert_idx = clone_info['expert_idx']
+                    clone_type = clone_info['type']
+                    
+                    if clone_type == 'decoder':
+                        # 获取Decoder MoE层：model.decoder 是 RTDETRTransformerv2，它包含 decoder.decoder (TransformerDecoder)
+                        decoder_layer = model.decoder.decoder.layers[layer_idx]
+                        if hasattr(decoder_layer, 'decoder_moe_layer'):
+                            moe_layer = decoder_layer.decoder_moe_layer
+                            # 直接赋值（expert_w1是Parameter，支持索引赋值）
+                            with torch.no_grad():
+                                moe_layer.expert_w1.data[expert_idx] = clone_info['w1']
+                                moe_layer.expert_b1.data[expert_idx] = clone_info['b1']
+                                moe_layer.expert_w2.data[expert_idx] = clone_info['w2']
+                                moe_layer.expert_b2.data[expert_idx] = clone_info['b2']
+                            decoder_clone_count += 4
+                    
+                    elif clone_type == 'encoder':
+                        # 获取Encoder MoE层：model.encoder 是 HybridEncoder，它包含 encoder.encoder (TransformerEncoder)
+                        # 注意：Encoder使用共享层设计，所有层共享同一个encoder_layer
+                        # 但为了兼容性，我们仍然按layer_idx访问
+                        encoder_layer = model.encoder.encoder.layers[layer_idx]
+                        if hasattr(encoder_layer, 'moe_layer'):
+                            moe_layer = encoder_layer.moe_layer
+                            # 直接赋值（expert_w1是Parameter，支持索引赋值）
+                            with torch.no_grad():
+                                moe_layer.expert_w1.data[expert_idx] = clone_info['w1']
+                                moe_layer.expert_b1.data[expert_idx] = clone_info['b1']
+                                moe_layer.expert_w2.data[expert_idx] = clone_info['w2']
+                                moe_layer.expert_b2.data[expert_idx] = clone_info['b2']
+                            encoder_clone_count += 4
+                
+                # 清理临时数据
+                delattr(self, '_expert_clone_params')
+                
+                if decoder_clone_count > 0:
+                    self.logger.info(f"  - Decoder专家克隆: {decoder_clone_count} 个参数 ({decoder_num_experts} 个专家)")
+                if encoder_clone_count > 0:
+                    self.logger.info(f"  - Encoder专家克隆: {encoder_clone_count} 个参数 ({encoder_num_experts} 个专家)")
+            
             self.logger.info(f"✓ 成功加载权重参数: {load_count} 个")
+            if expert_clone_count > 0:
+                self.logger.info(f"  - 专家克隆总计: {expert_clone_count} 个参数")
             if mismatch_count > 0:
-                self.logger.info(f"  - 维度不匹配跳过: {mismatch_count} 个参数 (主要集中在 128 维的 Decoder 部分)")
+                self.logger.info(f"  - 维度不匹配跳过: {mismatch_count} 个参数")
             
             # 统计各部分的加载情况
             backbone_loaded = sum(1 for k in final_state_dict.keys() if 'backbone' in k)
@@ -863,10 +1064,10 @@ class DSETTrainer:
             
             self.logger.info(f"  - Backbone 加载: {backbone_loaded} 个参数")
             self.logger.info(f"  - Encoder 加载: {encoder_loaded} 个参数")
-            self.logger.info(f"  - Decoder 加载: {decoder_loaded} 个参数 (预计较少)")
+            self.logger.info(f"  - Decoder 加载: {decoder_loaded} 个参数")
             
             if len(missing_keys) > 0:
-                self.logger.info(f"  - 未加载的参数 (Missing): {len(missing_keys)} 个 (包含 ASB-Gate 等新组件)")
+                self.logger.info(f"  - 未加载的参数 (Missing): {len(missing_keys)} 个 (MoE相关参数将通过专家克隆初始化)")
                 
         except Exception as e:
             self.logger.error(f"✗ 加载预训练权重失败: {e}")
@@ -1376,45 +1577,50 @@ class DSETTrainer:
                 self.logger.warning(f"📸 Epoch {epoch}: 可视化跳过，layer_wise_heatmaps 为空。")
                 return
 
-            # 我们通常只可视化分辨率最高的那一层 (通常是第一层 S4)
-            # heatmaps_2d_list 里的形状是 [B, 1, H_i, W_i]
-            scores_prob = torch.sigmoid(heatmaps_2d_list[0]) 
-            h_feat, w_feat = scores_prob.shape[2], scores_prob.shape[3]
+            # 获取使用的 encoder indices 来确定 level 名称（S3=0, S4=1, S5=2）
+            use_encoder_idx = self.model.encoder.use_encoder_idx if hasattr(self.model.encoder, 'use_encoder_idx') else [1, 2]
+            level_names = [f"S{idx+3}" for idx in use_encoder_idx]  # S3=0, S4=1, S5=2
             
-            for i in range(min(3, len(targets))):
-                img_id = targets[i]['image_id'].item()
-                data_root = Path(self.config['data']['data_root'])
+            # 遍历所有 level，为每个 level 生成热力图
+            for level_idx, (heatmap_tensor, level_name) in enumerate(zip(heatmaps_2d_list, level_names)):
+                # heatmaps_2d_list 里的形状是 [B, 1, H_i, W_i]
+                scores_prob = torch.sigmoid(heatmap_tensor)
+                h_feat, w_feat = scores_prob.shape[2], scores_prob.shape[3]
                 
-                # 尝试命名匹配
-                possible_paths = [
-                    data_root / "image" / f"{img_id:06d}.jpg",
-                    data_root / "image" / f"{img_id}.jpg"
-                ]
-                orig_img = None
-                for p in possible_paths:
-                    if p.exists():
-                        orig_img = cv2.imread(str(p))
-                        break
-                
-                if orig_img is None: continue
+                for i in range(min(3, len(targets))):
+                    img_id = targets[i]['image_id'].item()
+                    data_root = Path(self.config['data']['data_root'])
+                    
+                    # 尝试命名匹配
+                    possible_paths = [
+                        data_root / "image" / f"{img_id:06d}.jpg",
+                        data_root / "image" / f"{img_id}.jpg"
+                    ]
+                    orig_img = None
+                    for p in possible_paths:
+                        if p.exists():
+                            orig_img = cv2.imread(str(p))
+                            break
+                    
+                    if orig_img is None: continue
 
-                orig_h, orig_w = orig_img.shape[:2]
+                    orig_h, orig_w = orig_img.shape[:2]
 
-                # 物理空间校准
-                valid_h_feat = int(round(orig_h * (h_feat / H_tensor)))
-                valid_w_feat = int(round(orig_w * (w_feat / W_tensor)))
+                    # 物理空间校准
+                    valid_h_feat = int(round(orig_h * (h_feat / H_tensor)))
+                    valid_w_feat = int(round(orig_w * (w_feat / W_tensor)))
+                    
+                    s_2d = scores_prob[i, 0].cpu().numpy()
+                    s_valid = s_2d[:valid_h_feat, :valid_w_feat]
+                    
+                    s_norm = (s_valid - s_valid.min()) / (s_valid.max() - s_valid.min() + 1e-8)
+                    heatmap = cv2.applyColorMap((s_norm * 255).astype(np.uint8), cv2.COLORMAP_JET)
+                    heatmap = cv2.resize(heatmap, (orig_w, orig_h), interpolation=cv2.INTER_NEAREST)
+                    
+                    overlay = cv2.addWeighted(orig_img, 0.4, heatmap, 0.6, 0)
+                    cv2.imwrite(str(viz_dir / f"sample_{img_id}_{level_name}_heatmap.jpg"), overlay)
                 
-                s_2d = scores_prob[i, 0].cpu().numpy()
-                s_valid = s_2d[:valid_h_feat, :valid_w_feat]
-                
-                s_norm = (s_valid - s_valid.min()) / (s_valid.max() - s_valid.min() + 1e-8)
-                heatmap = cv2.applyColorMap((s_norm * 255).astype(np.uint8), cv2.COLORMAP_JET)
-                heatmap = cv2.resize(heatmap, (orig_w, orig_h), interpolation=cv2.INTER_NEAREST)
-                
-                overlay = cv2.addWeighted(orig_img, 0.4, heatmap, 0.6, 0)
-                cv2.imwrite(str(viz_dir / f"sample_{img_id}_S4_heatmap.jpg"), overlay)
-                
-            self.logger.info(f"📸 Epoch {epoch}: 已保存 S4 尺度重要性热力图至 {viz_dir}")
+            self.logger.info(f"📸 Epoch {epoch}: 已保存 {len(heatmaps_2d_list)} 个尺度({', '.join(level_names)})的重要性热力图至 {viz_dir}")
         except Exception as e:
             self.logger.error(f"可视化模块运行崩溃: {e}", exc_info=True)
         except Exception as e:
@@ -2446,7 +2652,7 @@ def main() -> None:
             'model': {
                 'config': args.config,
                 'hidden_dim': 256,
-                'decoder_hidden_dim': 128,
+                'decoder_hidden_dim': 256,
                 'num_queries': 300,
                 'top_k': args.top_k,
                 'backbone': args.backbone,

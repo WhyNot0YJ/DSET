@@ -16,7 +16,7 @@ model:
   pretrained_weights: pretrained/rtdetrv2_r18vd_120e_coco_rerun_48.1.pth
   num_decoder_layers: 3
   hidden_dim: 256
-  decoder_hidden_dim: 128
+  decoder_hidden_dim: 256
   num_queries: 100
   dset:
     token_keep_ratio: 0.5
