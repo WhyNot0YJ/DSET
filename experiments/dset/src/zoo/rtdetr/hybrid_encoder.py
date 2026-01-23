@@ -1,4 +1,4 @@
-"""DSET HybridEncoder - 集成Token Pruning和Patch-MoE"""
+"""DSET HybridEncoder - 集成Token Pruning和Encoder MoE"""
 
 import copy
 from collections import OrderedDict
@@ -475,8 +475,8 @@ class HybridEncoder(nn.Module):
             self.shared_token_pruner.set_epoch(epoch)
     
     def get_encoder_moe_loss(self, encoder_info: dict) -> Dict[str, torch.Tensor]:
-        """Compute Encoder Patch-MoE balance loss."""
-        # Patch-MoE is always enabled
+        """Compute Encoder MoE balance loss."""
+        # Encoder MoE is always enabled
         from .moe_components import compute_moe_balance_loss
         
         router_logits_list = encoder_info.get('moe_router_logits', [])

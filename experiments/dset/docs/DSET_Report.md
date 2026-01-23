@@ -18,7 +18,7 @@ DSET的整体架构遵循RT-DETR的设计范式，由以下核心组件构成：
 Backbone (ResNet18/34)
     ↓
 HybridEncoder (双稀疏设计)
-    ├── Patch-MoE (Patch-level Mixture of Experts)
+    ├── Encoder MoE (Mixture of Experts)
     └── Token Pruning (可学习的Token剪枝)
     ↓
 RTDETRTransformer (Decoder with MoE)
@@ -31,7 +31,7 @@ RTDETRTransformer (Decoder with MoE)
 
 DSET的核心创新在于Encoder层的**双稀疏机制**：
 
-#### 2.2.1 Patch-level MoE (Patch-MoE)
+#### 2.2.1 Encoder MoE (Mixture of Experts)
 
 **设计思想**：
 - 将特征图划分为固定大小的patches（默认4×4）
@@ -51,9 +51,9 @@ DSET的核心创新在于Encoder层的**双稀疏机制**：
 
 **实现机制**：
 ```python
-# Patch-MoE层结构
-class PatchMoELayer:
-    - PatchLevelRouter: 基于patch特征的路由器
+# Encoder MoE层结构
+class MoELayer:
+    - Router: 基于特征的路由器
     - Multi-Expert MLP (Vectorized): 专家MLP组（向量化实现）
     - 负载均衡损失: 确保专家负载均衡
 ```
@@ -84,11 +84,11 @@ class PatchMoELayer:
 
 #### 2.2.3 双稀疏协同机制
 
-Patch-MoE和Token Pruning的协同工作：
+Encoder MoE和Token Pruning的协同工作：
 
-1. **兼容性设计**: Token Pruning在Patch-MoE之后进行，两者兼容
+1. **兼容性设计**: Token Pruning在Encoder MoE之后进行，两者兼容
 2. **互补优势**: 
-   - Patch-MoE提供专家专业化
+   - Encoder MoE提供专家专业化
    - Token Pruning提供计算效率
 3. **联合优化**: 通过统一的损失函数进行端到端训练
 
@@ -120,7 +120,7 @@ DSET的损失函数包含多个组件：
    - GIoU Loss: 几何IoU损失
 
 2. **MoE平衡损失**:
-   - Encoder Patch-MoE Balance Loss: 确保Encoder专家负载均衡
+   - Encoder MoE Balance Loss: 确保Encoder专家负载均衡
    - Decoder MoE Balance Loss: 确保Decoder专家负载均衡
    - 权重: 0.03-0.05
 
@@ -137,7 +137,7 @@ DSET的损失函数包含多个组件：
 | 组件 | RT-DETR | DSET | 说明 |
 |------|---------|------|------|
 | **Backbone** | ResNet18/34 | ResNet18/34 | 相同 |
-| **Encoder FFN** | 标准FFN | **Patch-MoE** | DSET创新点1 |
+| **Encoder FFN** | 标准FFN | **Encoder MoE** | DSET创新点1 |
 | **Encoder Token处理** | 全部处理 | **Token Pruning** | DSET创新点2 |
 | **Decoder FFN** | 标准FFN | **Expert MoE** | DSET创新点3 |
 | **稀疏机制** | ❌ | ✅ **双稀疏** | DSET核心特性 |
@@ -150,7 +150,7 @@ DSET的损失函数包含多个组件：
    - RT-DETR: O(N × d²) - N个tokens，d为特征维度
    - DSET: O(N × d² × keep_ratio × top_k / num_experts)
      - Token Pruning减少tokens数量（keep_ratio）
-     - Patch-MoE通过专家并行减少计算（top_k / num_experts）
+     - Encoder MoE通过专家并行减少计算（top_k / num_experts）
 
 2. **Decoder层**:
    - RT-DETR: O(Q × d²) - Q个queries
@@ -168,7 +168,7 @@ DSET的损失函数包含多个组件：
 
 - **RT-DETR**: 标准Transformer参数
 - **DSET额外参数**:
-  - Patch-MoE: num_experts × FFN参数（但只激活top_k个）
+  - Encoder MoE: num_experts × FFN参数（但只激活top_k个）
   - Decoder MoE: num_experts × FFN参数（但只激活top_k个）
   - Token Pruning: 轻量级MLP（约128×d参数）
 
@@ -227,7 +227,7 @@ DSET的损失函数包含多个组件：
 
 1. **专家专业化**:
    - 不同专家学习不同的特征模式
-   - Patch-MoE和Decoder MoE提供多层次的专业化
+   - Encoder MoE和Decoder MoE提供多层次的专业化
 
 2. **自适应路由**:
    - 基于输入特征动态选择专家
@@ -262,7 +262,7 @@ DSET的损失函数包含多个组件：
    - 平衡性能和效率
 
 3. **模块化设计**:
-   - Patch-MoE、Token Pruning、Decoder MoE可独立启用/禁用
+   - Encoder MoE、Token Pruning、Decoder MoE可独立启用/禁用
    - 便于消融实验和定制化
 
 ---
@@ -273,11 +273,11 @@ DSET的损失函数包含多个组件：
 
 **创新性**：
 - 首次在目标检测的Encoder中同时引入两种稀疏机制
-- Patch-MoE和Token Pruning的协同设计
+- Encoder MoE和Token Pruning的协同设计
 
 **技术贡献**：
-1. **Patch-level MoE**: 
-   - 将MoE机制应用到patch级别，而非token级别
+1. **Encoder MoE**: 
+   - 将MoE机制应用到encoder层
    - 利用空间局部性，提高路由效率
 
 2. **可学习Token Pruning**:
@@ -288,16 +288,16 @@ DSET的损失函数包含多个组件：
    - 两种稀疏机制的联合训练
    - 互补优势，共同提升效率
 
-### 5.2 Patch-level MoE
+### 5.2 Encoder MoE
 
 **创新性**：
-- 不同于传统的token-level MoE，采用patch-level路由
+- 在Encoder中引入MoE机制
 - 更适合处理2D空间特征
 
 **技术优势**：
-1. **空间一致性**: 同一patch内的tokens共享路由决策
-2. **计算效率**: 减少路由计算开销（patch数量 << token数量）
-3. **特征聚合**: 利用patch的局部性建模空间特征
+1. **空间一致性**: 同一区域的tokens共享路由决策
+2. **计算效率**: 减少路由计算开销
+3. **特征聚合**: 利用局部性建模空间特征
 
 ### 5.3 渐进式可学习Token Pruning
 
@@ -314,7 +314,7 @@ DSET的损失函数包含多个组件：
 
 **创新性**：
 - Encoder和Decoder都引入MoE机制
-- 不同层次的MoE设计（Patch-level vs Query-level）
+- 不同层次的MoE设计（Encoder vs Decoder）
 
 **技术优势**：
 1. **多层次专业化**: Encoder和Decoder的专家学习不同层次的特征
@@ -357,7 +357,7 @@ DSET的损失函数包含多个组件：
 
 **理论分析**（基于配置）:
 - Token Pruning: 保留70% tokens，减少30%计算
-- Patch-MoE: top_k=3, num_experts=6，激活50%专家
+- Encoder MoE: top_k=3, num_experts=6，激活50%专家
 - Decoder MoE: top_k=3, num_experts=6，激活50%专家
 - **理论加速比**: 约1.5-2.0倍
 
@@ -413,9 +413,9 @@ model:
   backbone: presnet34
   encoder:
     num_encoder_layers: 1
-    patch_moe_num_experts: 6
-    patch_moe_top_k: 3
-    patch_moe_patch_size: 4
+    moe_num_experts: 6
+    moe_top_k: 3
+    moe_patch_size: 4
   decoder:
     num_decoder_layers: 4
     use_moe: true
@@ -450,9 +450,9 @@ model:
 
 ### 7.3 实现要点
 
-1. **Patch-MoE实现**:
-   - 使用unfold操作提取patches
-   - Patch级别路由，patch内tokens共享决策
+1. **Encoder MoE实现**:
+   - 使用专家路由机制
+   - Token级别路由，tokens共享决策
    - 负载均衡损失确保专家使用均衡
 
 2. **Token Pruning实现**:
@@ -518,7 +518,7 @@ model:
 
 ### 9.1 核心贡献
 
-1. **双稀疏设计**: 首次在目标检测Encoder中同时引入Patch-MoE和Token Pruning
+1. **双稀疏设计**: 首次在目标检测Encoder中同时引入Encoder MoE和Token Pruning
 2. **性能提升**: 在R34 backbone下实现1.06%的mAP提升
 3. **计算效率**: 理论分析显示1.5-2.0倍的加速潜力
 4. **端到端训练**: 所有稀疏机制可学习，无需额外步骤

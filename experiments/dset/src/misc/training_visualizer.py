@@ -111,7 +111,7 @@ class TrainingVisualizer:
             'decoder_moe_loss': [],
             'token_pruning_loss': [],
             'token_pruning_ratio': [],
-            'encoder_expert_usage': [],  # DSET的encoder (Patch-MoE) 专家使用率
+            'encoder_expert_usage': [],  # DSET的encoder MoE 专家使用率
             'decoder_expert_usage': [],  # DSET的decoder MoE 专家使用率
         }
     
@@ -152,7 +152,7 @@ class TrainingVisualizer:
             decoder_moe_loss: Decoder MoE balance loss（DSET模型）
             token_pruning_loss: Token pruning辅助损失（DSET模型）
             token_pruning_ratio: 实际token pruning比例（DSET模型）
-            encoder_expert_usage: Encoder (Patch-MoE) 专家使用率（DSET模型）
+            encoder_expert_usage: Encoder MoE 专家使用率（DSET模型）
             decoder_expert_usage: Decoder MoE 专家使用率（DSET模型）
         """
         self.history['train_loss'].append(train_loss)
@@ -652,7 +652,7 @@ class TrainingVisualizer:
                 ax.axhline(y=1.0/num_encoder_experts, color='red', linestyle='--', linewidth=2, label='Uniform')
                 ax.set_xlabel('Encoder Expert ID', fontsize=11)
                 ax.set_ylabel('Usage Rate', fontsize=11)
-                ax.set_title(f'Encoder (Patch-MoE) - Epoch {len(epochs)}', fontsize=12, fontweight='bold')
+                ax.set_title(f'Encoder (MoE) - Epoch {len(epochs)}', fontsize=12, fontweight='bold')
                 ax.set_xticks(range(num_encoder_experts))
                 ax.legend(fontsize=9)
                 ax.grid(True, alpha=0.3, axis='y')

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""DSET Training Script - Dual-Sparse Expert Transformer (Token Pruning + Patch-MoE + Decoder MoE)"""
+"""DSET Training Script - Dual-Sparse Expert Transformer (Token Pruning + Encoder MoE + Decoder MoE)"""
 
 import os
 import sys
@@ -128,7 +128,7 @@ class DSETRTDETR(nn.Module):
     1. Shared Backbone: Extracts multi-scale features
     2. DSET Encoder (Dual-Sparse):
        - Token Pruning: Prunes redundant tokens
-       - Patch-MoE: Sparse expert processing for spatial features
+       - Encoder MoE: Sparse expert processing for spatial features
     3. MoE Decoder: MoELayer in FFN
     4. Unified Output: Directly outputs detection results
     """
@@ -205,7 +205,7 @@ class DSETRTDETR(nn.Module):
         self.num_encoder_layers = num_encoder_layers
         self.use_encoder_idx = use_encoder_idx
         
-        # DSET双稀疏配置（Patch-MoE 必然启用，无需存储）
+        # DSET双稀疏配置（Encoder MoE 必然启用，无需存储）
         self.token_keep_ratio = token_keep_ratio
         self.encoder_moe_num_experts = encoder_moe_num_experts
         self.encoder_moe_top_k = encoder_moe_top_k
@@ -382,8 +382,8 @@ class DSETRTDETR(nn.Module):
         # 共享特征提取
         backbone_features = self.backbone(images)
         
-        # DSET Encoder（双稀疏：Patch-level Pruning + Patch-MoE）
-        # ⚠️ Patch-MoE 和 Patch-level Pruning 必然启用（DSET核心特性）
+        # DSET Encoder（双稀疏：Token Pruning + Encoder MoE）
+        # ⚠️ Encoder MoE 和 Token Pruning 必然启用（DSET核心特性）
         encoder_features, encoder_info = self.encoder(backbone_features, return_encoder_info=True)
         
         # MoE Decoder前向（内部自动处理路由和专家融合）
@@ -411,8 +411,8 @@ class DSETRTDETR(nn.Module):
             else:
                 decoder_moe_loss = torch.tensor(0.0, device=images.device)
             
-            # 2. Encoder Patch-MoE损失（仅训练时）- 负载均衡损失
-            # ⚠️ Patch-MoE 默认启用，DSET核心特性
+            # 2. Encoder MoE损失（仅训练时）- 负载均衡损失
+            # ⚠️ Encoder MoE 默认启用，DSET核心特性
             if self.training:
                 encoder_moe_loss_dict = self.encoder.get_encoder_moe_loss(encoder_info)
                 encoder_moe_loss = encoder_moe_loss_dict['balance_loss']
@@ -433,7 +433,7 @@ class DSETRTDETR(nn.Module):
             else:
                 decoder_moe_weight = 0.05
             
-            # Encoder Patch-MoE权重
+            # Encoder MoE权重
             if in_moe_balance_warmup:
                 encoder_moe_weight = 0.0
             elif hasattr(self, 'encoder_moe_balance_weight'):
@@ -688,7 +688,7 @@ class DSETTrainer:
         
         # DSET双稀疏配置
         dset_config = self.config['model'].get('dset', {})
-        # ⚠️ 注意：Patch-MoE 和 Patch-level Pruning 必然启用（DSET核心特性），无需配置
+        # ⚠️ 注意：Encoder MoE 和 Token Pruning 必然启用（DSET核心特性），无需配置
         token_keep_ratio = dset_config.get('token_keep_ratio', 0.7)
         encoder_moe_num_experts = dset_config.get('encoder_moe_num_experts', 4)
         encoder_moe_top_k = dset_config.get('encoder_moe_top_k', 2)
@@ -725,7 +725,7 @@ class DSETTrainer:
             num_experts=num_experts,
             num_encoder_layers=num_encoder_layers,
             use_encoder_idx=use_encoder_idx,
-            # DSET双稀疏参数（Patch-MoE 必然启用，无需传递）
+            # DSET双稀疏参数（Encoder MoE 必然启用，无需传递）
             token_keep_ratio=token_keep_ratio,
             encoder_moe_num_experts=encoder_moe_num_experts,
             encoder_moe_top_k=encoder_moe_top_k,
@@ -769,7 +769,7 @@ class DSETTrainer:
         self.logger.info(f"  Encoder MoE设计: 层间共享")
         self.logger.info(f"  双稀疏配置（DSET核心特性，必然启用）:")
         self.logger.info(f"    - Encoder-MoE: 启用 (experts={encoder_moe_num_experts}, top_k={encoder_moe_top_k})")
-        self.logger.info(f"    - Patch-level Pruning: 启用（与 Patch-MoE 兼容）")
+        self.logger.info(f"    - Token Pruning: 启用（与 Encoder MoE 兼容）")
         self.logger.info(f"      → keep_ratio={token_keep_ratio}")
         self.logger.info(f"  损失权重配置:")
         self.logger.info(f"    - CASS Supervision: {use_cass} (loss_type={cass_loss_type}, weight={cass_loss_weight}, expansion={cass_expansion_ratio}, min_size={cass_min_size})")
@@ -835,6 +835,8 @@ class DSETTrainer:
             # 第一步：收集需要克隆的FFN权重
             decoder_ffn_weights_to_clone = {}  # {layer_idx: {'linear1.weight': tensor, 'linear1.bias': tensor, ...}}
             encoder_ffn_weights_to_clone = {}  # {layer_idx: {'linear1.weight': tensor, 'linear1.bias': tensor, ...}}
+            # 跟踪成功克隆的FFN权重键名（用于从missing_keys中排除）
+            successfully_cloned_ffn_keys = set()
             
             for k, v in filtered_state_dict.items():
                 # 检测Decoder层的FFN权重（标准结构：decoder.layers.X.linear1.weight/bias, linear2.weight/bias）
@@ -890,30 +892,36 @@ class DSETTrainer:
                     linear2_weight = ffn_params['linear2.weight']  # [d_model, dim_feedforward]
                     linear2_bias = ffn_params['linear2.bias']  # [d_model]
                     
-                    # 克隆到每个专家
-                    for expert_idx in range(decoder_num_experts):
-                        # MoE层参数命名：decoder.layers.X.decoder_moe_layer.expert_w1[Y]
-                        expert_w1_key = f'decoder.layers.{layer_idx}.decoder_moe_layer.expert_w1'
-                        expert_b1_key = f'decoder.layers.{layer_idx}.decoder_moe_layer.expert_b1'
-                        expert_w2_key = f'decoder.layers.{layer_idx}.decoder_moe_layer.expert_w2'
-                        expert_b2_key = f'decoder.layers.{layer_idx}.decoder_moe_layer.expert_b2'
+                    # MoE层参数命名：decoder.layers.X.decoder_moe_layer.expert_w1
+                    expert_w1_key = f'decoder.layers.{layer_idx}.decoder_moe_layer.expert_w1'
+                    expert_b1_key = f'decoder.layers.{layer_idx}.decoder_moe_layer.expert_b1'
+                    expert_w2_key = f'decoder.layers.{layer_idx}.decoder_moe_layer.expert_w2'
+                    expert_b2_key = f'decoder.layers.{layer_idx}.decoder_moe_layer.expert_b2'
+                    
+                    # 检查这些键是否存在于模型中（在循环外检查，避免重复检查）
+                    if expert_w1_key in model_state_dict:
+                        # 获取模型中的参数（用于形状检查）
+                        model_w1 = model_state_dict[expert_w1_key]
+                        model_b1 = model_state_dict[expert_b1_key]
+                        model_w2 = model_state_dict[expert_w2_key]
+                        model_b2 = model_state_dict[expert_b2_key]
                         
-                        # 检查这些键是否存在于模型中
-                        if expert_w1_key in model_state_dict:
-                            # 获取模型中的参数（用于形状检查）
-                            model_w1 = model_state_dict[expert_w1_key]
-                            model_b1 = model_state_dict[expert_b1_key]
-                            model_w2 = model_state_dict[expert_w2_key]
-                            model_b2 = model_state_dict[expert_b2_key]
+                        # 检查形状是否匹配
+                        # model_w1 shape: [num_experts, dim_feedforward, d_model]
+                        # linear1_weight shape: [dim_feedforward, d_model]
+                        if (model_w1.shape[1:] == linear1_weight.shape and 
+                            model_b1.shape[1:] == linear1_bias.shape and
+                            model_w2.shape[1:] == linear2_weight.shape and
+                            model_b2.shape[1:] == linear2_bias.shape):
                             
-                            # 检查形状是否匹配
-                            # model_w1 shape: [num_experts, dim_feedforward, d_model]
-                            # linear1_weight shape: [dim_feedforward, d_model]
-                            if (model_w1.shape[1:] == linear1_weight.shape and 
-                                model_b1.shape[1:] == linear1_bias.shape and
-                                model_w2.shape[1:] == linear2_weight.shape and
-                                model_b2.shape[1:] == linear2_bias.shape):
-                                
+                            # 标记该层的FFN权重成功克隆（用于从missing_keys中排除）
+                            successfully_cloned_ffn_keys.add(f'decoder.layers.{layer_idx}.linear1.weight')
+                            successfully_cloned_ffn_keys.add(f'decoder.layers.{layer_idx}.linear1.bias')
+                            successfully_cloned_ffn_keys.add(f'decoder.layers.{layer_idx}.linear2.weight')
+                            successfully_cloned_ffn_keys.add(f'decoder.layers.{layer_idx}.linear2.bias')
+                            
+                            # 克隆到每个专家
+                            for expert_idx in range(decoder_num_experts):
                                 # 复制权重并添加噪声
                                 cloned_w1 = linear1_weight.clone()
                                 cloned_w1 += torch.randn_like(cloned_w1) * 0.01
@@ -940,6 +948,11 @@ class DSETTrainer:
                                     'b2': cloned_b2
                                 })
                                 expert_clone_count += 4  # 4个参数：w1, b1, w2, b2
+                        else:
+                            self.logger.warning(f"Decoder层{layer_idx}形状不匹配: "
+                                              f"model_w1={model_w1.shape[1:]}, linear1_weight={linear1_weight.shape}")
+                    else:
+                        self.logger.debug(f"Decoder层{layer_idx}未找到MoE层参数，跳过专家克隆")
             
             # 第二步（续）：将Encoder FFN权重复制到MoE专家
             encoder_num_experts = model.encoder_moe_num_experts
@@ -953,30 +966,36 @@ class DSETTrainer:
                     linear2_weight = ffn_params['linear2.weight']  # [d_model, dim_feedforward]
                     linear2_bias = ffn_params['linear2.bias']  # [d_model]
                     
-                    # 克隆到每个专家
-                    for expert_idx in range(encoder_num_experts):
-                        # MoE层参数命名：encoder.layers.X.moe_layer.expert_w1[Y]
-                        expert_w1_key = f'encoder.layers.{layer_idx}.moe_layer.expert_w1'
-                        expert_b1_key = f'encoder.layers.{layer_idx}.moe_layer.expert_b1'
-                        expert_w2_key = f'encoder.layers.{layer_idx}.moe_layer.expert_w2'
-                        expert_b2_key = f'encoder.layers.{layer_idx}.moe_layer.expert_b2'
+                    # MoE层参数命名：encoder.layers.X.moe_layer.expert_w1
+                    expert_w1_key = f'encoder.layers.{layer_idx}.moe_layer.expert_w1'
+                    expert_b1_key = f'encoder.layers.{layer_idx}.moe_layer.expert_b1'
+                    expert_w2_key = f'encoder.layers.{layer_idx}.moe_layer.expert_w2'
+                    expert_b2_key = f'encoder.layers.{layer_idx}.moe_layer.expert_b2'
+                    
+                    # 检查这些键是否存在于模型中（在循环外检查，避免重复检查）
+                    if expert_w1_key in model_state_dict:
+                        # 获取模型中的参数（用于形状检查）
+                        model_w1 = model_state_dict[expert_w1_key]
+                        model_b1 = model_state_dict[expert_b1_key]
+                        model_w2 = model_state_dict[expert_w2_key]
+                        model_b2 = model_state_dict[expert_b2_key]
                         
-                        # 检查这些键是否存在于模型中
-                        if expert_w1_key in model_state_dict:
-                            # 获取模型中的参数（用于形状检查）
-                            model_w1 = model_state_dict[expert_w1_key]
-                            model_b1 = model_state_dict[expert_b1_key]
-                            model_w2 = model_state_dict[expert_w2_key]
-                            model_b2 = model_state_dict[expert_b2_key]
+                        # 检查形状是否匹配
+                        # model_w1 shape: [num_experts, dim_feedforward, d_model]
+                        # linear1_weight shape: [dim_feedforward, d_model]
+                        if (model_w1.shape[1:] == linear1_weight.shape and 
+                            model_b1.shape[1:] == linear1_bias.shape and
+                            model_w2.shape[1:] == linear2_weight.shape and
+                            model_b2.shape[1:] == linear2_bias.shape):
                             
-                            # 检查形状是否匹配
-                            # model_w1 shape: [num_experts, dim_feedforward, d_model]
-                            # linear1_weight shape: [dim_feedforward, d_model]
-                            if (model_w1.shape[1:] == linear1_weight.shape and 
-                                model_b1.shape[1:] == linear1_bias.shape and
-                                model_w2.shape[1:] == linear2_weight.shape and
-                                model_b2.shape[1:] == linear2_bias.shape):
-                                
+                            # 标记该层的FFN权重成功克隆（用于从missing_keys中排除）
+                            successfully_cloned_ffn_keys.add(f'encoder.layers.{layer_idx}.linear1.weight')
+                            successfully_cloned_ffn_keys.add(f'encoder.layers.{layer_idx}.linear1.bias')
+                            successfully_cloned_ffn_keys.add(f'encoder.layers.{layer_idx}.linear2.weight')
+                            successfully_cloned_ffn_keys.add(f'encoder.layers.{layer_idx}.linear2.bias')
+                            
+                            # 克隆到每个专家
+                            for expert_idx in range(encoder_num_experts):
                                 # 复制权重并添加噪声
                                 cloned_w1 = linear1_weight.clone()
                                 cloned_w1 += torch.randn_like(cloned_w1) * 0.01
@@ -1001,9 +1020,18 @@ class DSETTrainer:
                                     'b2': cloned_b2
                                 })
                                 expert_clone_count += 4  # 4个参数：w1, b1, w2, b2
+                        else:
+                            self.logger.warning(f"Encoder层{layer_idx}形状不匹配: "
+                                              f"model_w1={model_w1.shape[1:]}, linear1_weight={linear1_weight.shape}")
+                    else:
+                        self.logger.debug(f"Encoder层{layer_idx}未找到MoE层参数，跳过专家克隆")
             
             # 使用 strict=False 加载匹配的部分
             missing_keys, unexpected_keys = model.load_state_dict(final_state_dict, strict=False)
+            
+            # [修复] 从missing_keys中排除成功克隆的FFN权重（这些权重通过专家克隆方式加载）
+            actual_missing_keys = [k for k in missing_keys if k not in successfully_cloned_ffn_keys]
+            cloned_ffn_count = len(missing_keys) - len(actual_missing_keys)
             
             # 第三步：手动赋值MoE专家权重（在load_state_dict之后）
             if hasattr(self, '_expert_clone_params') and self._expert_clone_params:
@@ -1030,8 +1058,6 @@ class DSETTrainer:
                     
                     elif clone_type == 'encoder':
                         # 获取Encoder MoE层：model.encoder 是 HybridEncoder，它包含 encoder.encoder (TransformerEncoder)
-                        # 注意：Encoder使用共享层设计，所有层共享同一个encoder_layer
-                        # 但为了兼容性，我们仍然按layer_idx访问
                         encoder_layer = model.encoder.encoder.layers[layer_idx]
                         if hasattr(encoder_layer, 'moe_layer'):
                             moe_layer = encoder_layer.moe_layer
@@ -1066,8 +1092,13 @@ class DSETTrainer:
             self.logger.info(f"  - Encoder 加载: {encoder_loaded} 个参数")
             self.logger.info(f"  - Decoder 加载: {decoder_loaded} 个参数")
             
-            if len(missing_keys) > 0:
-                self.logger.info(f"  - 未加载的参数 (Missing): {len(missing_keys)} 个 (MoE相关参数将通过专家克隆初始化)")
+            if len(actual_missing_keys) > 0:
+                self.logger.info(f"  - 未加载的参数 (Missing): {len(actual_missing_keys)} 个")
+                # 打印所有未加载的参数名称
+                for key in sorted(actual_missing_keys):
+                    self.logger.info(f"    • {key}")
+            if cloned_ffn_count > 0:
+                self.logger.info(f"  - FFN权重通过专家克隆加载: {cloned_ffn_count} 个参数（已从Missing中排除）")
                 
         except Exception as e:
             self.logger.error(f"✗ 加载预训练权重失败: {e}")
@@ -1683,7 +1714,7 @@ class DSETTrainer:
         total_loss = 0.0
         detection_loss = 0.0
         moe_lb_loss = 0.0  # MoE load balance loss
-        encoder_moe_loss_sum = 0.0  # Encoder Patch-MoE loss
+        encoder_moe_loss_sum = 0.0  # Encoder MoE loss
         cass_loss_sum = 0.0  # CASS supervision loss
         token_pruning_ratios = []
         
@@ -1831,7 +1862,7 @@ class DSETTrainer:
             'total_loss': avg_loss,
             'detection_loss': avg_detection_loss,
             'decoder_moe_loss': avg_decoder_moe_lb_loss,
-            'encoder_moe_loss': avg_encoder_moe_loss,  # Encoder Patch-MoE loss
+            'encoder_moe_loss': avg_encoder_moe_loss,  # Encoder MoE loss
             'cass_loss': avg_cass_loss,  # CASS supervision loss
             'token_pruning_ratio': avg_token_pruning_ratio,
             'moe_load_balance_loss': avg_decoder_moe_lb_loss + avg_encoder_moe_loss,  # 总MoE损失（向后兼容）
@@ -2458,7 +2489,7 @@ class DSETTrainer:
                 learning_rate=current_lr,
                 # DSET特有的可视化参数
                 detection_loss=train_metrics.get('detection_loss', 0.0),
-                encoder_moe_loss=train_metrics.get('encoder_moe_loss', 0.0),  # Encoder Patch-MoE loss
+                encoder_moe_loss=train_metrics.get('encoder_moe_loss', 0.0),  # Encoder MoE loss
                 decoder_moe_loss=train_metrics.get('decoder_moe_loss', 0.0),
                 token_pruning_ratio=train_metrics.get('token_pruning_ratio', 0.0),
                 # 传递encoder和decoder专家使用率

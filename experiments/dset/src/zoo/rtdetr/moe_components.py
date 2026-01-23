@@ -8,7 +8,7 @@ from typing import Tuple, List, Optional
 class MoELayer(nn.Module):
     """Universal Token-Level MoE Layer - 向量化实现（无 for 循环）
     
-    替代原有的 PatchMoELayer 和 AdaptiveExpertLayer，统一为Token级别的MoE实现。
+    Token级别的MoE实现。
     输入: [B, N, C] (N可以是动态的剪枝后的数量)
     输出: [B, N, C] (保持输入形状)
     
