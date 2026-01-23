@@ -165,7 +165,7 @@ def generate_report(results):
 ### 3.1 DSET模型性能
 
 DSET (Dual-Sparse Expert Transformer) 是本研究的核心创新，采用双稀疏设计：
-- **Encoder层**: Patch-level MoE + Token Pruning
+- **Encoder层**: Encoder MoE + Token Pruning
 - **Decoder层**: Expert MoE
 - **稀疏性**: 通过专家路由和token剪枝实现计算效率提升
 
@@ -279,7 +279,7 @@ YOLOv8作为当前流行的实时检测模型，提供了性能对比参考。
 
 | 特性 | DSET | MOE-RTDETR | RT-DETR | YOLOv8 |
 |------|------|------------|---------|--------|
-| Encoder MoE | ✅ Patch-MoE | ❌ | ❌ | ❌ |
+| Encoder MoE | ✅ Encoder MoE | ❌ | ❌ | ❌ |
 | Decoder MoE | ✅ | ✅ | ❌ | ❌ |
 | Token Pruning | ✅ | ❌ | ❌ | ❌ |
 | 双稀疏设计 | ✅ | ❌ | ❌ | ❌ |

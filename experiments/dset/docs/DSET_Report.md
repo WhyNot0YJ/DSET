@@ -34,20 +34,20 @@ DSET的核心创新在于Encoder层的**双稀疏机制**：
 #### 2.2.1 Encoder MoE (Mixture of Experts)
 
 **设计思想**：
-- 将特征图划分为固定大小的patches（默认4×4）
-- 每个patch作为一个整体进行专家路由决策
-- patch内的所有tokens共享相同的路由选择
+- 在Transformer Encoder Layer的FFN层引入MoE机制
+- 每个token独立进行专家路由决策
+- 基于token特征自适应选择专家
 
 **技术细节**：
-- **Patch大小**: 4×4（可配置）
+- **路由粒度**: Token级别（每个token独立路由）
 - **专家数量**: 4-8个（通常Encoder使用较少专家）
-- **Top-K路由**: 每个patch选择top_k个专家（通常k=2-3）
+- **Top-K路由**: 每个token选择top_k个专家（通常k=2-3）
 - **位置**: 替换Transformer Encoder Layer中的标准FFN层
 
 **优势**：
-1. **空间一致性**: 同一patch内的tokens具有空间相关性，共享路由决策更合理
-2. **计算效率**: Patch级别的路由减少了路由计算开销
-3. **特征聚合**: 利用patch的局部性，更好地建模空间特征
+1. **细粒度路由**: Token级别的路由提供更精细的专家选择
+2. **计算效率**: MoE机制只激活部分专家，减少计算量
+3. **专家专业化**: 不同专家学习不同的特征模式，提升模型表达能力
 
 **实现机制**：
 ```python
@@ -106,7 +106,7 @@ Encoder MoE和Token Pruning的协同工作：
 - **负载均衡**: 通过Balance Loss确保专家负载均衡
 
 **与Encoder MoE的区别**：
-- **粒度**: Decoder是query级别，Encoder是patch级别
+- **粒度**: Decoder是query级别，Encoder是token级别
 - **专家数量**: Decoder通常使用更多专家（6-8 vs 4-6）
 - **应用场景**: Decoder处理查询特征，Encoder处理空间特征
 
@@ -415,7 +415,6 @@ model:
     num_encoder_layers: 1
     moe_num_experts: 6
     moe_top_k: 3
-    moe_patch_size: 4
   decoder:
     num_decoder_layers: 4
     use_moe: true

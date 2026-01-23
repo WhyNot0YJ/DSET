@@ -19,13 +19,13 @@ graph TD
         Pruning -.-> note_pruning
         Pruning --> EncLayer[Transformer Encoder Layers]
         
-        subgraph "Patch-MoE Layer"
-            EncLayer --> PRouter[Patch Router]
+        subgraph "Encoder MoE Layer"
+            EncLayer --> PRouter[Router]
             PRouter --> PExperts{Select Top-K Experts}
             PExperts --> Expert1[Expert 1]
             PExperts --> Expert2[Expert 2]
             PExperts --> ExpertN[Expert N]
-            Expert1 & Expert2 & ExpertN --> PFused[Fused Patch Features]
+            Expert1 & Expert2 & ExpertN --> PFused[Fused Token Features]
         end
         
         PFused --> FPN[FPN/PAN Feature Fusion]
@@ -74,9 +74,9 @@ The encoder processes feature maps to capture global context, enhanced with two 
 *   **Patch-Level Pruning (Sparse Tokens):**
     *   **Function:** dynamically identifies and keeps only the most important image patches (foreground areas) while discarding irrelevant background patches.
     *   **Benefit:** Significantly reduces the sequence length for the Transformer, reducing computational cost.
-*   **Patch-MoE Layer (Sparse Experts):**
-    *   **Function:** Replaces the standard Feed-Forward Network (FFN). It uses a **Patch Router** to assign an entire patch to a specific subset of experts (Top-K).
-    *   **Benefit:** Coarse-grained routing. Different experts specialize in processing different types of texture or local patterns, maintaining efficiency by only activating a fraction of the network parameters.
+*   **Encoder MoE Layer (Sparse Experts):**
+    *   **Function:** Replaces the standard Feed-Forward Network (FFN). It uses a **Router** to assign each token to a specific subset of experts (Top-K).
+    *   **Benefit:** Token-level routing. Different experts specialize in processing different types of features, maintaining efficiency by only activating a fraction of the network parameters.
 *   **FPN/PAN Feature Fusion:**
     *   **Function:** Fuses high-level semantic features with low-level spatial features using Top-Down and Bottom-Up pathways.
     *   **Benefit:** Ensures the model has rich semantic and spatial information for detecting objects at all scales.
