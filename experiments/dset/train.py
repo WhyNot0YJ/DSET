@@ -832,6 +832,9 @@ class DSETTrainer:
             expert_clone_count = 0
             
             final_state_dict = {}
+            # 噪声强度：用于打破专家间的对称性，促进差异化学习
+            noise_scale = 0.001  # 建议的强度：1e-3 (0.001)
+            
             # 第一步：收集需要克隆的FFN权重
             decoder_ffn_weights_to_clone = {}  # {layer_idx: {'linear1.weight': tensor, 'linear1.bias': tensor, ...}}
             encoder_ffn_weights_to_clone = {}  # {layer_idx: {'linear1.weight': tensor, 'linear1.bias': tensor, ...}}
@@ -882,6 +885,7 @@ class DSETTrainer:
             
             # 第二步：将Decoder FFN权重复制到MoE专家
             decoder_num_experts = model.num_experts
+            
             for layer_idx, ffn_params in decoder_ffn_weights_to_clone.items():
                 # 检查是否有完整的FFN参数
                 if 'linear1.weight' in ffn_params and 'linear1.bias' in ffn_params and \
@@ -922,15 +926,15 @@ class DSETTrainer:
                             
                             # 克隆到每个专家
                             for expert_idx in range(decoder_num_experts):
-                                # 复制权重并添加噪声
+                                # 复制权重并添加噪声（使用 .add_() 更高效且语义清晰）
                                 cloned_w1 = linear1_weight.clone()
-                                cloned_w1 += torch.randn_like(cloned_w1) * 0.01
+                                cloned_w1.add_(torch.randn_like(cloned_w1) * noise_scale)
                                 cloned_b1 = linear1_bias.clone()
-                                cloned_b1 += torch.randn_like(cloned_b1) * 0.01
+                                cloned_b1.add_(torch.randn_like(cloned_b1) * noise_scale)
                                 cloned_w2 = linear2_weight.clone()
-                                cloned_w2 += torch.randn_like(cloned_w2) * 0.01
+                                cloned_w2.add_(torch.randn_like(cloned_w2) * noise_scale)
                                 cloned_b2 = linear2_bias.clone()
-                                cloned_b2 += torch.randn_like(cloned_b2) * 0.01
+                                cloned_b2.add_(torch.randn_like(cloned_b2) * noise_scale)
                                 
                                 # 直接赋值（因为expert_w1是Parameter，需要按索引赋值）
                                 # 注意：这里我们需要在加载后手动赋值，因为state_dict不支持索引赋值
@@ -996,15 +1000,15 @@ class DSETTrainer:
                             
                             # 克隆到每个专家
                             for expert_idx in range(encoder_num_experts):
-                                # 复制权重并添加噪声
+                                # 复制权重并添加噪声（使用 .add_() 更高效且语义清晰）
                                 cloned_w1 = linear1_weight.clone()
-                                cloned_w1 += torch.randn_like(cloned_w1) * 0.01
+                                cloned_w1.add_(torch.randn_like(cloned_w1) * noise_scale)
                                 cloned_b1 = linear1_bias.clone()
-                                cloned_b1 += torch.randn_like(cloned_b1) * 0.01
+                                cloned_b1.add_(torch.randn_like(cloned_b1) * noise_scale)
                                 cloned_w2 = linear2_weight.clone()
-                                cloned_w2 += torch.randn_like(cloned_w2) * 0.01
+                                cloned_w2.add_(torch.randn_like(cloned_w2) * noise_scale)
                                 cloned_b2 = linear2_bias.clone()
-                                cloned_b2 += torch.randn_like(cloned_b2) * 0.01
+                                cloned_b2.add_(torch.randn_like(cloned_b2) * noise_scale)
                                 
                                 # 存储克隆参数
                                 if not hasattr(self, '_expert_clone_params'):
