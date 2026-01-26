@@ -1142,11 +1142,6 @@ class DSETTrainer:
             self.logger.info(f"  - Encoder 加载: {encoder_loaded} 个参数")
             self.logger.info(f"  - Decoder 加载: {decoder_loaded} 个参数")
             
-            if len(actual_missing_keys) > 0:
-                self.logger.info(f"  - 未加载的参数 (Missing): {len(actual_missing_keys)} 个")
-                # 打印所有未加载的参数名称
-                for key in sorted(actual_missing_keys):
-                    self.logger.info(f"    • {key}")
             if cloned_ffn_count > 0:
                 self.logger.info(f"  - FFN权重通过专家克隆加载: {cloned_ffn_count} 个参数（已从Missing中排除）")
                 
