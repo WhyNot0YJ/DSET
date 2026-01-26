@@ -864,18 +864,26 @@ class DSETTrainer:
                     continue  # 暂时跳过，稍后处理
                 
                 # 检测Encoder层的FFN权重
-                # 支持两种格式：encoder.layers.X.linear1 或 encoder.encoder.layers.X.linear1
+                # 支持多种格式：
+                # - encoder.encoder.0.layers.0.linear1.weight (HybridEncoder中的多尺度encoder)
+                # - encoder.encoder.layers.X.linear1.weight
+                # - encoder.layers.X.linear1.weight
                 encoder_ffn_match = None
-                if ('encoder.layers.' in k or 'encoder.encoder.layers.' in k) and ('linear1' in k or 'linear2' in k):
-                    # 尝试匹配 encoder.encoder.layers.X.linear1.weight (优先)
-                    match1 = re.search(r'encoder\.encoder\.layers\.(\d+)\.(linear\d)\.(weight|bias)', k)
+                if ('encoder.layers.' in k or 'encoder.encoder' in k) and ('linear1' in k or 'linear2' in k):
+                    # 尝试匹配 encoder.encoder.0.layers.0.linear1.weight (优先，HybridEncoder格式)
+                    match1 = re.search(r'encoder\.encoder\.\d+\.layers\.(\d+)\.(linear\d)\.(weight|bias)', k)
                     if match1:
                         encoder_ffn_match = match1
                     else:
-                        # 尝试匹配 encoder.layers.X.linear1.weight
-                        match2 = re.search(r'encoder\.layers\.(\d+)\.(linear\d)\.(weight|bias)', k)
+                        # 尝试匹配 encoder.encoder.layers.X.linear1.weight
+                        match2 = re.search(r'encoder\.encoder\.layers\.(\d+)\.(linear\d)\.(weight|bias)', k)
                         if match2:
                             encoder_ffn_match = match2
+                        else:
+                            # 尝试匹配 encoder.layers.X.linear1.weight
+                            match3 = re.search(r'encoder\.layers\.(\d+)\.(linear\d)\.(weight|bias)', k)
+                            if match3:
+                                encoder_ffn_match = match3
                 
                 if encoder_ffn_match:
                     layer_idx = int(encoder_ffn_match.group(1))
@@ -992,23 +1000,8 @@ class DSETTrainer:
             # 第二步（续）：将Encoder FFN权重复制到MoE专家
             encoder_num_experts = model.encoder_moe_num_experts
             
-            # 调试：打印预训练权重中所有包含encoder和linear的键名
-            encoder_linear_keys = [k for k in filtered_state_dict.keys() if 'encoder' in k.lower() and 'linear' in k.lower()]
-            if encoder_linear_keys:
-                self.logger.info(f"  [调试] 预训练权重中找到 {len(encoder_linear_keys)} 个包含encoder和linear的键:")
-                for key in sorted(encoder_linear_keys)[:10]:  # 只打印前10个
-                    self.logger.info(f"    - {key}")
-                if len(encoder_linear_keys) > 10:
-                    self.logger.info(f"    ... 还有 {len(encoder_linear_keys) - 10} 个键")
-            else:
-                self.logger.info(f"  [调试] 预训练权重中未找到包含encoder和linear的键")
-            
             if encoder_ffn_weights_to_clone:
                 self.logger.info(f"  - 找到 {len(encoder_ffn_weights_to_clone)} 个Encoder层的FFN权重，准备克隆到MoE")
-                for layer_idx, ffn_params in encoder_ffn_weights_to_clone.items():
-                    self.logger.info(f"    [调试] Encoder层{layer_idx}的FFN参数: {list(ffn_params.keys())}")
-            else:
-                self.logger.info(f"  [调试] 未找到Encoder层的FFN权重 (encoder_ffn_weights_to_clone为空)")
             
             for layer_idx, ffn_params in encoder_ffn_weights_to_clone.items():
                 # 检查是否有完整的FFN参数
@@ -1020,19 +1013,28 @@ class DSETTrainer:
                     linear2_weight = ffn_params['linear2.weight']  # [d_model, dim_feedforward]
                     linear2_bias = ffn_params['linear2.bias']  # [d_model]
                     
-                    # MoE层参数命名：encoder.encoder.layers.X.moe_layer.expert_w1
-                    # 尝试两种格式
+                    # MoE层参数命名：尝试多种格式
+                    # 注意：预训练权重中是 encoder.encoder.0.layers.0.linear1，但模型中是 encoder.encoder.layers.0.moe_layer
+                    # 所以layer_idx应该对应到模型的layers索引
                     expert_w1_key = f'encoder.encoder.layers.{layer_idx}.moe_layer.expert_w1'
                     expert_b1_key = f'encoder.encoder.layers.{layer_idx}.moe_layer.expert_b1'
                     expert_w2_key = f'encoder.encoder.layers.{layer_idx}.moe_layer.expert_w2'
                     expert_b2_key = f'encoder.encoder.layers.{layer_idx}.moe_layer.expert_b2'
                     
-                    # 如果找不到，尝试另一种格式
+                    # 如果找不到，尝试其他格式
                     if expert_w1_key not in model_state_dict:
+                        # 尝试 encoder.layers.X.moe_layer.expert_w1
                         expert_w1_key = f'encoder.layers.{layer_idx}.moe_layer.expert_w1'
                         expert_b1_key = f'encoder.layers.{layer_idx}.moe_layer.expert_b1'
                         expert_w2_key = f'encoder.layers.{layer_idx}.moe_layer.expert_w2'
                         expert_b2_key = f'encoder.layers.{layer_idx}.moe_layer.expert_b2'
+                        
+                        # 如果还是找不到，尝试 encoder.encoder.0.layers.X.moe_layer (匹配预训练权重格式)
+                        if expert_w1_key not in model_state_dict:
+                            expert_w1_key = f'encoder.encoder.0.layers.{layer_idx}.moe_layer.expert_w1'
+                            expert_b1_key = f'encoder.encoder.0.layers.{layer_idx}.moe_layer.expert_b1'
+                            expert_w2_key = f'encoder.encoder.0.layers.{layer_idx}.moe_layer.expert_w2'
+                            expert_b2_key = f'encoder.encoder.0.layers.{layer_idx}.moe_layer.expert_b2'
                     
                     # 检查这些键是否存在于模型中（在循环外检查，避免重复检查）
                     if expert_w1_key in model_state_dict:
@@ -1041,13 +1043,6 @@ class DSETTrainer:
                         model_b1 = model_state_dict[expert_b1_key]
                         model_w2 = model_state_dict[expert_w2_key]
                         model_b2 = model_state_dict[expert_b2_key]
-                        
-                        # 调试：打印形状信息
-                        self.logger.info(f"    [调试] Encoder层{layer_idx}形状检查:")
-                        self.logger.info(f"      - FFN linear1_weight: {linear1_weight.shape}, MoE expert_w1: {model_w1.shape} (期望: {model_w1.shape[1:]})")
-                        self.logger.info(f"      - FFN linear1_bias: {linear1_bias.shape}, MoE expert_b1: {model_b1.shape} (期望: {model_b1.shape[1:]})")
-                        self.logger.info(f"      - FFN linear2_weight: {linear2_weight.shape}, MoE expert_w2: {model_w2.shape} (期望: {model_w2.shape[1:]})")
-                        self.logger.info(f"      - FFN linear2_bias: {linear2_bias.shape}, MoE expert_b2: {model_b2.shape} (期望: {model_b2.shape[1:]})")
                         
                         # 检查形状是否匹配
                         # model_w1 shape: [num_experts, dim_feedforward, d_model]
@@ -1096,23 +1091,9 @@ class DSETTrainer:
                                 })
                                 expert_clone_count += 4  # 4个参数：w1, b1, w2, b2
                         else:
-                            self.logger.warning(f"    [调试] Encoder层{layer_idx}形状不匹配，无法克隆")
-                            self.logger.warning(f"      - model_w1.shape[1:]={model_w1.shape[1:]}, linear1_weight.shape={linear1_weight.shape}")
-                            self.logger.warning(f"      - model_b1.shape[1:]={model_b1.shape[1:]}, linear1_bias.shape={linear1_bias.shape}")
-                            self.logger.warning(f"      - model_w2.shape[1:]={model_w2.shape[1:]}, linear2_weight.shape={linear2_weight.shape}")
-                            self.logger.warning(f"      - model_b2.shape[1:]={model_b2.shape[1:]}, linear2_bias.shape={linear2_bias.shape}")
+                            self.logger.debug(f"Encoder层{layer_idx}形状不匹配，跳过专家克隆")
                     else:
-                        self.logger.warning(f"    [调试] Encoder层{layer_idx}未找到MoE层参数，尝试的键名:")
-                        self.logger.warning(f"      - {expert_w1_key}")
-                        self.logger.warning(f"      - {f'encoder.layers.{layer_idx}.moe_layer.expert_w1' if expert_w1_key.startswith('encoder.encoder') else '已尝试'}")
-                        # 打印模型中所有包含encoder和moe的键名
-                        encoder_moe_keys = [k for k in model_state_dict.keys() if 'encoder' in k.lower() and 'moe' in k.lower()]
-                        if encoder_moe_keys:
-                            self.logger.warning(f"    [调试] 模型中找到的Encoder MoE相关键名 (前5个):")
-                            for key in sorted(encoder_moe_keys)[:5]:
-                                self.logger.warning(f"      - {key}")
-                        else:
-                            self.logger.warning(f"    [调试] 模型中未找到包含encoder和moe的键名")
+                        self.logger.debug(f"Encoder层{layer_idx}未找到MoE层参数，跳过专家克隆")
             
             # 使用 strict=False 加载匹配的部分
             missing_keys, unexpected_keys = model.load_state_dict(final_state_dict, strict=False)
@@ -1164,6 +1145,9 @@ class DSETTrainer:
                     self.logger.info(f"  - Decoder专家克隆: {decoder_clone_count} 个参数 ({decoder_num_experts} 个专家)")
                 if encoder_clone_count > 0:
                     self.logger.info(f"  - Encoder专家克隆: {encoder_clone_count} 个参数 ({encoder_num_experts} 个专家)")
+                
+                # 将专家克隆的参数数量计入成功加载的总数
+                load_count += decoder_clone_count + encoder_clone_count
             
             self.logger.info(f"✓ 成功加载权重参数: {load_count} 个")
             if expert_clone_count > 0:
