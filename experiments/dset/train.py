@@ -832,9 +832,6 @@ class DSETTrainer:
             expert_clone_count = 0
             
             final_state_dict = {}
-            # 噪声强度：用于打破专家间的对称性，促进差异化学习
-            noise_scale = 0.001  # 建议的强度：1e-3 (0.001)
-            
             # 第一步：收集需要克隆的FFN权重
             decoder_ffn_weights_to_clone = {}  # {layer_idx: {'linear1.weight': tensor, 'linear1.bias': tensor, ...}}
             encoder_ffn_weights_to_clone = {}  # {layer_idx: {'linear1.weight': tensor, 'linear1.bias': tensor, ...}}
@@ -842,32 +839,52 @@ class DSETTrainer:
             successfully_cloned_ffn_keys = set()
             
             for k, v in filtered_state_dict.items():
-                # 检测Decoder层的FFN权重（标准结构：decoder.layers.X.linear1.weight/bias, linear2.weight/bias）
-                if 'decoder.layers.' in k and ('linear1' in k or 'linear2' in k):
-                    # 提取层索引：decoder.layers.0.linear1.weight -> layer_idx=0
-                    match = re.search(r'decoder\.layers\.(\d+)\.(linear\d)\.(weight|bias)', k)
-                    if match:
-                        layer_idx = int(match.group(1))
-                        linear_name = match.group(2)  # 'linear1' or 'linear2'
-                        param_type = match.group(3)  # 'weight' or 'bias'
-                        
-                        if layer_idx not in decoder_ffn_weights_to_clone:
-                            decoder_ffn_weights_to_clone[layer_idx] = {}
-                        decoder_ffn_weights_to_clone[layer_idx][f'{linear_name}.{param_type}'] = v
+                # 检测Decoder层的FFN权重
+                # 支持两种格式：decoder.layers.X.linear1 或 decoder.decoder.layers.X.linear1
+                decoder_ffn_match = None
+                if ('decoder.layers.' in k or 'decoder.decoder.layers.' in k) and ('linear1' in k or 'linear2' in k):
+                    # 尝试匹配 decoder.decoder.layers.X.linear1.weight (优先)
+                    match1 = re.search(r'decoder\.decoder\.layers\.(\d+)\.(linear\d)\.(weight|bias)', k)
+                    if match1:
+                        decoder_ffn_match = match1
+                    else:
+                        # 尝试匹配 decoder.layers.X.linear1.weight
+                        match2 = re.search(r'decoder\.layers\.(\d+)\.(linear\d)\.(weight|bias)', k)
+                        if match2:
+                            decoder_ffn_match = match2
+                
+                if decoder_ffn_match:
+                    layer_idx = int(decoder_ffn_match.group(1))
+                    linear_name = decoder_ffn_match.group(2)  # 'linear1' or 'linear2'
+                    param_type = decoder_ffn_match.group(3)  # 'weight' or 'bias'
+                    
+                    if layer_idx not in decoder_ffn_weights_to_clone:
+                        decoder_ffn_weights_to_clone[layer_idx] = {}
+                    decoder_ffn_weights_to_clone[layer_idx][f'{linear_name}.{param_type}'] = v
                     continue  # 暂时跳过，稍后处理
                 
-                # 检测Encoder层的FFN权重（标准结构：encoder.layers.X.linear1.weight/bias, linear2.weight/bias）
-                if 'encoder.layers.' in k and ('linear1' in k or 'linear2' in k):
-                    # 提取层索引：encoder.layers.0.linear1.weight -> layer_idx=0
-                    match = re.search(r'encoder\.layers\.(\d+)\.(linear\d)\.(weight|bias)', k)
-                    if match:
-                        layer_idx = int(match.group(1))
-                        linear_name = match.group(2)  # 'linear1' or 'linear2'
-                        param_type = match.group(3)  # 'weight' or 'bias'
-                        
-                        if layer_idx not in encoder_ffn_weights_to_clone:
-                            encoder_ffn_weights_to_clone[layer_idx] = {}
-                        encoder_ffn_weights_to_clone[layer_idx][f'{linear_name}.{param_type}'] = v
+                # 检测Encoder层的FFN权重
+                # 支持两种格式：encoder.layers.X.linear1 或 encoder.encoder.layers.X.linear1
+                encoder_ffn_match = None
+                if ('encoder.layers.' in k or 'encoder.encoder.layers.' in k) and ('linear1' in k or 'linear2' in k):
+                    # 尝试匹配 encoder.encoder.layers.X.linear1.weight (优先)
+                    match1 = re.search(r'encoder\.encoder\.layers\.(\d+)\.(linear\d)\.(weight|bias)', k)
+                    if match1:
+                        encoder_ffn_match = match1
+                    else:
+                        # 尝试匹配 encoder.layers.X.linear1.weight
+                        match2 = re.search(r'encoder\.layers\.(\d+)\.(linear\d)\.(weight|bias)', k)
+                        if match2:
+                            encoder_ffn_match = match2
+                
+                if encoder_ffn_match:
+                    layer_idx = int(encoder_ffn_match.group(1))
+                    linear_name = encoder_ffn_match.group(2)  # 'linear1' or 'linear2'
+                    param_type = encoder_ffn_match.group(3)  # 'weight' or 'bias'
+                    
+                    if layer_idx not in encoder_ffn_weights_to_clone:
+                        encoder_ffn_weights_to_clone[layer_idx] = {}
+                    encoder_ffn_weights_to_clone[layer_idx][f'{linear_name}.{param_type}'] = v
                     continue  # 暂时跳过，稍后处理
                 
                 # 其他权重正常处理
@@ -885,7 +902,8 @@ class DSETTrainer:
             
             # 第二步：将Decoder FFN权重复制到MoE专家
             decoder_num_experts = model.num_experts
-            
+            if decoder_ffn_weights_to_clone:
+                self.logger.info(f"  - 找到 {len(decoder_ffn_weights_to_clone)} 个Decoder层的FFN权重，准备克隆到MoE")
             for layer_idx, ffn_params in decoder_ffn_weights_to_clone.items():
                 # 检查是否有完整的FFN参数
                 if 'linear1.weight' in ffn_params and 'linear1.bias' in ffn_params and \
@@ -896,11 +914,19 @@ class DSETTrainer:
                     linear2_weight = ffn_params['linear2.weight']  # [d_model, dim_feedforward]
                     linear2_bias = ffn_params['linear2.bias']  # [d_model]
                     
-                    # MoE层参数命名：decoder.layers.X.decoder_moe_layer.expert_w1
-                    expert_w1_key = f'decoder.layers.{layer_idx}.decoder_moe_layer.expert_w1'
-                    expert_b1_key = f'decoder.layers.{layer_idx}.decoder_moe_layer.expert_b1'
-                    expert_w2_key = f'decoder.layers.{layer_idx}.decoder_moe_layer.expert_w2'
-                    expert_b2_key = f'decoder.layers.{layer_idx}.decoder_moe_layer.expert_b2'
+                    # MoE层参数命名：decoder.decoder.layers.X.decoder_moe_layer.expert_w1
+                    # 尝试两种格式
+                    expert_w1_key = f'decoder.decoder.layers.{layer_idx}.decoder_moe_layer.expert_w1'
+                    expert_b1_key = f'decoder.decoder.layers.{layer_idx}.decoder_moe_layer.expert_b1'
+                    expert_w2_key = f'decoder.decoder.layers.{layer_idx}.decoder_moe_layer.expert_w2'
+                    expert_b2_key = f'decoder.decoder.layers.{layer_idx}.decoder_moe_layer.expert_b2'
+                    
+                    # 如果找不到，尝试另一种格式
+                    if expert_w1_key not in model_state_dict:
+                        expert_w1_key = f'decoder.layers.{layer_idx}.decoder_moe_layer.expert_w1'
+                        expert_b1_key = f'decoder.layers.{layer_idx}.decoder_moe_layer.expert_b1'
+                        expert_w2_key = f'decoder.layers.{layer_idx}.decoder_moe_layer.expert_w2'
+                        expert_b2_key = f'decoder.layers.{layer_idx}.decoder_moe_layer.expert_b2'
                     
                     # 检查这些键是否存在于模型中（在循环外检查，避免重复检查）
                     if expert_w1_key in model_state_dict:
@@ -919,6 +945,11 @@ class DSETTrainer:
                             model_b2.shape[1:] == linear2_bias.shape):
                             
                             # 标记该层的FFN权重成功克隆（用于从missing_keys中排除）
+                            # 需要同时标记两种可能的键名格式
+                            successfully_cloned_ffn_keys.add(f'decoder.decoder.layers.{layer_idx}.linear1.weight')
+                            successfully_cloned_ffn_keys.add(f'decoder.decoder.layers.{layer_idx}.linear1.bias')
+                            successfully_cloned_ffn_keys.add(f'decoder.decoder.layers.{layer_idx}.linear2.weight')
+                            successfully_cloned_ffn_keys.add(f'decoder.decoder.layers.{layer_idx}.linear2.bias')
                             successfully_cloned_ffn_keys.add(f'decoder.layers.{layer_idx}.linear1.weight')
                             successfully_cloned_ffn_keys.add(f'decoder.layers.{layer_idx}.linear1.bias')
                             successfully_cloned_ffn_keys.add(f'decoder.layers.{layer_idx}.linear2.weight')
@@ -926,15 +957,15 @@ class DSETTrainer:
                             
                             # 克隆到每个专家
                             for expert_idx in range(decoder_num_experts):
-                                # 复制权重并添加噪声（使用 .add_() 更高效且语义清晰）
+                                # 复制权重并添加噪声
                                 cloned_w1 = linear1_weight.clone()
-                                cloned_w1.add_(torch.randn_like(cloned_w1) * noise_scale)
+                                cloned_w1 += torch.randn_like(cloned_w1) * 0.01
                                 cloned_b1 = linear1_bias.clone()
-                                cloned_b1.add_(torch.randn_like(cloned_b1) * noise_scale)
+                                cloned_b1 += torch.randn_like(cloned_b1) * 0.01
                                 cloned_w2 = linear2_weight.clone()
-                                cloned_w2.add_(torch.randn_like(cloned_w2) * noise_scale)
+                                cloned_w2 += torch.randn_like(cloned_w2) * 0.01
                                 cloned_b2 = linear2_bias.clone()
-                                cloned_b2.add_(torch.randn_like(cloned_b2) * noise_scale)
+                                cloned_b2 += torch.randn_like(cloned_b2) * 0.01
                                 
                                 # 直接赋值（因为expert_w1是Parameter，需要按索引赋值）
                                 # 注意：这里我们需要在加载后手动赋值，因为state_dict不支持索引赋值
@@ -960,6 +991,8 @@ class DSETTrainer:
             
             # 第二步（续）：将Encoder FFN权重复制到MoE专家
             encoder_num_experts = model.encoder_moe_num_experts
+            if encoder_ffn_weights_to_clone:
+                self.logger.info(f"  - 找到 {len(encoder_ffn_weights_to_clone)} 个Encoder层的FFN权重，准备克隆到MoE")
             for layer_idx, ffn_params in encoder_ffn_weights_to_clone.items():
                 # 检查是否有完整的FFN参数
                 if 'linear1.weight' in ffn_params and 'linear1.bias' in ffn_params and \
@@ -970,11 +1003,19 @@ class DSETTrainer:
                     linear2_weight = ffn_params['linear2.weight']  # [d_model, dim_feedforward]
                     linear2_bias = ffn_params['linear2.bias']  # [d_model]
                     
-                    # MoE层参数命名：encoder.layers.X.moe_layer.expert_w1
-                    expert_w1_key = f'encoder.layers.{layer_idx}.moe_layer.expert_w1'
-                    expert_b1_key = f'encoder.layers.{layer_idx}.moe_layer.expert_b1'
-                    expert_w2_key = f'encoder.layers.{layer_idx}.moe_layer.expert_w2'
-                    expert_b2_key = f'encoder.layers.{layer_idx}.moe_layer.expert_b2'
+                    # MoE层参数命名：encoder.encoder.layers.X.moe_layer.expert_w1
+                    # 尝试两种格式
+                    expert_w1_key = f'encoder.encoder.layers.{layer_idx}.moe_layer.expert_w1'
+                    expert_b1_key = f'encoder.encoder.layers.{layer_idx}.moe_layer.expert_b1'
+                    expert_w2_key = f'encoder.encoder.layers.{layer_idx}.moe_layer.expert_w2'
+                    expert_b2_key = f'encoder.encoder.layers.{layer_idx}.moe_layer.expert_b2'
+                    
+                    # 如果找不到，尝试另一种格式
+                    if expert_w1_key not in model_state_dict:
+                        expert_w1_key = f'encoder.layers.{layer_idx}.moe_layer.expert_w1'
+                        expert_b1_key = f'encoder.layers.{layer_idx}.moe_layer.expert_b1'
+                        expert_w2_key = f'encoder.layers.{layer_idx}.moe_layer.expert_w2'
+                        expert_b2_key = f'encoder.layers.{layer_idx}.moe_layer.expert_b2'
                     
                     # 检查这些键是否存在于模型中（在循环外检查，避免重复检查）
                     if expert_w1_key in model_state_dict:
@@ -993,6 +1034,11 @@ class DSETTrainer:
                             model_b2.shape[1:] == linear2_bias.shape):
                             
                             # 标记该层的FFN权重成功克隆（用于从missing_keys中排除）
+                            # 需要同时标记两种可能的键名格式
+                            successfully_cloned_ffn_keys.add(f'encoder.encoder.layers.{layer_idx}.linear1.weight')
+                            successfully_cloned_ffn_keys.add(f'encoder.encoder.layers.{layer_idx}.linear1.bias')
+                            successfully_cloned_ffn_keys.add(f'encoder.encoder.layers.{layer_idx}.linear2.weight')
+                            successfully_cloned_ffn_keys.add(f'encoder.encoder.layers.{layer_idx}.linear2.bias')
                             successfully_cloned_ffn_keys.add(f'encoder.layers.{layer_idx}.linear1.weight')
                             successfully_cloned_ffn_keys.add(f'encoder.layers.{layer_idx}.linear1.bias')
                             successfully_cloned_ffn_keys.add(f'encoder.layers.{layer_idx}.linear2.weight')
@@ -1000,15 +1046,15 @@ class DSETTrainer:
                             
                             # 克隆到每个专家
                             for expert_idx in range(encoder_num_experts):
-                                # 复制权重并添加噪声（使用 .add_() 更高效且语义清晰）
+                                # 复制权重并添加噪声
                                 cloned_w1 = linear1_weight.clone()
-                                cloned_w1.add_(torch.randn_like(cloned_w1) * noise_scale)
+                                cloned_w1 += torch.randn_like(cloned_w1) * 0.01
                                 cloned_b1 = linear1_bias.clone()
-                                cloned_b1.add_(torch.randn_like(cloned_b1) * noise_scale)
+                                cloned_b1 += torch.randn_like(cloned_b1) * 0.01
                                 cloned_w2 = linear2_weight.clone()
-                                cloned_w2.add_(torch.randn_like(cloned_w2) * noise_scale)
+                                cloned_w2 += torch.randn_like(cloned_w2) * 0.01
                                 cloned_b2 = linear2_bias.clone()
-                                cloned_b2.add_(torch.randn_like(cloned_b2) * noise_scale)
+                                cloned_b2 += torch.randn_like(cloned_b2) * 0.01
                                 
                                 # 存储克隆参数
                                 if not hasattr(self, '_expert_clone_params'):
