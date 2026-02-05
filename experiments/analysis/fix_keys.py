@@ -4,34 +4,31 @@ fix_keys.py - The Surgeon
 This script creates a new checkpoint file with renamed keys to align with
 experiments/dset/train.py model naming.
 
-Key mappings (from inspect_keys output vs train.py / rtdetrv2_decoder.py):
-  - decoder: adaptive_expert_layer -> decoder_moe_layer
-  - encoder: moe_layer (unchanged, already correct)
+Key mappings (from missing_keys/unexpected_keys 分析):
+  1. decoder: adaptive_expert_layer -> decoder_moe_layer
+  2. encoder: token_pruners.0 -> shared_token_pruner (结构变更)
+  3. encoder: encoder.0.layers -> encoder.layers (移除多余的 .0)
 
 重要：必须同时 fix model_state_dict 和 ema_state_dict！
-generate_benchmark_table.py 评估时加载的是 EMA，若只 fix model 不 fix EMA，
-会导致 MoE 等层权重未加载，精度异常偏低。
 """
 
 import torch
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List, Tuple
 import os
 
 
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
-# Path to the old checkpoint file (e.g. experiments/dset/logs/S5only/dset6_r18_xxx/best_model.pth)
 OLD_CKPT_PATH = "/root/autodl-tmp/DSET/experiments/dset/logs/S5only/dset6_r18_20251229_195505/best_model.pth"
-
-# Path where the new checkpoint will be saved
 NEW_CKPT_PATH = "/root/autodl-tmp/DSET/experiments/dset/logs/S5only/dset6_r18_20251229_195505/best_model_fixed.pth"
 
-# Old substring to replace (checkpoint uses adaptive_expert_layer in decoder)
-OLD_SUBSTRING = "adaptive_expert_layer"
-
-# New substring to replace with (train.py expects decoder_moe_layer)
-NEW_SUBSTRING = "decoder_moe_layer"
+# 多组替换：(old_substring, new_substring)，按顺序应用
+KEY_MAPPINGS: List[Tuple[str, str]] = [
+    ("adaptive_expert_layer", "decoder_moe_layer"),
+    ("encoder.token_pruners.0.", "encoder.shared_token_pruner."),
+    ("encoder.encoder.0.layers.", "encoder.encoder.layers."),
+]
 
 
 # ============================================================================
@@ -73,28 +70,39 @@ def rename_keys_in_state_dict(state_dict: Dict[str, Any],
     return new_state_dict, renamed_count
 
 
+def apply_all_mappings(state_dict: Dict[str, Any], 
+                       mappings: List[Tuple[str, str]]) -> tuple[Dict[str, Any], int]:
+    """依次应用多组 key 替换"""
+    result = state_dict
+    total = 0
+    for old_s, new_s in mappings:
+        result, count = rename_keys_in_state_dict(result, old_s, new_s)
+        total += count
+    return result, total
+
+
 # ============================================================================
 # MAIN FUNCTION
 # ============================================================================
-def fix_checkpoint_keys(old_path: str, 
-                       new_path: str, 
-                       old_substring: str = "adaptive_expert_layer",
-                       new_substring: str = "decoder_moe_layer") -> None:
+def fix_checkpoint_keys(old_path: str, new_path: str,
+                       mappings: Optional[List[Tuple[str, str]]] = None) -> None:
     """
     Load a checkpoint, rename keys, and save the fixed version.
     
     Args:
         old_path: Path to the old checkpoint file
         new_path: Path where the new checkpoint will be saved
-        old_substring: Substring to find in keys (default: "adaptive_expert_layer")
-        new_substring: Substring to replace with (default: "decoder_moe_layer")
+        mappings: List of (old_substring, new_substring). Default: KEY_MAPPINGS
     """
+    mappings = mappings or KEY_MAPPINGS
     print("=" * 80)
     print("CHECKPOINT KEY FIXER")
     print("=" * 80)
     print(f"Old checkpoint: {old_path}")
     print(f"New checkpoint: {new_path}")
-    print(f"Replacing '{old_substring}' with '{new_substring}'")
+    print("Mappings:")
+    for old_s, new_s in mappings:
+        print(f"  '{old_s}' -> '{new_s}'")
     print("-" * 80)
     
     try:
@@ -126,9 +134,7 @@ def fix_checkpoint_keys(old_path: str,
             
             if model_sdict is not None:
                 print(f"\nProcessing '{model_key_used}'...")
-                new_model_dict, count = rename_keys_in_state_dict(
-                    model_sdict, old_substring, new_substring
-                )
+                new_model_dict, count = apply_all_mappings(model_sdict, mappings)
                 new_checkpoint[model_key_used] = new_model_dict
                 total_renamed += count
                 print(f"  Renamed {count} keys in model weights.")
@@ -142,13 +148,11 @@ def fix_checkpoint_keys(old_path: str,
                 ema_key = 'ema_state_dict' if 'ema_state_dict' in checkpoint else 'ema'
                 if isinstance(ema_sdict, dict) and 'module' in ema_sdict:
                     module_dict = ema_sdict['module']
-                    # 兼容 OrderedDict 等（isinstance(x, dict) 对 OrderedDict 为 True）
                     if hasattr(module_dict, 'items'):
-                        ema_old_count = sum(1 for k in module_dict if old_substring in k)
+                        ema_old_count = sum(1 for k in module_dict 
+                                            if any(old_s in k for old_s, _ in mappings))
                         print(f"  EMA module 中发现 {ema_old_count} 个需替换的键")
-                        new_module_dict, count = rename_keys_in_state_dict(
-                            module_dict, old_substring, new_substring
-                        )
+                        new_module_dict, count = apply_all_mappings(module_dict, mappings)
                         new_ema = {**ema_sdict, 'module': new_module_dict}
                         total_renamed += count
                         print(f"  Renamed {count} keys in EMA module weights.")
@@ -156,9 +160,7 @@ def fix_checkpoint_keys(old_path: str,
                         print("  WARNING: EMA module 不是 dict 类型，跳过")
                         new_ema = ema_sdict
                 else:
-                    new_ema, count = rename_keys_in_state_dict(
-                        ema_sdict, old_substring, new_substring
-                    )
+                    new_ema, count = apply_all_mappings(ema_sdict, mappings)
                     total_renamed += count
                     print(f"  Renamed {count} keys in EMA weights.")
                 new_checkpoint[ema_key] = new_ema
@@ -169,12 +171,9 @@ def fix_checkpoint_keys(old_path: str,
                     new_checkpoint[key] = checkpoint[key]
         
         else:
-            # Treat as flat state_dict
             print("Detected flat state_dict structure.")
             print("\nProcessing state_dict...")
-            new_checkpoint, total_renamed = rename_keys_in_state_dict(
-                checkpoint, old_substring, new_substring
-            )
+            new_checkpoint, total_renamed = apply_all_mappings(checkpoint, mappings)
             print(f"  Renamed {total_renamed} keys.")
         
         # Summary
@@ -185,7 +184,7 @@ def fix_checkpoint_keys(old_path: str,
         
         if total_renamed == 0:
             print("\nWARNING: No keys were renamed!")
-            print(f"Make sure '{old_substring}' exists in the checkpoint keys.")
+            print("Make sure checkpoint contains keys matching the mappings.")
             response = input("\nDo you still want to save the checkpoint? (yes/no): ")
             if response.lower() != 'yes':
                 print("Aborted. No file saved.")
@@ -208,30 +207,34 @@ def fix_checkpoint_keys(old_path: str,
             verify_checkpoint = torch.load(new_path, map_location='cpu')
         if isinstance(verify_checkpoint, dict):
             all_ok = True
+            old_substrings = [m[0] for m in mappings]
+            def has_old_keys(keys):
+                return [(x, old_s) for x in keys for old_s in old_substrings if old_s in x]
             # 1. 验证 model_state_dict
             for k in ['model_state_dict', 'model', 'state_dict']:
                 if k in verify_checkpoint:
                     verify_keys = list(verify_checkpoint[k].keys())
-                    old_in_model = [x for x in verify_keys if old_substring in x]
-                    if old_in_model:
-                        print(f"WARNING: model 中仍有 {len(old_in_model)} 个 '{old_substring}'")
+                    bad = has_old_keys(verify_keys)
+                    if bad:
+                        print(f"WARNING: model 中仍有 {len(bad)} 个旧键")
+                        for x, old_s in bad[:3]:
+                            print(f"    - {x} (含 '{old_s}')")
                         all_ok = False
                     else:
-                        print(f"✓ model: 无 '{old_substring}'")
+                        print(f"✓ model: 无旧键")
                     break
-            # 2. 验证 EMA（benchmark 实际加载的是这个！）
+            # 2. 验证 EMA
             ema_verify = verify_checkpoint.get('ema_state_dict') or verify_checkpoint.get('ema')
             if ema_verify and isinstance(ema_verify, dict) and 'module' in ema_verify:
                 ema_module_keys = list(ema_verify['module'].keys())
-                old_in_ema = [x for x in ema_module_keys if old_substring in x]
-                new_in_ema = [x for x in ema_module_keys if new_substring in x]
-                if old_in_ema:
-                    print(f"WARNING: EMA module 中仍有 {len(old_in_ema)} 个 '{old_substring}'（benchmark 加载 EMA，会导致精度异常！）")
-                    for k in old_in_ema[:3]:
-                        print(f"    - {k}")
+                bad = has_old_keys(ema_module_keys)
+                if bad:
+                    print(f"WARNING: EMA module 中仍有 {len(bad)} 个旧键（会导致精度异常！）")
+                    for x, old_s in bad[:3]:
+                        print(f"    - {x} (含 '{old_s}')")
                     all_ok = False
                 else:
-                    print(f"✓ EMA module: 无 '{old_substring}'，有 {len(new_in_ema)} 个 '{new_substring}'")
+                    print(f"✓ EMA module: 无旧键")
             elif ema_verify:
                 print("  (EMA 结构无 module，跳过 EMA 验证)")
             if all_ok:
@@ -247,4 +250,4 @@ def fix_checkpoint_keys(old_path: str,
 
 
 if __name__ == "__main__":
-    fix_checkpoint_keys(OLD_CKPT_PATH, NEW_CKPT_PATH, OLD_SUBSTRING, NEW_SUBSTRING)
+    fix_checkpoint_keys(OLD_CKPT_PATH, NEW_CKPT_PATH)
