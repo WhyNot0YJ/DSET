@@ -8,8 +8,9 @@ Key mappings (from inspect_keys output vs train.py / rtdetrv2_decoder.py):
   - decoder: adaptive_expert_layer -> decoder_moe_layer
   - encoder: moe_layer (unchanged, already correct)
 
-Handles both regular model weights and EMA weights.
-Supports model_state_dict, ema_state_dict (DSET checkpoint format).
+重要：必须同时 fix model_state_dict 和 ema_state_dict！
+generate_benchmark_table.py 评估时加载的是 EMA，若只 fix model 不 fix EMA，
+会导致 MoE 等层权重未加载，精度异常偏低。
 """
 
 import torch
@@ -133,14 +134,18 @@ def fix_checkpoint_keys(old_path: str,
                 print(f"  Renamed {count} keys in model weights.")
             
             # Process EMA weights if present (DSET uses ema_state_dict)
+            # 重要：benchmark 评估时加载的是 EMA，必须同时 fix EMA 才能得到正确精度
             ema_sdict = checkpoint.get('ema_state_dict') or checkpoint.get('ema')
             if ema_sdict is not None:
                 print("\nProcessing EMA weights...")
-                # EMA may have nested structure: {'module': state_dict, 'updates': N}
+                # EMA 结构: {'module': state_dict, 'updates': N}，实际参数在 module 内
                 ema_key = 'ema_state_dict' if 'ema_state_dict' in checkpoint else 'ema'
                 if isinstance(ema_sdict, dict) and 'module' in ema_sdict:
                     module_dict = ema_sdict['module']
-                    if isinstance(module_dict, dict):
+                    # 兼容 OrderedDict 等（isinstance(x, dict) 对 OrderedDict 为 True）
+                    if hasattr(module_dict, 'items'):
+                        ema_old_count = sum(1 for k in module_dict if old_substring in k)
+                        print(f"  EMA module 中发现 {ema_old_count} 个需替换的键")
                         new_module_dict, count = rename_keys_in_state_dict(
                             module_dict, old_substring, new_substring
                         )
@@ -148,6 +153,7 @@ def fix_checkpoint_keys(old_path: str,
                         total_renamed += count
                         print(f"  Renamed {count} keys in EMA module weights.")
                     else:
+                        print("  WARNING: EMA module 不是 dict 类型，跳过")
                         new_ema = ema_sdict
                 else:
                     new_ema, count = rename_keys_in_state_dict(
@@ -194,37 +200,42 @@ def fix_checkpoint_keys(old_path: str,
         torch.save(new_checkpoint, new_path)
         print("✓ Checkpoint saved successfully!")
         
-        # Verify the save
+        # Verify the save（同时验证 model 和 EMA，因为 benchmark 加载的是 EMA）
         print("\nVerifying saved checkpoint...")
         try:
             verify_checkpoint = torch.load(new_path, map_location='cpu', weights_only=False)
         except TypeError:
             verify_checkpoint = torch.load(new_path, map_location='cpu')
         if isinstance(verify_checkpoint, dict):
+            all_ok = True
+            # 1. 验证 model_state_dict
             for k in ['model_state_dict', 'model', 'state_dict']:
                 if k in verify_checkpoint:
                     verify_keys = list(verify_checkpoint[k].keys())
+                    old_in_model = [x for x in verify_keys if old_substring in x]
+                    if old_in_model:
+                        print(f"WARNING: model 中仍有 {len(old_in_model)} 个 '{old_substring}'")
+                        all_ok = False
+                    else:
+                        print(f"✓ model: 无 '{old_substring}'")
                     break
-            else:
-                verify_keys = list(verify_checkpoint.keys())
-            
-            # Check if any old substring still exists
-            old_keys_found = [k for k in verify_keys if old_substring in k]
-            if old_keys_found:
-                print(f"WARNING: Found {len(old_keys_found)} keys still containing '{old_substring}':")
-                for k in old_keys_found[:5]:  # Show first 5
-                    print(f"  - {k}")
-                if len(old_keys_found) > 5:
-                    print(f"  ... and {len(old_keys_found) - 5} more")
-            else:
-                print(f"✓ Verification passed: No keys contain '{old_substring}'")
-            
-            # Check if new substring exists
-            new_keys_found = [k for k in verify_keys if new_substring in k]
-            if new_keys_found:
-                print(f"✓ Found {len(new_keys_found)} keys containing '{new_substring}'")
-            else:
-                print(f"WARNING: No keys found containing '{new_substring}'")
+            # 2. 验证 EMA（benchmark 实际加载的是这个！）
+            ema_verify = verify_checkpoint.get('ema_state_dict') or verify_checkpoint.get('ema')
+            if ema_verify and isinstance(ema_verify, dict) and 'module' in ema_verify:
+                ema_module_keys = list(ema_verify['module'].keys())
+                old_in_ema = [x for x in ema_module_keys if old_substring in x]
+                new_in_ema = [x for x in ema_module_keys if new_substring in x]
+                if old_in_ema:
+                    print(f"WARNING: EMA module 中仍有 {len(old_in_ema)} 个 '{old_substring}'（benchmark 加载 EMA，会导致精度异常！）")
+                    for k in old_in_ema[:3]:
+                        print(f"    - {k}")
+                    all_ok = False
+                else:
+                    print(f"✓ EMA module: 无 '{old_substring}'，有 {len(new_in_ema)} 个 '{new_substring}'")
+            elif ema_verify:
+                print("  (EMA 结构无 module，跳过 EMA 验证)")
+            if all_ok:
+                print("✓ 验证通过: model 和 EMA 均已正确替换")
         
     except FileNotFoundError:
         print(f"ERROR: Checkpoint file not found at: {old_path}")
