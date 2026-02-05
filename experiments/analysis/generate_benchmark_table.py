@@ -348,7 +348,20 @@ def load_dset_model(config_path: str, checkpoint_path: str, device: str = "cuda"
     
     checkpoint = _load_checkpoint(checkpoint_path)
     state_dict = _extract_state_dict(checkpoint)
-    model.load_state_dict(state_dict, strict=False)
+    load_result = model.load_state_dict(state_dict, strict=False)
+    if load_result.missing_keys or load_result.unexpected_keys:
+        if load_result.missing_keys:
+            print(f"  ⚠ missing_keys: {len(load_result.missing_keys)} 个")
+            for k in load_result.missing_keys[:5]:
+                print(f"      - {k}")
+            if len(load_result.missing_keys) > 5:
+                print(f"      ... 等 {len(load_result.missing_keys)} 个")
+        if load_result.unexpected_keys:
+            print(f"  ⚠ unexpected_keys: {len(load_result.unexpected_keys)} 个")
+            for k in load_result.unexpected_keys[:5]:
+                print(f"      - {k}")
+            if len(load_result.unexpected_keys) > 5:
+                print(f"      ... 等 {len(load_result.unexpected_keys)} 个")
     model.eval()
     
     # 启用 token pruning - 强制设置 epoch=100 以跨越 warmup 阶段
