@@ -78,15 +78,20 @@ def _extract_state_dict(checkpoint: dict) -> dict:
 
 def count_moe_layer(m, x, y):
     """
-    MoELayer Custom Op
-    Logic: Router (Dense) + TopK Experts (Sparse)
-    Ref: Audit Report Section 3.1
+    MoELayer Custom Op (Physics-Level Accurate)
     
-    Formula:
-    - Router: B * N * C * E
-    - Experts: B * N * TopK * (2 * C * D_ffn)
+    MoE 层无法通过物理 Shape 自动降算力（因为所有专家都在计算图中），
+    需要手动计算激活路径的 FLOPs。
+    
+    Formula: G_moe = G_router + (top_k × G_single_expert)
+    - Router: 完整的 Dense FLOPs (所有专家都需要路由计算)
+    - Experts: 只计算激活的 top_k 个专家的 FLOPs
+    
+    Args:
+        m: MoE Layer module
+        x: Input tuple, x[0] is [B, N, C] tensor (N is already pruned if inside Encoder)
+        y: Output (not used)
     """
-    # x[0]: [B, N, C] - N is already pruned if inside Encoder
     inp = x[0]
     if not torch.is_tensor(inp):
         return
@@ -97,12 +102,13 @@ def count_moe_layer(m, x, y):
     top_k = getattr(m, 'top_k', 1)
     dim_feedforward = getattr(m, 'dim_feedforward', 2048)
     
-    # 1. Router: Linear(C, E) -> B*N*C*E
+    # 1. Router: Linear(C, E) -> B*N*C*E (完整的 Dense FLOPs)
     router_flops = B * N * C * num_experts
     
-    # 2. Experts: TopK * MLP(C->D->C)
-    # MLP = 2 * C * D_ffn (approx: Linear1 + Linear2)
-    expert_flops = B * N * top_k * (2 * C * dim_feedforward)
+    # 2. Experts: 只计算激活的 top_k 个专家的 FLOPs
+    # 单个 Expert 的 MLP: Linear1(C->D) + Linear2(D->C) = 2 * C * D_ffn
+    single_expert_flops = B * N * (2 * C * dim_feedforward)
+    expert_flops = single_expert_flops * top_k
     
     total = router_flops + expert_flops
     m.total_ops += torch.DoubleTensor([int(total)])
@@ -194,11 +200,18 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 12
     
     使用 thop custom_ops 实现物理级精确计算：
     - MoE Layer: Router (Dense) + TopK Experts (Sparse)
+      Formula: G_moe = G_router + (top_k × G_single_expert)
     - MSDeformableAttention: 包含所有 Linear Projections 和 Core Sampling
     - Standard Attention: 4NC^2 + 2N^2C
     
-    关键：Token Pruning 是物理剪枝（改变 Tensor Shape），
-    所以全量 Profile 得到的结果就是理论 FLOPs。
+    核心逻辑：
+    1. Token Pruning 是物理剪枝（通过 TokenPruner 对 Tensor 进行物理切片），
+       直接改变了后续算子的输入 Shape，thop 的 profile 会自动捕获计算量的下降。
+       只需确保在运行 profile 前，通过 model.set_epoch(999) 激活剪枝逻辑即可。
+    2. MoE 层无法通过物理 Shape 自动降算力（因为所有专家都在计算图中），
+       需要在自定义算子中手动计算：Router 完整计算，Experts 只计算 top_k 个。
+    3. 直接让 profile 在启用剪枝的模型上运行一遍，结果即为真实的 Theory GFLOPs。
+       不需要手动缩放或拆分模块。
     """
     # ========================== 1. 参数量计算 ==========================
     if is_yolo and hasattr(model, 'model'):
@@ -268,211 +281,37 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 12
             print(f"  ✓ Base FLOPs (Dense, r=1.0): {base_flops_g:.2f} G")
             
             # --- B. Measure Theory FLOPs (With Pruning) ---
-            r = 1.0  # 默认值，用于非 DSET 模型
+            # Token Pruning 是物理剪枝（通过 TokenPruner 对 Tensor 进行物理切片），
+            # 直接改变了后续算子的输入 Shape，thop 的 profile 会自动捕获计算量的下降。
+            # 只需确保在运行 profile 前，通过 model.set_epoch(999) 激活剪枝逻辑即可。
+            
             if model_type == "dset":
-                # Re-Enable Pruning (if config says so)
-                dset_cfg = config.get('model', {}).get('dset', {})
-                r = dset_cfg.get('token_keep_ratio', 1.0)
-                if isinstance(r, dict):
-                    r = max(r.values())
-                
-                # Force Enable Pruning with correct ratio
-                # Set epoch to a large value to ensure pruning is fully enabled
+                # Enable Pruning: Set epoch to a large value to ensure pruning is fully enabled
                 for m in model_eval.modules():
                     if hasattr(m, 'set_epoch'):
                         m.set_epoch(999)  # Large epoch to ensure warmup is done
                     if hasattr(m, 'pruning_enabled'):
                         m.pruning_enabled = True
-                    if hasattr(m, 'keep_ratio'):
-                        m.keep_ratio = r
                     if hasattr(m, 'current_epoch'):
                         m.current_epoch = 999
                 
-                # =========================================================
-                # 模块拆分：Backbone + Encoder + Head + Decoder
-                # =========================================================
-                
-                # 1. Backbone (CNN) - 独立测量
-                bb_macs = 0
-                if hasattr(model_eval, 'backbone'):
-                    bb_macs, _ = profile(model_eval.backbone, inputs=(dummy_img,), verbose=False)
-                
-                # =========================================================
-                # 2. 编码器 (Transformer Encoder) - 深度拆解 CNN vs Trans
-                # =========================================================
-                # 需先跑一遍 backbone 拿到特征图
-                with torch.no_grad():
-                    feats = model_eval.backbone(dummy_img)
-                
-                # HybridEncoder = Proj(CNN) + Transformer(Attn) + Fusion(CNN)
-                # 我们想知道真正的 Transformer 部分是多少
-                
-                # A. 测量 Encoder 整体 (HybridEncoder)
-                enc_in = feats if isinstance(feats, (list, tuple)) else [feats]
-                enc_total_macs, _ = profile(model_eval.encoder, inputs=(enc_in,), custom_ops=custom_ops_map, verbose=False)
-                
-                # B. 通过极限稀疏分离 CNN 和 Transformer
-                # 设置 r=0.001 (极限剪枝)，此时 Transformer ≈ 0，剩下的就是纯 CNN (Fixed) 开销
-                enc_cnn_fixed_macs = 0
-                enc_trans_dynamic_macs = 0
-                
-                if hasattr(model_eval.encoder, 'token_pruners') and model_eval.encoder.token_pruners:
-                    # 1. 保存当前状态
-                    current_r = getattr(model_eval.encoder.token_pruners[0], 'keep_ratio', r)
-                    
-                    # 2. 设置为极限稀疏 (r -> 0.001)
-                    for m in model_eval.encoder.token_pruners:
-                        m.keep_ratio = 0.001
-                        if hasattr(m, 'min_tokens'):
-                            m.min_tokens = 1  # 允许只留 1 个 token
-                    
-                    enc_cnn_fixed_macs, _ = profile(model_eval.encoder, inputs=(enc_in,), custom_ops=custom_ops_map, verbose=False)
-                    
-                    # 3. 恢复状态
-                    for m in model_eval.encoder.token_pruners:
-                        m.keep_ratio = current_r
-                        if hasattr(m, 'min_tokens'):
-                            m.min_tokens = 1  # 保持一致
-                    
-                    # 4. 计算 Transformer 的动态部分
-                    enc_trans_dynamic_macs = max(0, enc_total_macs - enc_cnn_fixed_macs)
-                else:
-                    # 如果没有 token_pruners，无法分离，使用总量
-                    enc_cnn_fixed_macs = 0
-                    enc_trans_dynamic_macs = enc_total_macs
-                
-                # 重新赋值给展示变量
-                enc_macs = enc_total_macs  # 总量
-                
-                # =========================================================
-                # 3. 预测头 (Prediction Heads) - 独立测量 (增强版)
-                # =========================================================
-                
-                # 自动查找真实的 num_queries
-                num_queries = 100  # 默认值
-                
-                if hasattr(model_eval, 'decoder') and hasattr(model_eval.decoder, 'num_queries'):
-                    num_queries = model_eval.decoder.num_queries
-                elif hasattr(model_eval, 'num_queries'):
-                    num_queries = model_eval.num_queries
-                elif hasattr(model_eval, 'transformer') and hasattr(model_eval.transformer, 'num_queries'):
-                    num_queries = model_eval.transformer.num_queries
-                
-                # 从配置文件获取
-                if config:
-                    cfg_queries = config.get('model', {}).get('num_queries', None)
-                    if cfg_queries:
-                        num_queries = cfg_queries
-                
-                hidden_dim = getattr(model_eval, 'hidden_dim', 256)
-                
-                # 构造符合实际 Query 数量的输入: [1, num_queries, 256]
-                dummy_head_in = torch.randn(1, num_queries, hidden_dim).to(device)
-                
-                head_macs = 0
-                found_heads = False  # 标记是否成功找到并计算了 Heads
-                
-                # 策略 A: RT-DETR/DSET 命名 (dec_score_head, dec_bbox_head)
-                # 注意：在 DSET/RT-DETR 中，heads 位于 decoder 子模块中
-                decoder_obj = getattr(model_eval, 'decoder', None)
-                if decoder_obj and hasattr(decoder_obj, 'dec_score_head') and hasattr(decoder_obj, 'dec_bbox_head'):
-                    for layer in decoder_obj.dec_score_head:
-                        h_macs, _ = profile(layer, inputs=(dummy_head_in,), verbose=False)
-                        head_macs += h_macs
-                    
-                    for layer in decoder_obj.dec_bbox_head:
-                        h_macs, _ = profile(layer, inputs=(dummy_head_in,), verbose=False)
-                        head_macs += h_macs
-                    
-                    # Encoder Auxiliary Head (也在 decoder 中)
-                    if hasattr(decoder_obj, 'enc_score_head'):
-                        h_macs, _ = profile(decoder_obj.enc_score_head, inputs=(dummy_head_in,), verbose=False)
-                        head_macs += h_macs
-                    if hasattr(decoder_obj, 'enc_bbox_head'):
-                        h_macs, _ = profile(decoder_obj.enc_bbox_head, inputs=(dummy_head_in,), verbose=False)
-                        head_macs += h_macs
-                    
-                    found_heads = True
-                # 兼容：如果 heads 直接在 model_eval 上（某些变体）
-                elif hasattr(model_eval, 'dec_score_head') and hasattr(model_eval, 'dec_bbox_head'):
-                    for layer in model_eval.dec_score_head:
-                        h_macs, _ = profile(layer, inputs=(dummy_head_in,), verbose=False)
-                        head_macs += h_macs
-                    
-                    for layer in model_eval.dec_bbox_head:
-                        h_macs, _ = profile(layer, inputs=(dummy_head_in,), verbose=False)
-                        head_macs += h_macs
-                    
-                    if hasattr(model_eval, 'enc_score_head'):
-                        h_macs, _ = profile(model_eval.enc_score_head, inputs=(dummy_head_in,), verbose=False)
-                        head_macs += h_macs
-                    if hasattr(model_eval, 'enc_bbox_head'):
-                        h_macs, _ = profile(model_eval.enc_bbox_head, inputs=(dummy_head_in,), verbose=False)
-                        head_macs += h_macs
-                    
-                    found_heads = True
-                
-                # 策略 B: DETR/Deformable-DETR 命名 (class_embed, bbox_embed)
-                if not found_heads:
-                    if hasattr(model_eval, 'class_embed'):
-                        if isinstance(model_eval.class_embed, nn.ModuleList):
-                            for layer in model_eval.class_embed:
-                                h_macs, _ = profile(layer, inputs=(dummy_head_in,), verbose=False)
-                                head_macs += h_macs
-                        else:
-                            num_dec_layers = getattr(model_eval.decoder, 'num_layers', 6)
-                            h_macs, _ = profile(model_eval.class_embed, inputs=(dummy_head_in,), verbose=False)
-                            head_macs += h_macs * num_dec_layers
-                    
-                    if hasattr(model_eval, 'bbox_embed'):
-                        if isinstance(model_eval.bbox_embed, nn.ModuleList):
-                            for layer in model_eval.bbox_embed:
-                                h_macs, _ = profile(layer, inputs=(dummy_head_in,), verbose=False)
-                                head_macs += h_macs
-                        else:
-                            num_dec_layers = getattr(model_eval.decoder, 'num_layers', 6)
-                            h_macs, _ = profile(model_eval.bbox_embed, inputs=(dummy_head_in,), verbose=False)
-                            head_macs += h_macs * num_dec_layers
-                
-                # Debug 模式：兜底查找
-                if head_macs == 0 and debug:
-                    print("  ⚠ 警告: 未找到预测头 (Heads)，尝试遍历查找 Linear...")
-                    for name, module in model_eval.named_modules():
-                        if ('score_head' in name or 'bbox_head' in name or 'class_embed' in name or 'bbox_embed' in name) and isinstance(module, nn.Linear):
-                            h_macs, _ = profile(module, inputs=(dummy_head_in,), verbose=False)
-                            head_macs += h_macs
-                            print(f"    + Found Head: {name}, FLOPs={h_macs/1e9:.4f}G")
-                
-                # 4. 解码器 (Transformer Decoder Only) - 倒推法
-                theory_macs, _ = profile(model_eval, inputs=(dummy_img,), custom_ops=custom_ops_map, verbose=False)
-                dec_trans_macs = max(0, theory_macs - bb_macs - enc_macs - head_macs)
-                
-                theory_flops_g = theory_macs / 1e9
-                
-                print(f"    ----------------------------------------------------------------")
-                print(f"    模块 (Module)        FLOPs (G)    占比      状态")
-                print(f"    ----------------------------------------------------------------")
-                print(f"    Backbone (CNN)      {bb_macs/1e9:6.2f} G    {bb_macs/theory_macs:6.1%}    🔒 死值")
-                print(f"    Heads (MLP)         {head_macs/1e9:6.2f} G    {head_macs/theory_macs:6.1%}    🔒 死值")
-                print(f"    ----------------------------------------------------------------")
-                print(f"    [Encoder 内部拆解]")
-                print(f"      ├─ CNN (FPN/Proj) {enc_cnn_fixed_macs/1e9:6.2f} G    {(enc_cnn_fixed_macs)/theory_macs:6.1%}    🔒 死值 (占比巨大!)")
-                print(f"      └─ Trans (AIFI)   {enc_trans_dynamic_macs/1e9:6.2f} G    {enc_trans_dynamic_macs/theory_macs:6.1%}    🔥 核心优化区 (r={r:.2f})")
-                print(f"    ----------------------------------------------------------------")
-                print(f"    Decoder (Trans)     {dec_trans_macs/1e9:6.2f} G    {dec_trans_macs/theory_macs:6.1%}    ✨ 关联优化区")
-                print(f"    ----------------------------------------------------------------")
-                print(f"    Total Theory        {theory_flops_g:6.2f} G")
-                
-                # 计算优化收益
-                if r > 0 and enc_trans_dynamic_macs > 0:
-                    base_trans_est = enc_trans_dynamic_macs / r
-                    saving = (base_trans_est - enc_trans_dynamic_macs) / 1e9
-                    trans_ratio = enc_trans_dynamic_macs / enc_macs if enc_macs > 0 else 0
-                    print(f"    💡 [真相] 你的优化在 Transformer 层实现了约 {1-r:.0%} 的计算量削减！")
-                    print(f"       但由于 Transformer 仅占 Encoder 的 {trans_ratio:.1%}，")
-                    print(f"       所以整体 Encoder 的 FLOPs 下降看起来不明显。")
+                # Get token_keep_ratio for display purposes only
+                dset_cfg = config.get('model', {}).get('dset', {})
+                r = dset_cfg.get('token_keep_ratio', 1.0)
+                if isinstance(r, dict):
+                    r = max(r.values())
             else:
-                theory_flops_g = base_flops_g
+                r = 1.0  # 默认值，用于非 DSET 模型
+            
+            # Direct profile on pruned model - this is the Theory FLOPs
+            # No manual scaling needed: physical pruning changes tensor shapes automatically
+            theory_macs, _ = profile(model_eval, inputs=(dummy_img,), custom_ops=custom_ops_map, verbose=False)
+            theory_flops_g = theory_macs / 1e9
+            
+            print(f"  ✓ Theory FLOPs (With Pruning, r={r:.2f}): {theory_flops_g:.2f} G")
+            if model_type == "dset" and r < 1.0:
+                reduction = (1 - theory_flops_g / base_flops_g) * 100 if base_flops_g > 0 else 0
+                print(f"  💡 FLOPs Reduction: {reduction:.1f}% (automatically captured by physical pruning)")
                 
             del model_eval
             if torch.cuda.is_available():

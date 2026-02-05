@@ -3,7 +3,7 @@ set -euo pipefail
 
 IMAGE="rtdetr:latest"           # 你用 docker build -t rtdetr:latest . 构建的镜像
 NAME="rtdetr_dev"               # 容器名
-WORKDIR="$HOME/proj/task-selective-det"   # 项目目录（含 external/RT-DETR）
+WORKDIR="$HOME/proj/DSET"   # 项目目录（含 external/RT-DETR）
 PORT_JUPYTER=8899               # 避免和 yolov8 冲突，给个不同端口
 PORT_TENSORBOARD=6007
 SHM_SIZE="4g"
