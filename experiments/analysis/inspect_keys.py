@@ -153,11 +153,17 @@ def inspect_checkpoint_keys(
             print(f"  [共 {len(model_keys)} 个键]")
         
         if ema_state_dict is not None:
-            ema_keys = _state_dict_keys(ema_state_dict)
+            # EMA 结构: {'module': state_dict, 'updates': N}，实际参数在 module 内
+            ema_module = None
+            if isinstance(ema_state_dict, dict) and 'module' in ema_state_dict:
+                ema_module = ema_state_dict['module']
+            ema_keys = _state_dict_keys(ema_module) if ema_module is not None else _state_dict_keys(ema_state_dict)
             if print_mode == "filter":
                 kw = keyword.lower()
                 ema_keys = [k for k in ema_keys if kw in k.lower()]
             print("\n=== EMA WEIGHTS ===")
+            if ema_module is not None:
+                print("  (来自 ema_state_dict['module'])")
             if not ema_keys:
                 print("  (none)" if print_mode == "filter" else "  (empty)")
             else:
