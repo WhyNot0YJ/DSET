@@ -1,12 +1,22 @@
 {
   "dset6-r18-0.3": {
     "type":"dset",
+    "config": "/root/autodl-tmp/DSET/experiments/dset/logs/dset6_r18_20260126_173526/config.yaml",
+    "checkpoint": "/root/autodl-tmp/DSET/experiments/dset/logs/dset6_r18_20260126_173526/best_model_fixed.pth"
+  },
+  "dset6-r18-0.3-S5": {
+    "type":"dset",
     "config": "/root/autodl-tmp/DSET/experiments/dset/logs/S5only/dset6_r18_20251229_195505/config.yaml",
     "checkpoint": "/root/autodl-tmp/DSET/experiments/dset/logs/S5only/dset6_r18_20251229_195505/best_model_fixed.pth"
   },
   "dset6-r34-0.3": {
     "type":"dset",
-    "config": "/root/autodl-tmp/DSET/experiments/dset/logs/dset6_r34/config.yaml",
-    "checkpoint": "/root/autodl-tmp/DSET/experiments/dset/logs/dset6_r34/best_model_fixed.pth"
+    "config": "/root/autodl-tmp/DSET/experiments/dset/logs/dset6_r34_20260127_054333/config.yaml",
+    "checkpoint": "/root/autodl-tmp/DSET/experiments/dset/dset6_r34_20260127_054333/best_model_fixed.pth"
+  },
+  "dset6-r34-0.3-S5": {
+    "type":"dset",
+    "config": "/root/autodl-tmp/DSET/experiments/dset/logs/S5only/dset6_r34/config.yaml",
+    "checkpoint": "/root/autodl-tmp/DSET/experiments/dset/S5only/logs/dset6_r34/best_model_fixed.pth"
   }
 }

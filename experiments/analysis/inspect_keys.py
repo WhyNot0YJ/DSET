@@ -107,7 +107,11 @@ def inspect_checkpoint_keys(
     print("-" * 80)
     
     try:
-        checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+        # PyTorch 2.6+ 默认 weights_only=True，checkpoint 含 numpy 等对象需设为 False
+        try:
+            checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+        except TypeError:
+            checkpoint = torch.load(checkpoint_path, map_location='cpu')
         
         if isinstance(checkpoint, dict):
             if 'model' in checkpoint:
