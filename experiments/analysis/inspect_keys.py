@@ -23,8 +23,8 @@ PRINT_MODE = "all"  # "all" | "filter"
 # Keyword to search for when PRINT_MODE == "filter"
 SEARCH_KEYWORD = "moe"
 
-# True = 按层级树形展示 (backbone.xxx 会合并成树); False = 平铺逐行打印完整键名
-SHOW_AS_TREE = True
+# True = 按层级树形展示; False = 仅打印键名列表（更简洁）
+SHOW_AS_TREE = False
 
 
 # ============================================================================
