@@ -107,7 +107,7 @@ def inspect_checkpoint_keys(
     print("-" * 80)
     
     try:
-        checkpoint = torch.load(checkpoint_path, map_location='cpu')
+        checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
         
         if isinstance(checkpoint, dict):
             if 'model' in checkpoint:
