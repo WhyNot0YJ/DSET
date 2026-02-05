@@ -1,9 +1,15 @@
 """
 fix_keys.py - The Surgeon
 ==========================
-This script creates a new checkpoint file with renamed keys.
-Specifically, it replaces 'adaptive_moe_layer' with 'encoder_moe_layer' in all keys.
+This script creates a new checkpoint file with renamed keys to align with
+experiments/dset/train.py model naming.
+
+Key mappings (from inspect_keys output vs train.py / rtdetrv2_decoder.py):
+  - decoder: adaptive_expert_layer -> decoder_moe_layer
+  - encoder: moe_layer (unchanged, already correct)
+
 Handles both regular model weights and EMA weights.
+Supports model_state_dict, ema_state_dict (DSET checkpoint format).
 """
 
 import torch
@@ -14,17 +20,17 @@ import os
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
-# Path to the old checkpoint file
-OLD_CKPT_PATH = "path/to/old/checkpoint.pth"
+# Path to the old checkpoint file (e.g. experiments/dset/logs/S5only/dset6_r18_xxx/best_model.pth)
+OLD_CKPT_PATH = "/root/autodl-tmp/DSET/experiments/dset/logs/S5only/dset6_r18_20251229_195505/best_model.pth"
 
 # Path where the new checkpoint will be saved
-NEW_CKPT_PATH = "path/to/new/checkpoint_fixed.pth"
+NEW_CKPT_PATH = "/root/autodl-tmp/DSET/experiments/dset/logs/S5only/dset6_r18_20251229_195505/best_model_fixed.pth"
 
-# Old substring to replace
-OLD_SUBSTRING = "adaptive_moe_layer"
+# Old substring to replace (checkpoint uses adaptive_expert_layer in decoder)
+OLD_SUBSTRING = "adaptive_expert_layer"
 
-# New substring to replace with
-NEW_SUBSTRING = "encoder_moe_layer"
+# New substring to replace with (train.py expects decoder_moe_layer)
+NEW_SUBSTRING = "decoder_moe_layer"
 
 
 # ============================================================================
@@ -71,16 +77,16 @@ def rename_keys_in_state_dict(state_dict: Dict[str, Any],
 # ============================================================================
 def fix_checkpoint_keys(old_path: str, 
                        new_path: str, 
-                       old_substring: str = "adaptive_moe_layer",
-                       new_substring: str = "encoder_moe_layer") -> None:
+                       old_substring: str = "adaptive_expert_layer",
+                       new_substring: str = "decoder_moe_layer") -> None:
     """
     Load a checkpoint, rename keys, and save the fixed version.
     
     Args:
         old_path: Path to the old checkpoint file
         new_path: Path where the new checkpoint will be saved
-        old_substring: Substring to find in keys (default: "adaptive_moe_layer")
-        new_substring: Substring to replace with (default: "encoder_moe_layer")
+        old_substring: Substring to find in keys (default: "adaptive_expert_layer")
+        new_substring: Substring to replace with (default: "decoder_moe_layer")
     """
     print("=" * 80)
     print("CHECKPOINT KEY FIXER")
@@ -93,50 +99,67 @@ def fix_checkpoint_keys(old_path: str,
     try:
         # Load the old checkpoint on CPU
         print("\nLoading checkpoint...")
-        checkpoint = torch.load(old_path, map_location='cpu')
+        try:
+            checkpoint = torch.load(old_path, map_location='cpu', weights_only=False)
+        except TypeError:
+            checkpoint = torch.load(old_path, map_location='cpu')
         
-        # Determine checkpoint structure
-        is_wrapped = isinstance(checkpoint, dict) and ('model' in checkpoint or 'state_dict' in checkpoint)
+        # Determine checkpoint structure (DSET uses model_state_dict, ema_state_dict)
+        model_keys = ['model', 'state_dict', 'model_state_dict']
+        has_model = isinstance(checkpoint, dict) and any(k in checkpoint for k in model_keys)
         
         total_renamed = 0
         
-        if is_wrapped:
+        if has_model:
             print("Detected wrapped checkpoint structure.")
             new_checkpoint = {}
             
-            # Process model state_dict
-            if 'model' in checkpoint:
-                print("\nProcessing 'model' state_dict...")
+            # Process model state_dict (try model_state_dict first for DSET format)
+            model_sdict = None
+            model_key_used = None
+            for k in ['model_state_dict', 'model', 'state_dict']:
+                if k in checkpoint:
+                    model_sdict = checkpoint[k]
+                    model_key_used = k
+                    break
+            
+            if model_sdict is not None:
+                print(f"\nProcessing '{model_key_used}'...")
                 new_model_dict, count = rename_keys_in_state_dict(
-                    checkpoint['model'], old_substring, new_substring
+                    model_sdict, old_substring, new_substring
                 )
-                new_checkpoint['model'] = new_model_dict
+                new_checkpoint[model_key_used] = new_model_dict
                 total_renamed += count
                 print(f"  Renamed {count} keys in model weights.")
             
-            elif 'state_dict' in checkpoint:
-                print("\nProcessing 'state_dict'...")
-                new_state_dict, count = rename_keys_in_state_dict(
-                    checkpoint['state_dict'], old_substring, new_substring
-                )
-                new_checkpoint['state_dict'] = new_state_dict
-                total_renamed += count
-                print(f"  Renamed {count} keys in state_dict.")
+            # Process EMA weights if present (DSET uses ema_state_dict)
+            ema_sdict = checkpoint.get('ema_state_dict') or checkpoint.get('ema')
+            if ema_sdict is not None:
+                print("\nProcessing EMA weights...")
+                # EMA may have nested structure: {'module': state_dict, 'updates': N}
+                ema_key = 'ema_state_dict' if 'ema_state_dict' in checkpoint else 'ema'
+                if isinstance(ema_sdict, dict) and 'module' in ema_sdict:
+                    module_dict = ema_sdict['module']
+                    if isinstance(module_dict, dict):
+                        new_module_dict, count = rename_keys_in_state_dict(
+                            module_dict, old_substring, new_substring
+                        )
+                        new_ema = {**ema_sdict, 'module': new_module_dict}
+                        total_renamed += count
+                        print(f"  Renamed {count} keys in EMA module weights.")
+                    else:
+                        new_ema = ema_sdict
+                else:
+                    new_ema, count = rename_keys_in_state_dict(
+                        ema_sdict, old_substring, new_substring
+                    )
+                    total_renamed += count
+                    print(f"  Renamed {count} keys in EMA weights.")
+                new_checkpoint[ema_key] = new_ema
             
-            # Process EMA weights if present
-            if 'ema' in checkpoint:
-                print("\nProcessing 'ema' state_dict...")
-                new_ema_dict, count = rename_keys_in_state_dict(
-                    checkpoint['ema'], old_substring, new_substring
-                )
-                new_checkpoint['ema'] = new_ema_dict
-                total_renamed += count
-                print(f"  Renamed {count} keys in EMA weights.")
-            
-            # Copy other keys as-is (e.g., 'optimizer', 'epoch', 'lr_scheduler', etc.)
+            # Copy other keys as-is (e.g., 'optimizer_state_dict', 'epoch', etc.)
             for key in checkpoint.keys():
-                if key not in ['model', 'state_dict', 'ema']:
-                    print(f"\nPreserving '{key}' key as-is...")
+                if key not in model_keys + ['ema', 'ema_state_dict']:
                     new_checkpoint[key] = checkpoint[key]
         
         else:
@@ -173,12 +196,15 @@ def fix_checkpoint_keys(old_path: str,
         
         # Verify the save
         print("\nVerifying saved checkpoint...")
-        verify_checkpoint = torch.load(new_path, map_location='cpu')
+        try:
+            verify_checkpoint = torch.load(new_path, map_location='cpu', weights_only=False)
+        except TypeError:
+            verify_checkpoint = torch.load(new_path, map_location='cpu')
         if isinstance(verify_checkpoint, dict):
-            if 'model' in verify_checkpoint:
-                verify_keys = list(verify_checkpoint['model'].keys())
-            elif 'state_dict' in verify_checkpoint:
-                verify_keys = list(verify_checkpoint['state_dict'].keys())
+            for k in ['model_state_dict', 'model', 'state_dict']:
+                if k in verify_checkpoint:
+                    verify_keys = list(verify_checkpoint[k].keys())
+                    break
             else:
                 verify_keys = list(verify_checkpoint.keys())
             
