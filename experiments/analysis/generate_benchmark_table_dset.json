@@ -4,6 +4,11 @@
     "config": "/root/autodl-tmp/DSET/experiments/dset/logs/dset6_r18_20260126_173526/config.yaml",
     "checkpoint": "/root/autodl-tmp/DSET/experiments/dset/logs/dset6_r18_20260126_173526/best_model.pth"
   },
+  "dset6-r18-0.3-noMOEinitialization": {
+    "type":"dset",
+    "config": "/root/autodl-tmp/DSET/experiments/dset/logs/dset6_r18_20260122_121035/config.yaml",
+    "checkpoint": "/root/autodl-tmp/DSET/experiments/dset/logs/dset6_r18_20260122_121035/best_model.pth"
+  },
   "dset6-r18-0.3-S5": {
     "type":"dset",
     "config": "/root/autodl-tmp/DSET/experiments/dset/logs/S5only/dset6_r18_20251229_195505/config.yaml",
