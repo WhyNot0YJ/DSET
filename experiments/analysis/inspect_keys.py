@@ -15,7 +15,7 @@ from typing import Dict, Any, Optional, List
 # CONFIGURATION
 # ============================================================================
 # Path to the checkpoint file you want to inspect.
-CHECKPOINT_PATH = "/root/autodl-tmp/DSET/experiments/dset/logs/S5only/dset6_r18_20251229_195505/best_model.pth"  # put your .pth here or use path to logs/.../best_model.pth
+CHECKPOINT_PATH = "/root/autodl-tmp/DSET/experiments/dset/logs/dset6_r18_20260126_173526/best_model.pth"  # put your .pth here or use path to logs/.../best_model.pth
 
 # Print mode: "all" = 打印所有层级的参数; "filter" = 仅打印包含关键词的键
 PRINT_MODE = "all"  # "all" | "filter"
