@@ -1,0 +1,6 @@
+[0;34m[INFO][0m 使用键名选择配置
+[0;34m[INFO][0m 开始实验: dset/configs/dset6_r18_ratio0.3.yaml
+[0;31m[ERROR][0m ✗ dset6_r18_ratio0.3 | 失败 (退出码: 134, 耗时: 12:08:07)
+[0;34m[INFO][0m 开始实验: dset/configs/dset6_r34_ratio0.3.yaml
+[0;32m[SUCCESS][0m ✓ 实验完成: dset6_r34_ratio0.3 (耗时: 15:00:50)
+[0;34m[INFO][0m 所有实验完成! 总耗时: 27:08:57
