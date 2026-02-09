@@ -76,112 +76,46 @@ def _extract_state_dict(checkpoint: dict) -> dict:
 # Custom Ops Definitions (Based on Audit Report)
 # ==============================================================================
 
-# 全局变量用于跟踪 MoE 层调用（用于调试）
-_moe_layer_call_count = {}
-_moe_layer_debug = False
-_moe_dense_mode = False  # True = 计算所有专家的 FLOPs (Dense), False = 只计算激活专家的 FLOPs (Sparse)
+_moe_dense_mode = False
 
 def count_moe_layer(m, x, y):
+    """MoELayer Custom Op: 计算 MoE 层的 FLOPs
+    
+    Dense 模式: 计算所有专家的 FLOPs (用于 Base FLOPs)
+    Sparse 模式: 只计算激活专家的 FLOPs (用于 Theory FLOPs)
     """
-    MoELayer Custom Op (Physics-Level Accurate)
-    
-    MoE 层无法通过物理 Shape 自动降算力（因为所有专家都在计算图中），
-    需要手动计算激活路径的 FLOPs。
-    
-    Formula: G_moe = G_router + (top_k / expert_num × G_all_experts)
-    - Router: 完整的 Dense FLOPs (所有专家都需要路由计算)
-    - Experts: 计算所有专家的 FLOPs，然后乘以激活比例 (top_k / expert_num)
-    
-    Args:
-        m: MoE Layer module
-        x: Input tuple, x[0] is [B, N, C] tensor (N is already pruned if inside Encoder)
-        y: Output (not used)
-    """
-    global _moe_layer_call_count, _moe_layer_debug
+    global _moe_dense_mode
     
     inp = x[0]
     if not torch.is_tensor(inp):
         return
     
     B, N, C = inp.shape
-    
     num_experts = getattr(m, 'num_experts', 1)
     top_k = getattr(m, 'top_k', 1)
     dim_feedforward = getattr(m, 'dim_feedforward', 2048)
     
-    # 1. Router: Linear(C, E) -> B*N*C*E (完整的 Dense FLOPs)
     router_flops = B * N * C * num_experts
-    
-    # 2. Experts: 计算所有专家的 FLOPs，然后乘以激活比例 (top_k / expert_num)
-    # 单个 Expert 的 MLP: Linear1(C->D) + Linear2(D->C) = 2 * C * D_ffn
     single_expert_flops = B * N * (2 * C * dim_feedforward)
     all_experts_flops = single_expert_flops * num_experts
     
-    # 根据模式选择：Dense 模式计算所有专家，Sparse 模式只计算激活的专家
-    global _moe_dense_mode
     if _moe_dense_mode:
-        # Dense 模式：计算所有专家的 FLOPs（用于 Base FLOPs）
         expert_flops = all_experts_flops
     else:
-        # Sparse 模式：只计算激活的专家（用于 Theory FLOPs）
-        activation_ratio = top_k / max(num_experts, 1)  # 避免除零
+        activation_ratio = top_k / max(num_experts, 1)
         expert_flops = all_experts_flops * activation_ratio
     
     total = router_flops + expert_flops
-    
-    # 计算如果使用所有专家的 FLOPs（用于对比）
-    dense_flops = router_flops + all_experts_flops
-    
-    # 调试输出
-    if _moe_layer_debug:
-        # 获取模块的完整名称（通过 id 跟踪）
-        module_id = id(m)
-        if module_id not in _moe_layer_call_count:
-            _moe_layer_call_count[module_id] = {
-                'count': 0,
-                'name': str(type(m).__name__),
-                'total_flops': 0,
-                'dense_flops': 0
-            }
-        _moe_layer_call_count[module_id]['count'] += 1
-        _moe_layer_call_count[module_id]['total_flops'] += total
-        _moe_layer_call_count[module_id]['dense_flops'] += dense_flops
-        call_num = _moe_layer_call_count[module_id]['count']
-        
-        total_gflops = total / 1e9
-        dense_gflops = dense_flops / 1e9
-        reduction = (1 - total / dense_flops) * 100 if dense_flops > 0 else 0
-        
-        print(f"      🔹 MoE Layer 调用 #{call_num}: "
-              f"shape=[B={B}, N={N}, C={C}], "
-              f"experts={num_experts}, top_k={top_k}, "
-              f"本次 FLOPs={total_gflops:.4f}G "
-              f"(Dense={dense_gflops:.4f}G, 减少={reduction:.1f}%)")
-    
     m.total_ops += torch.DoubleTensor([int(total)])
 
 
 def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 1280), 
                    is_yolo: bool = False, config: Dict = None, model_type: str = "dset",
                    debug: bool = False) -> Tuple[float, float, float, float]:
-    """
-    计算模型的参数量和理论 FLOPs (Physics-Level Accurate)
+    """计算模型的参数量和理论 FLOPs
     
-    使用 thop custom_ops 实现物理级精确计算：
-    - MoE Layer: Router (Dense) + TopK Experts (Sparse)
-      Formula: G_moe = G_router + (top_k / expert_num × G_all_experts)
-      Note: MoE 层无法通过物理 Shape 自动降算力（因为所有专家都在计算图中），
-            需要在自定义算子中手动计算激活路径的 FLOPs。
-    
-    核心逻辑：
-    1. Token Pruning 是物理剪枝（通过 TokenPruner 对 Tensor 进行物理切片），
-       直接改变了后续算子的输入 Shape，thop 的 profile 会自动捕获计算量的下降。
-       因此 MSDeformableAttention 和 MultiheadAttention 等算子不需要自定义函数，
-       只需确保在运行 profile 前，通过 model.set_epoch(999) 激活剪枝逻辑即可。
-    2. MoE 层无法通过物理 Shape 自动降算力（因为所有专家都在计算图中），
-       需要在自定义算子中手动计算：Router 完整计算，Experts 计算所有专家后乘以激活比例 (top_k / expert_num)。
-    3. 直接让 profile 在启用剪枝的模型上运行一遍，结果即为真实的 Theory GFLOPs。
-       不需要手动缩放或拆分模块。
+    Base FLOPs: Token pruning 已应用 + MoE Dense (所有专家)
+    Theory FLOPs: Token pruning 已应用 + MoE Sparse (只计算激活专家)
     """
     # ========================== 1. 参数量计算 ==========================
     if is_yolo and hasattr(model, 'model'):
@@ -223,183 +157,48 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 12
             device = next(model_eval.parameters()).device
             dummy_img = torch.randn(input_size).to(device)
             
-            # --- Auto-Register Custom Ops ---
-            # 注意：只有 MoE Layer 需要自定义函数，因为 MoE 的稀疏性无法通过物理 shape 自动捕获
-            # （所有专家都在计算图中，需要手动计算激活路径的 FLOPs）
-            # MSDeformableAttention 和 MultiheadAttention 不需要自定义函数：
-            # Token Pruning 是物理剪枝，会直接改变输入 tensor 的 shape，
-            # thop 的 profile 会自动捕获计算量的下降。
             custom_ops_map = {}
-            
-            # Debug: 打印所有模块名称和类型，特别关注 MoE 相关模块
-            if debug:
-                print("\n  🔍 扫描所有模块...")
-                moe_candidates = []
-                all_modules_info = []
-                for name, module in model_eval.named_modules():
-                    module_type = module.__class__.__name__
-                    all_modules_info.append((name, module_type))
-                    # 查找可能包含 MoE 的模块
-                    if "MoE" in module_type or "moe" in name.lower() or "expert" in name.lower():
-                        moe_candidates.append((name, module_type))
-                
-                print(f"  📋 总共找到 {len(all_modules_info)} 个模块")
-                if moe_candidates:
-                    print(f"  🎯 找到 {len(moe_candidates)} 个可能的 MoE 相关模块:")
-                    for name, module_type in moe_candidates:
-                        print(f"      - {name}: {module_type}")
-                else:
-                    print("  ⚠ 未找到 MoE 相关模块")
-                
-                # 打印所有模块类型（去重）
-                unique_types = {}
-                for name, module_type in all_modules_info:
-                    if module_type not in unique_types:
-                        unique_types[module_type] = []
-                    unique_types[module_type].append(name)
-                
-                print(f"\n  📊 所有模块类型统计（共 {len(unique_types)} 种）:")
-                for module_type in sorted(unique_types.keys()):
-                    count = len(unique_types[module_type])
-                    if count <= 3:
-                        examples = ", ".join(unique_types[module_type])
-                        print(f"      {module_type}: {count} 个 (例如: {examples})")
-                    else:
-                        examples = ", ".join(unique_types[module_type][:3]) + "..."
-                        print(f"      {module_type}: {count} 个 (例如: {examples})")
-            
-            # 注册 MoE Layer 自定义函数
-            global _moe_layer_call_count, _moe_layer_debug
-            _moe_layer_debug = debug
-            
             for m in model_eval.modules():
-                name = m.__class__.__name__
-                if "MoELayer" in name:
+                if "MoELayer" in m.__class__.__name__:
                     custom_ops_map[m.__class__] = count_moe_layer
-            
-            if debug:
-                print(f"\n  ✅ Custom Ops Registered: {list(k.__name__ for k in custom_ops_map.keys())}")
-                if not custom_ops_map:
-                    print("  ⚠ 警告: 未注册任何自定义操作，可能 MoE 层的类名不是 'MoELayer'")
-                    print("  💡 提示: 请检查上面的模块类型列表，找到正确的 MoE 层类名")
 
-            # --- A. Measure Base FLOPs (Dense, r=1.0) ---
-            # Base FLOPs: Token pruning 已应用（N=1380），但 MoE 层使用所有专家（Dense）
             global _moe_dense_mode
-            _moe_dense_mode = True  # 设置为 Dense 模式，计算所有专家的 FLOPs
-            
-            if debug:
-                _moe_layer_call_count.clear()
-                print(f"\n  📊 计算 Base FLOPs (Token Pruned + MoE Dense)...")
-                if custom_ops_map:
-                    print(f"      MoE 层调用统计 (Dense 模式 - 所有专家):")
-            
+            _moe_dense_mode = True
             base_macs, _ = profile(model_eval, inputs=(dummy_img,), custom_ops=custom_ops_map, verbose=False)
             base_flops_g = base_macs / 1e9
             print(f"  ✓ Base FLOPs (Dense, r=1.0): {base_flops_g:.2f} G")
             
-            # --- B. Measure Theory FLOPs (With Pruning) ---
-            # Token Pruning 是物理剪枝（通过 TokenPruner 对 Tensor 进行物理切片），
-            # 直接改变了后续算子的输入 Shape，thop 的 profile 会自动捕获计算量的下降。
-            # 只需确保在运行 profile 前，通过 model.set_epoch(999) 激活剪枝逻辑即可。
-            
             if model_type == "dset":
-                # Enable Pruning: 直接访问并设置 TokenLevelPruner 的状态
-                # Token pruning 现在不依赖 set_epoch，而是依赖 keep_ratio 和 prune_in_eval
-                # 需要确保 prune_in_eval=True（创建时已设置）且 keep_ratio < 1.0
-                
-                # 直接访问 shared_token_pruner 并确保其状态正确
                 if hasattr(model_eval, 'encoder') and hasattr(model_eval.encoder, 'shared_token_pruner'):
                     pruner = model_eval.encoder.shared_token_pruner
                     if pruner is not None:
-                        # 确保 prune_in_eval 为 True（eval 模式下也能剪枝）
                         if hasattr(pruner, 'prune_in_eval'):
                             pruner.prune_in_eval = True
-                        # 确保 pruning_enabled 为 True（如果存在该属性）
                         if hasattr(pruner, 'pruning_enabled'):
                             pruner.pruning_enabled = True
                 
-                # 也设置其他可能的属性（保持兼容性）
                 for m in model_eval.modules():
                     if hasattr(m, 'set_epoch'):
-                        m.set_epoch(999)  # 虽然现在是 no-op，但保持调用以兼容
+                        m.set_epoch(999)
                     if hasattr(m, 'pruning_enabled'):
                         m.pruning_enabled = True
                     if hasattr(m, 'current_epoch'):
                         m.current_epoch = 999
                 
-                # Get token_keep_ratio for display purposes only
                 dset_cfg = config.get('model', {}).get('dset', {})
                 r = dset_cfg.get('token_keep_ratio', 1.0)
                 if isinstance(r, dict):
                     r = max(r.values())
-                
-                # Debug: 验证 token pruning 是否激活
-                if debug:
-                    print(f"\n  🔍 验证 Token Pruning 状态:")
-                    if hasattr(model_eval, 'encoder') and hasattr(model_eval.encoder, 'shared_token_pruner'):
-                        pruner = model_eval.encoder.shared_token_pruner
-                        if pruner is not None:
-                            keep_ratio = getattr(pruner, 'keep_ratio', 1.0)
-                            prune_in_eval = getattr(pruner, 'prune_in_eval', True)
-                            pruning_enabled = getattr(pruner, 'pruning_enabled', None)
-                            
-                            print(f"      - keep_ratio: {keep_ratio}")
-                            print(f"      - prune_in_eval: {prune_in_eval}")
-                            print(f"      - pruning_enabled: {pruning_enabled}")
-                            print(f"      - model.training: {model_eval.training}")
-                            
-                            # 计算 should_prune（根据 TokenLevelPruner 的逻辑）
-                            should_prune = (keep_ratio < 1.0) and (model_eval.training or prune_in_eval)
-                            print(f"      - should_prune: {should_prune} "
-                                  f"(keep_ratio < 1.0: {keep_ratio < 1.0}, "
-                                  f"training: {model_eval.training}, "
-                                  f"prune_in_eval: {prune_in_eval})")
             else:
-                r = 1.0  # 默认值，用于非 DSET 模型
+                r = 1.0
             
-            # Direct profile on pruned model - this is the Theory FLOPs
-            # No manual scaling needed: physical pruning changes tensor shapes automatically
-            # 重要：在 profile 之前先运行一次前向传播，确保 token pruning 被激活
             if model_type == "dset":
                 with torch.no_grad():
-                    _ = model_eval(dummy_img)  # 预热，激活 token pruning
+                    _ = model_eval(dummy_img)
             
-            # Theory FLOPs: Token pruning 已应用（N=1380），MoE 层使用稀疏模式（只计算激活的专家）
-            _moe_dense_mode = False  # 设置为 Sparse 模式，只计算激活专家的 FLOPs
-            
-            if debug:
-                _moe_layer_call_count.clear()
-                print(f"\n  📊 计算 Theory FLOPs (Token Pruned + MoE Sparse, r={r:.2f})...")
-                if custom_ops_map:
-                    print(f"      MoE 层调用统计 (Sparse 模式 - 只计算激活专家):")
-            
+            _moe_dense_mode = False
             theory_macs, _ = profile(model_eval, inputs=(dummy_img,), custom_ops=custom_ops_map, verbose=False)
             theory_flops_g = theory_macs / 1e9
-            
-            if debug and _moe_layer_call_count:
-                print(f"\n      📈 MoE 层调用总结:")
-                total_moe_flops = 0
-                total_moe_dense_flops = 0
-                for module_id, info in _moe_layer_call_count.items():
-                    total_moe_flops += info['total_flops']
-                    total_moe_dense_flops += info['dense_flops']
-                    total_gflops = info['total_flops'] / 1e9
-                    dense_gflops = info['dense_flops'] / 1e9
-                    reduction = (1 - info['total_flops'] / info['dense_flops']) * 100 if info['dense_flops'] > 0 else 0
-                    print(f"        - {info['name']} (id={module_id}): "
-                          f"调用 {info['count']} 次, "
-                          f"累计 FLOPs={total_gflops:.4f}G "
-                          f"(Dense={dense_gflops:.4f}G, 减少={reduction:.1f}%)")
-                
-                if len(_moe_layer_call_count) > 1:
-                    total_moe_gflops = total_moe_flops / 1e9
-                    total_moe_dense_gflops = total_moe_dense_flops / 1e9
-                    total_reduction = (1 - total_moe_flops / total_moe_dense_flops) * 100 if total_moe_dense_flops > 0 else 0
-                    print(f"        📊 所有 MoE 层总计: "
-                          f"FLOPs={total_moe_gflops:.4f}G "
-                          f"(Dense={total_moe_dense_gflops:.4f}G, 总减少={total_reduction:.1f}%)")
-            
             print(f"  ✓ Theory FLOPs (With Pruning, r={r:.2f}): {theory_flops_g:.2f} G")
             if model_type == "dset" and r < 1.0:
                 reduction = (1 - theory_flops_g / base_flops_g) * 100 if base_flops_g > 0 else 0
