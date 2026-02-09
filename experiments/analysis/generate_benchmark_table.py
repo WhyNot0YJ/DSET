@@ -76,6 +76,10 @@ def _extract_state_dict(checkpoint: dict) -> dict:
 # Custom Ops Definitions (Based on Audit Report)
 # ==============================================================================
 
+# 全局变量用于跟踪 MoE 层调用（用于调试）
+_moe_layer_call_count = {}
+_moe_layer_debug = False
+
 def count_moe_layer(m, x, y):
     """
     MoELayer Custom Op (Physics-Level Accurate)
@@ -92,6 +96,8 @@ def count_moe_layer(m, x, y):
         x: Input tuple, x[0] is [B, N, C] tensor (N is already pruned if inside Encoder)
         y: Output (not used)
     """
+    global _moe_layer_call_count, _moe_layer_debug
+    
     inp = x[0]
     if not torch.is_tensor(inp):
         return
@@ -115,6 +121,36 @@ def count_moe_layer(m, x, y):
     expert_flops = all_experts_flops * activation_ratio
     
     total = router_flops + expert_flops
+    
+    # 计算如果使用所有专家的 FLOPs（用于对比）
+    dense_flops = router_flops + all_experts_flops
+    
+    # 调试输出
+    if _moe_layer_debug:
+        # 获取模块的完整名称（通过 id 跟踪）
+        module_id = id(m)
+        if module_id not in _moe_layer_call_count:
+            _moe_layer_call_count[module_id] = {
+                'count': 0,
+                'name': str(type(m).__name__),
+                'total_flops': 0,
+                'dense_flops': 0
+            }
+        _moe_layer_call_count[module_id]['count'] += 1
+        _moe_layer_call_count[module_id]['total_flops'] += total
+        _moe_layer_call_count[module_id]['dense_flops'] += dense_flops
+        call_num = _moe_layer_call_count[module_id]['count']
+        
+        total_gflops = total / 1e9
+        dense_gflops = dense_flops / 1e9
+        reduction = (1 - total / dense_flops) * 100 if dense_flops > 0 else 0
+        
+        print(f"      🔹 MoE Layer 调用 #{call_num}: "
+              f"shape=[B={B}, N={N}, C={C}], "
+              f"experts={num_experts}, top_k={top_k}, "
+              f"本次 FLOPs={total_gflops:.4f}G "
+              f"(Dense={dense_gflops:.4f}G, 减少={reduction:.1f}%)")
+    
     m.total_ops += torch.DoubleTensor([int(total)])
 
 
@@ -226,6 +262,9 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 12
                         print(f"      {module_type}: {count} 个 (例如: {examples})")
             
             # 注册 MoE Layer 自定义函数
+            global _moe_layer_call_count, _moe_layer_debug
+            _moe_layer_debug = debug
+            
             for m in model_eval.modules():
                 name = m.__class__.__name__
                 if "MoELayer" in name:
@@ -245,6 +284,12 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 12
                 if hasattr(m, 'set_epoch'):
                     # Set epoch to 0 to disable pruning
                     m.set_epoch(0)
+            
+            if debug:
+                _moe_layer_call_count.clear()
+                print(f"\n  📊 计算 Base FLOPs (Dense, r=1.0)...")
+                if custom_ops_map:
+                    print(f"      MoE 层调用统计:")
             
             base_macs, _ = profile(model_eval, inputs=(dummy_img,), custom_ops=custom_ops_map, verbose=False)
             base_flops_g = base_macs / 1e9
@@ -275,8 +320,37 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 12
             
             # Direct profile on pruned model - this is the Theory FLOPs
             # No manual scaling needed: physical pruning changes tensor shapes automatically
+            if debug:
+                _moe_layer_call_count.clear()
+                print(f"\n  📊 计算 Theory FLOPs (With Pruning, r={r:.2f})...")
+                if custom_ops_map:
+                    print(f"      MoE 层调用统计:")
+            
             theory_macs, _ = profile(model_eval, inputs=(dummy_img,), custom_ops=custom_ops_map, verbose=False)
             theory_flops_g = theory_macs / 1e9
+            
+            if debug and _moe_layer_call_count:
+                print(f"\n      📈 MoE 层调用总结:")
+                total_moe_flops = 0
+                total_moe_dense_flops = 0
+                for module_id, info in _moe_layer_call_count.items():
+                    total_moe_flops += info['total_flops']
+                    total_moe_dense_flops += info['dense_flops']
+                    total_gflops = info['total_flops'] / 1e9
+                    dense_gflops = info['dense_flops'] / 1e9
+                    reduction = (1 - info['total_flops'] / info['dense_flops']) * 100 if info['dense_flops'] > 0 else 0
+                    print(f"        - {info['name']} (id={module_id}): "
+                          f"调用 {info['count']} 次, "
+                          f"累计 FLOPs={total_gflops:.4f}G "
+                          f"(Dense={dense_gflops:.4f}G, 减少={reduction:.1f}%)")
+                
+                if len(_moe_layer_call_count) > 1:
+                    total_moe_gflops = total_moe_flops / 1e9
+                    total_moe_dense_gflops = total_moe_dense_flops / 1e9
+                    total_reduction = (1 - total_moe_flops / total_moe_dense_flops) * 100 if total_moe_dense_flops > 0 else 0
+                    print(f"        📊 所有 MoE 层总计: "
+                          f"FLOPs={total_moe_gflops:.4f}G "
+                          f"(Dense={total_moe_dense_gflops:.4f}G, 总减少={total_reduction:.1f}%)")
             
             print(f"  ✓ Theory FLOPs (With Pruning, r={r:.2f}): {theory_flops_g:.2f} G")
             if model_type == "dset" and r < 1.0:
