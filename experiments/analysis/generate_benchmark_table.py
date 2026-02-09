@@ -79,6 +79,7 @@ def _extract_state_dict(checkpoint: dict) -> dict:
 # 全局变量用于跟踪 MoE 层调用（用于调试）
 _moe_layer_call_count = {}
 _moe_layer_debug = False
+_moe_dense_mode = False  # True = 计算所有专家的 FLOPs (Dense), False = 只计算激活专家的 FLOPs (Sparse)
 
 def count_moe_layer(m, x, y):
     """
@@ -116,9 +117,15 @@ def count_moe_layer(m, x, y):
     single_expert_flops = B * N * (2 * C * dim_feedforward)
     all_experts_flops = single_expert_flops * num_experts
     
-    # 应用激活比例：实际只激活了 top_k / expert_num 比例的专家
-    activation_ratio = top_k / max(num_experts, 1)  # 避免除零
-    expert_flops = all_experts_flops * activation_ratio
+    # 根据模式选择：Dense 模式计算所有专家，Sparse 模式只计算激活的专家
+    global _moe_dense_mode
+    if _moe_dense_mode:
+        # Dense 模式：计算所有专家的 FLOPs（用于 Base FLOPs）
+        expert_flops = all_experts_flops
+    else:
+        # Sparse 模式：只计算激活的专家（用于 Theory FLOPs）
+        activation_ratio = top_k / max(num_experts, 1)  # 避免除零
+        expert_flops = all_experts_flops * activation_ratio
     
     total = router_flops + expert_flops
     
@@ -277,19 +284,15 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 12
                     print("  💡 提示: 请检查上面的模块类型列表，找到正确的 MoE 层类名")
 
             # --- A. Measure Base FLOPs (Dense, r=1.0) ---
-            # Disable Pruning for Base calculation
-            for m in model_eval.modules():
-                if hasattr(m, 'pruning_enabled'):
-                    m.pruning_enabled = False
-                if hasattr(m, 'set_epoch'):
-                    # Set epoch to 0 to disable pruning
-                    m.set_epoch(0)
+            # Base FLOPs: Token pruning 已应用（N=1380），但 MoE 层使用所有专家（Dense）
+            global _moe_dense_mode
+            _moe_dense_mode = True  # 设置为 Dense 模式，计算所有专家的 FLOPs
             
             if debug:
                 _moe_layer_call_count.clear()
-                print(f"\n  📊 计算 Base FLOPs (Dense, r=1.0)...")
+                print(f"\n  📊 计算 Base FLOPs (Token Pruned + MoE Dense)...")
                 if custom_ops_map:
-                    print(f"      MoE 层调用统计:")
+                    print(f"      MoE 层调用统计 (Dense 模式 - 所有专家):")
             
             base_macs, _ = profile(model_eval, inputs=(dummy_img,), custom_ops=custom_ops_map, verbose=False)
             base_flops_g = base_macs / 1e9
@@ -362,11 +365,14 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 12
                 with torch.no_grad():
                     _ = model_eval(dummy_img)  # 预热，激活 token pruning
             
+            # Theory FLOPs: Token pruning 已应用（N=1380），MoE 层使用稀疏模式（只计算激活的专家）
+            _moe_dense_mode = False  # 设置为 Sparse 模式，只计算激活专家的 FLOPs
+            
             if debug:
                 _moe_layer_call_count.clear()
-                print(f"\n  📊 计算 Theory FLOPs (With Pruning, r={r:.2f})...")
+                print(f"\n  📊 计算 Theory FLOPs (Token Pruned + MoE Sparse, r={r:.2f})...")
                 if custom_ops_map:
-                    print(f"      MoE 层调用统计:")
+                    print(f"      MoE 层调用统计 (Sparse 模式 - 只计算激活专家):")
             
             theory_macs, _ = profile(model_eval, inputs=(dummy_img,), custom_ops=custom_ops_map, verbose=False)
             theory_flops_g = theory_macs / 1e9
