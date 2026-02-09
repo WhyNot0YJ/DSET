@@ -2,12 +2,12 @@
   "rt-detr-r18": {
     "type":"rtdetr",
     "config": "/root/autodl-tmp/DSET/experiments/rt-detr/configs/rtdetr_r18.yaml",
-    "checkpoint": "/root/autodl-tmp/DSET/experiments/rt-detr/logs/base_config/rtdetr_r18_20251204_150404/best_model.pth"
+    "checkpoint": "/root/autodl-tmp/DSET/experiments/rt-detr/logs/base_config/rtdetr_r18_20260112_225710/best_model.pth"
   },
   "rt-detr-r34": {
     "type":"rtdetr",
     "config": "/root/autodl-tmp/DSET/experiments/rt-detr/configs/rtdetr_r34.yaml",
-    "checkpoint": "/root/autodl-tmp/DSET/experiments/rt-detr/logs/base_config/rtdetr_r34_20251205_104936/best_model.pth"
+    "checkpoint": "/root/autodl-tmp/DSET/experiments/rt-detr/logs/base_config/rtdetr_r18_20260112_225710/best_model.pth"
   }
 }
 
