@@ -301,10 +301,25 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 12
             # 只需确保在运行 profile 前，通过 model.set_epoch(999) 激活剪枝逻辑即可。
             
             if model_type == "dset":
-                # Enable Pruning: Set epoch to a large value to ensure pruning is fully enabled
+                # Enable Pruning: 直接访问并设置 TokenLevelPruner 的状态
+                # Token pruning 现在不依赖 set_epoch，而是依赖 keep_ratio 和 prune_in_eval
+                # 需要确保 prune_in_eval=True（创建时已设置）且 keep_ratio < 1.0
+                
+                # 直接访问 shared_token_pruner 并确保其状态正确
+                if hasattr(model_eval, 'encoder') and hasattr(model_eval.encoder, 'shared_token_pruner'):
+                    pruner = model_eval.encoder.shared_token_pruner
+                    if pruner is not None:
+                        # 确保 prune_in_eval 为 True（eval 模式下也能剪枝）
+                        if hasattr(pruner, 'prune_in_eval'):
+                            pruner.prune_in_eval = True
+                        # 确保 pruning_enabled 为 True（如果存在该属性）
+                        if hasattr(pruner, 'pruning_enabled'):
+                            pruner.pruning_enabled = True
+                
+                # 也设置其他可能的属性（保持兼容性）
                 for m in model_eval.modules():
                     if hasattr(m, 'set_epoch'):
-                        m.set_epoch(999)  # Large epoch to ensure warmup is done
+                        m.set_epoch(999)  # 虽然现在是 no-op，但保持调用以兼容
                     if hasattr(m, 'pruning_enabled'):
                         m.pruning_enabled = True
                     if hasattr(m, 'current_epoch'):
@@ -315,11 +330,38 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 12
                 r = dset_cfg.get('token_keep_ratio', 1.0)
                 if isinstance(r, dict):
                     r = max(r.values())
+                
+                # Debug: 验证 token pruning 是否激活
+                if debug:
+                    print(f"\n  🔍 验证 Token Pruning 状态:")
+                    if hasattr(model_eval, 'encoder') and hasattr(model_eval.encoder, 'shared_token_pruner'):
+                        pruner = model_eval.encoder.shared_token_pruner
+                        if pruner is not None:
+                            keep_ratio = getattr(pruner, 'keep_ratio', 1.0)
+                            prune_in_eval = getattr(pruner, 'prune_in_eval', True)
+                            pruning_enabled = getattr(pruner, 'pruning_enabled', None)
+                            
+                            print(f"      - keep_ratio: {keep_ratio}")
+                            print(f"      - prune_in_eval: {prune_in_eval}")
+                            print(f"      - pruning_enabled: {pruning_enabled}")
+                            print(f"      - model.training: {model_eval.training}")
+                            
+                            # 计算 should_prune（根据 TokenLevelPruner 的逻辑）
+                            should_prune = (keep_ratio < 1.0) and (model_eval.training or prune_in_eval)
+                            print(f"      - should_prune: {should_prune} "
+                                  f"(keep_ratio < 1.0: {keep_ratio < 1.0}, "
+                                  f"training: {model_eval.training}, "
+                                  f"prune_in_eval: {prune_in_eval})")
             else:
                 r = 1.0  # 默认值，用于非 DSET 模型
             
             # Direct profile on pruned model - this is the Theory FLOPs
             # No manual scaling needed: physical pruning changes tensor shapes automatically
+            # 重要：在 profile 之前先运行一次前向传播，确保 token pruning 被激活
+            if model_type == "dset":
+                with torch.no_grad():
+                    _ = model_eval(dummy_img)  # 预热，激活 token pruning
+            
             if debug:
                 _moe_layer_call_count.clear()
                 print(f"\n  📊 计算 Theory FLOPs (With Pruning, r={r:.2f})...")
