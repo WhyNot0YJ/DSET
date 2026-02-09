@@ -83,9 +83,9 @@ def count_moe_layer(m, x, y):
     MoE 层无法通过物理 Shape 自动降算力（因为所有专家都在计算图中），
     需要手动计算激活路径的 FLOPs。
     
-    Formula: G_moe = G_router + (top_k × G_single_expert)
+    Formula: G_moe = G_router + (top_k / expert_num × G_all_experts)
     - Router: 完整的 Dense FLOPs (所有专家都需要路由计算)
-    - Experts: 只计算激活的 top_k 个专家的 FLOPs
+    - Experts: 计算所有专家的 FLOPs，然后乘以激活比例 (top_k / expert_num)
     
     Args:
         m: MoE Layer module
@@ -105,90 +105,16 @@ def count_moe_layer(m, x, y):
     # 1. Router: Linear(C, E) -> B*N*C*E (完整的 Dense FLOPs)
     router_flops = B * N * C * num_experts
     
-    # 2. Experts: 只计算激活的 top_k 个专家的 FLOPs
+    # 2. Experts: 计算所有专家的 FLOPs，然后乘以激活比例 (top_k / expert_num)
     # 单个 Expert 的 MLP: Linear1(C->D) + Linear2(D->C) = 2 * C * D_ffn
     single_expert_flops = B * N * (2 * C * dim_feedforward)
-    expert_flops = single_expert_flops * top_k
+    all_experts_flops = single_expert_flops * num_experts
+    
+    # 应用激活比例：实际只激活了 top_k / expert_num 比例的专家
+    activation_ratio = top_k / max(num_experts, 1)  # 避免除零
+    expert_flops = all_experts_flops * activation_ratio
     
     total = router_flops + expert_flops
-    m.total_ops += torch.DoubleTensor([int(total)])
-
-
-def count_ms_deform_attn(m, x, y):
-    """
-    MSDeformableAttention Custom Op
-    Ref: Audit Report Section 2.1
-    
-    Formula includes:
-    - Linear Projections (Offset, Weights, Value, Output)
-    - Core Sampling (Bilinear Interpolation + Weighted Sum)
-    """
-    # x: (query, reference_points, value, value_spatial_shapes, value_mask)
-    query = x[0]  # [B, Nq, C]
-    value = x[2]  # [B, Nv, C] - Nv is Memory size
-    
-    if not torch.is_tensor(query) or not torch.is_tensor(value):
-        return
-    
-    B, Nq, C = query.shape
-    _, Nv, _ = value.shape
-    
-    heads = getattr(m, 'num_heads', 8)
-    levels = getattr(m, 'num_levels', 4)
-    # Use total_points if available, otherwise calculate from num_points_list
-    # Note: total_points = num_heads * sum(num_points_list) in MSDeformableAttention
-    total_points = getattr(m, 'total_points', None)
-    if total_points is None:
-        num_points_list = getattr(m, 'num_points_list', [4] * levels)
-        total_points = heads * sum(num_points_list)
-    # total_points already includes num_heads, so use it directly
-    
-    # 1. Linear Projections
-    # Sampling Offsets: C -> total_points*2 (total_points already includes num_heads)
-    flops_offset = Nq * C * (total_points * 2)
-    # Attn Weights: C -> total_points
-    flops_weights = Nq * C * total_points
-    # Output Proj: C -> C
-    flops_out = Nq * C * C
-    # Value Proj: Nv * C * C (Applied on Memory)
-    flops_value = Nv * C * C
-    
-    # 2. Core Sampling
-    # Bilinear Interpolation (4 mul) + Weighted Sum (1 mul) per point
-    # Each point samples head_dim features
-    # total_points = num_heads * sum(num_points_list), already includes all heads
-    head_dim = C // heads
-    flops_core = Nq * total_points * head_dim * 5  # 4 for bilinear + 1 for weighted sum
-    
-    total = B * (flops_offset + flops_weights + flops_out + flops_value + flops_core)
-    m.total_ops += torch.DoubleTensor([int(total)])
-
-
-def count_standard_attention(m, x, y):
-    """
-    Standard MultiheadAttention Custom Op (for Encoder)
-    Ref: Audit Report Section 1.1
-    Formula: 4*N*C^2 + 2*N^2*C
-    """
-    # x: (query, key, value, ...)
-    # In Encoder Self-Attn: query=key=value=src [B, N, C]
-    q = x[0]
-    if not torch.is_tensor(q):
-        return
-    
-    # Handle batch_first=True/False
-    if getattr(m, 'batch_first', True):
-        B, N, C = q.shape
-    else:
-        N, B, C = q.shape
-    
-    # 1. Linear Projections (Q, K, V, Out) -> 4 * N * C^2
-    flops_linear = 4 * N * (C ** 2)
-    
-    # 2. Attention Matrix (Q*K, Score*V) -> 2 * N^2 * C
-    flops_attn = 2 * (N ** 2) * C
-    
-    total = B * (flops_linear + flops_attn)
     m.total_ops += torch.DoubleTensor([int(total)])
 
 
@@ -200,16 +126,17 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 12
     
     使用 thop custom_ops 实现物理级精确计算：
     - MoE Layer: Router (Dense) + TopK Experts (Sparse)
-      Formula: G_moe = G_router + (top_k × G_single_expert)
-    - MSDeformableAttention: 包含所有 Linear Projections 和 Core Sampling
-    - Standard Attention: 4NC^2 + 2N^2C
+      Formula: G_moe = G_router + (top_k / expert_num × G_all_experts)
+      Note: MoE 层无法通过物理 Shape 自动降算力（因为所有专家都在计算图中），
+            需要在自定义算子中手动计算激活路径的 FLOPs。
     
     核心逻辑：
     1. Token Pruning 是物理剪枝（通过 TokenPruner 对 Tensor 进行物理切片），
        直接改变了后续算子的输入 Shape，thop 的 profile 会自动捕获计算量的下降。
+       因此 MSDeformableAttention 和 MultiheadAttention 等算子不需要自定义函数，
        只需确保在运行 profile 前，通过 model.set_epoch(999) 激活剪枝逻辑即可。
     2. MoE 层无法通过物理 Shape 自动降算力（因为所有专家都在计算图中），
-       需要在自定义算子中手动计算：Router 完整计算，Experts 只计算 top_k 个。
+       需要在自定义算子中手动计算：Router 完整计算，Experts 计算所有专家后乘以激活比例 (top_k / expert_num)。
     3. 直接让 profile 在启用剪枝的模型上运行一遍，结果即为真实的 Theory GFLOPs。
        不需要手动缩放或拆分模块。
     """
@@ -254,18 +181,61 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 12
             dummy_img = torch.randn(input_size).to(device)
             
             # --- Auto-Register Custom Ops ---
+            # 注意：只有 MoE Layer 需要自定义函数，因为 MoE 的稀疏性无法通过物理 shape 自动捕获
+            # （所有专家都在计算图中，需要手动计算激活路径的 FLOPs）
+            # MSDeformableAttention 和 MultiheadAttention 不需要自定义函数：
+            # Token Pruning 是物理剪枝，会直接改变输入 tensor 的 shape，
+            # thop 的 profile 会自动捕获计算量的下降。
             custom_ops_map = {}
+            
+            # Debug: 打印所有模块名称和类型，特别关注 MoE 相关模块
+            if debug:
+                print("\n  🔍 扫描所有模块...")
+                moe_candidates = []
+                all_modules_info = []
+                for name, module in model_eval.named_modules():
+                    module_type = module.__class__.__name__
+                    all_modules_info.append((name, module_type))
+                    # 查找可能包含 MoE 的模块
+                    if "MoE" in module_type or "moe" in name.lower() or "expert" in name.lower():
+                        moe_candidates.append((name, module_type))
+                
+                print(f"  📋 总共找到 {len(all_modules_info)} 个模块")
+                if moe_candidates:
+                    print(f"  🎯 找到 {len(moe_candidates)} 个可能的 MoE 相关模块:")
+                    for name, module_type in moe_candidates:
+                        print(f"      - {name}: {module_type}")
+                else:
+                    print("  ⚠ 未找到 MoE 相关模块")
+                
+                # 打印所有模块类型（去重）
+                unique_types = {}
+                for name, module_type in all_modules_info:
+                    if module_type not in unique_types:
+                        unique_types[module_type] = []
+                    unique_types[module_type].append(name)
+                
+                print(f"\n  📊 所有模块类型统计（共 {len(unique_types)} 种）:")
+                for module_type in sorted(unique_types.keys()):
+                    count = len(unique_types[module_type])
+                    if count <= 3:
+                        examples = ", ".join(unique_types[module_type])
+                        print(f"      {module_type}: {count} 个 (例如: {examples})")
+                    else:
+                        examples = ", ".join(unique_types[module_type][:3]) + "..."
+                        print(f"      {module_type}: {count} 个 (例如: {examples})")
+            
+            # 注册 MoE Layer 自定义函数
             for m in model_eval.modules():
                 name = m.__class__.__name__
                 if "MoELayer" in name:
                     custom_ops_map[m.__class__] = count_moe_layer
-                elif "MSDeformableAttention" in name:
-                    custom_ops_map[m.__class__] = count_ms_deform_attn
-                elif isinstance(m, nn.MultiheadAttention):
-                    custom_ops_map[m.__class__] = count_standard_attention
             
             if debug:
-                print(f"  🔍 Custom Ops Registered: {list(k.__name__ for k in custom_ops_map.keys())}")
+                print(f"\n  ✅ Custom Ops Registered: {list(k.__name__ for k in custom_ops_map.keys())}")
+                if not custom_ops_map:
+                    print("  ⚠ 警告: 未注册任何自定义操作，可能 MoE 层的类名不是 'MoELayer'")
+                    print("  💡 提示: 请检查上面的模块类型列表，找到正确的 MoE 层类名")
 
             # --- A. Measure Base FLOPs (Dense, r=1.0) ---
             # Disable Pruning for Base calculation
@@ -1148,7 +1118,7 @@ def print_summary_table(results: List[Dict], gpu_name: str = "GPU", save_csv: bo
                         resolution, mAP, ap50, aps, r.get('input_size', '')])
     
     print("-" * 140)
-    print("Note: Theoretical FLOPs are calculated based on sparsity-aware projection (Top-K expert and token pruning ratio).")
+    print("Note: Theoretical FLOPs are calculated based on sparsity-aware projection (MoE activation ratio: top_k/expert_num, and token pruning ratio).")
     print("=" * 140)
     
     if save_csv:
@@ -1224,7 +1194,7 @@ def _format_evaluation_results(model_type: str, total_params_m: float, active_pa
     print(f"Base FLOPs: {base_flops_g:.2f}G | Theory FLOPs: {theory_flops_g:.2f}G")
     print(f"mAP: {metrics['mAP']:.3f} | AP50: {metrics['AP50']:.3f} | APS: {metrics['APS']:.3f}")
     print("=" * 70)
-    print("Note: Theoretical FLOPs are calculated based on sparsity-aware projection (Top-1 expert and token pruning ratio).")
+    print("Note: Theoretical FLOPs are calculated based on sparsity-aware projection (MoE activation ratio: top_k/expert_num, and token pruning ratio).")
 
 
 def main():
