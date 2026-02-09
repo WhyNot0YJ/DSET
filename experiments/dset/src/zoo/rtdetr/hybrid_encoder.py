@@ -540,6 +540,62 @@ class HybridEncoder(nn.Module):
                 spatial_shape=None,
                 return_indices=True
             )
+            
+            # [Pruning Debug] Calculate S5/S4 split statistics
+            if not self.training and kept_indices is not None and len(level_sizes) >= 2:
+                # Determine which level is S5 (low-res) vs S4 (high-res) based on resolution
+                # S5 has smaller spatial size (lower resolution), S4 has larger spatial size (higher resolution)
+                size_0 = level_sizes[0]
+                size_1 = level_sizes[1]
+                
+                # Identify S5 (smaller) and S4 (larger) based on token count
+                if size_0 <= size_1:
+                    # First level is S5 (low-res), second is S4 (high-res)
+                    len_s5 = size_0
+                    len_s4 = size_1
+                    h_s5, w_s5 = spatial_shapes[0]
+                    h_s4, w_s4 = spatial_shapes[1]
+                    s5_first = True
+                else:
+                    # First level is S4 (high-res), second is S5 (low-res) - reversed order
+                    len_s5 = size_1
+                    len_s4 = size_0
+                    h_s5, w_s5 = spatial_shapes[1]
+                    h_s4, w_s4 = spatial_shapes[0]
+                    s5_first = False
+                
+                total_s5 = h_s5 * w_s5
+                total_s4 = h_s4 * w_s4
+                total_tokens = src_flatten_total.shape[1]
+                
+                # For each batch item, count how many kept indices belong to S5 vs S4
+                batch_size = kept_indices.shape[0]
+                for b_idx in range(batch_size):
+                    batch_indices = kept_indices[b_idx]  # [N_kept]
+                    # Filter valid indices (remove padding if any)
+                    valid_indices = batch_indices[batch_indices >= 0]
+                    
+                    if s5_first:
+                        # S5 tokens come first (indices < len_s5)
+                        kept_s5 = (valid_indices < len_s5).sum().item()
+                        # S4 tokens come after (indices >= len_s5)
+                        kept_s4 = ((valid_indices >= len_s5) & (valid_indices < total_tokens)).sum().item()
+                    else:
+                        # S4 tokens come first (indices < len_s4)
+                        kept_s4 = (valid_indices < len_s4).sum().item()
+                        # S5 tokens come after (indices >= len_s4)
+                        kept_s5 = ((valid_indices >= len_s4) & (valid_indices < total_tokens)).sum().item()
+                    
+                    # Calculate ratios
+                    ratio_s5 = (kept_s5 / total_s5 * 100.0) if total_s5 > 0 else 0.0
+                    ratio_s4 = (kept_s4 / total_s4 * 100.0) if total_s4 > 0 else 0.0
+                    total_kept = kept_s5 + kept_s4
+                    
+                    # Print formatted log
+                    print(f"[Pruning Debug] Batch {b_idx} | Total Kept: {total_kept} | "
+                          f"S5 Kept: {kept_s5}/{total_s5} ({ratio_s5:.2f}%) | "
+                          f"S4 Kept: {kept_s4}/{total_s4} ({ratio_s4:.2f}%)")
+            
             encoder_info['token_pruning_ratios'].append(prune_info.get('pruning_ratio', 0.0))
 
             if 'token_importance_scores' in prune_info and prune_info['token_importance_scores'] is not None:
