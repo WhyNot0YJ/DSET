@@ -7,7 +7,7 @@
   "rt-detr-r34": {
     "type":"rtdetr",
     "config": "/root/autodl-tmp/DSET/experiments/rt-detr/configs/rtdetr_r34.yaml",
-    "checkpoint": "/root/autodl-tmp/DSET/experiments/rt-detr/logs/rtdetr_r18_20260112_225710/best_model.pth"
+    "checkpoint": "/root/autodl-tmp/DSET/experiments/rt-detr/logs/rtdetr_r34_20260113_052817/best_model.pth"
   }
 }
 
