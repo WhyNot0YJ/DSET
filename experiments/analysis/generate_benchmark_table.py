@@ -1200,7 +1200,7 @@ def _format_evaluation_results(model_type: str, total_params_m: float, active_pa
 def main():
     parser = argparse.ArgumentParser(description='生成性能对比表')
     parser.add_argument('--logs_dir', type=str, default='experiments/dset/logs')
-    parser.add_argument('--config', type=str, default='experiments/dset/configs/dset4_r18_ratio0.5.yaml')
+    parser.add_argument('--config', type=str, default='experiments/dset/logs/dset6_r18_20260126_173526/config.yaml')
     parser.add_argument('--checkpoint', type=str, default=None)
     parser.add_argument('--input_size', type=int, nargs=2, default=None)
     parser.add_argument('--device', type=str, default='cuda')
