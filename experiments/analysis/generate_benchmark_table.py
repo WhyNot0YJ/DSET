@@ -938,10 +938,13 @@ def evaluate_single_model(model_name: str, model_config: Dict, args, project_roo
         elif model_type == "deformable-detr":
             model = load_deformable_detr_model(str(checkpoint_path), args.device, 
                                                config_path=str(config_path) if config_path else None)
-            # 加载配置
+            # 加载配置（MMDetection 的 config.yaml 含 !!python/tuple 等标签，需用 mmengine.Config 而非 yaml.safe_load）
             if config_path:
-                with open(config_path, 'r', encoding='utf-8') as f:
-                    config = yaml.safe_load(f)
+                try:
+                    from mmengine.config import Config
+                    config = Config.fromfile(config_path)
+                except ImportError:
+                    config = None
         elif model_type.startswith("yolov8"):
             model, config = load_yolov8_model(str(checkpoint_path), args.device)
         elif model_type.startswith("yolov10"):
