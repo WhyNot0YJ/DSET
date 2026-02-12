@@ -157,6 +157,18 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 12
             device = next(model_eval.parameters()).device
             dummy_img = torch.randn(input_size).to(device)
             
+            def _clear_thop_buffers(module):
+                for name in ('total_ops', 'total_params'):
+                    if hasattr(module, name) and hasattr(module, '_buffers') and name in module._buffers:
+                        del module._buffers[name]
+            try:
+                # YOLO 的实际 net 在 .model 中
+                target = model_eval.model if (is_yolo and hasattr(model_eval, 'model')) else model_eval
+                for m in target.modules():
+                    _clear_thop_buffers(m)
+            except Exception:
+                pass
+            
             # mmdet 模型（如 deformable-detr）forward 需要 batch_data_samples，用 wrapper 构造 DetDataSample
             if model_type == "deformable-detr":
                 from mmdet.structures import DetDataSample
