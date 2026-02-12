@@ -29,44 +29,32 @@ import seaborn as sns
 # Hardcoded Data Points (from benchmarking)
 # =============================================================================
 
-# DSET (Ours) - Red, Star marker, Solid line
+# DSET-R18 (Ours) - Red, Star marker
 DSET = {
-    "points": [
-        {"name": "DSET-R18", "gflops": 68.3, "mAP": 0.680},
-        {"name": "DSET-R34", "gflops": 104.5, "mAP": 0.702},
-    ],
+    "points": [{"name": "DSET-R18", "gflops": 68.3, "mAP": 0.680}],
     "color": "#C41E3A",  # Academic red
     "marker": "*",
-    "linestyle": "-",
-    "linewidth": 2.5,
     "markersize": 16,
     "label": "DSET (Ours)",
 }
 
-# RT-DETR (Baseline) - Blue, Circle marker, Dashed line
+# RT-DETR-R18 (Baseline) - Blue, Circle marker
 RTDETR = {
-    "points": [
-        {"name": "RT-DETR-R18", "gflops": 67.6, "mAP": 0.649},
-        {"name": "RT-DETR-R34", "gflops": 103.7, "mAP": 0.692},
-    ],
+    "points": [{"name": "RT-DETR-R18", "gflops": 67.6, "mAP": 0.649}],
     "color": "#1E3A8A",  # Deep blue
     "marker": "o",
-    "linestyle": "--",
-    "linewidth": 2,
     "markersize": 10,
     "label": "RT-DETR",
 }
 
-# YOLO Series - Grey, Square/Triangle, Scatter only (no lines)
+# YOLO-S only (YOLOv8-S, YOLOv10-S) - Grey, Square/Triangle, Scatter only
 YOLO = {
     "points": [
         {"name": "YOLOv10-S", "gflops": 99.2, "mAP": 0.707},
-        {"name": "YOLOv10-M", "gflops": 256.1, "mAP": 0.729},
         {"name": "YOLOv8-S", "gflops": 114.7, "mAP": 0.689},
-        {"name": "YOLOv8-M", "gflops": 316.4, "mAP": 0.726},
     ],
     "color": "#6B7280",  # Neutral grey
-    "markers": ["s", "^", "s", "^"],  # Square for S, Triangle for M
+    "markers": ["s", "^"],  # Square for v10, Triangle for v8
     "markersize": 10,
     "label": "YOLO",
 }
