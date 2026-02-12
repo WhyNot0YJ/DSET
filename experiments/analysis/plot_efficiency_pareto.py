@@ -100,35 +100,33 @@ def plot_pareto_frontier(output_dir: Path):
 
     # --- Plot Data ---
 
-    # DSET: Solid line + stars
-    dset_x = [p["gflops"] for p in DSET["points"]]
-    dset_y = [p["mAP"] for p in DSET["points"]]
-    ax.plot(
-        dset_x, dset_y,
-        color=DSET["color"],
-        marker=DSET["marker"],
-        linestyle=DSET["linestyle"],
-        linewidth=DSET["linewidth"],
-        markersize=DSET["markersize"],
-        label=DSET["label"],
-        zorder=5,
-    )
+    # DSET-R18: Star marker
+    for p in DSET["points"]:
+        ax.scatter(
+            p["gflops"], p["mAP"],
+            c=DSET["color"],
+            marker=DSET["marker"],
+            s=DSET["markersize"] ** 2,
+            label=DSET["label"],
+            zorder=5,
+            edgecolors="white",
+            linewidths=0.5,
+        )
 
-    # RT-DETR: Dashed line + circles
-    rtdetr_x = [p["gflops"] for p in RTDETR["points"]]
-    rtdetr_y = [p["mAP"] for p in RTDETR["points"]]
-    ax.plot(
-        rtdetr_x, rtdetr_y,
-        color=RTDETR["color"],
-        marker=RTDETR["marker"],
-        linestyle=RTDETR["linestyle"],
-        linewidth=RTDETR["linewidth"],
-        markersize=RTDETR["markersize"],
-        label=RTDETR["label"],
-        zorder=4,
-    )
+    # RT-DETR-R18: Circle marker
+    for p in RTDETR["points"]:
+        ax.scatter(
+            p["gflops"], p["mAP"],
+            c=RTDETR["color"],
+            marker=RTDETR["marker"],
+            s=RTDETR["markersize"] ** 2,
+            label=RTDETR["label"],
+            zorder=4,
+            edgecolors="white",
+            linewidths=0.5,
+        )
 
-    # YOLO: Scatter only (no lines)
+    # YOLO-S: Scatter only (YOLOv8-S, YOLOv10-S)
     for i, p in enumerate(YOLO["points"]):
         ax.scatter(
             p["gflops"],
@@ -136,7 +134,7 @@ def plot_pareto_frontier(output_dir: Path):
             c=YOLO["color"],
             marker=YOLO["markers"][i],
             s=YOLO["markersize"] ** 2,
-            label=YOLO["label"] if i == 0 else None,
+            label=p["name"],
             zorder=3,
             edgecolors="white",
             linewidths=0.5,
@@ -163,7 +161,7 @@ def plot_pareto_frontier(output_dir: Path):
     # --- Axis setup ---
     ax.set_xlabel("Computational Cost (GFLOPs)")
     ax.set_ylabel("COCO mAP (50-95)")
-    ax.set_xlim(50, 350)
+    ax.set_xlim(50, 130)
     ax.set_ylim(0.64, 0.74)
     ax.set_aspect("auto")
 
