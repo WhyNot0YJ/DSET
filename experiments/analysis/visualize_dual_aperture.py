@@ -32,6 +32,7 @@ try:
         load_model,
         preprocess_image,
         load_gt_boxes,
+        get_gt_annotation_path,
         postprocess_outputs,
         draw_boxes,
         CLASS_NAMES,
@@ -43,6 +44,7 @@ except ImportError:
         load_model,
         preprocess_image,
         load_gt_boxes,
+        get_gt_annotation_path,
         postprocess_outputs,
         draw_boxes,
         CLASS_NAMES,
@@ -88,10 +90,11 @@ def kept_indices_to_level_mask(kept_indices, level_start, level_size, spatial_sh
     return mask_flat.reshape(h, w)
 
 
-def process_single_scenario(model, postprocessor, image_path, device, target_size, conf_threshold=0.3):
+def process_single_scenario(model, postprocessor, image_path, device, target_size, conf_threshold=0.3, gt_path=None):
     """
-    Run inference on one image, capture S4/S5 data and predictions.
-    Returns: (orig_with_pred_boxes, s5_overlay, s4_overlay, combined_with_pred_boxes)
+    Run inference on one image, capture S4/S5 data.
+    Returns: (orig_with_gt_boxes, s5_overlay, s4_overlay, combined_with_pred_boxes)
+    Column 1: Original + GT; Column 4: Combined Dual-Sparse + Predictions.
     """
     orig_image = cv2.imread(str(image_path))
     if orig_image is None:
@@ -196,8 +199,18 @@ def process_single_scenario(model, postprocessor, image_path, device, target_siz
     s4_colormap = cv2.applyColorMap(s4_uint8, cv2.COLORMAP_JET)
     s4_overlay = cv2.addWeighted(orig_image.copy(), 0.4, s4_colormap, 0.6, 0)
 
-    # Draw predicted boxes (thin for paper)
-    orig_with_boxes = draw_boxes(orig_image.copy(), labels, boxes, scores, CLASS_NAMES, COLORS)
+    # Column 1: Original Image + Ground Truth
+    gt_path_resolved = gt_path or get_gt_annotation_path(Path(image_path))
+    if gt_path_resolved and Path(gt_path_resolved).exists():
+        try:
+            gt_labels, gt_boxes, gt_scores = load_gt_boxes(gt_path_resolved, CLASS_NAMES)
+            orig_with_boxes = draw_boxes(orig_image.copy(), gt_labels, gt_boxes, gt_scores, CLASS_NAMES, COLORS)
+        except Exception:
+            orig_with_boxes = orig_image.copy()
+    else:
+        orig_with_boxes = orig_image.copy()
+
+    # Column 4: Combined Dual-Sparse + Predicted boxes
     combined_with_boxes = draw_boxes(combined_image.copy(), labels, boxes, scores, CLASS_NAMES, COLORS)
 
     return orig_with_boxes, s5_overlay, s4_overlay, combined_with_boxes
