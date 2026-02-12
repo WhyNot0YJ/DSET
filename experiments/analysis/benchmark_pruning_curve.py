@@ -167,26 +167,32 @@ def set_inference_keep_ratio(trainer, keep_ratio):
     Dynamically modify model's keep_ratio
     """
     # 1. Update Trainer's current epoch to ensure pruning is enabled (must be > warmup_epochs)
-    # Warmup is usually 10, so 100 is safe
-    trainer.current_epoch = 100 
-    
+    trainer.current_epoch = 100
+
+    def _update_pruner(pruner):
+        if pruner is not None and hasattr(pruner, 'keep_ratio'):
+            pruner.keep_ratio = keep_ratio
+            pruner.set_epoch(trainer.current_epoch)
+            pruner.prune_in_eval = True
+
     # 2. Update Pruners in EMA Model (Validation uses EMA)
     model = trainer.ema.module if hasattr(trainer, 'ema') and trainer.ema else trainer.model
-    
-    if hasattr(model, 'encoder') and hasattr(model.encoder, 'token_pruners'):
-        for pruner in model.encoder.token_pruners:
-            # Set new ratio
-            pruner.keep_ratio = keep_ratio
-            # Force enable pruning
-            pruner.set_epoch(trainer.current_epoch)
-            # Ensure it's in eval mode
-            pruner.prune_in_eval = True
-            
-    # Also update the base model just in case
-    if hasattr(trainer.model, 'encoder') and hasattr(trainer.model.encoder, 'token_pruners'):
-        for pruner in trainer.model.encoder.token_pruners:
-            pruner.keep_ratio = keep_ratio
-            pruner.set_epoch(trainer.current_epoch)
+
+    # DSET uses shared_token_pruner (singular), not token_pruners (plural)
+    if hasattr(model, 'encoder') and model.encoder is not None:
+        if hasattr(model.encoder, 'shared_token_pruner'):
+            _update_pruner(model.encoder.shared_token_pruner)
+        if hasattr(model.encoder, 'token_pruners') and model.encoder.token_pruners:
+            for pruner in model.encoder.token_pruners:
+                _update_pruner(pruner)
+
+    # Also update the base model
+    if hasattr(trainer.model, 'encoder') and trainer.model.encoder is not None:
+        if hasattr(trainer.model.encoder, 'shared_token_pruner'):
+            _update_pruner(trainer.model.encoder.shared_token_pruner)
+        if hasattr(trainer.model.encoder, 'token_pruners') and trainer.model.encoder.token_pruners:
+            for pruner in trainer.model.encoder.token_pruners:
+                _update_pruner(pruner)
 
 def benchmark_models(models_dict, inference_ratios, device='cuda'):
     """
