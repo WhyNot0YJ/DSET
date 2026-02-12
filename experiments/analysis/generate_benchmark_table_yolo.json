@@ -1,27 +1,26 @@
 {
- "yolov8s": {
-    "type":"yolov8s",
+  "yolov8s": {
+    "type": "yolov8s",
     "config": "/root/autodl-tmp/DSET/experiments/yolov8/logs/yolo_v8s_20251216_141023/config.yaml",
     "checkpoint": "/root/autodl-tmp/DSET/experiments/yolov8/logs/yolo_v8s_20251216_141023/best_model.pth",
-    "data":"/root/autodl-tmp/datasets/DAIR-V2X_YOLO/dairv2x.yaml"
+    "data": "/root/autodl-tmp/datasets/DAIR-V2X_YOLO/dairv2x.yaml"
   },
   "yolov8m": {
-    "type":"yolov8m",
+    "type": "yolov8m",
     "config": "/root/autodl-tmp/DSET/experiments/yolov8/logs/yolo_v8m_20251216_122413/config.yaml",
     "checkpoint": "/root/autodl-tmp/DSET/experiments/yolov8/logs/yolo_v8m_20251216_122413/best_model.pth",
-    "data":"/root/autodl-tmp/datasets/DAIR-V2X_YOLO/dairv2x.yaml"
+    "data": "/root/autodl-tmp/datasets/DAIR-V2X_YOLO/dairv2x.yaml"
   },
- "yolov10s": {
-    "type":"yolov10s",
+  "yolov10s": {
+    "type": "yolov10s",
     "config": "/root/autodl-tmp/DSET/experiments/yolov8/logs/yolo_v10s_20251216_175635/config.yaml",
     "checkpoint": "/root/autodl-tmp/DSET/experiments/yolov8/logs/yolo_v10s_20251216_175635/best_model.pth",
-    "data":"/root/autodl-tmp/datasets/DAIR-V2X_YOLO/dairv2x.yaml"
+    "data": "/root/autodl-tmp/datasets/DAIR-V2X_YOLO/dairv2x.yaml"
   },
   "yolov10m": {
-    "type":"yolov10m",
-    "config":"/root/autodl-tmp/DSET/experiments/yolov8/logs/yolo_v10m_20251216_153048/config.yaml",
-    "checkpoint":"/root/autodl-tmp/DSET/experiments/yolov8/logs/yolo_v10m_20251216_153048/best_model.pth",
-    "data":"/root/autodl-tmp/datasets/DAIR-V2X_YOLO/dairv2x.yaml"
+    "type": "yolov10m",
+    "config": "/root/autodl-tmp/DSET/experiments/yolov8/logs/yolo_v10m_20251216_153048/config.yaml",
+    "checkpoint": "/root/autodl-tmp/DSET/experiments/yolov8/logs/yolo_v10m_20251216_153048/best_model.pth",
+    "data": "/root/autodl-tmp/datasets/DAIR-V2X_YOLO/dairv2x.yaml"
   }
 }
-
