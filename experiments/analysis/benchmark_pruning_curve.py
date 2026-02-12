@@ -249,8 +249,8 @@ def plot_results(inference_ratios, results, output_path="pruning_tradeoff.pdf"):
     fig, ax = plt.subplots(figsize=(10, 6))
 
     # Shaded regions (draw first so they appear behind the curves)
-    ax.axvspan(0.1, 0.3, alpha=0.2, color="#90EE90", label="High-Efficiency Zone")
-    ax.axvspan(0.3, 1.0, alpha=0.2, color="#ADD8E6", label="Saturation Zone")
+    ax.axvspan(0.3, 0.4, alpha=0.2, color="#90EE90", label="High-Efficiency Zone")
+    ax.axvspan(0.4, 1.0, alpha=0.2, color="#ADD8E6", label="Saturation Zone")
 
     # Vertical dashed line at training threshold r=0.3
     ax.axvline(x=0.3, color="grey", linestyle="--", alpha=0.6, linewidth=1.5)
