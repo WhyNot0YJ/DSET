@@ -149,7 +149,7 @@ def plot_pareto_frontier(output_dir: Path):
         color="#1E3A8A",  # Blue (matches RT-DETR, accuracy comparison)
         linewidth=2,
         mutation_scale=16,
-        connectionstyle="arc3,rad=-0.2",
+        connectionstyle="arc3,rad=0",  # Straight line for precise pointing
         zorder=6,
     )
     ax.add_patch(arrow_vert)
@@ -167,15 +167,15 @@ def plot_pareto_frontier(output_dir: Path):
     )
 
     # --- Arrow 2: Compute Savings (YOLOv10-S LEFT towards DSET-R18) ---
-    # Arrow points down-left (YOLOv10 higher in y); emphasizes horizontal gap
+    # Arrow points down-left to DSET center for accurate pointing
     arrow_horiz = FancyArrowPatch(
         (yolo10_x, yolo10_y),
-        (dset_x + 6, dset_y + 0.005),
+        (dset_x, dset_y),
         arrowstyle="->",
         color="#15803D",  # Green: "Green AI" / Efficiency
         linewidth=2,
         mutation_scale=16,
-        connectionstyle="arc3,rad=-0.2",
+        connectionstyle="arc3,rad=0",  # Straight line for precise pointing
         zorder=6,
     )
     ax.add_patch(arrow_horiz)
