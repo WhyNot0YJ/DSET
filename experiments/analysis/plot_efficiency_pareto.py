@@ -13,8 +13,8 @@ Usage:
     python plot_efficiency_pareto.py --output_dir ../figures
 
 Output:
-    figures/efficiency_edge_focus.pdf (vector format for LaTeX)
-    figures/efficiency_edge_focus.png (high DPI)
+    figures/efficiency_edge_final.pdf (vector format for LaTeX)
+    figures/efficiency_edge_final.png (high DPI)
 """
 
 import argparse
@@ -141,48 +141,52 @@ def plot_pareto_frontier(output_dir: Path):
             linewidths=0.5,
         )
 
-    # --- Arrow 1: Accuracy Gain (RT-DETR -> DSET, upward) ---
+    # --- Arrow 1: Accuracy Boost (RT-DETR-R18 UP to DSET-R18) ---
     arrow_vert = FancyArrowPatch(
         (rtdetr_x, rtdetr_y),
         (dset_x, dset_y),
         arrowstyle="->",
-        color="#15803D",
+        color="#1E3A8A",  # Blue (matches RT-DETR, accuracy comparison)
         linewidth=2,
         mutation_scale=16,
+        connectionstyle="arc3,rad=-0.2",
         zorder=6,
     )
     ax.add_patch(arrow_vert)
+    # Text to the right of arrow (avoids clipping with xlim 60)
     ax.text(
-        dset_x + 4,
+        dset_x + 8,
         (rtdetr_y + dset_y) / 2,
         "+3.1% mAP",
         fontsize=12,
         fontweight="bold",
-        color="#15803D",
+        color="#1E3A8A",
         va="center",
         ha="left",
         zorder=6,
     )
 
-    # --- Arrow 2: Efficiency Gain (YOLOv10-S -> DSET, leftward) ---
+    # --- Arrow 2: Compute Savings (YOLOv10-S LEFT towards DSET-R18) ---
+    # Arrow points down-left (YOLOv10 higher in y); emphasizes horizontal gap
     arrow_horiz = FancyArrowPatch(
         (yolo10_x, yolo10_y),
-        (dset_x + 5, yolo10_y),
+        (dset_x + 6, dset_y + 0.005),
         arrowstyle="->",
-        color="#15803D",
+        color="#15803D",  # Green: "Green AI" / Efficiency
         linewidth=2,
         mutation_scale=16,
+        connectionstyle="arc3,rad=-0.2",
         zorder=6,
     )
     ax.add_patch(arrow_horiz)
     ax.text(
-        (yolo10_x + dset_x) / 2,
-        yolo10_y + 0.008,
-        "-30% GFLOPs",
+        (yolo10_x + dset_x) / 2 + 2,
+        (yolo10_y + dset_y) / 2 - 0.003,
+        "-31% GFLOPs",
         fontsize=12,
         fontweight="bold",
         color="#15803D",
-        va="bottom",
+        va="center",
         ha="center",
         zorder=6,
     )
@@ -190,7 +194,7 @@ def plot_pareto_frontier(output_dir: Path):
     # --- Axis setup (Zoomed: tight limits) ---
     ax.set_xlabel("Computational Cost (GFLOPs)")
     ax.set_ylabel("COCO mAP (50-95)")
-    ax.set_xlim(60, 120)
+    ax.set_xlim(60, 125)
     ax.set_ylim(0.64, 0.72)
     ax.set_aspect("auto")
 
@@ -202,8 +206,8 @@ def plot_pareto_frontier(output_dir: Path):
     # --- Save outputs ---
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    pdf_path = output_dir / "efficiency_edge_focus.pdf"
-    png_path = output_dir / "efficiency_edge_focus.png"
+    pdf_path = output_dir / "efficiency_edge_final.pdf"
+    png_path = output_dir / "efficiency_edge_final.png"
 
     fig.savefig(pdf_path, format="pdf", bbox_inches="tight")
     fig.savefig(png_path, format="png", dpi=300, bbox_inches="tight")
