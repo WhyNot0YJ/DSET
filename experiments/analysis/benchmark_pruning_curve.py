@@ -17,11 +17,13 @@ DSET Pruning Curve Benchmark Script
     
     测试多个模型（多次调用或使用脚本循环）：
         # 方式1: 多次调用
-        python benchmark_pruning_curve.py --config config1.yaml --checkpoint ckpt1.pth --name "Model1" --output results.png
-        python benchmark_pruning_curve.py --config config2.yaml --checkpoint ckpt2.pth --name "Model2" --output results.png --append
+        python benchmark_pruning_curve.py --config config1.yaml --checkpoint ckpt1.pth --name "Model1" --output results.pdf
     
         # 方式2: 使用配置文件（JSON格式）
-        python benchmark_pruning_curve.py --models_config models.json --output results.png
+        python benchmark_pruning_curve.py --models_config models.json --output results.pdf
+    
+    从预计算结果直接绘图（无需重新跑 benchmark）：
+        python benchmark_pruning_curve.py --from_json benchmark_pruning_curve_results.json --output pruning_tradeoff.pdf
     
     自定义 keep_ratio 范围：
         python benchmark_pruning_curve.py \
@@ -82,23 +84,15 @@ DSET Pruning Curve Benchmark Script
 import sys
 import os
 import argparse
-import yaml
-import torch
-import matplotlib.pyplot as plt
+import json
+from pathlib import Path
+
 import matplotlib
+import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
-from pathlib import Path
-from tqdm import tqdm
 
-# Add project root (DSET/) to path so "experiments.dset.train" can be imported
-_script_dir = Path(__file__).resolve().parent
-project_root = _script_dir.parent.parent  # DSET/ from experiments/analysis/benchmark_*.py
-if str(project_root) not in sys.path:
-    sys.path.insert(0, str(project_root))
-
-# Import DSETTrainer
-from experiments.dset.train import DSETTrainer
+# Heavy imports (torch, DSETTrainer) are deferred until benchmark mode is needed
 
 def setup_trainer(config_path, checkpoint_path, device='cuda'):
     """
@@ -327,6 +321,9 @@ def main():
     parser.add_argument("--models_config", type=str, default=None,
                         help="Path to JSON file with multiple models config. Format: "
                              '{"Model1": {"config": "path1.yaml", "checkpoint": "ckpt1.pth"}, ...}')
+    parser.add_argument("--from_json", type=str, default=None,
+                        help="Load pre-computed results from JSON and plot only (no benchmark). "
+                             'Format: {"inference_ratios": [0.0, 0.1, ...], "results": {"Model1": [mAP1, ...]}}')
     
     # Testing parameters
     parser.add_argument("--ratios", type=float, nargs="+", default=None,
@@ -341,59 +338,81 @@ def main():
     # Output
     parser.add_argument("--output", type=str, default="pruning_tradeoff.pdf",
                         help="Output plot file path (default: pruning_tradeoff.pdf)")
-    parser.add_argument("--append", action="store_true",
-                        help="Append results to existing plot file (if it exists)")
+    parser.add_argument("--save_results", type=str, default=None,
+                        help="Save benchmark results to JSON for later --from_json plotting")
     
     # Device
     parser.add_argument("--device", type=str, default="cuda",
                         help="Device to use (default: cuda)")
     
     args = parser.parse_args()
-    
+
+    # --- Plot-only mode: load pre-computed results from JSON ---
+    if args.from_json:
+        if not os.path.exists(args.from_json):
+            print(f"Error: Results file not found: {args.from_json}")
+            return
+        with open(args.from_json, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        inference_ratios = data.get("inference_ratios")
+        results = data.get("results")
+        if not inference_ratios or not results:
+            print("Error: JSON must contain 'inference_ratios' and 'results' keys.")
+            return
+        print(f"Loaded pre-computed results from {args.from_json}")
+        print(f"Ratios: {inference_ratios}")
+        plot_results(inference_ratios, results, output_path=args.output)
+        return
+
+    # --- Benchmark mode (requires torch, yaml, DSETTrainer) ---
+    import yaml
+    import torch
+    from tqdm import tqdm
+
+    _script_dir = Path(__file__).resolve().parent
+    project_root = _script_dir.parent.parent
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
+    from experiments.dset.train import DSETTrainer
+
     # 1. Parse models configuration
     models = {}
-    
+
     if args.models_config:
-        # Load from JSON file
-        import json
         if not os.path.exists(args.models_config):
             print(f"Error: Models config file not found: {args.models_config}")
             return
-        with open(args.models_config, 'r') as f:
+        with open(args.models_config, "r", encoding="utf-8") as f:
             models_dict = json.load(f)
         for name, cfg_dict in models_dict.items():
-            if 'config' in cfg_dict and 'checkpoint' in cfg_dict:
-                models[name] = (cfg_dict['config'], cfg_dict['checkpoint'])
+            if "config" in cfg_dict and "checkpoint" in cfg_dict:
+                models[name] = (cfg_dict["config"], cfg_dict["checkpoint"])
             else:
                 print(f"Warning: Invalid model entry '{name}' in config file")
     elif args.config and args.checkpoint:
-        # Single model from command line
         models[args.name] = (args.config, args.checkpoint)
     else:
-        print("Error: Must provide either (--config and --checkpoint) or --models_config")
+        print("Error: Must provide either (--config and --checkpoint) or --models_config or --from_json")
         parser.print_help()
         return
-    
+
     # 2. Parse inference ratios
     if args.ratios:
         inference_ratios = sorted(args.ratios)
     else:
-        # Generate range from min to max with step
         inference_ratios = []
         current = args.min_ratio
-        while current <= args.max_ratio + 1e-6:  # Add small epsilon for float comparison
+        while current <= args.max_ratio + 1e-6:
             inference_ratios.append(round(current, 2))
             current += args.step
-    
+
     print(f"Testing keep_ratios: {inference_ratios}")
-    
-    # 3. Check if files exist (resolve relative paths)
+
+    # 3. Check if files exist
     valid_models = {}
     for name, (cfg, ckpt) in models.items():
-        # Resolve relative paths
         cfg_abs = os.path.abspath(cfg) if not os.path.isabs(cfg) else cfg
         ckpt_abs = os.path.abspath(ckpt) if not os.path.isabs(ckpt) else ckpt
-        
         if not os.path.exists(cfg_abs):
             print(f"Warning: Config not found for {name} at {cfg_abs}")
             continue
@@ -401,21 +420,22 @@ def main():
             print(f"Warning: Checkpoint not found for {name} at {ckpt_abs}")
             continue
         valid_models[name] = (cfg_abs, ckpt_abs)
-    
+
     if not valid_models:
         print("Error: No valid models found. Please check paths.")
         return
-    
-    # 4. Load existing results if appending
-    existing_results = {}
-    if args.append and os.path.exists(args.output):
-        print(f"Note: --append mode is not fully implemented. Will overwrite {args.output}")
-        # TODO: Implement loading existing results from plot or JSON
-    
-    # 5. Run Benchmark
+
+    # 4. Run Benchmark
     results = benchmark_models(valid_models, inference_ratios, device=args.device)
-    
-    # 7. Visualize
+
+    # 5. Save results to JSON (optional)
+    if results and args.save_results:
+        save_data = {"inference_ratios": inference_ratios, "results": results}
+        with open(args.save_results, "w", encoding="utf-8") as f:
+            json.dump(save_data, f, indent=2)
+        print(f"Results saved to {args.save_results}")
+
+    # 6. Visualize
     if results:
         plot_results(inference_ratios, results, output_path=args.output)
     else:
