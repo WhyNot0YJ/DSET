@@ -1201,19 +1201,9 @@ def main():
         if result:
             all_results.append(result)
     
-    # 输出结果
-    if len(all_results) > 1:
-        print_summary_table(all_results, gpu_name, save_csv=True, max_samples=0)  # max_samples 不再使用，设为 0
-    elif all_results:
-        r = all_results[0]
-        _format_evaluation_results(
-            r['model_type'], 
-            r.get('total_params_m', 0), r.get('active_params_m', 0),
-            r.get('base_flops_g', 0), r.get('theory_flops_g', 0),
-            {'mAP': r['mAP'], 'AP50': r['AP50'], 'APS': r['APS']},
-            (int(r['input_size'].split('x')[1]), int(r['input_size'].split('x')[0])),
-            r['model_type'].startswith("yolov"), gpu_name
-        )
+    # 输出结果（无论单模型还是多模型，都保存 CSV）
+    if all_results:
+        print_summary_table(all_results, gpu_name, save_csv=True, max_samples=0)
 
 
 if __name__ == '__main__':
