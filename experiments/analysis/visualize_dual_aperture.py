@@ -2,15 +2,12 @@
 """
 Dual-Sparse Aperture Visualization (Figure 5)
 
-Creates a 4-column qualitative figure demonstrating the Dual-Sparse mechanism
-(S4 and S5 cooperation):
-- Column 1: Original Image with GT bounding boxes
-- Column 2: S5 Coarse Heatmap (Rough Search / Coarse Blobs)
-- Column 3: S4 Fine Heatmap (Precision Focus / Contextual Halo)
-- Column 4: Combined Dual-Sparse Input (Semantic Aperture)
+Generates a single 4x4 composite figure for qualitative analysis:
+- 4 rows: diverse scenarios (e.g., Daytime Sparse, Nighttime, Different Viewpoint, Medium Flow)
+- 4 columns: Original Image + Predicted Boxes | S5 Coarse Heatmap | S4 Fine Heatmap | Combined Dual-Sparse + Predicted Boxes
 
-Reuses PruningHook and align_map_to_image from visualize_sparsity.py for
-physical alignment (handles padding, different strides: S4=16, S5=32).
+Default: 4 images from ./image/, output figure5_qualitative_final.pdf (Vector, 300 DPI).
+Uses align_map_to_image for physical alignment (S4 stride=16, S5 stride=32).
 """
 
 import sys
@@ -31,10 +28,26 @@ if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
 try:
-    from experiments.dset.batch_inference import load_model, preprocess_image, load_gt_boxes
+    from experiments.dset.batch_inference import (
+        load_model,
+        preprocess_image,
+        load_gt_boxes,
+        postprocess_outputs,
+        draw_boxes,
+        CLASS_NAMES,
+        COLORS,
+    )
 except ImportError:
     sys.path.insert(0, str(_script_dir.parent))
-    from batch_inference import load_model, preprocess_image, load_gt_boxes
+    from batch_inference import (
+        load_model,
+        preprocess_image,
+        load_gt_boxes,
+        postprocess_outputs,
+        draw_boxes,
+        CLASS_NAMES,
+        COLORS,
+    )
 
 def align_map_to_image(map_2d, h_feat, w_feat, H_tensor, W_tensor, orig_h, orig_w, normalize_before_resize=False):
     """
@@ -73,6 +86,160 @@ def kept_indices_to_level_mask(kept_indices, level_start, level_size, spatial_sh
             if 0 <= local_idx < level_size:
                 mask_flat[local_idx] = 1.0
     return mask_flat.reshape(h, w)
+
+
+def process_single_scenario(model, postprocessor, image_path, device, target_size, conf_threshold=0.3):
+    """
+    Run inference on one image, capture S4/S5 data and predictions.
+    Returns: (orig_with_pred_boxes, s5_overlay, s4_overlay, combined_with_pred_boxes)
+    """
+    orig_image = cv2.imread(str(image_path))
+    if orig_image is None:
+        raise ValueError(f"Failed to read image: {image_path}")
+
+    img_tensor, _, meta = preprocess_image(str(image_path), target_size=target_size)
+    img_tensor = img_tensor.to(device)
+    orig_h, orig_w = meta["orig_size"][0].tolist()
+    padded_h, padded_w = meta["padded_h"], meta["padded_w"]
+
+    kept_indices_captured = [None]
+    encoder_info_captured = [None]
+
+    def pruner_hook(module, inputs, outputs):
+        if isinstance(outputs, tuple) and len(outputs) >= 2:
+            _, kept_indices, _ = outputs
+            kept_indices_captured[0] = kept_indices
+
+    def encoder_hook(module, inputs, outputs):
+        if isinstance(outputs, tuple) and len(outputs) == 2:
+            _, info = outputs
+            encoder_info_captured[0] = info
+        elif isinstance(outputs, (list, tuple)) and len(outputs) > 0:
+            first = outputs[0]
+            if hasattr(first, "encoder_info"):
+                encoder_info_captured[0] = first.encoder_info
+
+    hook_pruner = None
+    hook_encoder = None
+    if hasattr(model, "encoder"):
+        if hasattr(model.encoder, "shared_token_pruner") and model.encoder.shared_token_pruner is not None:
+            hook_pruner = model.encoder.shared_token_pruner.register_forward_hook(pruner_hook)
+        hook_encoder = model.encoder.register_forward_hook(encoder_hook)
+
+    with torch.no_grad():
+        outputs = model(img_tensor)
+
+    if hook_pruner:
+        hook_pruner.remove()
+    if hook_encoder:
+        hook_encoder.remove()
+
+    # Predictions
+    labels, boxes, scores = postprocess_outputs(
+        outputs, postprocessor, meta, conf_threshold, target_size, device, verbose=False
+    )
+
+    encoder_info = encoder_info_captured[0]
+    if encoder_info is None and isinstance(outputs, dict) and "encoder_info" in outputs:
+        encoder_info = outputs["encoder_info"]
+    if encoder_info is None:
+        raise RuntimeError("Could not extract encoder_info from model output.")
+
+    spatial_shapes = encoder_info.get("spatial_shapes", [])
+    level_sizes = [h * w for h, w in spatial_shapes]
+    level_start_index = encoder_info.get("level_start_index")
+    if level_start_index is not None:
+        level_start_index = level_start_index.cpu().numpy().tolist()
+    else:
+        level_start_index = [0] + list(np.cumsum(level_sizes[:-1]))
+
+    layer_wise_heatmaps = encoder_info.get("layer_wise_heatmaps", [])
+    if len(layer_wise_heatmaps) < 2:
+        raise RuntimeError("Need at least 2 levels (S4, S5).")
+
+    kept_indices = kept_indices_captured[0]
+    s4_idx, s5_idx = 0, 1
+    s4_shape = spatial_shapes[s4_idx]
+    s5_shape = spatial_shapes[s5_idx]
+
+    s4_scores_sigmoid = torch.sigmoid(layer_wise_heatmaps[s4_idx][0, 0]).cpu().numpy()
+    s5_scores_sigmoid = torch.sigmoid(layer_wise_heatmaps[s5_idx][0, 0]).cpu().numpy()
+
+    s4_mask = kept_indices_to_level_mask(
+        kept_indices, level_start_index[s4_idx], level_sizes[s4_idx], s4_shape
+    )
+    s5_mask = kept_indices_to_level_mask(
+        kept_indices, level_start_index[s5_idx], level_sizes[s5_idx], s5_shape
+    )
+
+    h_s4, w_s4 = s4_shape
+    h_s5, w_s5 = s5_shape
+
+    s5_heatmap_aligned = align_map_to_image(
+        s5_scores_sigmoid, h_s5, w_s5, padded_h, padded_w, orig_h, orig_w, normalize_before_resize=True
+    )
+    s4_heatmap_aligned = align_map_to_image(
+        s4_scores_sigmoid, h_s4, w_s4, padded_h, padded_w, orig_h, orig_w, normalize_before_resize=True
+    )
+    s5_mask_aligned = align_map_to_image(s5_mask, h_s5, w_s5, padded_h, padded_w, orig_h, orig_w)
+    s4_mask_aligned = align_map_to_image(s4_mask, h_s4, w_s4, padded_h, padded_w, orig_h, orig_w)
+
+    combined_mask = np.maximum(s4_mask_aligned, s5_mask_aligned)
+    combined_image = orig_image.copy()
+    combined_image[combined_mask < 0.5] = 0
+
+    s5_uint8 = (s5_heatmap_aligned * 255).astype(np.uint8)
+    s5_colormap = cv2.applyColorMap(s5_uint8, cv2.COLORMAP_JET)
+    s5_overlay = cv2.addWeighted(orig_image.copy(), 0.4, s5_colormap, 0.6, 0)
+
+    s4_uint8 = (s4_heatmap_aligned * 255).astype(np.uint8)
+    s4_colormap = cv2.applyColorMap(s4_uint8, cv2.COLORMAP_JET)
+    s4_overlay = cv2.addWeighted(orig_image.copy(), 0.4, s4_colormap, 0.6, 0)
+
+    # Draw predicted boxes (thin for paper)
+    orig_with_boxes = draw_boxes(orig_image.copy(), labels, boxes, scores, CLASS_NAMES, COLORS)
+    combined_with_boxes = draw_boxes(combined_image.copy(), labels, boxes, scores, CLASS_NAMES, COLORS)
+
+    return orig_with_boxes, s5_overlay, s4_overlay, combined_with_boxes
+
+
+def run_qualitative_4x4_grid(
+    model,
+    postprocessor,
+    image_paths,
+    device="cuda",
+    output_path="figure5_qualitative_final.pdf",
+    target_size=1280,
+    conf_threshold=0.3,
+):
+    """Build single 4x4 grid figure (4 scenarios x 4 columns)."""
+    matplotlib.rcParams["font.family"] = "serif"
+    matplotlib.rcParams["font.serif"] = ["Times New Roman", "DejaVu Serif", "serif"]
+
+    fig, axes = plt.subplots(nrows=4, ncols=4, figsize=(16, 10))
+    plt.subplots_adjust(wspace=0.01, hspace=0.05)
+
+    col_titles = ["Original Image", r"$S_5$ Coarse Heatmap", r"$S_4$ Fine Heatmap", "Combined Dual-Sparse Input"]
+
+    for row, image_path in enumerate(image_paths):
+        print(f"Processing scenario {row + 1}/4: {image_path}")
+        orig_with_boxes, s5_overlay, s4_overlay, combined_with_boxes = process_single_scenario(
+            model, postprocessor, image_path, device, target_size, conf_threshold
+        )
+        imgs = [orig_with_boxes, s5_overlay, s4_overlay, combined_with_boxes]
+        for col, (ax, img) in enumerate(zip(axes[row], imgs)):
+            ax.imshow(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+            if row == 0:
+                ax.set_title(col_titles[col], fontweight="bold", fontfamily="serif")
+            ax.set_xticks([])
+            ax.set_yticks([])
+            ax.axis("off")
+
+    out_path = Path(output_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(str(out_path), dpi=300, format="pdf", bbox_inches="tight")
+    plt.close()
+    print(f"Saved: {out_path}")
 
 
 def run_dual_aperture_visualization(
@@ -323,13 +490,16 @@ def main():
     parser.add_argument("--image", type=str, default=None, help="Input image path (default: 4 images from ./image/)")
     parser.add_argument("--config", type=str, default=default_config, help="Model config YAML")
     parser.add_argument("--checkpoint", type=str, default=default_checkpoint, help="Model checkpoint")
-    parser.add_argument("--output", type=str, default="figure5_dual_aperture.pdf", help="Output PDF path")
+    parser.add_argument("--output", type=str, default="figure5_qualitative_final.pdf", help="Output PDF path")
     parser.add_argument("--gt_path", type=str, default=None, help="Optional GT annotations JSON for boxes")
     parser.add_argument("--zoom", type=float, nargs=4, default=None,
                         help="Zoom region: x y w h (e.g., 200 100 150 120)")
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--target_size", type=int, default=1280)
     parser.add_argument("--image_dir", type=str, default=".", help="Base dir for image folder (default: cwd)")
+    parser.add_argument("--conf_threshold", type=float, default=0.3, help="Detection confidence threshold")
+    parser.add_argument("--mode", type=str, default="grid", choices=["grid", "single"],
+                        help="grid: 4x4 composite figure (default); single: one 4-column figure per image")
     args = parser.parse_args()
 
     # Resolve images: --image or 4 from image/
@@ -345,24 +515,37 @@ def main():
         print("Error: --config and --checkpoint required (or set defaults in benchmark_pruning_curve_example.json)")
         return
 
-    model, _ = load_model(args.config, args.checkpoint, args.device)
+    model, postprocessor = load_model(args.config, args.checkpoint, args.device)
     zoom_region = tuple(map(int, args.zoom)) if args.zoom else None
 
-    for i, image_path in enumerate(image_paths):
-        out_path = args.output
-        if len(image_paths) > 1:
-            stem = Path(out_path).stem
-            suffix = Path(out_path).suffix
-            out_path = str(Path(out_path).parent / f"{stem}_{i}{suffix}")
-        run_dual_aperture_visualization(
+    if args.mode == "grid" and len(image_paths) >= 4:
+        # 4x4 composite figure (4 scenarios x 4 columns)
+        run_qualitative_4x4_grid(
             model,
-            image_path,
+            postprocessor,
+            image_paths[:4],
             device=args.device,
-            output_path=out_path,
+            output_path=args.output,
             target_size=args.target_size,
-            gt_path=args.gt_path,
-            zoom_region=zoom_region,
+            conf_threshold=args.conf_threshold,
         )
+    elif args.mode == "grid" and len(image_paths) < 4:
+        print(f"Warning: grid mode requires 4 images, found {len(image_paths)}. Falling back to single mode.")
+        for i, image_path in enumerate(image_paths):
+            run_dual_aperture_visualization(
+                model, image_path, device=args.device,
+                output_path=args.output if len(image_paths) == 1 else f"{Path(args.output).stem}_{i}.pdf",
+                target_size=args.target_size, gt_path=args.gt_path, zoom_region=zoom_region,
+            )
+    else:
+        for i, image_path in enumerate(image_paths):
+            out_path = args.output
+            if len(image_paths) > 1:
+                out_path = str(Path(args.output).parent / f"{Path(args.output).stem}_{i}.pdf")
+            run_dual_aperture_visualization(
+                model, image_path, device=args.device, output_path=out_path,
+                target_size=args.target_size, gt_path=args.gt_path, zoom_region=zoom_region,
+            )
 
 
 if __name__ == "__main__":
