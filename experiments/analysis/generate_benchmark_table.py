@@ -154,12 +154,10 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 12
     if is_yolo and hasattr(model, 'model'):
         try:
             imgsz = input_size[2] if input_size[2] == input_size[3] else [input_size[2], input_size[3]]
-            if not isinstance(imgsz, list):
-                imgsz = [imgsz, imgsz]
             from ultralytics.utils.torch_utils import get_flops
             base_flops_g = get_flops(model.model, imgsz=imgsz)
             theory_flops_g = base_flops_g
-            print(f"  ✓ Base FLOPs: {base_flops_g:.2f} G (ultralytics 内置)")
+            print(f"  ✓ Base FLOPs: {base_flops_g:.2f} G (ultralytics @{imgsz})")
             print(f"  ✓ Theory FLOPs: {theory_flops_g:.2f} G")
         except Exception as e:
             print(f"  ⚠ YOLO FLOPs 获取失败: {e}")
