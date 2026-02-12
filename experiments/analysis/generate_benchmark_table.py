@@ -185,7 +185,11 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 12
             base_flops_g = base_macs / 1e9
             print(f"  ✓ Base FLOPs (Dense, r=1.0): {base_flops_g:.2f} G")
             
-            if model_type == "dset":
+            if model_type != "dset":
+                _moe_dense_mode = False
+                theory_flops_g = base_flops_g
+                print(f"  ✓ Theory FLOPs: {theory_flops_g:.2f} G")
+            elif model_type == "dset":
                 if hasattr(model_eval, 'encoder') and hasattr(model_eval.encoder, 'shared_token_pruner'):
                     pruner = model_eval.encoder.shared_token_pruner
                     if pruner is not None:
@@ -193,7 +197,6 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 12
                             pruner.prune_in_eval = True
                         if hasattr(pruner, 'pruning_enabled'):
                             pruner.pruning_enabled = True
-                
                 for m in model_eval.modules():
                     if hasattr(m, 'set_epoch'):
                         m.set_epoch(999)
@@ -201,26 +204,20 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 12
                         m.pruning_enabled = True
                     if hasattr(m, 'current_epoch'):
                         m.current_epoch = 999
-                
                 dset_cfg = config.get('model', {}).get('dset', {})
                 r = dset_cfg.get('token_keep_ratio', 1.0)
                 if isinstance(r, dict):
                     r = max(r.values())
-            else:
-                r = 1.0
-            
-            if model_type == "dset":
                 with torch.no_grad():
                     _ = model_eval(dummy_img)
-            
-            _moe_dense_mode = False
-            theory_macs, _ = profile(model_eval, inputs=(dummy_img,), custom_ops=custom_ops_map, verbose=False)
-            theory_flops_g = theory_macs / 1e9
-            print(f"  ✓ Theory FLOPs (With Pruning, r={r:.2f}): {theory_flops_g:.2f} G")
-            if model_type == "dset" and r < 1.0:
-                reduction = (1 - theory_flops_g / base_flops_g) * 100 if base_flops_g > 0 else 0
-                print(f"  💡 FLOPs Reduction: {reduction:.1f}% (automatically captured by physical pruning)")
-                
+                _moe_dense_mode = False
+                theory_macs, _ = profile(model_eval, inputs=(dummy_img,), custom_ops=custom_ops_map, verbose=False)
+                theory_flops_g = theory_macs / 1e9
+                print(f"  ✓ Theory FLOPs (With Pruning, r={r:.2f}): {theory_flops_g:.2f} G")
+                if r < 1.0:
+                    reduction = (1 - theory_flops_g / base_flops_g) * 100 if base_flops_g > 0 else 0
+                    print(f"  💡 FLOPs Reduction: {reduction:.1f}% (automatically captured by physical pruning)")
+
             del model_eval
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
