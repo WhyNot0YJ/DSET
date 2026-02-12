@@ -1,15 +1,7 @@
 {
   "DSET_r18_0.3": {
-    "config": "experiments/dset/configs/dset6_r18_ratio0.3.yaml",
-    "checkpoint": "experiments/dset/logs/dset6_r18_20251209_155547/best_model.pth"
-  },
-  "DSET_r18_0.5": {
-    "config": "experiments/dset/configs/dset6_r18_ratio0.5.yaml",
-    "checkpoint": "experiments/dset/logs/dset6_r18_20251210_103509/best_model.pth"
-  },
-  "DSET_r18_0.9": {
-    "config": "experiments/dset/configs/dset6_r18_ratio0.9.yaml",
-    "checkpoint": "experiments/dset/logs/dset6_r18_20251209_235652/best_model.pth"
+    "config": "/root/autodl-tmp/DSET/experiments/dset/logs/dset6_r18_20260126_173526/config.yaml",
+    "checkpoint": "/root/autodl-tmp/DSET/experiments/dset/logs/dset6_r18_20260126_173526/best_model.pth"
   }
 }
 

@@ -85,7 +85,9 @@ import argparse
 import yaml
 import torch
 import matplotlib.pyplot as plt
+import matplotlib
 import numpy as np
+import seaborn as sns
 from pathlib import Path
 from tqdm import tqdm
 
@@ -236,34 +238,73 @@ def benchmark_models(models_dict, inference_ratios, device='cuda'):
         
     return results
 
-def plot_results(inference_ratios, results, output_path="pruning_tradeoff.png"):
+def plot_results(inference_ratios, results, output_path="pruning_tradeoff.pdf"):
     """
-    Plot the trade-off curves
+    Plot the trade-off curves with professional, publication-ready styling
+    (CVPR/ICCV style, seaborn-based, vector PDF output).
     """
-    plt.figure(figsize=(10, 6))
-    
-    markers = ['o', 's', '^', 'D']
-    colors = ['b', 'g', 'r', 'c']
-    
-    for i, (model_name, mAPs) in enumerate(results.items()):
-        plt.plot(inference_ratios, mAPs, 
-                 marker=markers[i % len(markers)], 
-                 color=colors[i % len(colors)], 
-                 linewidth=2, 
-                 label=model_name)
-        
-        # Add labels (保留三位小数)
-        for x, y in zip(inference_ratios, mAPs):
-            plt.annotate(f"{y:.3f}", (x, y), textcoords="offset points", xytext=(0, 10), ha='center', fontsize=8)
+    # Theme and font setup
+    sns.set_theme(style="whitegrid")
+    matplotlib.rcParams["font.family"] = "serif"
+    matplotlib.rcParams["font.serif"] = ["Times New Roman", "DejaVu Serif", "serif"]
+    matplotlib.rcParams["axes.titlesize"] = 12
+    matplotlib.rcParams["axes.labelsize"] = 11
 
-    plt.xlabel('Inference Keep Ratio')
-    plt.ylabel('mAP (0.5:0.95)')
-    plt.title('Accuracy vs. Efficiency Trade-off (Dynamic Pruning)')
-    plt.grid(True, linestyle='--', alpha=0.7)
-    plt.legend()
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    # Shaded regions (draw first so they appear behind the curves)
+    ax.axvspan(0.1, 0.3, alpha=0.2, color="#90EE90", label="High-Efficiency Zone")
+    ax.axvspan(0.3, 1.0, alpha=0.2, color="#ADD8E6", label="Saturation Zone")
+
+    # Vertical dashed line at training threshold r=0.3
+    ax.axvline(x=0.3, color="grey", linestyle="--", alpha=0.6, linewidth=1.5)
+
+    # Professional color palette (DSET primary: #d62728)
+    palette = ["#d62728", "#2ca02c", "#1f77b4", "#9467bd", "#ff7f0e"]
+    markers = ["o", "s", "^", "D", "v"]
+
+    for i, (model_name, mAPs) in enumerate(results.items()):
+        color = palette[i % len(palette)]
+        ax.plot(
+            inference_ratios,
+            mAPs,
+            marker=markers[i % len(markers)],
+            color=color,
+            linewidth=2.5,
+            markersize=8,
+            label=model_name,
+        )
+        # Value annotations (three decimal places)
+        for x, y in zip(inference_ratios, mAPs):
+            ax.annotate(
+                f"{y:.3f}",
+                (x, y),
+                textcoords="offset points",
+                xytext=(0, 10),
+                ha="center",
+                fontsize=8,
+                fontfamily="serif",
+            )
+
+    ax.set_xlabel("Inference Keep Ratio", fontweight="bold")
+    ax.set_ylabel("mAP (0.5:0.95)", fontweight="bold")
+    ax.set_title("Accuracy vs. Efficiency Trade-off (Dynamic Pruning)", fontweight="bold")
+
+    sns.despine(trim=True, ax=ax)
+    ax.legend(
+        loc="lower right",
+        framealpha=0.7,
+        frameon=True,
+        edgecolor="grey",
+    )
+
     plt.tight_layout()
-    
-    plt.savefig(output_path, dpi=300)
+
+    # Default to PDF format for vector quality (LaTeX-ready)
+    ext = os.path.splitext(output_path)[1].lower()
+    fmt = "pdf" if ext in (".pdf",) else (ext.lstrip(".") or "pdf")
+    plt.savefig(output_path, dpi=300, format=fmt, bbox_inches="tight")
+    plt.close()
     print(f"\nPlot saved to {output_path}")
 
 def main():
@@ -296,8 +337,8 @@ def main():
                         help="Step size for keep_ratio sweep (default: 0.1)")
     
     # Output
-    parser.add_argument("--output", type=str, default="pruning_tradeoff.png",
-                        help="Output plot file path (default: pruning_tradeoff.png)")
+    parser.add_argument("--output", type=str, default="pruning_tradeoff.pdf",
+                        help="Output plot file path (default: pruning_tradeoff.pdf)")
     parser.add_argument("--append", action="store_true",
                         help="Append results to existing plot file (if it exists)")
     
