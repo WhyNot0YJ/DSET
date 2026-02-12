@@ -157,6 +157,23 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 12
             device = next(model_eval.parameters()).device
             dummy_img = torch.randn(input_size).to(device)
             
+            # mmdet 模型（如 deformable-detr）forward 需要 batch_data_samples，用 wrapper 构造 DetDataSample
+            if model_type == "deformable-detr":
+                from mmdet.structures import DetDataSample
+
+                class _MMDetFLOPsWrapper(torch.nn.Module):
+                    def __init__(self, m):
+                        super().__init__()
+                        self._model = m
+
+                    def forward(self, x):
+                        H, W = int(x.shape[2]), int(x.shape[3])
+                        ds = DetDataSample()
+                        ds.set_metainfo(dict(batch_input_shape=(H, W), img_shape=(H, W)))
+                        return self._model(x, [ds], mode='tensor')
+
+                model_eval = _MMDetFLOPsWrapper(model_eval)
+            
             custom_ops_map = {}
             for m in model_eval.modules():
                 if "MoELayer" in m.__class__.__name__:
@@ -566,12 +583,8 @@ def evaluate_deformable_detr_full(config_path: str,
         register_all_modules()
     
     cfg = Config.fromfile(config_path)
-    if checkpoint_path:
-        cfg.load_from = checkpoint_path
-    
-    # 使用配置文件中的 batch_size（不强制为 1，COCO 评估结果与 batch_size 无关）
-    # 其余配置（pipeline/resize/evaluator/proposal_nums/metric_items/num_workers 等）
-    # 严格沿用训练脚本（如 train_deformable_r18.py）生成的 config，保证一致性。
+    # 不设置 cfg.load_from：PyTorch 2.6+ 默认 weights_only=True，mmengine checkpoint 含自定义类会报错。
+    # 改为手动加载（使用 weights_only=False），避免 Runner 内部 torch.load 失败。
     
     # 避免写日志到 work_dir（Runner 需要但我们不关心）
     try:
@@ -581,6 +594,10 @@ def evaluate_deformable_detr_full(config_path: str,
         cfg.work_dir = cfg.get('work_dir', './work_dirs/bench_deformable_detr')
     
     runner = Runner.from_cfg(cfg)
+    if checkpoint_path:
+        checkpoint = _load_checkpoint(checkpoint_path)
+        state_dict = checkpoint.get('state_dict', checkpoint.get('model', checkpoint))
+        runner.model.load_state_dict(state_dict, strict=False)
     runner.model = runner.model.to(device)
     runner.model.eval()
     
