@@ -179,16 +179,18 @@ def plot_pareto_frontier(output_dir: Path):
         zorder=6,
     )
     ax.add_patch(arrow_horiz)
-    ax.text(
-        (yolo10_x + dset_x) / 2 + 2,
-        (yolo10_y + dset_y) / 2 - 0.003,
+    ax.annotate(
         "-31% GFLOPs",
+        xy=((yolo10_x + dset_x) / 2, (yolo10_y + dset_y) / 2),
+        xytext=(20, 0),
+        textcoords="offset points",
         fontsize=12,
         fontweight="bold",
         color="#15803D",
         va="center",
         ha="center",
         zorder=6,
+        arrowprops=dict(arrowstyle="-", alpha=0),
     )
 
     # --- Axis setup (Zoomed: tight limits) ---
