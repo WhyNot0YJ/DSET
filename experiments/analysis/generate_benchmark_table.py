@@ -936,15 +936,15 @@ def evaluate_single_model(model_name: str, model_config: Dict, args, project_roo
         elif model_type == "rtdetr":
             model, config = load_rtdetr_model(str(config_path), str(checkpoint_path), args.device)
         elif model_type == "deformable-detr":
-            model = load_deformable_detr_model(str(checkpoint_path), args.device, 
-                                               config_path=str(config_path) if config_path else None)
-            # 加载配置（MMDetection 的 config.yaml 含 !!python/tuple 等标签，需用 mmengine.Config 而非 yaml.safe_load）
-            if config_path:
+            model, config = load_deformable_detr_model(str(checkpoint_path), args.device, 
+                                                       config_path=str(config_path) if config_path else None)
+            # config 已由 load_deformable_detr_model 返回；若为空则用 Config.fromfile 补充（含 !!python/tuple 的 yaml 需 mmengine 解析）
+            if not config and config_path:
                 try:
                     from mmengine.config import Config
                     config = Config.fromfile(config_path)
                 except ImportError:
-                    config = None
+                    config = {}
         elif model_type.startswith("yolov8"):
             model, config = load_yolov8_model(str(checkpoint_path), args.device)
         elif model_type.startswith("yolov10"):
