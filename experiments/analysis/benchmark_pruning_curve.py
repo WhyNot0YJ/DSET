@@ -91,18 +91,14 @@ import seaborn as sns
 from pathlib import Path
 from tqdm import tqdm
 
-# Add project root to path
-project_root = Path(__file__).parent.resolve()
+# Add project root (DSET/) to path so "experiments.dset.train" can be imported
+_script_dir = Path(__file__).resolve().parent
+project_root = _script_dir.parent.parent  # DSET/ from experiments/analysis/benchmark_*.py
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 # Import DSETTrainer
-try:
-    from experiments.dset.train import DSETTrainer
-except ImportError:
-    # Try alternate path if running from root
-    sys.path.insert(0, str(project_root / "experiments/dset"))
-    from train import DSETTrainer
+from experiments.dset.train import DSETTrainer
 
 def setup_trainer(config_path, checkpoint_path, device='cuda'):
     """
