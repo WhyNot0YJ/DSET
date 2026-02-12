@@ -21,7 +21,7 @@ import argparse
 from pathlib import Path
 
 import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
+from matplotlib.patches import FancyArrowPatch
 import seaborn as sns
 
 
@@ -82,23 +82,12 @@ def plot_pareto_frontier(output_dir: Path):
 
     fig, ax = plt.subplots(figsize=(7, 5))
 
-    # --- Pareto Frontier Highlight: shaded region for DSET-R18 advantage ---
-    # DSET-R18: (68.3, 0.680) - Best low-cost point ("High Precision @ Low Cost")
-    dset_r18_x, dset_r18_y = 68.3, 0.680
+    # Data coordinates for annotations
+    dset_x, dset_y = 68.3, 0.680
+    rtdetr_x, rtdetr_y = 67.6, 0.649
+    yolo8_x, yolo8_y = 114.7, 0.689
 
-    # Light shaded region: "High Precision @ Low Cost" zone
-    rect = mpatches.Rectangle(
-        (50, 0.670),
-        width=dset_r18_x - 50 + 5,
-        height=0.02,
-        linewidth=0,
-        facecolor=DSET["color"],
-        alpha=0.15,
-        zorder=0,
-    )
-    ax.add_patch(rect)
-
-    # --- Plot Data ---
+    # --- Plot Data (Scatter only, NO connecting lines) ---
 
     # DSET-R18: Star marker
     for p in DSET["points"]:
@@ -140,21 +129,49 @@ def plot_pareto_frontier(output_dir: Path):
             linewidths=0.5,
         )
 
-    # --- Annotate DSET-R18: "High Precision @ Low Cost" ---
-    ax.annotate(
-        "High Precision @ Low Cost",
-        xy=(dset_r18_x, dset_r18_y),
-        xytext=(dset_r18_x + 25, dset_r18_y - 0.008),
-        fontsize=10,
+    # --- Vertical Arrow: Accuracy Gain (RT-DETR-R18 -> DSET-R18) ---
+    arrow_vert = FancyArrowPatch(
+        (rtdetr_x, rtdetr_y),
+        (dset_x, dset_y),
+        arrowstyle="->",
+        color="#15803D",
+        linewidth=2,
+        mutation_scale=16,
+        zorder=6,
+    )
+    ax.add_patch(arrow_vert)
+    ax.text(
+        dset_x + 6,
+        (rtdetr_y + dset_y) / 2,
+        "+3.1% mAP",
+        fontsize=11,
         fontweight="bold",
-        color=DSET["color"],
+        color="#15803D",
+        va="center",
         ha="left",
-        arrowprops=dict(
-            arrowstyle="->",
-            color=DSET["color"],
-            lw=1.2,
-            connectionstyle="arc3,rad=0.1",
-        ),
+        zorder=6,
+    )
+
+    # --- Horizontal Arrow: Efficiency Gain (YOLOv8-S -> DSET-R18) ---
+    arrow_horiz = FancyArrowPatch(
+        (yolo8_x, yolo8_y),
+        (dset_x + 5, yolo8_y),
+        arrowstyle="->",
+        color="#15803D",
+        linewidth=2,
+        mutation_scale=16,
+        zorder=6,
+    )
+    ax.add_patch(arrow_horiz)
+    ax.text(
+        (yolo8_x + dset_x) / 2,
+        yolo8_y - 0.012,
+        "~40% Less GFLOPs",
+        fontsize=11,
+        fontweight="bold",
+        color="#15803D",
+        va="top",
+        ha="center",
         zorder=6,
     )
 
