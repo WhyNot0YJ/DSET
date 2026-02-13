@@ -31,25 +31,23 @@ try:
     from experiments.dset.batch_inference import (
         load_model,
         preprocess_image,
-        get_gt_annotation_path,
         postprocess_outputs,
         draw_boxes,
         CLASS_NAMES,
         COLORS,
     )
-    from experiments.dset.visualize_ground_truth import load_annotations, draw_gt_boxes
+    from experiments.dset.visualize_ground_truth import draw_gt_boxes
 except ImportError:
     sys.path.insert(0, str(_project_root))
     from experiments.dset.batch_inference import (
         load_model,
         preprocess_image,
-        get_gt_annotation_path,
         postprocess_outputs,
         draw_boxes,
         CLASS_NAMES,
         COLORS,
     )
-    from experiments.dset.visualize_ground_truth import load_annotations, draw_gt_boxes
+    from experiments.dset.visualize_ground_truth import draw_gt_boxes
 
 def align_map_to_image(map_2d, h_feat, w_feat, H_tensor, W_tensor, orig_h, orig_w, normalize_before_resize=False):
     """
@@ -91,9 +89,7 @@ def kept_indices_to_level_mask(kept_indices, level_start, level_size, spatial_sh
 
 
 def _resolve_gt_annotation_path(image_path, gt_path=None, annotations_dir=None, data_root=None):
-    """Resolve GT annotation path for an image. Tries multiple strategies.
-    Supports both DAIR-V2X JSON and YOLO .txt (e.g. DAIR-V2X_YOLO labels/train, labels/val).
-    """
+    """Resolve GT annotation path (YOLO .txt only)."""
     path = Path(image_path)
     stem = path.stem
 
@@ -102,29 +98,22 @@ def _resolve_gt_annotation_path(image_path, gt_path=None, annotations_dir=None, 
         if p.is_file():
             return str(p)
         if p.is_dir():
-            for candidate in [p / f"{stem}.json", p / "camera" / f"{stem}.json", p / f"{stem}.txt"]:
-                if candidate.exists():
-                    return str(candidate)
+            cand = p / f"{stem}.txt"
+            if cand.exists():
+                return str(cand)
 
     if annotations_dir:
-        ad = Path(annotations_dir)
-        for candidate in [ad / f"{stem}.json", ad / "camera" / f"{stem}.json", ad / f"{stem}.txt"]:
-            if candidate.exists():
-                return str(candidate)
+        cand = Path(annotations_dir) / f"{stem}.txt"
+        if cand.exists():
+            return str(cand)
 
     if data_root:
         dr = Path(data_root)
-        # DAIR-V2X_YOLO: labels/train/*.txt, labels/val/*.txt
-        for candidate in [
-            dr / "labels" / "train" / f"{stem}.txt",
-            dr / "labels" / "val" / f"{stem}.txt",
-            dr / "labels" / "train" / f"{stem}.json",
-            dr / "labels" / "val" / f"{stem}.json",
-        ]:
-            if candidate.exists():
-                return str(candidate)
+        for cand in [dr / "labels" / "train" / f"{stem}.txt", dr / "labels" / "val" / f"{stem}.txt"]:
+            if cand.exists():
+                return str(cand)
 
-    return get_gt_annotation_path(path)
+    return None
 
 
 def _load_yolo_annotations(label_path: Path, img_h: int, img_w: int) -> list:
@@ -274,13 +263,10 @@ def process_single_scenario(model, postprocessor, image_path, device, target_siz
     if gt_path_resolved and Path(gt_path_resolved).exists():
         ann_path = Path(gt_path_resolved)
         try:
-            if ann_path.suffix.lower() == ".txt":
-                annotations = _load_yolo_annotations(ann_path, orig_h, orig_w)
-            else:
-                annotations = load_annotations(ann_path)
+            annotations = _load_yolo_annotations(ann_path, orig_h, orig_w)
             if annotations:
                 orig_with_boxes = draw_gt_boxes(
-                    orig_image.copy(), annotations, show_labels=True, line_thickness=1
+                    orig_image.copy(), annotations, show_labels=True, line_thickness=1, colors=COLORS
                 )
                 if verbose:
                     print(f"  ✓ GT: {len(annotations)} boxes from {ann_path.name}")
@@ -604,11 +590,11 @@ def main():
     parser.add_argument("--checkpoint", type=str, default=default_checkpoint, help="Model checkpoint")
     parser.add_argument("--output", type=str, default="figure5_qualitative_final.pdf", help="Output PDF path")
     parser.add_argument("--gt_path", type=str, default=None,
-                        help="GT JSON path (single file) or directory containing {stem}.json")
+                        help="GT .txt path (single file) or directory with {stem}.txt")
     parser.add_argument("--annotations_dir", type=str, default=None,
-                        help="Directory with GT JSONs: {annotations_dir}/{stem}.json or .../camera/{stem}.json")
+                        help="Directory with GT .txt: {annotations_dir}/{stem}.txt")
     parser.add_argument("--data_root", type=str, default=None,
-                        help="Data root: labels/train|val/{stem}.txt|.json; images from images/train|val if ./image/ empty")
+                        help="Data root: labels/train|val/{stem}.txt; images from images/train|val if ./image/ empty")
     parser.add_argument("--zoom", type=float, nargs=4, default=None,
                         help="Zoom region: x y w h (e.g., 200 100 150 120)")
     parser.add_argument("--device", type=str, default="cuda")

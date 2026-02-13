@@ -84,7 +84,8 @@ def load_annotations(annotation_path: Path) -> List[Dict]:
 
 
 def draw_gt_boxes(image: np.ndarray, annotations: List[Dict], 
-                  show_labels: bool = True, line_thickness: int = 2) -> np.ndarray:
+                  show_labels: bool = True, line_thickness: int = 2,
+                  colors: List = None) -> np.ndarray:
     """Draw Ground Truth boxes on image.
     
     Args:
@@ -92,12 +93,14 @@ def draw_gt_boxes(image: np.ndarray, annotations: List[Dict],
         annotations: List of annotations
         show_labels: Whether to show labels
         line_thickness: Thickness of bbox lines
+        colors: BGR color list per class_id (default: COLORS)
     
     Returns:
         Image with GT boxes
     """
     image = image.copy()
-    
+    palette = colors if colors is not None else COLORS
+
     for ann in annotations:
         x1, y1, x2, y2 = map(int, ann['bbox'])
         class_id = ann['class_id']
@@ -110,7 +113,7 @@ def draw_gt_boxes(image: np.ndarray, annotations: List[Dict],
         y2 = max(0, min(y2, image.shape[0] - 1))
         
         # Get Color
-        color = COLORS[class_id] if class_id < len(COLORS) else (255, 255, 255)
+        color = palette[class_id] if class_id < len(palette) else (255, 255, 255)
         
         # Draw Rectangle
         cv2.rectangle(image, (x1, y1), (x2, y2), color, line_thickness)
