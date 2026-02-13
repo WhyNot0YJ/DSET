@@ -31,25 +31,25 @@ try:
     from experiments.dset.batch_inference import (
         load_model,
         preprocess_image,
-        load_gt_boxes,
         get_gt_annotation_path,
         postprocess_outputs,
         draw_boxes,
         CLASS_NAMES,
         COLORS,
     )
+    from experiments.dset.visualize_ground_truth import load_annotations, draw_gt_boxes
 except ImportError:
-    sys.path.insert(0, str(_script_dir.parent))
-    from batch_inference import (
+    sys.path.insert(0, str(_project_root))
+    from experiments.dset.batch_inference import (
         load_model,
         preprocess_image,
-        load_gt_boxes,
         get_gt_annotation_path,
         postprocess_outputs,
         draw_boxes,
         CLASS_NAMES,
         COLORS,
     )
+    from experiments.dset.visualize_ground_truth import load_annotations, draw_gt_boxes
 
 def align_map_to_image(map_2d, h_feat, w_feat, H_tensor, W_tensor, orig_h, orig_w, normalize_before_resize=False):
     """
@@ -199,13 +199,19 @@ def process_single_scenario(model, postprocessor, image_path, device, target_siz
     s4_colormap = cv2.applyColorMap(s4_uint8, cv2.COLORMAP_JET)
     s4_overlay = cv2.addWeighted(orig_image.copy(), 0.4, s4_colormap, 0.6, 0)
 
-    # Column 1: Original Image + Ground Truth
+    # Column 1: Original Image + Ground Truth (use visualize_ground_truth for consistent GT rendering)
     gt_path_resolved = gt_path or get_gt_annotation_path(Path(image_path))
-    if gt_path_resolved and Path(gt_path_resolved).exists():
-        try:
-            gt_labels, gt_boxes, gt_scores = load_gt_boxes(gt_path_resolved, CLASS_NAMES)
-            orig_with_boxes = draw_boxes(orig_image.copy(), gt_labels, gt_boxes, gt_scores, CLASS_NAMES, COLORS)
-        except Exception:
+    if gt_path_resolved:
+        ann_path = Path(gt_path_resolved)
+        if ann_path.exists():
+            try:
+                annotations = load_annotations(ann_path)
+                orig_with_boxes = draw_gt_boxes(
+                    orig_image.copy(), annotations, show_labels=True, line_thickness=1
+                )
+            except Exception:
+                orig_with_boxes = orig_image.copy()
+        else:
             orig_with_boxes = orig_image.copy()
     else:
         orig_with_boxes = orig_image.copy()
