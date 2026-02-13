@@ -314,7 +314,7 @@ def run_qualitative_4x4_grid(
     fig, axes = plt.subplots(nrows=4, ncols=4, figsize=(16, 10))
     plt.subplots_adjust(wspace=0.01, hspace=0.05)
 
-    col_titles = ["Original Image", r"$S_5$ Coarse Heatmap", r"$S_4$ Fine Heatmap", "Combined Dual-Sparse Input"]
+    col_titles = ["Original Image", r"$S_5$ Coarse Heatmap", r"$S_4$ Fine Heatmap", "Fused Token Mask"]
 
     for row, image_path in enumerate(image_paths):
         print(f"Processing scenario {row + 1}/4: {image_path}")
@@ -545,7 +545,7 @@ def run_dual_aperture_visualization(
 
     # Column 4: Combined Dual-Sparse
     axes[3].imshow(cv2.cvtColor(combined_image, cv2.COLOR_BGR2RGB))
-    axes[3].set_title("Combined Dual-Sparse Input", fontweight="bold", fontfamily="serif")
+    axes[3].set_title("Fused Token Mask", fontweight="bold", fontfamily="serif")
 
     plt.tight_layout()
     out_path = Path(output_path)
