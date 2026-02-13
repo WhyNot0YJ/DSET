@@ -91,7 +91,9 @@ def kept_indices_to_level_mask(kept_indices, level_start, level_size, spatial_sh
 
 
 def _resolve_gt_annotation_path(image_path, gt_path=None, annotations_dir=None, data_root=None):
-    """Resolve GT annotation path for an image. Tries multiple strategies."""
+    """Resolve GT annotation path for an image. Tries multiple strategies.
+    Supports both DAIR-V2X JSON and YOLO .txt (e.g. DAIR-V2X_YOLO labels/train, labels/val).
+    """
     path = Path(image_path)
     stem = path.stem
 
@@ -100,19 +102,22 @@ def _resolve_gt_annotation_path(image_path, gt_path=None, annotations_dir=None, 
         if p.is_file():
             return str(p)
         if p.is_dir():
-            for candidate in [p / f"{stem}.json", p / "camera" / f"{stem}.json"]:
+            for candidate in [p / f"{stem}.json", p / "camera" / f"{stem}.json", p / f"{stem}.txt"]:
                 if candidate.exists():
                     return str(candidate)
 
     if annotations_dir:
         ad = Path(annotations_dir)
-        for candidate in [ad / f"{stem}.json", ad / "camera" / f"{stem}.json"]:
+        for candidate in [ad / f"{stem}.json", ad / "camera" / f"{stem}.json", ad / f"{stem}.txt"]:
             if candidate.exists():
                 return str(candidate)
 
     if data_root:
         dr = Path(data_root)
+        # DAIR-V2X_YOLO: labels/train/*.txt, labels/val/*.txt
         for candidate in [
+            dr / "labels" / "train" / f"{stem}.txt",
+            dr / "labels" / "val" / f"{stem}.txt",
             dr / "labels" / "train" / f"{stem}.json",
             dr / "labels" / "val" / f"{stem}.json",
         ]:
@@ -120,6 +125,37 @@ def _resolve_gt_annotation_path(image_path, gt_path=None, annotations_dir=None, 
                 return str(candidate)
 
     return get_gt_annotation_path(path)
+
+
+def _load_yolo_annotations(label_path: Path, img_h: int, img_w: int) -> list:
+    """Load YOLO format .txt (class_id cx cy w h normalized) and convert to draw_gt_boxes format."""
+    if not label_path.exists():
+        return []
+    lines = label_path.read_text(encoding="utf-8").strip().splitlines()
+    out = []
+    for line in lines:
+        parts = line.split()
+        if len(parts) < 5:
+            continue
+        try:
+            cid = int(parts[0])
+            cx, cy, w, h = float(parts[1]), float(parts[2]), float(parts[3]), float(parts[4])
+        except (ValueError, IndexError):
+            continue
+        x1 = (cx - w / 2) * img_w
+        y1 = (cy - h / 2) * img_h
+        x2 = (cx + w / 2) * img_w
+        y2 = (cy + h / 2) * img_h
+        if x2 <= x1 or y2 <= y1:
+            continue
+        if cid < 0 or cid >= len(CLASS_NAMES):
+            continue
+        out.append({
+            "class_id": cid,
+            "class_name": CLASS_NAMES[cid],
+            "bbox": [x1, y1, x2, y2],
+        })
+    return out
 
 
 def process_single_scenario(model, postprocessor, image_path, device, target_size, conf_threshold=0.3,
@@ -238,7 +274,10 @@ def process_single_scenario(model, postprocessor, image_path, device, target_siz
     if gt_path_resolved and Path(gt_path_resolved).exists():
         ann_path = Path(gt_path_resolved)
         try:
-            annotations = load_annotations(ann_path)
+            if ann_path.suffix.lower() == ".txt":
+                annotations = _load_yolo_annotations(ann_path, orig_h, orig_w)
+            else:
+                annotations = load_annotations(ann_path)
             if annotations:
                 orig_with_boxes = draw_gt_boxes(
                     orig_image.copy(), annotations, show_labels=True, line_thickness=1
@@ -251,8 +290,16 @@ def process_single_scenario(model, postprocessor, image_path, device, target_siz
             if verbose:
                 print(f"  ⚠ GT load failed: {e}")
     elif verbose:
-        tried = gt_path_resolved or "(auto-detect failed)"
-        print(f"  ⚠ No GT for {Path(image_path).name}. Tried: {tried}. Use --annotations_dir or --data_root")
+        stem = Path(image_path).stem
+        if data_root:
+            tried = [
+                str(Path(data_root) / "labels" / "train" / f"{stem}.txt"),
+                str(Path(data_root) / "labels" / "val" / f"{stem}.txt"),
+            ]
+            print(f"  ⚠ No GT for {Path(image_path).name}. Tried: {tried}. Ensure images match dataset stems.")
+        else:
+            tried = gt_path_resolved or "(auto-detect failed)"
+            print(f"  ⚠ No GT for {Path(image_path).name}. Tried: {tried}. Use --annotations_dir or --data_root")
 
     # Column 4: Combined Dual-Sparse + Predicted boxes
     combined_with_boxes = draw_boxes(combined_image.copy(), labels, boxes, scores, CLASS_NAMES, COLORS)
@@ -531,17 +578,21 @@ def _load_default_config():
     return None, None
 
 
-def _get_default_images(image_dir=None, max_count=4):
-    """Get up to max_count images from image/ folder (sorted by path)."""
-    image_dir = Path(image_dir or ".") / "image"
-    if not image_dir.exists():
-        return []
+def _get_default_images(image_dir=None, data_root=None, max_count=4):
+    """Get up to max_count images. Tries image_dir/image/, then data_root/images/train|val/."""
     exts = {".jpg", ".jpeg", ".png", ".bmp"}
-    images = sorted(
-        [p for p in image_dir.iterdir() if p.suffix.lower() in exts],
-        key=lambda p: str(p),
-    )
-    return [str(p) for p in images[:max_count]]
+    candidates = []
+    base = Path(image_dir or ".") / "image"
+    if base.exists():
+        candidates = sorted([p for p in base.iterdir() if p.suffix.lower() in exts], key=lambda p: str(p))
+    if not candidates and data_root:
+        dr = Path(data_root)
+        for sub in ["images/train", "images/val", "image"]:
+            folder = dr / sub
+            if folder.exists():
+                candidates = sorted([p for p in folder.iterdir() if p.suffix.lower() in exts], key=lambda p: str(p))
+                break
+    return [str(p) for p in candidates[:max_count]]
 
 
 def main():
@@ -557,7 +608,7 @@ def main():
     parser.add_argument("--annotations_dir", type=str, default=None,
                         help="Directory with GT JSONs: {annotations_dir}/{stem}.json or .../camera/{stem}.json")
     parser.add_argument("--data_root", type=str, default=None,
-                        help="Data root: {data_root}/labels/train|val/{stem}.json (DAIR-V2X_YOLO)")
+                        help="Data root: labels/train|val/{stem}.txt|.json; images from images/train|val if ./image/ empty")
     parser.add_argument("--zoom", type=float, nargs=4, default=None,
                         help="Zoom region: x y w h (e.g., 200 100 150 120)")
     parser.add_argument("--device", type=str, default="cuda")
@@ -568,13 +619,13 @@ def main():
                         help="grid: 4x4 composite figure (default); single: one 4-column figure per image")
     args = parser.parse_args()
 
-    # Resolve images: --image or 4 from image/
+    # Resolve images: --image or 4 from image/ or data_root/images/train|val
     if args.image:
         image_paths = [args.image]
     else:
-        image_paths = _get_default_images(args.image_dir, max_count=4)
+        image_paths = _get_default_images(args.image_dir, args.data_root, max_count=4)
         if not image_paths:
-            print("Error: No --image provided and no images found in ./image/")
+            print("Error: No --image provided and no images in ./image/ or --data_root/images/train|val")
             return
 
     if not args.config or not args.checkpoint:
