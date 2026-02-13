@@ -113,8 +113,8 @@ def _resolve_gt_annotation_path(image_path, gt_path=None, annotations_dir=None, 
     if data_root:
         dr = Path(data_root)
         for candidate in [
-            dr / "annotations" / "camera" / f"{stem}.json",
-            dr / "infrastructure-side" / "annotations" / "camera" / f"{stem}.json",
+            dr / "labels" / "train" / f"{stem}.json",
+            dr / "labels" / "val" / f"{stem}.json",
         ]:
             if candidate.exists():
                 return str(candidate)
@@ -557,7 +557,7 @@ def main():
     parser.add_argument("--annotations_dir", type=str, default=None,
                         help="Directory with GT JSONs: {annotations_dir}/{stem}.json or .../camera/{stem}.json")
     parser.add_argument("--data_root", type=str, default=None,
-                        help="DAIR-V2X data root: {data_root}/annotations/camera/{stem}.json")
+                        help="Data root: {data_root}/labels/train|val/{stem}.json (DAIR-V2X_YOLO)")
     parser.add_argument("--zoom", type=float, nargs=4, default=None,
                         help="Zoom region: x y w h (e.g., 200 100 150 120)")
     parser.add_argument("--device", type=str, default="cuda")
