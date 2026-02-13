@@ -90,7 +90,40 @@ def kept_indices_to_level_mask(kept_indices, level_start, level_size, spatial_sh
     return mask_flat.reshape(h, w)
 
 
-def process_single_scenario(model, postprocessor, image_path, device, target_size, conf_threshold=0.3, gt_path=None):
+def _resolve_gt_annotation_path(image_path, gt_path=None, annotations_dir=None, data_root=None):
+    """Resolve GT annotation path for an image. Tries multiple strategies."""
+    path = Path(image_path)
+    stem = path.stem
+
+    if gt_path:
+        p = Path(gt_path)
+        if p.is_file():
+            return str(p)
+        if p.is_dir():
+            for candidate in [p / f"{stem}.json", p / "camera" / f"{stem}.json"]:
+                if candidate.exists():
+                    return str(candidate)
+
+    if annotations_dir:
+        ad = Path(annotations_dir)
+        for candidate in [ad / f"{stem}.json", ad / "camera" / f"{stem}.json"]:
+            if candidate.exists():
+                return str(candidate)
+
+    if data_root:
+        dr = Path(data_root)
+        for candidate in [
+            dr / "annotations" / "camera" / f"{stem}.json",
+            dr / "infrastructure-side" / "annotations" / "camera" / f"{stem}.json",
+        ]:
+            if candidate.exists():
+                return str(candidate)
+
+    return get_gt_annotation_path(path)
+
+
+def process_single_scenario(model, postprocessor, image_path, device, target_size, conf_threshold=0.3,
+                            gt_path=None, annotations_dir=None, data_root=None, verbose=True):
     """
     Run inference on one image, capture S4/S5 data.
     Returns: (orig_with_gt_boxes, s5_overlay, s4_overlay, combined_with_pred_boxes)
@@ -200,21 +233,26 @@ def process_single_scenario(model, postprocessor, image_path, device, target_siz
     s4_overlay = cv2.addWeighted(orig_image.copy(), 0.4, s4_colormap, 0.6, 0)
 
     # Column 1: Original Image + Ground Truth (use visualize_ground_truth for consistent GT rendering)
-    gt_path_resolved = gt_path or get_gt_annotation_path(Path(image_path))
-    if gt_path_resolved:
+    gt_path_resolved = _resolve_gt_annotation_path(image_path, gt_path, annotations_dir, data_root)
+    orig_with_boxes = orig_image.copy()
+    if gt_path_resolved and Path(gt_path_resolved).exists():
         ann_path = Path(gt_path_resolved)
-        if ann_path.exists():
-            try:
-                annotations = load_annotations(ann_path)
+        try:
+            annotations = load_annotations(ann_path)
+            if annotations:
                 orig_with_boxes = draw_gt_boxes(
                     orig_image.copy(), annotations, show_labels=True, line_thickness=1
                 )
-            except Exception:
-                orig_with_boxes = orig_image.copy()
-        else:
-            orig_with_boxes = orig_image.copy()
-    else:
-        orig_with_boxes = orig_image.copy()
+                if verbose:
+                    print(f"  ✓ GT: {len(annotations)} boxes from {ann_path.name}")
+            elif verbose:
+                print(f"  ⚠ GT file empty: {ann_path}")
+        except Exception as e:
+            if verbose:
+                print(f"  ⚠ GT load failed: {e}")
+    elif verbose:
+        tried = gt_path_resolved or "(auto-detect failed)"
+        print(f"  ⚠ No GT for {Path(image_path).name}. Tried: {tried}. Use --annotations_dir or --data_root")
 
     # Column 4: Combined Dual-Sparse + Predicted boxes
     combined_with_boxes = draw_boxes(combined_image.copy(), labels, boxes, scores, CLASS_NAMES, COLORS)
@@ -230,6 +268,9 @@ def run_qualitative_4x4_grid(
     output_path="figure5_qualitative_final.pdf",
     target_size=1280,
     conf_threshold=0.3,
+    gt_path=None,
+    annotations_dir=None,
+    data_root=None,
 ):
     """Build single 4x4 grid figure (4 scenarios x 4 columns)."""
     matplotlib.rcParams["font.family"] = "serif"
@@ -243,7 +284,8 @@ def run_qualitative_4x4_grid(
     for row, image_path in enumerate(image_paths):
         print(f"Processing scenario {row + 1}/4: {image_path}")
         orig_with_boxes, s5_overlay, s4_overlay, combined_with_boxes = process_single_scenario(
-            model, postprocessor, image_path, device, target_size, conf_threshold
+            model, postprocessor, image_path, device, target_size, conf_threshold,
+            gt_path=gt_path, annotations_dir=annotations_dir, data_root=data_root,
         )
         imgs = [orig_with_boxes, s5_overlay, s4_overlay, combined_with_boxes]
         for col, (ax, img) in enumerate(zip(axes[row], imgs)):
@@ -510,7 +552,12 @@ def main():
     parser.add_argument("--config", type=str, default=default_config, help="Model config YAML")
     parser.add_argument("--checkpoint", type=str, default=default_checkpoint, help="Model checkpoint")
     parser.add_argument("--output", type=str, default="figure5_qualitative_final.pdf", help="Output PDF path")
-    parser.add_argument("--gt_path", type=str, default=None, help="Optional GT annotations JSON for boxes")
+    parser.add_argument("--gt_path", type=str, default=None,
+                        help="GT JSON path (single file) or directory containing {stem}.json")
+    parser.add_argument("--annotations_dir", type=str, default=None,
+                        help="Directory with GT JSONs: {annotations_dir}/{stem}.json or .../camera/{stem}.json")
+    parser.add_argument("--data_root", type=str, default=None,
+                        help="DAIR-V2X data root: {data_root}/annotations/camera/{stem}.json")
     parser.add_argument("--zoom", type=float, nargs=4, default=None,
                         help="Zoom region: x y w h (e.g., 200 100 150 120)")
     parser.add_argument("--device", type=str, default="cuda")
@@ -547,6 +594,9 @@ def main():
             output_path=args.output,
             target_size=args.target_size,
             conf_threshold=args.conf_threshold,
+            gt_path=args.gt_path,
+            annotations_dir=args.annotations_dir,
+            data_root=args.data_root,
         )
     elif args.mode == "grid" and len(image_paths) < 4:
         print(f"Warning: grid mode requires 4 images, found {len(image_paths)}. Falling back to single mode.")
