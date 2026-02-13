@@ -148,7 +148,7 @@ def _load_yolo_annotations(label_path: Path, img_h: int, img_w: int) -> list:
 
 
 def process_single_scenario(model, postprocessor, image_path, device, target_size, conf_threshold=0.3,
-                            gt_path=None, annotations_dir=None, data_root=None, verbose=True):
+                            gt_path=None, annotations_dir=None, data_root=None, draw_gt=False, verbose=True):
     """
     Run inference on one image, capture S4/S5 data.
     Returns: (orig_with_gt_boxes, s5_overlay, s4_overlay, combined_with_pred_boxes)
@@ -257,35 +257,36 @@ def process_single_scenario(model, postprocessor, image_path, device, target_siz
     s4_colormap = cv2.applyColorMap(s4_uint8, cv2.COLORMAP_JET)
     s4_overlay = cv2.addWeighted(orig_image.copy(), 0.4, s4_colormap, 0.6, 0)
 
-    # Column 1: Original Image + Ground Truth (use visualize_ground_truth for consistent GT rendering)
-    gt_path_resolved = _resolve_gt_annotation_path(image_path, gt_path, annotations_dir, data_root)
+    # Column 1: Original Image + Ground Truth (optional)
     orig_with_boxes = orig_image.copy()
-    if gt_path_resolved and Path(gt_path_resolved).exists():
-        ann_path = Path(gt_path_resolved)
-        try:
-            annotations = _load_yolo_annotations(ann_path, orig_h, orig_w)
-            if annotations:
-                orig_with_boxes = draw_gt_boxes(
-                    orig_image.copy(), annotations, show_labels=True, line_thickness=1, colors=COLORS
-                )
+    if draw_gt:
+        gt_path_resolved = _resolve_gt_annotation_path(image_path, gt_path, annotations_dir, data_root)
+        if gt_path_resolved and Path(gt_path_resolved).exists():
+            ann_path = Path(gt_path_resolved)
+            try:
+                annotations = _load_yolo_annotations(ann_path, orig_h, orig_w)
+                if annotations:
+                    orig_with_boxes = draw_gt_boxes(
+                        orig_image.copy(), annotations, show_labels=True, line_thickness=1, colors=COLORS
+                    )
+                    if verbose:
+                        print(f"  ✓ GT: {len(annotations)} boxes from {ann_path.name}")
+                elif verbose:
+                    print(f"  ⚠ GT file empty: {ann_path}")
+            except Exception as e:
                 if verbose:
-                    print(f"  ✓ GT: {len(annotations)} boxes from {ann_path.name}")
-            elif verbose:
-                print(f"  ⚠ GT file empty: {ann_path}")
-        except Exception as e:
-            if verbose:
-                print(f"  ⚠ GT load failed: {e}")
-    elif verbose:
-        stem = Path(image_path).stem
-        if data_root:
-            tried = [
-                str(Path(data_root) / "labels" / "train" / f"{stem}.txt"),
-                str(Path(data_root) / "labels" / "val" / f"{stem}.txt"),
-            ]
-            print(f"  ⚠ No GT for {Path(image_path).name}. Tried: {tried}. Ensure images match dataset stems.")
-        else:
-            tried = gt_path_resolved or "(auto-detect failed)"
-            print(f"  ⚠ No GT for {Path(image_path).name}. Tried: {tried}. Use --annotations_dir or --data_root")
+                    print(f"  ⚠ GT load failed: {e}")
+        elif verbose:
+            stem = Path(image_path).stem
+            if data_root:
+                tried = [
+                    str(Path(data_root) / "labels" / "train" / f"{stem}.txt"),
+                    str(Path(data_root) / "labels" / "val" / f"{stem}.txt"),
+                ]
+                print(f"  ⚠ No GT for {Path(image_path).name}. Tried: {tried}. Ensure images match dataset stems.")
+            else:
+                tried = gt_path_resolved or "(auto-detect failed)"
+                print(f"  ⚠ No GT for {Path(image_path).name}. Tried: {tried}. Use --annotations_dir or --data_root")
 
     # Column 4: Combined Dual-Sparse + Predicted boxes
     combined_with_boxes = draw_boxes(combined_image.copy(), labels, boxes, scores, CLASS_NAMES, COLORS)
@@ -304,6 +305,7 @@ def run_qualitative_4x4_grid(
     gt_path=None,
     annotations_dir=None,
     data_root=None,
+    draw_gt=False,
 ):
     """Build single 4x4 grid figure (4 scenarios x 4 columns)."""
     matplotlib.rcParams["font.family"] = "serif"
@@ -318,7 +320,7 @@ def run_qualitative_4x4_grid(
         print(f"Processing scenario {row + 1}/4: {image_path}")
         orig_with_boxes, s5_overlay, s4_overlay, combined_with_boxes = process_single_scenario(
             model, postprocessor, image_path, device, target_size, conf_threshold,
-            gt_path=gt_path, annotations_dir=annotations_dir, data_root=data_root,
+            gt_path=gt_path, annotations_dir=annotations_dir, data_root=data_root, draw_gt=draw_gt,
         )
         imgs = [orig_with_boxes, s5_overlay, s4_overlay, combined_with_boxes]
         for col, (ax, img) in enumerate(zip(axes[row], imgs)):
@@ -345,6 +347,7 @@ def run_dual_aperture_visualization(
     gt_path=None,
     zoom_region=None,
     class_names=None,
+    draw_gt=False,
 ):
     """
     Main routine: run inference, capture S4/S5 data, build 4-column figure.
@@ -474,9 +477,9 @@ def run_dual_aperture_visualization(
     s4_colormap = cv2.applyColorMap(s4_uint8, cv2.COLORMAP_JET)
     s4_overlay = cv2.addWeighted(orig_image.copy(), 0.4, s4_colormap, 0.6, 0)
 
-    # 10. Draw GT boxes on original image (thin)
+    # 10. Draw GT boxes on original image (optional)
     gt_boxes_loaded = []
-    if gt_path and Path(gt_path).exists():
+    if draw_gt and gt_path and Path(gt_path).exists():
         try:
             class_names = class_names or [
                 "Car", "Truck", "Van", "Bus", "Pedestrian",
@@ -601,6 +604,7 @@ def main():
     parser.add_argument("--target_size", type=int, default=1280)
     parser.add_argument("--image_dir", type=str, default=".", help="Base dir for image folder (default: cwd)")
     parser.add_argument("--conf_threshold", type=float, default=0.3, help="Detection confidence threshold")
+    parser.add_argument("--draw_gt", action="store_true", help="Draw Ground Truth boxes on column 1 (default: off)")
     parser.add_argument("--mode", type=str, default="grid", choices=["grid", "single"],
                         help="grid: 4x4 composite figure (default); single: one 4-column figure per image")
     args = parser.parse_args()
@@ -634,6 +638,7 @@ def main():
             gt_path=args.gt_path,
             annotations_dir=args.annotations_dir,
             data_root=args.data_root,
+            draw_gt=args.draw_gt,
         )
     elif args.mode == "grid" and len(image_paths) < 4:
         print(f"Warning: grid mode requires 4 images, found {len(image_paths)}. Falling back to single mode.")
@@ -641,7 +646,7 @@ def main():
             run_dual_aperture_visualization(
                 model, image_path, device=args.device,
                 output_path=args.output if len(image_paths) == 1 else f"{Path(args.output).stem}_{i}.pdf",
-                target_size=args.target_size, gt_path=args.gt_path, zoom_region=zoom_region,
+                target_size=args.target_size, gt_path=args.gt_path, zoom_region=zoom_region, draw_gt=args.draw_gt,
             )
     else:
         for i, image_path in enumerate(image_paths):
@@ -650,7 +655,7 @@ def main():
                 out_path = str(Path(args.output).parent / f"{Path(args.output).stem}_{i}.pdf")
             run_dual_aperture_visualization(
                 model, image_path, device=args.device, output_path=out_path,
-                target_size=args.target_size, gt_path=args.gt_path, zoom_region=zoom_region,
+                target_size=args.target_size, gt_path=args.gt_path, zoom_region=zoom_region, draw_gt=args.draw_gt,
             )
 
 
