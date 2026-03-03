@@ -61,39 +61,60 @@ class PruningHook:
         else:
             return
 
-        # Capture Importance Scores
+        # Capture Importance Scores (full multi-scale sequence: [S4_tokens, S5_tokens])
         if 'token_importance_scores' in info:
             self.scores = info['token_importance_scores']
 
-        # Get original feature map dimensions from info
+        # Get base feature map dimensions (assumed to correspond to S5)
         if 'original_spatial_shape' in info:
-            H, W = info['original_spatial_shape']
+            H5, W5 = info['original_spatial_shape']
         else:
             return
-        if H <= 0 or W <= 0:
+        if H5 <= 0 or W5 <= 0:
             self.spatial_shape = None
             return
 
-        # Initialize binary mask (0 = Pruned/Background)
-        # Flattened size: H * W
-        total_tokens = H * W
+        # Compute S4 spatial shape (higher-resolution branch)
+        H4, W4 = 2 * H5, 2 * W5
+
+        # Optional safety: if we also have importance scores, ensure S4 tokens fit
+        # into the unified sequence [S4_tokens, S5_tokens]; otherwise, fall back to S5.
+        if self.scores is not None:
+            scores = self.scores
+            if isinstance(scores, torch.Tensor):
+                # Expect shape [B, L] or [L]
+                if scores.ndim == 2:
+                    seq_len = scores.shape[1]
+                else:
+                    seq_len = scores.shape[0]
+            else:
+                # Fallback for non-tensor types
+                seq_len = len(scores)
+
+            num_tokens_s4 = H4 * W4
+            if num_tokens_s4 > seq_len:
+                # Sequence is too short to contain full S4 region; revert to S5-only view.
+                H4, W4 = H5, W5
+
+        # Initialize binary mask for the target scale (0 = Pruned/Background)
+        total_tokens = H4 * W4
         mask_flat = np.zeros(total_tokens, dtype=np.float32)
 
         if kept_indices is not None:
             # DSET Sparse Mode
             # Get indices for the first image in batch
             indices = kept_indices[0].cpu().numpy()
-            # Handle -1 padding
-            indices = indices[indices >= 0]
+            # Handle -1 padding and ensure indices stay within the S4 token range
+            indices = indices[(indices >= 0) & (indices < total_tokens)]
             # Set kept locations to 1 (Foreground)
             mask_flat[indices] = 1.0
         else:
             # No pruning (Dense Mode or keep_ratio >= 1.0) - Set all to 1
             mask_flat[:] = 1.0
 
-        # Reshape to 2D feature map
-        self.mask = mask_flat.reshape(H, W)
-        self.spatial_shape = (H, W)
+        # Reshape to 2D feature map at target (S4) scale
+        self.mask = mask_flat.reshape(H4, W4)
+        self.spatial_shape = (H4, W4)
         self.kept_indices = kept_indices
 
 
@@ -196,15 +217,16 @@ def run_visualization(model, image_path, device='cuda', output_dir=None, target_
     feature_mask = pruning_hook.mask
     if feature_mask is None:
         print("⚠ Failed to capture mask via hook. Falling back to all-ones.")
-        feature_mask = np.ones((padded_h // 32, padded_w // 32), dtype=np.float32)
+        # For S4 (higher-resolution) visualization, approximate stride as 16
+        feature_mask = np.ones((padded_h // 16, padded_w // 16), dtype=np.float32)
 
     # Get feature map dimensions from hook
     if pruning_hook.spatial_shape:
         h_feat, w_feat = pruning_hook.spatial_shape
     else:
-        # Fallback: calculate from padded dimensions (stride=32)
-        h_feat = padded_h // 32
-        w_feat = padded_w // 32
+        # Fallback: approximate S4 feature map dimensions with stride 16
+        h_feat = padded_h // 16
+        w_feat = padded_w // 16
 
     # Align Map to Image: Use train.py's physical alignment strategy
     def align_map_to_image(map_2d, h_feat, w_feat, H_tensor, W_tensor, orig_h, orig_w, normalize_before_resize=False):
@@ -247,8 +269,8 @@ def run_visualization(model, image_path, device='cuda', output_dir=None, target_
                 map_valid = np.zeros_like(map_valid)
         
         # Step 4: Single resize from feature map to original image
-        # Use INTER_NEAREST to maintain blocky token appearance
-        map_final = cv2.resize(map_valid, (orig_w, orig_h), interpolation=cv2.INTER_NEAREST)
+        # Use INTER_CUBIC for smooth upsampling
+        map_final = cv2.resize(map_valid, (orig_w, orig_h), interpolation=cv2.INTER_CUBIC)
         
         return map_final
 
@@ -257,14 +279,19 @@ def run_visualization(model, image_path, device='cuda', output_dir=None, target_
     # (B) Get Importance Scores (UPDATED LOGIC)
     importance_scores_2d = None
     
-    # Priority 1: Get directly from Hook (Most reliable)
+    # Priority 1: Get directly from Hook (Most reliable, uses unified sequence [S4_tokens, S5_tokens])
     if pruning_hook.scores is not None:
         scores = pruning_hook.scores.cpu().numpy()
-        if scores.ndim == 2: scores = scores[0] # Take batch 0
+        if scores.ndim == 2:
+            scores = scores[0]  # Take batch 0
+        # Use current spatial_shape (now pointing to S4) to select S4 segment
         if pruning_hook.spatial_shape:
-            H, W = pruning_hook.spatial_shape
-            if len(scores) == H * W:
-                importance_scores_2d = scores.reshape(H, W)
+            H_s4, W_s4 = pruning_hook.spatial_shape
+            num_tokens_s4 = H_s4 * W_s4
+            if len(scores) >= num_tokens_s4:
+                # Take the S4 portion from the head of the mixed sequence
+                scores_s4 = scores[:num_tokens_s4]
+                importance_scores_2d = scores_s4.reshape(H_s4, W_s4)
     
     # Priority 2: Fallback to existing logic (Encoder Info)
     if importance_scores_2d is None:
@@ -283,11 +310,14 @@ def run_visualization(model, image_path, device='cuda', output_dir=None, target_
                  scores_list = encoder_info_out['importance_scores_list']
                  if scores_list:
                     scores = scores_list[0].cpu().numpy()
-                    if scores.ndim == 2: scores = scores[0]
+                    if scores.ndim == 2:
+                        scores = scores[0]
                     if pruning_hook.spatial_shape:
-                        H, W = pruning_hook.spatial_shape
-                        if len(scores) == H * W:
-                            importance_scores_2d = scores.reshape(H, W)
+                        H_s4, W_s4 = pruning_hook.spatial_shape
+                        num_tokens_s4 = H_s4 * W_s4
+                        if len(scores) >= num_tokens_s4:
+                            scores_s4 = scores[:num_tokens_s4]
+                            importance_scores_2d = scores_s4.reshape(H_s4, W_s4)
         
         # 尝试从 tensor 属性中提取 (Inference mode hack)
         elif isinstance(outputs, list) and len(outputs) > 0 and hasattr(outputs[0], 'encoder_info'):
@@ -297,11 +327,14 @@ def run_visualization(model, image_path, device='cuda', output_dir=None, target_
                  scores_list = encoder_info_out['importance_scores_list']
                  if scores_list:
                     scores = scores_list[0].cpu().numpy()
-                    if scores.ndim == 2: scores = scores[0]
+                    if scores.ndim == 2:
+                        scores = scores[0]
                     if pruning_hook.spatial_shape:
-                        H, W = pruning_hook.spatial_shape
-                        if len(scores) == H * W:
-                            importance_scores_2d = scores.reshape(H, W)
+                        H_s4, W_s4 = pruning_hook.spatial_shape
+                        num_tokens_s4 = H_s4 * W_s4
+                        if len(scores) >= num_tokens_s4:
+                            scores_s4 = scores[:num_tokens_s4]
+                            importance_scores_2d = scores_s4.reshape(H_s4, W_s4)
         
         # 原有逻辑：直接检查 'encoder_info' key (如果 outputs 是 dict)
         elif isinstance(outputs, dict) and 'encoder_info' in outputs:
@@ -309,13 +342,16 @@ def run_visualization(model, image_path, device='cuda', output_dir=None, target_
             importance_scores_2d = _pick_layer_wise_heatmap(outputs['encoder_info'])
             if scores_list:
                 scores = scores_list[0].cpu().numpy()
-                if scores.ndim == 2: scores = scores[0] # Take batch 0
+                if scores.ndim == 2:
+                    scores = scores[0]  # Take batch 0
                 
-                # Reshape scores to 2D
+                # Reshape scores to 2D at S4 scale
                 if pruning_hook.spatial_shape:
-                    H, W = pruning_hook.spatial_shape
-                    if len(scores) == H * W:
-                        importance_scores_2d = scores.reshape(H, W)
+                    H_s4, W_s4 = pruning_hook.spatial_shape
+                    num_tokens_s4 = H_s4 * W_s4
+                    if len(scores) >= num_tokens_s4:
+                        scores_s4 = scores[:num_tokens_s4]
+                        importance_scores_2d = scores_s4.reshape(H_s4, W_s4)
 
     # 4. Generate Visualization based on Mode
     
@@ -360,13 +396,75 @@ def run_visualization(model, image_path, device='cuda', output_dir=None, target_
         cv2.imwrite(str(path_concat), combined)
         print(f"Saved: {path_concat}")
 
+    elif mode == 'heatmap' and pruning_hook.scores is not None:
+        print("Generating Smooth Importance Heatmap...")
+
+        # 1. 针对 S4 序列截取
+        scores = pruning_hook.scores
+        if isinstance(scores, torch.Tensor):
+            s_raw = scores.detach().cpu().numpy()
+        else:
+            s_raw = np.asarray(scores)
+
+        # 取 batch 0
+        if s_raw.ndim >= 2:
+            s_raw = s_raw[0]
+
+        if pruning_hook.spatial_shape is None:
+            print("Error: spatial shape from pruning hook is None.")
+            return
+        h_f, w_f = pruning_hook.spatial_shape
+
+        if s_raw.size < h_f * w_f:
+            print("Error: importance scores length is smaller than S4 token count.")
+            return
+
+        # 这里的 s_2d 依然是原始的、一块块的分数
+        s_2d = torch.sigmoid(
+            torch.from_numpy(s_raw[: h_f * w_f].reshape(h_f, w_f)).float()
+        ).numpy()
+
+        # 2. 使用 INTER_CUBIC 进行初步平滑缩放
+        # 修改 align_map_to_image 内部的 interpolation 为 cv2.INTER_CUBIC
+        s_final = align_map_to_image(
+            s_2d,
+            h_f,
+            w_f,
+            padded_h,
+            padded_w,
+            orig_h,
+            orig_w,
+            normalize_before_resize=True,
+        )
+
+        # 3. 应用高斯模糊实现“圆润”效果
+        sigma = orig_w / 40.0
+        k_size = int(sigma * 3) * 2 + 1  # 确保核大小为奇数
+        s_smooth = cv2.GaussianBlur(s_final, (k_size, k_size), sigmaX=sigma, sigmaY=sigma)
+
+        # 4. 重新归一化以保证色彩亮度
+        s_min, s_max = s_smooth.min(), s_smooth.max()
+        if s_max - s_min > 1e-8:
+            s_smooth = (s_smooth - s_min) / (s_max - s_min + 1e-8)
+        else:
+            s_smooth = np.zeros_like(s_smooth)
+
+        # 5. 生成伪彩色图
+        heatmap = cv2.applyColorMap((s_smooth * 255).astype(np.uint8), cv2.COLORMAP_JET)
+
+        # 叠加
+        res = cv2.addWeighted(orig_image, 0.5, heatmap, 0.5, 0)
+        path_heatmap = output_dir / f"{stem}_smooth_heatmap.jpg"
+        cv2.imwrite(str(path_heatmap), res)
+        print(f"✅ 丝滑热力图已保存至: {path_heatmap}")
+
     elif mode == 'heatmap':
-        print("Generating Importance Heatmap...")
+        # 回退到旧的 heatmap 逻辑（兼容无 pruning_hook.scores 的情况）
+        print("Generating Importance Heatmap (fallback path)...")
         if importance_scores_2d is None:
             print("Error: No importance scores found for heatmap mode.")
             return
 
-        # causing all regions to appear bright (high intensity) and losing contrast
         if isinstance(importance_scores_2d, np.ndarray):
             scores_tensor = torch.from_numpy(importance_scores_2d).float()
         else:
@@ -374,30 +472,38 @@ def run_visualization(model, image_path, device='cuda', output_dir=None, target_
         scores_prob = torch.sigmoid(scores_tensor).numpy()
         importance_scores_2d_prob = scores_prob
 
-        # Get feature map dimensions for alignment
         if pruning_hook.spatial_shape:
             h_feat, w_feat = pruning_hook.spatial_shape
         else:
-            h_feat = padded_h // 32
-            w_feat = padded_w // 32
+            h_feat = padded_h // 16
+            w_feat = padded_w // 16
 
-        # [FIX] Align with normalization on cropped region BEFORE resize (exactly matching train.py)
-        # train.py flow: Sigmoid → Crop → Normalize → Resize
-        # This ensures normalization statistics are computed on the original feature map scale
         scores_final = align_map_to_image(
-            importance_scores_2d_prob, h_feat, w_feat, padded_h, padded_w, 
-            orig_h, orig_w, normalize_before_resize=True
+            importance_scores_2d_prob,
+            h_feat,
+            w_feat,
+            padded_h,
+            padded_w,
+            orig_h,
+            orig_w,
+            normalize_before_resize=True,
         )
-        
-        # Convert normalized [0,1] scores to uint8 for colormap
+
         scores_uint8 = (scores_final * 255).astype(np.uint8)
         heatmap_color = cv2.applyColorMap(scores_uint8, cv2.COLORMAP_JET)
-        
-        # Overlay (matching train.py alpha=0.6)
+
         fig_heatmap = cv2.addWeighted(orig_image.copy(), 0.4, heatmap_color, 0.6, 0)
-        
-        cv2.putText(fig_heatmap, "Token Importance Heatmap", (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
-        
+
+        cv2.putText(
+            fig_heatmap,
+            "Token Importance Heatmap",
+            (30, 50),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1.0,
+            (255, 255, 255),
+            2,
+        )
+
         path_heatmap = output_dir / f"{stem}_heatmap.jpg"
         cv2.imwrite(str(path_heatmap), fig_heatmap)
         print(f"Saved: {path_heatmap}")
