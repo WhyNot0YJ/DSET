@@ -9,8 +9,8 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 if [ ! -d "$SCRIPT_DIR/mmdetection" ]; then
     echo "mmdetection directory not found. Cloning the mmdetection repository using a proxy..."
     cd "$SCRIPT_DIR"
-    # 使用 GitHub 代理加速克隆，防止 AutoDL 连不上 GitHub 报 443 错误
-    git clone https://ghproxy.net/https://github.com/open-mmlab/mmdetection.git
+    # 尝试使用 GitHub 代理或者官方源，如果其中一个失败尝试另一个
+    git clone https://gitee.com/open-mmlab/mmdetection.git || git clone https://github.com/open-mmlab/mmdetection.git
     
     if [ ! -d "$SCRIPT_DIR/mmdetection" ]; then
         echo "Error: Failed to clone mmdetection. Please check your network."
