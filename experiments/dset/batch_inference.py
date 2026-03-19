@@ -80,15 +80,13 @@ def load_model(config_path: str, checkpoint_path: str, device: str = "cuda"):
     with open(config_path, 'r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
     
-    # Create trainer to build model
-    trainer = DSETTrainer(config)
-    
-    # Simple logger for inference
-    if trainer.logger is None:
-        class SimpleLogger:
-            def info(self, msg): pass
-        trainer.logger = SimpleLogger()
-    
+    # Build model without running DSETTrainer.__init__ (which requires the dataset).
+    # _create_model() only reads self.config, so we can safely bypass __init__.
+    import logging
+    trainer = object.__new__(DSETTrainer)
+    trainer.config = config
+    trainer.logger = logging.getLogger(__name__)
+    trainer.device = torch.device(device)
     model = trainer._create_model()
     
     # Load checkpoint

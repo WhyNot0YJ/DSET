@@ -42,10 +42,13 @@ except ImportError:
 class PruningHook:
     """
     Hook to capture the pruning mask AND importance scores from the model's encoder.
+    
+    NOTE: HybridEncoder calls shared_token_pruner with spatial_shape=None because
+    the input is a multi-scale concatenated sequence [S4_tokens, S5_tokens].
+    Therefore we only capture raw scores and kept_indices here; the spatial
+    shape (S4) is computed externally from padded tensor dimensions.
     """
     def __init__(self):
-        self.mask = None
-        self.spatial_shape = None
         self.kept_indices = None
         self.scores = None
 
@@ -54,67 +57,16 @@ class PruningHook:
         Hook function to intercept forward pass.
         outputs: (pruned_tokens, kept_indices, info)
         """
-        # Unpack outputs from TokenLevelPruner
-        # Note: HybridEncoder calls it with return_indices=True
         if isinstance(outputs, tuple):
             _, kept_indices, info = outputs
         else:
             return
 
-        # Capture Importance Scores (full multi-scale sequence: [S4_tokens, S5_tokens])
+        # Capture raw importance scores (full multi-scale sequence: [S4_tokens, S5_tokens])
         if 'token_importance_scores' in info:
             self.scores = info['token_importance_scores']
 
-        # Get base feature map dimensions (assumed to correspond to S5)
-        if 'original_spatial_shape' in info:
-            H5, W5 = info['original_spatial_shape']
-        else:
-            return
-        if H5 <= 0 or W5 <= 0:
-            self.spatial_shape = None
-            return
-
-        # Compute S4 spatial shape (higher-resolution branch)
-        H4, W4 = 2 * H5, 2 * W5
-
-        # Optional safety: if we also have importance scores, ensure S4 tokens fit
-        # into the unified sequence [S4_tokens, S5_tokens]; otherwise, fall back to S5.
-        if self.scores is not None:
-            scores = self.scores
-            if isinstance(scores, torch.Tensor):
-                # Expect shape [B, L] or [L]
-                if scores.ndim == 2:
-                    seq_len = scores.shape[1]
-                else:
-                    seq_len = scores.shape[0]
-            else:
-                # Fallback for non-tensor types
-                seq_len = len(scores)
-
-            num_tokens_s4 = H4 * W4
-            if num_tokens_s4 > seq_len:
-                # Sequence is too short to contain full S4 region; revert to S5-only view.
-                H4, W4 = H5, W5
-
-        # Initialize binary mask for the target scale (0 = Pruned/Background)
-        total_tokens = H4 * W4
-        mask_flat = np.zeros(total_tokens, dtype=np.float32)
-
-        if kept_indices is not None:
-            # DSET Sparse Mode
-            # Get indices for the first image in batch
-            indices = kept_indices[0].cpu().numpy()
-            # Handle -1 padding and ensure indices stay within the S4 token range
-            indices = indices[(indices >= 0) & (indices < total_tokens)]
-            # Set kept locations to 1 (Foreground)
-            mask_flat[indices] = 1.0
-        else:
-            # No pruning (Dense Mode or keep_ratio >= 1.0) - Set all to 1
-            mask_flat[:] = 1.0
-
-        # Reshape to 2D feature map at target (S4) scale
-        self.mask = mask_flat.reshape(H4, W4)
-        self.spatial_shape = (H4, W4)
+        # Capture kept_indices (global indices into the concatenated sequence)
         self.kept_indices = kept_indices
 
 
@@ -212,21 +164,26 @@ def run_visualization(model, image_path, device='cuda', output_dir=None, target_
         hook_handle.remove()
 
     # 3. Process Mask/Scores
-    
-    # (A) Get Binary Mask from Hook (Actual Pruning Decision)
-    feature_mask = pruning_hook.mask
-    if feature_mask is None:
-        print("⚠ Failed to capture mask via hook. Falling back to all-ones.")
-        # For S4 (higher-resolution) visualization, approximate stride as 16
-        feature_mask = np.ones((padded_h // 16, padded_w // 16), dtype=np.float32)
+    #
+    # Compute S4 spatial shape from padded tensor dimensions.
+    # use_encoder_idx=[1,2] → S4 (stride 16) and S5 (stride 32).
+    # We only visualize the S4 portion (higher resolution, first segment in
+    # the concatenated sequence).
+    h_s4, w_s4 = padded_h // 16, padded_w // 16
+    num_tokens_s4 = h_s4 * w_s4
+    h_feat, w_feat = h_s4, w_s4
 
-    # Get feature map dimensions from hook
-    if pruning_hook.spatial_shape:
-        h_feat, w_feat = pruning_hook.spatial_shape
+    # (A) Build Binary Mask from Hook's kept_indices (S4 region only)
+    if pruning_hook.kept_indices is not None:
+        kept_indices = pruning_hook.kept_indices[0].cpu().numpy()  # batch 0
+        mask_flat = np.zeros(num_tokens_s4, dtype=np.float32)
+        indices = kept_indices[(kept_indices >= 0) & (kept_indices < num_tokens_s4)]
+        mask_flat[indices] = 1.0
+        feature_mask = mask_flat.reshape(h_s4, w_s4)
+        print(f"  ✓ Captured pruning mask: {indices.shape[0]}/{num_tokens_s4} S4 tokens kept")
     else:
-        # Fallback: approximate S4 feature map dimensions with stride 16
-        h_feat = padded_h // 16
-        w_feat = padded_w // 16
+        print("⚠ No kept_indices captured. Using all-ones mask (no pruning).")
+        feature_mask = np.ones((h_s4, w_s4), dtype=np.float32)
 
     # Align Map to Image: Use train.py's physical alignment strategy
     def align_map_to_image(map_2d, h_feat, w_feat, H_tensor, W_tensor, orig_h, orig_w, normalize_before_resize=False):
@@ -276,82 +233,45 @@ def run_visualization(model, image_path, device='cuda', output_dir=None, target_
 
     feature_mask_final = align_map_to_image(feature_mask, h_feat, w_feat, padded_h, padded_w, orig_h, orig_w)
 
-    # (B) Get Importance Scores (UPDATED LOGIC)
+    # (B) Get Importance Scores — reshape S4 portion to 2D
     importance_scores_2d = None
-    
-    # Priority 1: Get directly from Hook (Most reliable, uses unified sequence [S4_tokens, S5_tokens])
+
+    def _extract_s4_scores(raw_scores):
+        """Extract S4 portion from raw scores and reshape to 2D."""
+        if isinstance(raw_scores, torch.Tensor):
+            s = raw_scores.detach().cpu().numpy()
+        else:
+            s = np.asarray(raw_scores)
+        if s.ndim >= 2:
+            s = s[0]  # batch 0
+        if len(s) >= num_tokens_s4:
+            return s[:num_tokens_s4].reshape(h_s4, w_s4)
+        return None
+
+    # Priority 1: Hook scores (most reliable)
     if pruning_hook.scores is not None:
-        scores = pruning_hook.scores.cpu().numpy()
-        if scores.ndim == 2:
-            scores = scores[0]  # Take batch 0
-        # Use current spatial_shape (now pointing to S4) to select S4 segment
-        if pruning_hook.spatial_shape:
-            H_s4, W_s4 = pruning_hook.spatial_shape
-            num_tokens_s4 = H_s4 * W_s4
-            if len(scores) >= num_tokens_s4:
-                # Take the S4 portion from the head of the mixed sequence
-                scores_s4 = scores[:num_tokens_s4]
-                importance_scores_2d = scores_s4.reshape(H_s4, W_s4)
-    
-    # Priority 2: Fallback to existing logic (Encoder Info)
+        importance_scores_2d = _extract_s4_scores(pruning_hook.scores)
+
+    # Priority 2: Fallback — try to get scores from model outputs
     if importance_scores_2d is None:
-        def _pick_layer_wise_heatmap(encoder_info_out):
+        def _try_extract_from_encoder_info(encoder_info_out):
+            # Option A: layer_wise_heatmaps (already reshaped per-level by encoder)
             heatmaps = encoder_info_out.get('layer_wise_heatmaps', [])
             if heatmaps:
-                heatmap = max(heatmaps, key=lambda t: t.shape[-2] * t.shape[-1])
-                return heatmap[0, 0].detach().cpu().numpy()
+                # Pick the largest spatial heatmap (S4)
+                hm = max(heatmaps, key=lambda t: t.shape[-2] * t.shape[-1])
+                return hm[0, 0].detach().cpu().numpy()
+            # Option B: importance_scores_list
+            scores_list = encoder_info_out.get('importance_scores_list', [])
+            if scores_list:
+                return _extract_s4_scores(scores_list[0])
             return None
 
-        # 尝试从 outputs 中提取 encoder_info (Training mode 返回 tuple)
         if isinstance(outputs, tuple) and len(outputs) == 2:
-             _, encoder_info_out = outputs
-             importance_scores_2d = _pick_layer_wise_heatmap(encoder_info_out)
-             if 'importance_scores_list' in encoder_info_out:
-                 scores_list = encoder_info_out['importance_scores_list']
-                 if scores_list:
-                    scores = scores_list[0].cpu().numpy()
-                    if scores.ndim == 2:
-                        scores = scores[0]
-                    if pruning_hook.spatial_shape:
-                        H_s4, W_s4 = pruning_hook.spatial_shape
-                        num_tokens_s4 = H_s4 * W_s4
-                        if len(scores) >= num_tokens_s4:
-                            scores_s4 = scores[:num_tokens_s4]
-                            importance_scores_2d = scores_s4.reshape(H_s4, W_s4)
-        
-        # 尝试从 tensor 属性中提取 (Inference mode hack)
-        elif isinstance(outputs, list) and len(outputs) > 0 and hasattr(outputs[0], 'encoder_info'):
-            encoder_info_out = getattr(outputs[0], 'encoder_info')
-            importance_scores_2d = _pick_layer_wise_heatmap(encoder_info_out)
-            if 'importance_scores_list' in encoder_info_out:
-                 scores_list = encoder_info_out['importance_scores_list']
-                 if scores_list:
-                    scores = scores_list[0].cpu().numpy()
-                    if scores.ndim == 2:
-                        scores = scores[0]
-                    if pruning_hook.spatial_shape:
-                        H_s4, W_s4 = pruning_hook.spatial_shape
-                        num_tokens_s4 = H_s4 * W_s4
-                        if len(scores) >= num_tokens_s4:
-                            scores_s4 = scores[:num_tokens_s4]
-                            importance_scores_2d = scores_s4.reshape(H_s4, W_s4)
-        
-        # 原有逻辑：直接检查 'encoder_info' key (如果 outputs 是 dict)
+            _, encoder_info_out = outputs
+            importance_scores_2d = _try_extract_from_encoder_info(encoder_info_out)
         elif isinstance(outputs, dict) and 'encoder_info' in outputs:
-            scores_list = outputs['encoder_info'].get('importance_scores_list', [])
-            importance_scores_2d = _pick_layer_wise_heatmap(outputs['encoder_info'])
-            if scores_list:
-                scores = scores_list[0].cpu().numpy()
-                if scores.ndim == 2:
-                    scores = scores[0]  # Take batch 0
-                
-                # Reshape scores to 2D at S4 scale
-                if pruning_hook.spatial_shape:
-                    H_s4, W_s4 = pruning_hook.spatial_shape
-                    num_tokens_s4 = H_s4 * W_s4
-                    if len(scores) >= num_tokens_s4:
-                        scores_s4 = scores[:num_tokens_s4]
-                        importance_scores_2d = scores_s4.reshape(H_s4, W_s4)
+            importance_scores_2d = _try_extract_from_encoder_info(outputs['encoder_info'])
 
     # 4. Generate Visualization based on Mode
     
@@ -362,124 +282,94 @@ def run_visualization(model, image_path, device='cuda', output_dir=None, target_
         output_dir.mkdir(parents=True, exist_ok=True)
     
     stem = Path(image_path).stem
-    
-    if mode == 'teaser':
-        print("Generating Teaser Figure (Binary Masks)...")
-        # --- Figure (a): RT-DETR (Dense) ---
-        orange_color = (0, 128, 255) # BGR
-        full_mask = np.ones((orig_h, orig_w), dtype=np.float32)
-        fig_a = apply_mask_overlay(orig_image.copy(), full_mask, orange_color, alpha=0.3)
-        cv2.putText(fig_a, "RT-DETR: Dense Compute", (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 3)
-        cv2.putText(fig_a, "RT-DETR: Dense Compute", (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 0), 1)
 
-        # --- Figure (b): DSET (Sparse) ---
-        blue_color = (255, 0, 0)
-        red_color = (0, 0, 255)
-        bg_mask = 1.0 - feature_mask_final
-        
-        # Apply Background (Blue)
-        fig_b = apply_mask_overlay(orig_image.copy(), bg_mask, blue_color, alpha=0.3)
-        # Apply Foreground (Red)
-        fig_b = apply_mask_overlay(fig_b, feature_mask_final, red_color, alpha=0.5)
-        
-        cv2.putText(fig_b, "DSET (Ours): Sparse Focus", (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 3)
-        cv2.putText(fig_b, "DSET (Ours): Sparse Focus", (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 0), 1)
-        
-        # Save
-        path_a = output_dir / f"{stem}_teaser_a_rtdetr.jpg"
-        path_b = output_dir / f"{stem}_teaser_b_dset.jpg"
+    # ── Shared layout constants & helpers (used by both modes) ──────────────
+    HEADER_H  = 64
+    DIVIDER_W = 4
+    C_BG      = (240, 240, 240)   # light gray bar background
+    C_BLACK   = (0, 0, 0)
+    _FONT     = cv2.FONT_HERSHEY_DUPLEX
+
+    def put_text_centered(img, text, cx, cy, scale, color, thickness=2):
+        """Draw horizontally-centred text at (cx, cy)."""
+        (tw, th), _ = cv2.getTextSize(text, _FONT, scale, thickness)
+        cv2.putText(img, text, (cx - tw // 2, cy + th // 2), _FONT, scale, color, thickness, cv2.LINE_AA)
+
+    def make_dashed_divider(height):
+        """White dashed vertical line on a light-gray background."""
+        div = np.full((height, DIVIDER_W, 3), C_BG, dtype=np.uint8)
+        cx = DIVIDER_W // 2
+        dash_len, gap_len = 14, 8
+        y = gap_len
+        while y < height:
+            end = min(y + dash_len, height)
+            cv2.line(div, (cx, y), (cx, end), (255, 255, 255), 1)
+            y += dash_len + gap_len
+        return div
+
+    if mode == 'teaser':
+        print("Generating Teaser Figure (Paper-style two-column comparison)...")
+
+        # Colours (BGR) for image overlays
+        C_ORANGE = (15, 55, 140)   # dark burnt-orange / rust (暗沉橙)
+        C_BLUE   = (220,  80,  20)
+        C_RED    = (30,   30, 220)
+
+        # ── Build the two image panels ───────────────────────────────────────
+        # (a) Dense: dark muted tint — conveys O(N²) computational burden
+        full_mask = np.ones((orig_h, orig_w), dtype=np.float32)
+        fig_a = apply_mask_overlay(orig_image.copy(), full_mask, C_ORANGE, alpha=0.55)
+
+        # (b) Sparse: blue background + red foreground
+        bg_mask  = 1.0 - feature_mask_final
+        fig_b = apply_mask_overlay(orig_image.copy(), bg_mask,          C_BLUE,   alpha=0.35)
+        fig_b = apply_mask_overlay(fig_b,             feature_mask_final, C_RED,  alpha=0.50)
+
+        W, H = orig_w, orig_h   # panel dimensions
+
+        # ── Sub-label: (a) / (b) in bottom-left of each panel ───────────────
+        # (removed per user request)
+
+        # ── Assemble: [header] / [fig_a | divider | fig_b] ──────────────────
+        total_w = W * 2 + DIVIDER_W
+
+        # Header bar
+        header = np.full((HEADER_H, total_w, 3), C_BG, dtype=np.uint8)
+        put_text_centered(header, "Dense Paradigm",         W // 2,                       HEADER_H // 2, 1.0, C_BLACK)
+        put_text_centered(header, "Sparse Paradigm (Ours)", W + DIVIDER_W // 2 + W // 2, HEADER_H // 2, 1.0, C_BLACK)
+
+        # Image row with dashed divider
+        divider = make_dashed_divider(H)
+        img_row = cv2.hconcat([fig_a, divider, fig_b])
+
+        # Stack vertically (no footer)
+        combined = cv2.vconcat([header, img_row])
+
+        # ── Save ────────────────────────────────────────────────────────────
+        path_a      = output_dir / f"{stem}_teaser_a_dense.jpg"
+        path_b      = output_dir / f"{stem}_teaser_b_sparse.jpg"
         path_concat = output_dir / f"{stem}_teaser_combined.jpg"
-        
+
         cv2.imwrite(str(path_a), fig_a)
         cv2.imwrite(str(path_b), fig_b)
-        combined = cv2.hconcat([fig_a, fig_b])
         cv2.imwrite(str(path_concat), combined)
         print(f"Saved: {path_concat}")
 
-    elif mode == 'heatmap' and pruning_hook.scores is not None:
-        print("Generating Smooth Importance Heatmap...")
-
-        # 1. 针对 S4 序列截取
-        scores = pruning_hook.scores
-        if isinstance(scores, torch.Tensor):
-            s_raw = scores.detach().cpu().numpy()
-        else:
-            s_raw = np.asarray(scores)
-
-        # 取 batch 0
-        if s_raw.ndim >= 2:
-            s_raw = s_raw[0]
-
-        if pruning_hook.spatial_shape is None:
-            print("Error: spatial shape from pruning hook is None.")
-            return
-        h_f, w_f = pruning_hook.spatial_shape
-
-        if s_raw.size < h_f * w_f:
-            print("Error: importance scores length is smaller than S4 token count.")
-            return
-
-        # 这里的 s_2d 依然是原始的、一块块的分数
-        s_2d = torch.sigmoid(
-            torch.from_numpy(s_raw[: h_f * w_f].reshape(h_f, w_f)).float()
-        ).numpy()
-
-        # 2. 使用 INTER_CUBIC 进行初步平滑缩放
-        # 修改 align_map_to_image 内部的 interpolation 为 cv2.INTER_CUBIC
-        s_final = align_map_to_image(
-            s_2d,
-            h_f,
-            w_f,
-            padded_h,
-            padded_w,
-            orig_h,
-            orig_w,
-            normalize_before_resize=True,
-        )
-
-        # 3. 应用高斯模糊实现“圆润”效果
-        sigma = orig_w / 40.0
-        k_size = int(sigma * 3) * 2 + 1  # 确保核大小为奇数
-        s_smooth = cv2.GaussianBlur(s_final, (k_size, k_size), sigmaX=sigma, sigmaY=sigma)
-
-        # 4. 重新归一化以保证色彩亮度
-        s_min, s_max = s_smooth.min(), s_smooth.max()
-        if s_max - s_min > 1e-8:
-            s_smooth = (s_smooth - s_min) / (s_max - s_min + 1e-8)
-        else:
-            s_smooth = np.zeros_like(s_smooth)
-
-        # 5. 生成伪彩色图
-        heatmap = cv2.applyColorMap((s_smooth * 255).astype(np.uint8), cv2.COLORMAP_JET)
-
-        # 叠加
-        res = cv2.addWeighted(orig_image, 0.5, heatmap, 0.5, 0)
-        path_heatmap = output_dir / f"{stem}_smooth_heatmap.jpg"
-        cv2.imwrite(str(path_heatmap), res)
-        print(f"✅ 丝滑热力图已保存至: {path_heatmap}")
 
     elif mode == 'heatmap':
-        # 回退到旧的 heatmap 逻辑（兼容无 pruning_hook.scores 的情况）
-        print("Generating Importance Heatmap (fallback path)...")
+        print("Generating Smooth Importance Heatmap...")
         if importance_scores_2d is None:
             print("Error: No importance scores found for heatmap mode.")
             return
 
-        if isinstance(importance_scores_2d, np.ndarray):
-            scores_tensor = torch.from_numpy(importance_scores_2d).float()
-        else:
-            scores_tensor = importance_scores_2d
-        scores_prob = torch.sigmoid(scores_tensor).numpy()
-        importance_scores_2d_prob = scores_prob
+        # Apply sigmoid to convert logits to probabilities
+        s_2d = torch.sigmoid(
+            torch.from_numpy(importance_scores_2d.astype(np.float32))
+        ).numpy()
 
-        if pruning_hook.spatial_shape:
-            h_feat, w_feat = pruning_hook.spatial_shape
-        else:
-            h_feat = padded_h // 16
-            w_feat = padded_w // 16
-
-        scores_final = align_map_to_image(
-            importance_scores_2d_prob,
+        # Align to original image (crop padding + resize)
+        s_final = align_map_to_image(
+            s_2d,
             h_feat,
             w_feat,
             padded_h,
@@ -489,25 +379,50 @@ def run_visualization(model, image_path, device='cuda', output_dir=None, target_
             normalize_before_resize=True,
         )
 
-        scores_uint8 = (scores_final * 255).astype(np.uint8)
-        heatmap_color = cv2.applyColorMap(scores_uint8, cv2.COLORMAP_JET)
+        # Gaussian blur for smooth appearance
+        sigma = orig_w / 40.0
+        k_size = int(sigma * 3) * 2 + 1
+        s_smooth = cv2.GaussianBlur(s_final, (k_size, k_size), sigmaX=sigma, sigmaY=sigma)
 
-        fig_heatmap = cv2.addWeighted(orig_image.copy(), 0.4, heatmap_color, 0.6, 0)
+        # Re-normalize
+        s_min, s_max = s_smooth.min(), s_smooth.max()
+        if s_max - s_min > 1e-8:
+            s_smooth = (s_smooth - s_min) / (s_max - s_min + 1e-8)
+        else:
+            s_smooth = np.zeros_like(s_smooth)
 
-        cv2.putText(
-            fig_heatmap,
-            "Token Importance Heatmap",
-            (30, 50),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            1.0,
-            (255, 255, 255),
-            2,
-        )
+        # Apply JET colormap and blend
+        heatmap = cv2.applyColorMap((s_smooth * 255).astype(np.uint8), cv2.COLORMAP_JET)
+        res = cv2.addWeighted(orig_image, 0.5, heatmap, 0.5, 0)
 
-        path_heatmap = output_dir / f"{stem}_heatmap.jpg"
-        cv2.imwrite(str(path_heatmap), fig_heatmap)
-        print(f"Saved: {path_heatmap}")
-        
+        # ── Three outputs matching teaser layout ─────────────────────────────
+        C_ORANGE = (15, 55, 140)   # dark burnt-orange / rust (暗沉橙)
+        full_mask = np.ones((orig_h, orig_w), dtype=np.float32)
+        fig_orig = apply_mask_overlay(orig_image.copy(), full_mask, C_ORANGE, alpha=0.55)
+        fig_heat = res.copy()
+        W, H = orig_w, orig_h
+
+        # ── Assemble: [header] / [fig_orig | divider | fig_heat] ────────────
+        total_w = W * 2 + DIVIDER_W
+        header  = np.full((HEADER_H, total_w, 3), C_BG, dtype=np.uint8)
+        put_text_centered(header, "Dense Paradigm",         W // 2,                       HEADER_H // 2, 1.0, C_BLACK)
+        put_text_centered(header, "Sparse Paradigm (Ours)", W + DIVIDER_W // 2 + W // 2, HEADER_H // 2, 1.0, C_BLACK)
+
+        divider  = make_dashed_divider(H)
+        img_row  = cv2.hconcat([fig_orig, divider, fig_heat])
+
+        combined = cv2.vconcat([header, img_row])
+
+        # ── Save three images ────────────────────────────────────────────────
+        path_a      = output_dir / f"{stem}_heatmap_a_original.jpg"
+        path_b      = output_dir / f"{stem}_heatmap_b_heatmap.jpg"
+        path_concat = output_dir / f"{stem}_heatmap_combined.jpg"
+
+        cv2.imwrite(str(path_a), fig_orig)
+        cv2.imwrite(str(path_b), fig_heat)
+        cv2.imwrite(str(path_concat), combined)
+        print(f"Saved: {path_concat}")
+
     else:
         print(f"Unknown mode: {mode}")
 

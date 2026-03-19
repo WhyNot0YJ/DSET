@@ -1,0 +1,21 @@
+#!/bin/bash
+# run_dab_detr.sh
+# 启动 DAB-DETR (R18) 实验的脚本
+
+cd /home/yujie/proj/DSET/experiments/dab-detr/DAB-DETR
+
+# 模型配置: ResNet-18, COCO预训练权重初始化，对标 DSET 的 DAIR-V2X (200 epoch, bs 12)
+# 请确保将社区下载的 COCO R18 预训练权重重命名并放入相应位置，代码允许 non-strict 自动适应 8 类 Head
+python main.py \
+    --dataset_file coco \
+    --coco_path /root/autodl-tmp/datasets/DAIR-V2X \
+    --output_dir ../../logs/dab_detr_r18_dairv2x \
+    --batch_size 12 \
+    --epochs 200 \
+    --lr 1e-4 \
+    --lr_backbone 1e-5 \
+    --lr_drop 190 \
+    --weight_decay 1e-4 \
+    --num_workers 16 \
+    --backbone resnet18 \
+    --resume ../../pretrained/dab_detr_r18_coco.pth
