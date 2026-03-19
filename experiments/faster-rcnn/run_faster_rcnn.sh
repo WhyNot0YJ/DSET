@@ -27,11 +27,15 @@ cd "$SCRIPT_DIR/mmdetection"
 # 首先安装 mmdet 依赖 (如果尚未安装)
 pip install -r requirements/build.txt
 
-# 确保 MMCV 版本兼容性（MMDetection 3.0.0 需要 mmcv >= 2.0.0rc4, < 2.1.0）
+# 确保 MMCV 版本兼容性（MMDetection 3.0.0 需要 mmcv >= 2.0.0rc4）
 # 禁用 MMCV 的 C++ ops 编译，只使用纯 Python 版本，避免编译失败
 export MMCV_WITH_OPS=0
 pip uninstall -y mmcv mmcv-full 2>/dev/null || true
-pip install --no-cache-dir "mmcv>=2.0.0rc4,<2.1.0"
+
+# 尝试从官方 PyPI 安装指定版本，绕过镜像的元数据问题
+# 如果 2.1.0 失败，尝试从 GitHub 源安装
+pip install --no-cache-dir "mmcv==2.1.0" || \
+    pip install --no-cache-dir "git+https://github.com/open-mmlab/mmcv.git@v2.0.1#egg=mmcv"
 
 # 安装 MMDetection
 pip install -v -e .
