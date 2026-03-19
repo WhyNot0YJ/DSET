@@ -2,6 +2,10 @@
 # run_faster_rcnn.sh
 # 启动 Faster R-CNN (MMDetection) 实验的脚本
 
+# 修复 OpenMP 环境变量问题
+export OMP_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+
 # 获取当前脚本的绝对路径
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 
@@ -24,9 +28,9 @@ cd "$SCRIPT_DIR/mmdetection"
 pip install -r requirements/build.txt
 
 # 确保 MMCV 版本兼容性（MMDetection 3.0.0 需要 mmcv >= 2.0.0rc4, < 2.1.0）
-# 如果已装了 2.2.0，先卸载后重新安装
+# 卸载旧版本，使用预编译的二进制轮子，避免从源代码编译的各种兼容性问题
 pip uninstall -y mmcv mmcv-full 2>/dev/null || true
-pip install --force-reinstall "mmcv>=2.0.0rc4,<2.1.0"
+pip install --no-build-isolation "mmcv>=2.0.0rc4,<2.1.0"
 
 # 安装 MMDetection
 pip install -v -e .
