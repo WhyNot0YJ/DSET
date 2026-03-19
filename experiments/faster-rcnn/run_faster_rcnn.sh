@@ -24,7 +24,9 @@ cd "$SCRIPT_DIR/mmdetection"
 pip install -r requirements/build.txt
 
 # 确保 MMCV 版本兼容性（MMDetection 3.0.0 需要 mmcv >= 2.0.0rc4, < 2.1.0）
-pip install "mmcv>=2.0.0rc4,<2.1.0"
+# 如果已装了 2.2.0，先卸载后重新安装
+pip uninstall -y mmcv mmcv-full 2>/dev/null || true
+pip install --force-reinstall "mmcv>=2.0.0rc4,<2.1.0"
 
 # 安装 MMDetection
 pip install -v -e .
