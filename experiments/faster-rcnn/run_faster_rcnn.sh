@@ -22,6 +22,11 @@ cd "$SCRIPT_DIR/mmdetection"
 
 # 首先安装 mmdet 依赖 (如果尚未安装)
 pip install -r requirements/build.txt
+
+# 确保 MMCV 版本兼容性（MMDetection 3.0.0 需要 mmcv >= 2.0.0rc4, < 2.1.0）
+pip install "mmcv>=2.0.0rc4,<2.1.0"
+
+# 安装 MMDetection
 pip install -v -e .
 
 # 运行基于 DSET 配置的 Faster RCNN 训练
