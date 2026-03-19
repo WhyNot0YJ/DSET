@@ -7,13 +7,15 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 
 # 如果由于尚未在 AutoDL 上克隆 mmdetection，自动克隆
 if [ ! -d "$SCRIPT_DIR/mmdetection" ]; then
-    echo "mmdetection directory not found. Cloning the mmdetection repository..."
+    echo "mmdetection directory not found. Cloning the mmdetection repository using a proxy..."
     cd "$SCRIPT_DIR"
-    git clone https://github.com/open-mmlab/mmdetection.git
+    # 使用 GitHub 代理加速克隆，防止 AutoDL 连不上 GitHub 报 443 错误
+    git clone https://ghproxy.net/https://github.com/open-mmlab/mmdetection.git
     
-    # 提醒需要拷贝过去的配置文件
-    echo "Please ensure configs/faster_rcnn/faster-rcnn_r50_fpn_dairv2x.py is copied to mmdetection/configs/faster_rcnn/"
-fi
+    if [ ! -d "$SCRIPT_DIR/mmdetection" ]; then
+        echo "Error: Failed to clone mmdetection. Please check your network."
+        exit 1
+    fi
 
 cd "$SCRIPT_DIR/mmdetection"
 
