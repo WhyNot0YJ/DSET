@@ -16,6 +16,7 @@ if [ ! -d "$SCRIPT_DIR/mmdetection" ]; then
         echo "Error: Failed to clone mmdetection. Please check your network."
         exit 1
     fi
+fi
 
 cd "$SCRIPT_DIR/mmdetection"
 
