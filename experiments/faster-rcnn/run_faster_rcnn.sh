@@ -4,6 +4,17 @@
 
 # 获取当前脚本的绝对路径
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+
+# 如果由于尚未在 AutoDL 上克隆 mmdetection，自动克隆
+if [ ! -d "$SCRIPT_DIR/mmdetection" ]; then
+    echo "mmdetection directory not found. Cloning the mmdetection repository..."
+    cd "$SCRIPT_DIR"
+    git clone https://github.com/open-mmlab/mmdetection.git
+    
+    # 提醒需要拷贝过去的配置文件
+    echo "Please ensure configs/faster_rcnn/faster-rcnn_r50_fpn_dairv2x.py is copied to mmdetection/configs/faster_rcnn/"
+fi
+
 cd "$SCRIPT_DIR/mmdetection"
 
 # 首先安装 mmdet 依赖 (如果尚未安装)
