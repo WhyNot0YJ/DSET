@@ -2,8 +2,10 @@
 # run_deformable_detr_r50.sh
 # 启动 Deformable DETR (R50 版带 COCO 预训练) 的 DAIR-V2X 对标实验
 
-# 切换到项目根目录执行（因为 Python 脚本内使用的是基于项目根目录的相对路径）
-cd /home/yujie/proj/DSET
+# 获取当前脚本所在目录，推导项目根目录
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+PROJECT_ROOT="$( dirname "$( dirname "$SCRIPT_DIR" )" )"
+cd "$PROJECT_ROOT"
 
 echo "====================================================================="
 echo "启动 Deformable DETR (R50) 训练..."

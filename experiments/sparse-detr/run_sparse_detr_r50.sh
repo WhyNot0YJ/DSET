@@ -2,7 +2,9 @@
 # run_sparse_detr_r50.sh
 # 启动 Sparse DETR (R50) 实验的脚本 (带 COCO 预训练)
 
-cd /home/yujie/proj/DSET/experiments/sparse-detr/SparseDETR
+# 获取当前脚本的绝对路径
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+cd "$SCRIPT_DIR/SparseDETR"
 
 echo "====================================================================="
 echo "启动 Sparse DETR (R50) 训练..."
