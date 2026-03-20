@@ -1,7 +1,7 @@
 {
-  "DSET_r18_0.3": {
-    "config": "/root/autodl-tmp/DSET/experiments/dset/logs/dset6_r18_20260126_173526/config.yaml",
-    "checkpoint": "/root/autodl-tmp/DSET/experiments/dset/logs/dset6_r18_20260126_173526/best_model.pth"
+  "Cas_DETR_r18_0.3": {
+    "config": "/root/autodl-tmp/Cas_DETR/experiments/cas_detr/logs/cas_detr6_r18_20260126_173526/config.yaml",
+    "checkpoint": "/root/autodl-tmp/Cas_DETR/experiments/cas_detr/logs/cas_detr6_r18_20260126_173526/best_model.pth"
   }
 }
 

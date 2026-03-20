@@ -15,13 +15,13 @@
 #   ./run_batch_experiments.sh --test                          # 测试模式：运行所有配置，每个只跑2个epoch
 #   ./run_batch_experiments.sh --rt-detr                       # 只运行RT-DETR实验
 #   ./run_batch_experiments.sh --moe-rtdetr                    # 只运行MOE-RTDETR实验
-#   ./run_batch_experiments.sh --dset                          # 只运行DSET实验
+#   ./run_batch_experiments.sh --cas_detr                          # 只运行Cas_DETR实验
 #   ./run_batch_experiments.sh --yolov8                        # 只运行YOLOv8实验
 #   ./run_batch_experiments.sh --yolov10                       # 只运行YOLOv10实验
 #   ./run_batch_experiments.sh --deformable-detr               # 只运行Deformable-DETR实验
 #   ./run_batch_experiments.sh --test --rt-detr                # 测试模式只运行RT-DETR
 #   ./run_batch_experiments.sh --test --moe-rtdetr             # 测试模式只运行MOE-RTDETR
-#   ./run_batch_experiments.sh --test --dset                   # 测试模式只运行DSET
+#   ./run_batch_experiments.sh --test --cas_detr                   # 测试模式只运行Cas_DETR
 #   ./run_batch_experiments.sh --test --yolov8                 # 测试模式只运行YOLOv8
 #   ./run_batch_experiments.sh --test --yolov10                # 测试模式只运行YOLOv10
 #   ./run_batch_experiments.sh --test --deformable-detr        # 测试模式只运行Deformable-DETR
@@ -84,13 +84,13 @@ declare -A RT_DETR_CONFIGS=(
 # 核心实验配置（8个实验，按顺序）
 declare -a CORE_EXPERIMENTS=(
     "rt-detr/configs/rtdetr_r18.yaml"           # 1. RT-DETR-R18 (Baseline)
-    "dset/configs/dset6_r18_ratio0.5.yaml"      # 2. DSET6-R18-0.5 (⭐⭐⭐ 最重要)
+    "cas_detr/configs/cas_detr6_r18_ratio0.5.yaml"      # 2. Cas_DETR6-R18-0.5 (⭐⭐⭐ 最重要)
     "rt-detr/configs/rtdetr_r34.yaml"           # 3. RT-DETR-R34 (Baseline)
-    "dset/configs/dset6_r34_ratio0.3.yaml"      # 4. DSET6-R34-0.3
-    "dset/configs/dset6_r18_ratio0.3.yaml"      # 5. DSET6-R18-0.3
-    "dset/configs/dset6_r18_ratio0.9.yaml"       # 6. DSET6-R18-0.9
-    "dset/configs/dset4_r18_ratio0.3.yaml"      # 7. DSET4-R18-0.3
-    "dset/configs/dset48_r18_ratio0.3.yaml"      # 8. DSET48-R18-0.3
+    "cas_detr/configs/cas_detr6_r34_ratio0.3.yaml"      # 4. Cas_DETR6-R34-0.3
+    "cas_detr/configs/cas_detr6_r18_ratio0.3.yaml"      # 5. Cas_DETR6-R18-0.3
+    "cas_detr/configs/cas_detr6_r18_ratio0.9.yaml"       # 6. Cas_DETR6-R18-0.9
+    "cas_detr/configs/cas_detr4_r18_ratio0.3.yaml"      # 7. Cas_DETR4-R18-0.3
+    "cas_detr/configs/cas_detr48_r18_ratio0.3.yaml"      # 8. Cas_DETR48-R18-0.3
 )
 
 declare -A MOE_RTDETR_CONFIGS=(
@@ -102,22 +102,22 @@ declare -A MOE_RTDETR_CONFIGS=(
     ["moe8-r34"]="moe-rtdetr/configs/moe8_r34.yaml"
 )
 
-declare -A DSET_CONFIGS=(
+declare -A Cas_DETR_CONFIGS=(
     # 核心实验配置（按实验顺序）
-    # 1. DSET6-R18-0.5 (⭐⭐⭐ 最重要) - 核心模型
-    ["dset6-r18-0.5"]="dset/configs/dset6_r18_ratio0.5.yaml"
-    # 2. DSET6-R34-0.3 - 证明可扩展性
-    ["dset6-r34-0.3"]="dset/configs/dset6_r34_ratio0.3.yaml"
-    # 3. DSET6-R18-0.3 - 低bound (Fast)
-    ["dset6-r18-0.3"]="dset/configs/dset6_r18_ratio0.3.yaml"
-    # 4. DSET6-R18-0.7 - 中等bound
-    ["dset6-r18-0.7"]="dset/configs/dset6_r18_ratio0.7.yaml"
-    # 5. DSET6-R18-0.9 - 高bound (Slow)
-    ["dset6-r18-0.9"]="dset/configs/dset6_r18_ratio0.9.yaml"
-    # 6. DSET4-R18-0.3 - 专家数量影响 (Lite)
-    ["dset4-r18-0.3"]="dset/configs/dset4_r18_ratio0.3.yaml"
-    # 7. DSET48-R18-0.3 - 专家数量影响 (Heavy)
-    ["dset48-r18-0.3"]="dset/configs/dset48_r18_ratio0.3.yaml"
+    # 1. Cas_DETR6-R18-0.5 (⭐⭐⭐ 最重要) - 核心模型
+    ["cas_detr6-r18-0.5"]="cas_detr/configs/cas_detr6_r18_ratio0.5.yaml"
+    # 2. Cas_DETR6-R34-0.3 - 证明可扩展性
+    ["cas_detr6-r34-0.3"]="cas_detr/configs/cas_detr6_r34_ratio0.3.yaml"
+    # 3. Cas_DETR6-R18-0.3 - 低bound (Fast)
+    ["cas_detr6-r18-0.3"]="cas_detr/configs/cas_detr6_r18_ratio0.3.yaml"
+    # 4. Cas_DETR6-R18-0.7 - 中等bound
+    ["cas_detr6-r18-0.7"]="cas_detr/configs/cas_detr6_r18_ratio0.7.yaml"
+    # 5. Cas_DETR6-R18-0.9 - 高bound (Slow)
+    ["cas_detr6-r18-0.9"]="cas_detr/configs/cas_detr6_r18_ratio0.9.yaml"
+    # 6. Cas_DETR4-R18-0.3 - 专家数量影响 (Lite)
+    ["cas_detr4-r18-0.3"]="cas_detr/configs/cas_detr4_r18_ratio0.3.yaml"
+    # 7. Cas_DETR48-R18-0.3 - 专家数量影响 (Heavy)
+    ["cas_detr48-r18-0.3"]="cas_detr/configs/cas_detr48_r18_ratio0.3.yaml"
 )
 
 declare -A YOLOV8_CONFIGS=(
@@ -157,8 +157,8 @@ build_all_configs() {
         NAME_TO_PATH["$key"]="$p"
         NAME_TO_PATH["$b"]="$p"
     done
-    for key in "${!DSET_CONFIGS[@]}"; do
-        local p="${DSET_CONFIGS[$key]}"
+    for key in "${!Cas_DETR_CONFIGS[@]}"; do
+        local p="${Cas_DETR_CONFIGS[$key]}"
         all_configs_paths+=("$p")
         local b
         b=$(basename "$p" .yaml)
@@ -373,7 +373,7 @@ parse_arguments() {
     # 收集所有指定的实验类型（支持多个参数叠加）
     local has_rt_detr=false
     local has_moe_rtdetr=false
-    local has_dset=false
+    local has_cas_detr=false
     local has_yolov8=false
     local has_yolov10=false
     local has_deformable_detr=false
@@ -386,8 +386,8 @@ parse_arguments() {
             --moe-rtdetr)
                 has_moe_rtdetr=true
                 ;;
-            --dset)
-                has_dset=true
+            --cas_detr)
+                has_cas_detr=true
                 ;;
             --yolov8)
                 has_yolov8=true
@@ -402,12 +402,12 @@ parse_arguments() {
     done
     
     # 如果指定了实验类型，只运行指定的类型（支持多个）
-    if [ "$has_rt_detr" = true ] || [ "$has_moe_rtdetr" = true ] || [ "$has_dset" = true ] || [ "$has_yolov8" = true ] || [ "$has_yolov10" = true ] || [ "$has_deformable_detr" = true ]; then
+    if [ "$has_rt_detr" = true ] || [ "$has_moe_rtdetr" = true ] || [ "$has_cas_detr" = true ] || [ "$has_yolov8" = true ] || [ "$has_yolov10" = true ] || [ "$has_deformable_detr" = true ]; then
         # 显示将要运行的类型
         local selected_types=()
         [ "$has_rt_detr" = true ] && selected_types+=("RT-DETR")
         [ "$has_moe_rtdetr" = true ] && selected_types+=("MOE-RTDETR")
-        [ "$has_dset" = true ] && selected_types+=("DSET")
+        [ "$has_cas_detr" = true ] && selected_types+=("Cas_DETR")
         [ "$has_yolov8" = true ] && selected_types+=("YOLOv8")
         [ "$has_yolov10" = true ] && selected_types+=("YOLOv10")
         [ "$has_deformable_detr" = true ] && selected_types+=("Deformable-DETR")
@@ -437,9 +437,9 @@ parse_arguments() {
             done
         fi
         
-        if [ "$has_dset" = true ]; then
-            for key in $(printf '%s\n' "${!DSET_CONFIGS[@]}" | sort); do
-                local p="${DSET_CONFIGS[$key]}"
+        if [ "$has_cas_detr" = true ]; then
+            for key in $(printf '%s\n' "${!Cas_DETR_CONFIGS[@]}" | sort); do
+                local p="${Cas_DETR_CONFIGS[$key]}"
                 if filter_config "$p"; then
                     CONFIGS_TO_RUN+=("$p")
                 fi
@@ -491,9 +491,9 @@ parse_arguments() {
                 CONFIGS_TO_RUN+=("$p")
             fi
         done
-        # DSET实验（按字典序：dset4→dset48→dset6）
-        for key in $(printf '%s\n' "${!DSET_CONFIGS[@]}" | sort); do
-            local p="${DSET_CONFIGS[$key]}"
+        # Cas_DETR实验（按字典序：cas_detr4→cas_detr48→cas_detr6）
+        for key in $(printf '%s\n' "${!Cas_DETR_CONFIGS[@]}" | sort); do
+            local p="${Cas_DETR_CONFIGS[$key]}"
             if filter_config "$p"; then
                 CONFIGS_TO_RUN+=("$p")
             fi
@@ -579,18 +579,18 @@ parse_arguments() {
         echo "  ./run_batch_experiments.sh --test                          # 测试模式：所有配置各跑2个epoch"
         echo "  ./run_batch_experiments.sh --rt-detr                       # 只运行RT-DETR"
         echo "  ./run_batch_experiments.sh --moe-rtdetr                    # 只运行MOE-RTDETR"
-        echo "  ./run_batch_experiments.sh --dset                          # 只运行DSET"
+        echo "  ./run_batch_experiments.sh --cas_detr                          # 只运行Cas_DETR"
         echo "  ./run_batch_experiments.sh --yolov8                        # 只运行YOLOv8"
         echo "  ./run_batch_experiments.sh --yolov10                       # 只运行YOLOv10"
         echo "  ./run_batch_experiments.sh --deformable-detr               # 只运行Deformable-DETR"
         echo "  ./run_batch_experiments.sh --test --rt-detr                # 测试模式只运行RT-DETR"
         echo "  ./run_batch_experiments.sh --test --moe-rtdetr             # 测试模式只运行MOE-RTDETR"
-        echo "  ./run_batch_experiments.sh --test --dset                   # 测试模式只运行DSET"
+        echo "  ./run_batch_experiments.sh --test --cas_detr                   # 测试模式只运行Cas_DETR"
         echo "  ./run_batch_experiments.sh --test --yolov8                 # 测试模式只运行YOLOv8"
         echo "  ./run_batch_experiments.sh --test --yolov10                # 测试模式只运行YOLOv10"
         echo "  ./run_batch_experiments.sh --test --deformable-detr        # 测试模式只运行Deformable-DETR"
-        echo "  ./run_batch_experiments.sh --rt-detr --moe-rtdetr --dset   # 运行多个实验类型（可叠加）"
-        echo "  ./run_batch_experiments.sh --test --rt-detr --dset          # 测试模式运行多个类型"
+        echo "  ./run_batch_experiments.sh --rt-detr --moe-rtdetr --cas_detr   # 运行多个实验类型（可叠加）"
+        echo "  ./run_batch_experiments.sh --test --rt-detr --cas_detr          # 测试模式运行多个类型"
         echo "  ./run_batch_experiments.sh --r18                           # 只运行R18"
         echo "  ./run_batch_experiments.sh --r34                           # 只运行R34"
         echo "  ./run_batch_experiments.sh --r18 --r34                     # 运行R18+R34"
@@ -639,9 +639,9 @@ run_single_experiment() {
     elif [[ "$exp_dir" == *"yolov10"* ]]; then
         TRAIN_SCRIPT="yolov10/train.py"
         WORK_DIR="yolov10"
-    elif [[ "$exp_dir" == *"dset"* ]]; then
-        TRAIN_SCRIPT="dset/train.py"
-        WORK_DIR="dset"
+    elif [[ "$exp_dir" == *"cas_detr"* ]]; then
+        TRAIN_SCRIPT="cas_detr/train.py"
+        WORK_DIR="cas_detr"
     elif [[ "$exp_dir" == *"deformable-detr"* ]]; then
         # Deformable-DETR 使用 Python 脚本而不是 YAML 配置
         TRAIN_SCRIPT="deformable-detr/train_deformable_r18.py"
@@ -764,7 +764,7 @@ generate_report() {
     echo -e "${BLUE}提示: 实验结果（包括mAP等指标）已保存在各训练脚本生成的日志目录中${NC}"
     echo -e "${BLUE}      - RT-DETR日志: rt-detr/logs/${NC}"
     echo -e "${BLUE}      - MOE-RTDETR日志: moe-rtdetr/logs/${NC}"
-    echo -e "${BLUE}      - DSET日志: dset/logs/${NC}"
+    echo -e "${BLUE}      - Cas_DETR日志: cas_detr/logs/${NC}"
     echo -e "${BLUE}      - YOLOv8日志: yolov8/logs/${NC}"
     echo -e "${BLUE}      - YOLOv10日志: yolov10/logs/${NC}"
     echo -e "${BLUE}      - Deformable-DETR日志: deformable-detr/work_dirs/${NC}"

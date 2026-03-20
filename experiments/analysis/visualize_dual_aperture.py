@@ -28,7 +28,7 @@ if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
 try:
-    from experiments.dset.batch_inference import (
+    from experiments.cas_detr.batch_inference import (
         load_model,
         preprocess_image,
         postprocess_outputs,
@@ -36,10 +36,10 @@ try:
         CLASS_NAMES,
         COLORS,
     )
-    from experiments.dset.visualize_ground_truth import draw_gt_boxes
+    from experiments.cas_detr.visualize_ground_truth import draw_gt_boxes
 except ImportError:
     sys.path.insert(0, str(_project_root))
-    from experiments.dset.batch_inference import (
+    from experiments.cas_detr.batch_inference import (
         load_model,
         preprocess_image,
         postprocess_outputs,
@@ -47,7 +47,7 @@ except ImportError:
         CLASS_NAMES,
         COLORS,
     )
-    from experiments.dset.visualize_ground_truth import draw_gt_boxes
+    from experiments.cas_detr.visualize_ground_truth import draw_gt_boxes
 
 def align_map_to_image(map_2d, h_feat, w_feat, H_tensor, W_tensor, orig_h, orig_w, normalize_before_resize=False):
     """
@@ -409,7 +409,7 @@ def run_dual_aperture_visualization(
         encoder_info = outputs["encoder_info"]
 
     if encoder_info is None:
-        raise RuntimeError("Could not extract encoder_info from model output. Is the model DSET with dual-scale encoder?")
+        raise RuntimeError("Could not extract encoder_info from model output. Is the model Cas_DETR with dual-scale encoder?")
 
     # 5. Parse S4 (index 1) and S5 (index 2) from encoder
     use_encoder_idx = getattr(model.encoder, "use_encoder_idx", [1, 2])

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-模型理论效率评估脚本 - 支持 DSET, RT-DETR, Deformable-DETR, YOLOv8, YOLOv10
+模型理论效率评估脚本 - 支持 Cas_DETR, RT-DETR, Deformable-DETR, YOLOv8, YOLOv10
 
 功能：
 1. 自动从 logs/ 目录查找最新的 best_model.pth 或使用指定的检查点
@@ -9,7 +9,7 @@
 4. 使用配置文件中的 batch_size（COCO 评估结果与 batch_size 无关，可使用更大 batch_size 加速）
 
 使用方法：
-    python generate_benchmark_table.py --model_type dset
+    python generate_benchmark_table.py --model_type cas_detr
     python generate_benchmark_table.py --models_config models.json
 """
 
@@ -110,7 +110,7 @@ def count_moe_layer(m, x, y):
 
 
 def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 1280), 
-                   is_yolo: bool = False, config: Dict = None, model_type: str = "dset",
+                   is_yolo: bool = False, config: Dict = None, model_type: str = "cas_detr",
                    debug: bool = False) -> Tuple[float, float, float, float]:
     """计算模型的参数量和理论 FLOPs
     
@@ -126,10 +126,10 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 12
     
     # Active Params (Simple Estimation based on config)
     active_params = total_params
-    if model_type == "dset" and config:
-        dset_cfg = config.get('model', {}).get('dset', {})
-        enc_k = dset_cfg.get('encoder_moe_top_k', 1)
-        enc_e = dset_cfg.get('encoder_moe_num_experts', 1)
+    if model_type == "cas_detr" and config:
+        cas_detr_cfg = config.get('model', {}).get('cas_detr', {})
+        enc_k = cas_detr_cfg.get('encoder_moe_top_k', 1)
+        enc_e = cas_detr_cfg.get('encoder_moe_num_experts', 1)
         dec_k = config.get('model', {}).get('top_k', 3)
         dec_e = config.get('model', {}).get('num_experts', 1)
         
@@ -196,11 +196,11 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 12
             base_flops_g = base_macs / 1e9
             print(f"  ✓ Base FLOPs (Dense, r=1.0): {base_flops_g:.2f} G")
             
-            if model_type != "dset":
+            if model_type != "cas_detr":
                 _moe_dense_mode = False
                 theory_flops_g = base_flops_g
                 print(f"  ✓ Theory FLOPs: {theory_flops_g:.2f} G")
-            elif model_type == "dset":
+            elif model_type == "cas_detr":
                 if hasattr(model_eval, 'encoder') and hasattr(model_eval.encoder, 'shared_token_pruner'):
                     pruner = model_eval.encoder.shared_token_pruner
                     if pruner is not None:
@@ -215,8 +215,8 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 12
                         m.pruning_enabled = True
                     if hasattr(m, 'current_epoch'):
                         m.current_epoch = 999
-                dset_cfg = config.get('model', {}).get('dset', {})
-                r = dset_cfg.get('token_keep_ratio', 1.0)
+                cas_detr_cfg = config.get('model', {}).get('cas_detr', {})
+                r = cas_detr_cfg.get('token_keep_ratio', 1.0)
                 if isinstance(r, dict):
                     r = max(r.values())
                 with torch.no_grad():
@@ -242,15 +242,15 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 12
     return total_params_m, active_params_m, base_flops_g, theory_flops_g
 
 
-def load_dset_model(config_path: str, checkpoint_path: str, device: str = "cuda"):
-    """加载 DSET 模型"""
+def load_cas_detr_model(config_path: str, checkpoint_path: str, device: str = "cuda"):
+    """加载 Cas_DETR 模型"""
     try:
-        from experiments.dset.train import DSETTrainer
+        from experiments.cas_detr.train import Cas_DETRTrainer
     except ImportError:
-        dset_dir = Path(config_path).parent.parent
-        if str(dset_dir) not in sys.path:
-            sys.path.insert(0, str(dset_dir))
-        from train import DSETTrainer
+        cas_detr_dir = Path(config_path).parent.parent
+        if str(cas_detr_dir) not in sys.path:
+            sys.path.insert(0, str(cas_detr_dir))
+        from train import Cas_DETRTrainer
     
     with open(config_path, 'r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
@@ -259,7 +259,7 @@ def load_dset_model(config_path: str, checkpoint_path: str, device: str = "cuda"
         config['misc'] = {}
     config['misc']['device'] = device
     
-    trainer = DSETTrainer(config, config_file_path=str(config_path))
+    trainer = Cas_DETRTrainer(config, config_file_path=str(config_path))
     model = trainer.model
     
     checkpoint = _load_checkpoint(checkpoint_path)
@@ -282,9 +282,9 @@ def load_dset_model(config_path: str, checkpoint_path: str, device: str = "cuda"
     
     # 启用 token pruning - 强制设置 epoch=100 以跨越 warmup 阶段
     if hasattr(model, 'encoder') and hasattr(model.encoder, 'set_epoch'):
-        dset_config = config.get('model', {}).get('dset', {})
-        warmup_epochs = dset_config.get('token_pruning_warmup_epochs', 10)
-        target_keep_ratio = dset_config.get('token_keep_ratio', 1.0)
+        cas_detr_config = config.get('model', {}).get('cas_detr', {})
+        warmup_epochs = cas_detr_config.get('token_pruning_warmup_epochs', 10)
+        target_keep_ratio = cas_detr_config.get('token_keep_ratio', 1.0)
         
         # 强制 epoch=100 以确保剪枝完全激活（progress=1.0）
         forced_epoch = 100
@@ -622,12 +622,12 @@ def evaluate_deformable_detr_full(config_path: str,
 def _get_outputs_info(outputs: Dict) -> Tuple[torch.Tensor, torch.Tensor, bool]:
     """从模型输出中提取 logits 和 boxes
     
-    注意：DSET 和 RT-DETR 均使用 Focal Loss，推理时应使用 Sigmoid 激活
+    注意：Cas_DETR 和 RT-DETR 均使用 Focal Loss，推理时应使用 Sigmoid 激活
     """
     if 'pred_logits' in outputs:
         return outputs['pred_logits'], outputs['pred_boxes'], True  # RT-DETR: sigmoid
     elif 'class_scores' in outputs:
-        return outputs['class_scores'], outputs['bboxes'], True  # DSET: sigmoid (Focal Loss)
+        return outputs['class_scores'], outputs['bboxes'], True  # Cas_DETR: sigmoid (Focal Loss)
     return None, None, False
 
 
@@ -727,19 +727,19 @@ def _collect_predictions_for_coco(outputs: Dict, targets: List[Dict], batch_idx:
 
 
 def evaluate_accuracy(model, config_path: str, device: str = "cuda", 
-                      model_type: str = "dset", max_samples: int = 300) -> Dict[str, float]:
+                      model_type: str = "cas_detr", max_samples: int = 300) -> Dict[str, float]:
     """使用 pycocotools 在验证集上运行 COCO 评估（仅精度，无性能测试）"""
     try:
         # 导入 Trainer
-        if model_type == "dset":
+        if model_type == "cas_detr":
             try:
-                from experiments.dset.train import DSETTrainer
+                from experiments.cas_detr.train import Cas_DETRTrainer
             except ImportError:
-                dset_dir = Path(config_path).parent.parent
-                if str(dset_dir) not in sys.path:
-                    sys.path.insert(0, str(dset_dir))
-                from train import DSETTrainer
-            TrainerClass = DSETTrainer
+                cas_detr_dir = Path(config_path).parent.parent
+                if str(cas_detr_dir) not in sys.path:
+                    sys.path.insert(0, str(cas_detr_dir))
+                from train import Cas_DETRTrainer
+            TrainerClass = Cas_DETRTrainer
         elif model_type == "rtdetr":
             rtdetr_dir = Path(config_path).parent.parent
             if str(rtdetr_dir) not in sys.path:
@@ -758,7 +758,7 @@ def evaluate_accuracy(model, config_path: str, device: str = "cuda",
         config['misc']['device'] = device
         
         # 创建 DataLoader（使用配置文件中的 batch_size）
-        if model_type == "dset":
+        if model_type == "cas_detr":
             trainer = TrainerClass(config, config_file_path=str(config_path))
             _, val_loader = trainer._create_data_loaders()
         else:
@@ -956,8 +956,8 @@ def evaluate_single_model(model_name: str, model_config: Dict, args, project_roo
     is_yolo_model = model_type.startswith("yolov8") or model_type.startswith("yolov10")
     config = None
     try:
-        if model_type == "dset":
-            model, config = load_dset_model(str(config_path), str(checkpoint_path), args.device)
+        if model_type == "cas_detr":
+            model, config = load_cas_detr_model(str(config_path), str(checkpoint_path), args.device)
         elif model_type == "rtdetr":
             model, config = load_rtdetr_model(str(config_path), str(checkpoint_path), args.device)
         elif model_type == "deformable-detr":
@@ -995,7 +995,7 @@ def evaluate_single_model(model_name: str, model_config: Dict, args, project_roo
     # 评估（仅精度）
     metrics = {'mAP': 0.0, 'AP50': 0.0, 'APS': 0.0}
     
-    if model_type in ["dset", "rtdetr"] and config_path:
+    if model_type in ["cas_detr", "rtdetr"] and config_path:
         metrics = evaluate_accuracy(model, str(config_path), args.device, 
                                     model_type=model_type, max_samples=999999)
     elif model_type == "deformable-detr" and config_path:
@@ -1081,7 +1081,7 @@ def print_summary_table(results: List[Dict], gpu_name: str = "GPU", save_csv: bo
             print(f"\n⚠ 保存 CSV 失败: {e}")
 
 
-def find_latest_best_model(logs_dir: Path, model_type: str = "dset") -> Optional[Path]:
+def find_latest_best_model(logs_dir: Path, model_type: str = "cas_detr") -> Optional[Path]:
     """在 logs 目录下找到最新的 best_model.pth 或 best.pt
     
     优先查找各实验目录下 weights/ 文件夹内的检查点文件，并按文件修改时间排序返回最新者。
@@ -1101,7 +1101,7 @@ def find_latest_best_model(logs_dir: Path, model_type: str = "dset") -> Optional
         best_models.extend(list(logs_dir.rglob("best.pt")))
         best_models.extend(list(logs_dir.rglob("best_model.pth")))
     else:
-        # DSET/RT-DETR: 查找 best_model.pth
+        # Cas_DETR/RT-DETR: 查找 best_model.pth
         # 优先查找 weights/ 目录
         best_models.extend(list(logs_dir.rglob("weights/best_model.pth")))
         best_models.extend(list(logs_dir.rglob("best_model.pth")))
@@ -1125,7 +1125,7 @@ def _format_evaluation_results(model_type: str, total_params_m: float, active_pa
                                gpu_name: str = "GPU") -> None:
     """格式化并输出评估结果（理论效率视角）"""
     model_names = {
-        'dset': 'DSET', 'rtdetr': 'RT-DETRv2', 'deformable-detr': 'Deformable-DETR',
+        'cas_detr': 'Cas_DETR', 'rtdetr': 'RT-DETRv2', 'deformable-detr': 'Deformable-DETR',
         'yolov8s': 'YOLOv8-s', 'yolov8m': 'YOLOv8-m',
         'yolov10s': 'YOLOv10-s', 'yolov10m': 'YOLOv10-m'
     }
@@ -1148,13 +1148,13 @@ def _format_evaluation_results(model_type: str, total_params_m: float, active_pa
 
 def main():
     parser = argparse.ArgumentParser(description='生成性能对比表')
-    parser.add_argument('--logs_dir', type=str, default='experiments/dset/logs')
-    parser.add_argument('--config', type=str, default='experiments/dset/logs/dset6_r18_20260126_173526/config.yaml')
+    parser.add_argument('--logs_dir', type=str, default='experiments/cas_detr/logs')
+    parser.add_argument('--config', type=str, default='experiments/cas_detr/logs/cas_detr6_r18_20260126_173526/config.yaml')
     parser.add_argument('--checkpoint', type=str, default=None)
     parser.add_argument('--input_size', type=int, nargs=2, default=None)
     parser.add_argument('--device', type=str, default='cuda')
-    parser.add_argument('--model_type', type=str, default='dset',
-                       choices=['dset', 'rtdetr', 'deformable-detr', 
+    parser.add_argument('--model_type', type=str, default='cas_detr',
+                       choices=['cas_detr', 'rtdetr', 'deformable-detr', 
                                'yolov8s', 'yolov8m', 'yolov10s', 'yolov10m'])
     parser.add_argument('--rtdetr_config', type=str, default=None)
     parser.add_argument('--deformable_work_dir', type=str, default=None)

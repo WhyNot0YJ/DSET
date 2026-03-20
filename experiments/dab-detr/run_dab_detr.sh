@@ -6,7 +6,7 @@
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 cd "$SCRIPT_DIR/DAB-DETR"
 
-# 模型配置: ResNet-18, COCO预训练权重初始化，对标 DSET 的 DAIR-V2X (200 epoch, bs 12)
+# 模型配置: ResNet-18, COCO预训练权重初始化，对标 Cas_DETR 的 DAIR-V2X (200 epoch, bs 12)
 # 请确保将社区下载的 COCO R18 预训练权重重命名并放入相应位置，代码允许 non-strict 自动适应 8 类 Head
 python main.py \
     --dataset_file coco \

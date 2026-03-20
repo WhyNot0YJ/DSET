@@ -40,7 +40,7 @@ pip install --no-cache-dir "mmcv==2.1.0" || \
 # 安装 MMDetection
 pip install -v -e .
 
-# 运行基于 DSET 配置的 Faster RCNN 训练
+# 运行基于 Cas_DETR 配置的 Faster RCNN 训练
 python tools/train.py \
     configs/faster_rcnn/faster-rcnn_r50_fpn_dairv2x.py \
     --work-dir ../../logs/faster_rcnn_dairv2x

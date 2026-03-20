@@ -656,7 +656,7 @@ class RTDETRTrainer:
         # 分组参数
         param_groups = []
         
-        # 定义新增结构的关键词（rt-detr没有MoE/DSET结构，所以为空）
+        # 定义新增结构的关键词（rt-detr没有MoE/Cas_DETR结构，所以为空）
         new_structure_keywords = []
         
         # 1. 预训练参数组（backbone、encoder、decoder的标准层，排除norm层和新增结构）
@@ -699,7 +699,7 @@ class RTDETRTrainer:
             })
             self.logger.info(f"✓ Norm层参数组: {len(norm_params)} 个参数, lr={new_lr}, wd=0")
         
-        # 3. 新参数组（MoE层、DSET层等新增结构，即使它们在encoder/decoder中）
+        # 3. 新参数组（MoE层、Cas_DETR层等新增结构，即使它们在encoder/decoder中）
         new_params = []
         new_names = []
         processed_params = set(id(p) for p in pretrained_params + norm_params)
@@ -937,7 +937,7 @@ class RTDETRTrainer:
         self.last_epoch = -1
         self.best_loss = float('inf')
         self.best_map = 0.0  # 记录最佳mAP
-        self.global_step = 0  # 全局步数（与moe-rtdetr/dset保持一致）
+        self.global_step = 0  # 全局步数（与moe-rtdetr/cas_detr保持一致）
         
         # 6.5 初始化Early Stopping
         self.early_stopping = self._create_early_stopping()
@@ -1097,7 +1097,7 @@ class RTDETRTrainer:
             else:
                 val_metrics = {}
             
-            # 学习率调度（与moe-rtdetr/dset保持一致）
+            # 学习率调度（与moe-rtdetr/cas_detr保持一致）
             if self.last_epoch < self.warmup_scheduler.warmup_epochs:
                 self.warmup_scheduler.step()
             else:
@@ -1442,7 +1442,7 @@ class RTDETRTrainer:
                 
                 # 计算损失（兼容两种方式：模型内部计算或外部计算）
                 if isinstance(outputs, dict) and 'total_loss' in outputs:
-                    # 模型内部已计算损失（与moe-rtdetr/dset保持一致）
+                    # 模型内部已计算损失（与moe-rtdetr/cas_detr保持一致）
                     loss = outputs['total_loss']
                     total_loss += loss.item()
                 else:

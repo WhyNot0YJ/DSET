@@ -151,7 +151,7 @@ def main():
     class_names = ('Car', 'Truck', 'Van', 'Bus', 'Pedestrian', 'Cyclist', 'Motorcyclist', 'Trafficcone')
     metainfo = dict(classes=class_names)
 
-    # Data Augmentation Pipeline (aligned with DSET)
+    # Data Augmentation Pipeline (aligned with Cas_DETR)
     train_pipeline = [
         dict(type='LoadImageFromFile', backend_args=None),
         dict(type='LoadAnnotations', with_bbox=True),

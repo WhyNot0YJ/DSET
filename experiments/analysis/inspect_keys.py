@@ -15,7 +15,7 @@ from typing import Dict, Any, Optional, List
 # CONFIGURATION
 # ============================================================================
 # Path to the checkpoint file you want to inspect.
-CHECKPOINT_PATH = "/root/autodl-tmp/DSET/experiments/dset/logs/dset6_r18_20260126_173526/best_model.pth"  # put your .pth here or use path to logs/.../best_model.pth
+CHECKPOINT_PATH = "/root/autodl-tmp/Cas_DETR/experiments/cas_detr/logs/cas_detr6_r18_20260126_173526/best_model.pth"  # put your .pth here or use path to logs/.../best_model.pth
 
 # Print mode: "all" = 打印所有层级的参数; "filter" = 仅打印包含关键词的键
 PRINT_MODE = "all"  # "all" | "filter"
@@ -179,7 +179,7 @@ def inspect_checkpoint_keys(
     except FileNotFoundError:
         print(f"ERROR: Checkpoint file not found at: {checkpoint_path}")
         print("Please update CHECKPOINT_PATH at the top of this script.")
-        print("Tip: use the path to your trained checkpoint, e.g. logs/dset6_r18_xxx/best_model.pth")
+        print("Tip: use the path to your trained checkpoint, e.g. logs/cas_detr6_r18_xxx/best_model.pth")
     except Exception as e:
         print(f"ERROR: Failed to load checkpoint: {e}")
         import traceback

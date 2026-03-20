@@ -2,7 +2,7 @@
 """
 Edge-Focus Efficiency vs. Accuracy Plot for CVPR/ICCV Paper (Section 4.2.2)
 
-Zoomed-in scatter plot comparing DSET-R18 vs RT-DETR-R18, YOLOv8-S, YOLOv10-S.
+Zoomed-in scatter plot comparing Cas_DETR-R18 vs RT-DETR-R18, YOLOv8-S, YOLOv10-S.
 Highlights the "Sweet Spot" (High Accuracy, Low GFLOPs) in the top-left.
 
 Dependencies:
@@ -29,13 +29,13 @@ import seaborn as sns
 # Hardcoded Data Points - Edge-Focus (R18, S only)
 # =============================================================================
 
-# DSET-R18 (Ours) - Red Star, Size 250
-DSET = {
-    "points": [{"name": "DSET-R18", "gflops": 68.3, "mAP": 0.680}],
+# Cas_DETR-R18 (Ours) - Red Star, Size 250
+Cas_DETR = {
+    "points": [{"name": "Cas_DETR-R18", "gflops": 68.3, "mAP": 0.680}],
     "color": "#C41E3A",
     "marker": "*",
     "size": 250,
-    "label": "DSET (Ours)",
+    "label": "Cas_DETR (Ours)",
 }
 
 # RT-DETR-R18 (Base) - Blue Circle, Size 180
@@ -84,7 +84,7 @@ def plot_pareto_frontier(output_dir: Path):
     fig, ax = plt.subplots(figsize=(7, 5))
 
     # Data coordinates
-    dset_x, dset_y = 68.3, 0.680
+    cas_detr_x, cas_detr_y = 68.3, 0.680
     rtdetr_x, rtdetr_y = 67.6, 0.649
     yolo10_x, yolo10_y = 99.2, 0.707
 
@@ -102,14 +102,14 @@ def plot_pareto_frontier(output_dir: Path):
 
     # --- Plot Data (Scatter only) ---
 
-    # DSET-R18: Red Star, Size 250
-    for p in DSET["points"]:
+    # Cas_DETR-R18: Red Star, Size 250
+    for p in Cas_DETR["points"]:
         ax.scatter(
             p["gflops"], p["mAP"],
-            c=DSET["color"],
-            marker=DSET["marker"],
-            s=DSET["size"],
-            label=DSET["label"],
+            c=Cas_DETR["color"],
+            marker=Cas_DETR["marker"],
+            s=Cas_DETR["size"],
+            label=Cas_DETR["label"],
             zorder=5,
             edgecolors="white",
             linewidths=1,
@@ -141,10 +141,10 @@ def plot_pareto_frontier(output_dir: Path):
             linewidths=0.5,
         )
 
-    # --- Arrow 1: Accuracy Boost (RT-DETR-R18 UP to DSET-R18) ---
+    # --- Arrow 1: Accuracy Boost (RT-DETR-R18 UP to Cas_DETR-R18) ---
     arrow_vert = FancyArrowPatch(
         (rtdetr_x, rtdetr_y),
-        (dset_x, dset_y),
+        (cas_detr_x, cas_detr_y),
         arrowstyle="->",
         color="#1E3A8A",  # Blue (matches RT-DETR, accuracy comparison)
         linewidth=2,
@@ -155,8 +155,8 @@ def plot_pareto_frontier(output_dir: Path):
     ax.add_patch(arrow_vert)
     # Text to the right of arrow (avoids clipping with xlim 60)
     ax.text(
-        dset_x + 8,
-        (rtdetr_y + dset_y) / 2,
+        cas_detr_x + 8,
+        (rtdetr_y + cas_detr_y) / 2,
         "+3.1% mAP",
         fontsize=12,
         fontweight="bold",
@@ -166,11 +166,11 @@ def plot_pareto_frontier(output_dir: Path):
         zorder=6,
     )
 
-    # --- Arrow 2: Compute Savings (YOLOv10-S LEFT towards DSET-R18) ---
-    # Arrow points down-left to DSET center for accurate pointing
+    # --- Arrow 2: Compute Savings (YOLOv10-S LEFT towards Cas_DETR-R18) ---
+    # Arrow points down-left to Cas_DETR center for accurate pointing
     arrow_horiz = FancyArrowPatch(
         (yolo10_x, yolo10_y),
-        (dset_x, dset_y),
+        (cas_detr_x, cas_detr_y),
         arrowstyle="->",
         color="#15803D",  # Green: "Green AI" / Efficiency
         linewidth=2,
@@ -181,7 +181,7 @@ def plot_pareto_frontier(output_dir: Path):
     ax.add_patch(arrow_horiz)
     ax.annotate(
         "-31% GFLOPs",
-        xy=((yolo10_x + dset_x) / 2, (yolo10_y + dset_y) / 2),
+        xy=((yolo10_x + cas_detr_x) / 2, (yolo10_y + cas_detr_y) / 2),
         xytext=(20, 0),
         textcoords="offset points",
         fontsize=12,

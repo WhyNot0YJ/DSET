@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # 自动读取 JSON 配置并运行 generate_benchmark_table.py
-# 默认使用 generate_benchmark_table_dset.json
+# 默认使用 generate_benchmark_table_cas_detr.json
 #
 # 用法:
 #   ./run_benchmark.sh                    # 使用默认 JSON
@@ -10,7 +10,7 @@
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-DEFAULT_JSON="${SCRIPT_DIR}/generate_benchmark_table_dset.json"
+DEFAULT_JSON="${SCRIPT_DIR}/generate_benchmark_table_cas_detr.json"
 JSON_PATH="${1:-$DEFAULT_JSON}"
 
 # 相对路径转绝对路径

@@ -82,8 +82,8 @@ def main():
     base_dir = Path(__file__).parent
     
     experiments = {
-        'DSET-R34': ('dset/logs/dset8_r34_20251125_114205/training_history.csv', read_training_history),
-        'DSET-R18': ('dset/logs/dset8_r18_20251126_155540/training_history.csv', read_training_history),
+        'Cas_DETR-R34': ('cas_detr/logs/cas_detr8_r34_20251125_114205/training_history.csv', read_training_history),
+        'Cas_DETR-R18': ('cas_detr/logs/cas_detr8_r18_20251126_155540/training_history.csv', read_training_history),
         'MOE-RTDETR-R34': ('moe-rtdetr/logs/moe6_rtdetr_r34_20251121_142648/training_history.csv', read_training_history),
         'MOE-RTDETR-R18': ('moe-rtdetr/logs/moe6_rtdetr_r18_20251121_110441/training_history.csv', read_training_history),
         'RT-DETR-R34': ('rt-detr/logs/rtdetr_r34_20251126_045005/training_history.csv', read_training_history),
@@ -124,7 +124,7 @@ def generate_report(results):
 ## 1. 实验概述
 
 本报告对比了多种目标检测模型在DAIR-V2X数据集上的性能表现，包括：
-- **DSET (Dual-Sparse Expert Transformer)**: 基于RT-DETR的双稀疏专家网络
+- **Cas_DETR (Dual-Sparse Expert Transformer)**: 基于RT-DETR的双稀疏专家网络
 - **MOE-RTDETR**: 混合专家RT-DETR
 - **RT-DETR**: 实时DETR基线模型
 - **YOLOv8**: YOLO系列最新版本
@@ -162,9 +162,9 @@ def generate_report(results):
 
 ## 3. 详细分析
 
-### 3.1 DSET模型性能
+### 3.1 Cas_DETR模型性能
 
-DSET (Dual-Sparse Expert Transformer) 是本研究的核心创新，采用双稀疏设计：
+Cas_DETR (Dual-Sparse Expert Transformer) 是本研究的核心创新，采用双稀疏设计：
 - **Encoder层**: Encoder MoE + Token Pruning
 - **Decoder层**: Expert MoE
 - **稀疏性**: 通过专家路由和token剪枝实现计算效率提升
@@ -172,29 +172,29 @@ DSET (Dual-Sparse Expert Transformer) 是本研究的核心创新，采用双稀
 **实验结果**:
 """
     
-    if 'DSET-R34' in results:
-        dset_r34 = results['DSET-R34']
+    if 'Cas_DETR-R34' in results:
+        cas_detr_r34 = results['Cas_DETR-R34']
         report += f"""
-- **DSET-R34**: 
-  - mAP@0.5:0.95 = {dset_r34['mAP_0.5_0.95']:.4f}
-  - mAP@0.5 = {dset_r34['mAP_0.5']:.4f}
-  - mAP@0.75 = {dset_r34['mAP_0.75']:.4f}
-  - 最佳Epoch: {dset_r34['epoch']}
+- **Cas_DETR-R34**: 
+  - mAP@0.5:0.95 = {cas_detr_r34['mAP_0.5_0.95']:.4f}
+  - mAP@0.5 = {cas_detr_r34['mAP_0.5']:.4f}
+  - mAP@0.75 = {cas_detr_r34['mAP_0.75']:.4f}
+  - 最佳Epoch: {cas_detr_r34['epoch']}
 """
     
-    if 'DSET-R18' in results:
-        dset_r18 = results['DSET-R18']
+    if 'Cas_DETR-R18' in results:
+        cas_detr_r18 = results['Cas_DETR-R18']
         report += f"""
-- **DSET-R18**: 
-  - mAP@0.5:0.95 = {dset_r18['mAP_0.5_0.95']:.4f}
-  - mAP@0.5 = {dset_r18['mAP_0.5']:.4f}
-  - mAP@0.75 = {dset_r18['mAP_0.75']:.4f}
-  - 最佳Epoch: {dset_r18['epoch']}
+- **Cas_DETR-R18**: 
+  - mAP@0.5:0.95 = {cas_detr_r18['mAP_0.5_0.95']:.4f}
+  - mAP@0.5 = {cas_detr_r18['mAP_0.5']:.4f}
+  - mAP@0.75 = {cas_detr_r18['mAP_0.75']:.4f}
+  - 最佳Epoch: {cas_detr_r18['epoch']}
 """
     
     report += """
 **分析**:
-- DSET通过双稀疏设计在保持检测精度的同时提升了计算效率
+- Cas_DETR通过双稀疏设计在保持检测精度的同时提升了计算效率
 - R34版本相比R18版本有显著的性能提升，体现了backbone的重要性
 
 ### 3.2 MOE-RTDETR模型性能
@@ -277,7 +277,7 @@ YOLOv8作为当前流行的实时检测模型，提供了性能对比参考。
 
 ### 4.1 模型架构对比
 
-| 特性 | DSET | MOE-RTDETR | RT-DETR | YOLOv8 |
+| 特性 | Cas_DETR | MOE-RTDETR | RT-DETR | YOLOv8 |
 |------|------|------------|---------|--------|
 | Encoder MoE | ✅ Encoder MoE | ❌ | ❌ | ❌ |
 | Decoder MoE | ✅ | ✅ | ❌ | ❌ |
@@ -288,15 +288,15 @@ YOLOv8作为当前流行的实时检测模型，提供了性能对比参考。
 
 """
     
-    if 'DSET-R34' in results and 'RT-DETR-R34' in results:
-        dset = results['DSET-R34']
+    if 'Cas_DETR-R34' in results and 'RT-DETR-R34' in results:
+        cas_detr = results['Cas_DETR-R34']
         baseline = results['RT-DETR-R34']
-        improvement = ((dset['mAP_0.5_0.95'] - baseline['mAP_0.5_0.95']) / baseline['mAP_0.5_0.95']) * 100
+        improvement = ((cas_detr['mAP_0.5_0.95'] - baseline['mAP_0.5_0.95']) / baseline['mAP_0.5_0.95']) * 100
         report += f"""
-**DSET-R34 vs RT-DETR-R34**:
-- 绝对提升: {dset['mAP_0.5_0.95'] - baseline['mAP_0.5_0.95']:.4f}
+**Cas_DETR-R34 vs RT-DETR-R34**:
+- 绝对提升: {cas_detr['mAP_0.5_0.95'] - baseline['mAP_0.5_0.95']:.4f}
 - 相对提升: {improvement:.2f}%
-- DSET通过双稀疏专家设计实现了性能提升
+- Cas_DETR通过双稀疏专家设计实现了性能提升
 
 """
     
@@ -307,12 +307,12 @@ YOLOv8作为当前流行的实时检测模型，提供了性能对比参考。
 
 """
     
-    if 'DSET-R34' in results and 'DSET-R18' in results:
-        r34 = results['DSET-R34']
-        r18 = results['DSET-R18']
+    if 'Cas_DETR-R34' in results and 'Cas_DETR-R18' in results:
+        r34 = results['Cas_DETR-R34']
+        r18 = results['Cas_DETR-R18']
         diff = r34['mAP_0.5_0.95'] - r18['mAP_0.5_0.95']
         report += f"""
-- **DSET**: R34相比R18提升 {diff:.4f} ({(diff/r18['mAP_0.5_0.95']*100):.2f}%)
+- **Cas_DETR**: R34相比R18提升 {diff:.4f} ({(diff/r18['mAP_0.5_0.95']*100):.2f}%)
 """
     
     if 'RT-DETR-R34' in results and 'RT-DETR-R18' in results:
@@ -338,7 +338,7 @@ YOLOv8作为当前流行的实时检测模型，提供了性能对比参考。
 
 ### 5.2 损失函数分析
 
-- **DSET**: 检测损失 + MoE平衡损失 + Token Pruning损失
+- **Cas_DETR**: 检测损失 + MoE平衡损失 + Token Pruning损失
 - **MOE-RTDETR**: 检测损失 + MoE平衡损失
 - **RT-DETR**: 标准检测损失
 - **YOLOv8**: Box Loss + Class Loss + DFL Loss
@@ -349,7 +349,7 @@ YOLOv8作为当前流行的实时检测模型，提供了性能对比参考。
 
 ### 6.1 主要发现
 
-1. **DSET架构优势**: 双稀疏专家设计在DAIR-V2X数据集上取得了最佳性能
+1. **Cas_DETR架构优势**: 双稀疏专家设计在DAIR-V2X数据集上取得了最佳性能
 2. **Backbone重要性**: R34相比R18有显著性能提升
 3. **专家网络有效性**: MoE机制能够提升模型表达能力
 

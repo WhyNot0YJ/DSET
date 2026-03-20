@@ -512,4 +512,4 @@ visualizer:
   type: DetLocalVisualizer
   vis_backends:
   - type: LocalVisBackend
-work_dir: /root/autodl-tmp/DSET/experiments/deformable-detr/work_dirs/r18_baseline
+work_dir: /root/autodl-tmp/Cas_DETR/experiments/deformable-detr/work_dirs/r18_baseline

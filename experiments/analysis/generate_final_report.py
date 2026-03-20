@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-生成《DSET vs Baselines 终极实验评估报告》
+生成《Cas_DETR vs Baselines 终极实验评估报告》
 深度扫描实验日志，提取所有关键指标
 """
 
@@ -17,11 +17,11 @@ BASE_DIR = Path(__file__).parent
 
 # 模型名称映射
 MODEL_NAME_MAP = {
-    'dset4': 'DSET-4',
-    'dset6': 'DSET-6',
-    'dset48': 'DSET-48',
-    'dset4_r34': 'DSET-4 (R34)',
-    'dset6_r34': 'DSET-6 (R34)',
+    'cas_detr4': 'Cas_DETR-4',
+    'cas_detr6': 'Cas_DETR-6',
+    'cas_detr48': 'Cas_DETR-48',
+    'cas_detr4_r34': 'Cas_DETR-4 (R34)',
+    'cas_detr6_r34': 'Cas_DETR-6 (R34)',
     'rtdetr_r18': 'RT-DETR (R18)',
     'rtdetr_r34': 'RT-DETR (R34)',
     'yolo_v8s': 'YOLOv8-S',
@@ -206,7 +206,7 @@ def parse_config_yaml(yaml_path: Path) -> Dict:
                 elif 'target_size' in config['training']:
                     result['input_resolution'] = config['training']['target_size']
             
-            # 对于DSET和RT-DETR，从data_augmentation中提取max_size
+            # 对于Cas_DETR和RT-DETR，从data_augmentation中提取max_size
             if 'data_augmentation' in config:
                 if 'max_size' in config['data_augmentation']:
                     result['input_resolution'] = config['data_augmentation']['max_size']
@@ -218,8 +218,8 @@ def parse_config_yaml(yaml_path: Path) -> Dict:
             if 'training' in config:
                 result['batch_size'] = config['training'].get('batch_size', None)
             
-            if 'model' in config and 'dset' in config['model']:
-                token_keep = config['model']['dset'].get('token_keep_ratio', None)
+            if 'model' in config and 'cas_detr' in config['model']:
+                token_keep = config['model']['cas_detr'].get('token_keep_ratio', None)
                 if isinstance(token_keep, dict):
                     # 取第一个值
                     result['token_keep_ratio'] = list(token_keep.values())[0] if token_keep else None
@@ -227,7 +227,7 @@ def parse_config_yaml(yaml_path: Path) -> Dict:
                     result['token_keep_ratio'] = token_keep
             
             # 检查验证设置（通常在代码中，这里尝试从注释或默认值推断）
-            # 对于DSET和RT-DETR，通常使用conf_thres=0.001, max_det=100
+            # 对于Cas_DETR和RT-DETR，通常使用conf_thres=0.001, max_det=100
             result['conf_thres'] = 0.001  # 默认值
             result['max_det'] = 100  # 默认值
             
@@ -240,10 +240,10 @@ def scan_experiments() -> Dict:
     """扫描所有实验"""
     experiments = {}
     
-    # 扫描DSET实验（排除 recent_config）
-    dset_logs = BASE_DIR / 'dset' / 'logs'
-    if dset_logs.exists():
-        for exp_dir in dset_logs.iterdir():
+    # 扫描Cas_DETR实验（排除 recent_config）
+    cas_detr_logs = BASE_DIR / 'cas_detr' / 'logs'
+    if cas_detr_logs.exists():
+        for exp_dir in cas_detr_logs.iterdir():
             if exp_dir.is_dir() and exp_dir.name != 'recent_config':
                 exp_name = exp_dir.name
                 
@@ -251,7 +251,7 @@ def scan_experiments() -> Dict:
                 csv_path = exp_dir / 'training_history.csv'
                 if csv_path.exists():
                     data = parse_training_history_csv(csv_path)
-                    data['model_type'] = 'DSET'
+                    data['model_type'] = 'Cas_DETR'
                     data['exp_name'] = exp_name
                     
                     # 读取日志
@@ -373,7 +373,7 @@ def scan_experiments() -> Dict:
 def generate_report(experiments: Dict) -> str:
     """生成报告"""
     report = []
-    report.append("# DSET vs Baselines 终极实验评估报告\n")
+    report.append("# Cas_DETR vs Baselines 终极实验评估报告\n")
     report.append("生成时间: 2025-12-05\n")
     report.append("---\n\n")
     
@@ -448,9 +448,9 @@ def generate_report(experiments: Dict) -> str:
     
     for exp_name, data in experiments.items():
         model_name = get_model_name(exp_name)
-        if 'R18' in model_name and ('DSET' in model_name or 'RT-DETR' in model_name):
+        if 'R18' in model_name and ('Cas_DETR' in model_name or 'RT-DETR' in model_name):
             r18_exps[exp_name] = data
-        elif 'R34' in model_name and ('DSET' in model_name or 'RT-DETR' in model_name):
+        elif 'R34' in model_name and ('Cas_DETR' in model_name or 'RT-DETR' in model_name):
             r34_exps[exp_name] = data
         elif 'YOLO' in model_name:
             yolo_exps[exp_name] = data
@@ -496,14 +496,14 @@ def generate_report(experiments: Dict) -> str:
         
         report.append(f"| {model_name} | {ped_str} | {cyc_str} |\n")
     
-    # DSET vs RT-DETR R18 提升分析
+    # Cas_DETR vs RT-DETR R18 提升分析
     if rtdetr_r18_ped:
-        report.append("\n#### 3.1.2 DSET vs RT-DETR R18 提升分析 (Small Objects)\n\n")
+        report.append("\n#### 3.1.2 Cas_DETR vs RT-DETR R18 提升分析 (Small Objects)\n\n")
         report.append("| Model | Pedestrian AP | vs RT-DETR R18 | Cyclist AP | vs RT-DETR R18 |\n")
         report.append("|:---|:---|:---|:---|:---|\n")
         for exp_name, data in sorted(r18_exps.items(), key=lambda x: x[1].get('best_map_50_95', 0.0), reverse=True):
             model_name = get_model_name(exp_name)
-            if 'DSET' in model_name:
+            if 'Cas_DETR' in model_name:
                 ped_ap = data.get('pedestrian_ap')
                 cyc_ap = data.get('cyclist_ap')
                 if ped_ap and cyc_ap:
@@ -537,14 +537,14 @@ def generate_report(experiments: Dict) -> str:
         
         report.append(f"| {model_name} | {van_str} | {truck_str} |\n")
     
-    # DSET vs RT-DETR R18 提升分析（困难类别）
+    # Cas_DETR vs RT-DETR R18 提升分析（困难类别）
     if rtdetr_r18_van:
-        report.append("\n#### 3.1.4 DSET vs RT-DETR R18 提升分析 (Hard Categories)\n\n")
+        report.append("\n#### 3.1.4 Cas_DETR vs RT-DETR R18 提升分析 (Hard Categories)\n\n")
         report.append("| Model | Van AP | vs RT-DETR R18 | Truck AP | vs RT-DETR R18 |\n")
         report.append("|:---|:---|:---|:---|:---|\n")
         for exp_name, data in sorted(r18_exps.items(), key=lambda x: x[1].get('best_map_50_95', 0.0), reverse=True):
             model_name = get_model_name(exp_name)
-            if 'DSET' in model_name:
+            if 'Cas_DETR' in model_name:
                 van_ap = data.get('van_ap')
                 truck_ap = data.get('truck_ap')
                 if van_ap and truck_ap:
@@ -595,14 +595,14 @@ def generate_report(experiments: Dict) -> str:
         
         report.append(f"| {model_name} | {ped_str} | {cyc_str} |\n")
     
-    # DSET vs RT-DETR R34 提升分析
+    # Cas_DETR vs RT-DETR R34 提升分析
     if rtdetr_r34_ped:
-        report.append("\n#### 3.2.2 DSET vs RT-DETR R34 提升分析 (Small Objects)\n\n")
+        report.append("\n#### 3.2.2 Cas_DETR vs RT-DETR R34 提升分析 (Small Objects)\n\n")
         report.append("| Model | Pedestrian AP | vs RT-DETR R34 | Cyclist AP | vs RT-DETR R34 |\n")
         report.append("|:---|:---|:---|:---|:---|\n")
         for exp_name, data in sorted(r34_exps.items(), key=lambda x: x[1].get('best_map_50_95', 0.0), reverse=True):
             model_name = get_model_name(exp_name)
-            if 'DSET' in model_name:
+            if 'Cas_DETR' in model_name:
                 ped_ap = data.get('pedestrian_ap')
                 cyc_ap = data.get('cyclist_ap')
                 if ped_ap and cyc_ap:
@@ -636,14 +636,14 @@ def generate_report(experiments: Dict) -> str:
         
         report.append(f"| {model_name} | {van_str} | {truck_str} |\n")
     
-    # DSET vs RT-DETR R34 提升分析（困难类别）
+    # Cas_DETR vs RT-DETR R34 提升分析（困难类别）
     if rtdetr_r34_van:
-        report.append("\n#### 3.2.4 DSET vs RT-DETR R34 提升分析 (Hard Categories)\n\n")
+        report.append("\n#### 3.2.4 Cas_DETR vs RT-DETR R34 提升分析 (Hard Categories)\n\n")
         report.append("| Model | Van AP | vs RT-DETR R34 | Truck AP | vs RT-DETR R34 |\n")
         report.append("|:---|:---|:---|:---|:---|\n")
         for exp_name, data in sorted(r34_exps.items(), key=lambda x: x[1].get('best_map_50_95', 0.0), reverse=True):
             model_name = get_model_name(exp_name)
-            if 'DSET' in model_name:
+            if 'Cas_DETR' in model_name:
                 van_ap = data.get('van_ap')
                 truck_ap = data.get('truck_ap')
                 if van_ap and truck_ap:
