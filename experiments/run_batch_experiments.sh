@@ -126,22 +126,18 @@ declare -A Cas_DETR_CONFIGS=(
 
 declare -A YOLOV8_CONFIGS=(
     ["yolov8s"]="yolov8/configs/yolov8s_dairv2x.yaml"
-    ["yolov8m"]="yolov8/configs/yolov8m_dairv2x.yaml"
 )
 
 declare -A YOLOV10_CONFIGS=(
     ["yolov10s"]="yolov10/configs/yolov10s_dairv2x.yaml"
-    ["yolov10m"]="yolov10/configs/yolov10m_dairv2x.yaml"
 )
 
 declare -A YOLOV11_CONFIGS=(
     ["yolov11s"]="yolov11/configs/yolov11s_dairv2x.yaml"
-    ["yolov11m"]="yolov11/configs/yolov11m_dairv2x.yaml"
 )
 
 declare -A YOLOV12_CONFIGS=(
     ["yolov12s"]="yolov12/configs/yolov12s_dairv2x.yaml"
-    ["yolov12m"]="yolov12/configs/yolov12m_dairv2x.yaml"
 )
 
 declare -A DEFORMABLE_DETR_CONFIGS=(
@@ -554,7 +550,7 @@ parse_arguments() {
                 CONFIGS_TO_RUN+=("$p")
             fi
         done
-        # YOLOv8实验（按字典序：yolov8m→yolov8s）
+        # YOLOv8实验（仅s配置）
         for key in $(printf '%s\n' "${!YOLOV8_CONFIGS[@]}" | sort); do
             local p="${YOLOV8_CONFIGS[$key]}"
             # YOLOv8不使用backbone过滤（它有自己的模型大小）
