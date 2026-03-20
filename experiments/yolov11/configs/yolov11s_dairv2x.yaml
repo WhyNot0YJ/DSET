@@ -1,6 +1,6 @@
 model:
-  model_name: "yolov11s.pt"
-  pretrained_weights: "pretrained/yolov11s.pt"
+  model_name: "yolo11s.pt"
+  pretrained_weights: "pretrained/yolo11s.pt"
 
 training:
   epochs: 200

@@ -122,7 +122,7 @@ class YOLOv11Trainer:
         else:
             # 新训练：创建带时间戳的目录
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            model_name = self.config.get('model', {}).get('model_name', 'yolov11n')
+            model_name = self.config.get('model', {}).get('model_name', 'yolo11n')
             # 去掉.pt后缀（如果存在）
             if model_name.endswith('.pt'):
                 model_name = model_name[:-3]
@@ -157,7 +157,7 @@ class YOLOv11Trainer:
     
     def create_model(self):
         """创建YOLO模型"""
-        model_name = self.model_config.get('model_name', 'yolov11n.pt')
+        model_name = self.model_config.get('model_name', 'yolo11n.pt')
         pretrained_weights = self.model_config.get('pretrained_weights', None)
         
         # 如果指定了预训练权重，尝试解析路径
