@@ -177,7 +177,7 @@ def inference_from_preprocessed_image(img_tensor, model, postprocessor, orig_ima
     return result_image
 
 
-def preprocess_image(image_path: str, target_size: int = 1280):
+def preprocess_image(image_path: str, target_size: int = 640):
     """Preprocess image (PIL version)."""
     try:
         image_pil = Image.open(str(image_path)).convert("RGB")
@@ -186,7 +186,7 @@ def preprocess_image(image_path: str, target_size: int = 1280):
     
     orig_w, orig_h = image_pil.size
     im_size_max = max(orig_h, orig_w)
-    target_max = 640
+    target_max = target_size
     scale = target_max / float(im_size_max)
     
     new_w = int(round(orig_w * scale))
@@ -198,8 +198,8 @@ def preprocess_image(image_path: str, target_size: int = 1280):
     std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
     image_tensor = (image_tensor - mean) / std
     
-    padded_h = 640
-    padded_w = 640
+    padded_h = target_size
+    padded_w = target_size
     
     padded_image = torch.zeros(3, padded_h, padded_w, dtype=torch.float32)
     padded_image[:, :new_h, :new_w] = image_tensor
@@ -347,7 +347,7 @@ def load_gt_boxes(json_path, class_names_list):
 
 
 def process_single_image(image_path: Path, model, postprocessor, output_dir: Path, 
-                        conf_threshold: float, device: str, target_size: int = 1280):
+                        conf_threshold: float, device: str, target_size: int = 640):
     """处理单张图像"""
     try:
         img_tensor, orig_image, meta = preprocess_image(str(image_path), target_size)
@@ -385,7 +385,7 @@ def process_single_image(image_path: Path, model, postprocessor, output_dir: Pat
 def batch_inference(image_dir: str, config_path: str, checkpoint_path: str, 
                    output_dir: str = None, conf_threshold: float = 0.3, 
                    device: str = "cuda", max_images: int = None,
-                   target_size: int = 1280,
+                   target_size: int = 640,
                    image_extensions: tuple = ('.jpg', '.jpeg', '.png', '.bmp')):
     """批量推理"""
     print(f"加载模型: {checkpoint_path}")
@@ -458,7 +458,7 @@ if __name__ == "__main__":
     parser.add_argument("--conf", type=float, default=0.3, help="置信度阈值")
     parser.add_argument("--device", type=str, default="cuda", help="设备 (cuda/cpu)")
     parser.add_argument("--max_images", type=int, default=None, help="最大处理图像数量")
-    parser.add_argument("--target_size", type=int, default=1280, help="推理图像尺寸")
+    parser.add_argument("--target_size", type=int, default=640, help="推理图像尺寸")
     
     args = parser.parse_args()
     

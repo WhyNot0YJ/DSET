@@ -79,6 +79,9 @@ class TrainingVisualizer:
             'mAP_0_5': [],
             'mAP_0_75': [],
             'mAP_0_5_0_95': [],
+            'ap_easy': [],
+            'ap_moderate': [],
+            'ap_hard': [],
             'learning_rate': [],
             'expert_usage': [],  # 仅MOE模型使用
             'router_loss': []     # 仅MOE模型使用
@@ -93,6 +96,9 @@ class TrainingVisualizer:
         mAP_0_75: float = 0.0,
         mAP_0_5_0_95: float = 0.0,
         learning_rate: float = 0.0,
+        ap_easy: float = 0.0,
+        ap_moderate: float = 0.0,
+        ap_hard: float = 0.0,
         expert_usage: Optional[List[float]] = None,
         router_loss: Optional[float] = None
     ) -> None:
@@ -114,6 +120,9 @@ class TrainingVisualizer:
         self.history['mAP_0_5'].append(mAP_0_5)
         self.history['mAP_0_75'].append(mAP_0_75)
         self.history['mAP_0_5_0_95'].append(mAP_0_5_0_95)
+        self.history['ap_easy'].append(ap_easy)
+        self.history['ap_moderate'].append(ap_moderate)
+        self.history['ap_hard'].append(ap_hard)
         self.history['learning_rate'].append(learning_rate)
         
         if expert_usage is not None:
@@ -341,6 +350,9 @@ class TrainingVisualizer:
                 'mAP_0.5': self.history['mAP_0_5'][i],
                 'mAP_0.75': self.history['mAP_0_75'][i],
                 'mAP_0.5_0.95': self.history['mAP_0_5_0_95'][i],
+                'AP_easy': self.history['ap_easy'][i],
+                'AP_moderate': self.history['ap_moderate'][i],
+                'AP_hard': self.history['ap_hard'][i],
                 'learning_rate': self.history['learning_rate'][i]
             }
             

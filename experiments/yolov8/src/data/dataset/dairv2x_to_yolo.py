@@ -4,11 +4,10 @@
 """
 
 import json
+import struct
 import shutil
 from pathlib import Path
 from typing import List, Dict
-import cv2
-import numpy as np
 
 
 # DAIR-V2X类别定义（8类）
@@ -28,6 +27,66 @@ IGNORE_CLASSES = [
     "PedestrianIgnore", "CarIgnore", "OtherIgnore", 
     "Unknown_movable", "Unknown_unmovable"
 ]
+
+
+def normalize_state(value) -> int:
+    """标准化状态值到 [0, 1, 2]。"""
+    try:
+        state = int(float(value))
+    except (TypeError, ValueError):
+        return 0
+    if state < 0:
+        return 0
+    if state > 2:
+        return 2
+    return state
+
+
+def extract_states(ann: Dict) -> Dict[str, int]:
+    """从原始标注提取截断/遮挡状态（兼容常见拼写）。"""
+    truncated_raw = ann.get("truncated_state", ann.get("turncated_state", 0))
+    occluded_raw = ann.get("occluded_state", ann.get("occulated_state", 0))
+    return {
+        "truncated_state": normalize_state(truncated_raw),
+        "occluded_state": normalize_state(occluded_raw)
+    }
+
+
+def read_jpeg_size(image_path: Path):
+    """读取 JPEG 图像尺寸（width, height），不依赖第三方库。"""
+    with open(image_path, 'rb') as f:
+        if f.read(2) != b'\xff\xd8':
+            raise ValueError(f"Not a JPEG file: {image_path}")
+
+        while True:
+            marker_prefix = f.read(1)
+            if not marker_prefix:
+                break
+            if marker_prefix != b'\xff':
+                continue
+
+            marker = f.read(1)
+            while marker == b'\xff':
+                marker = f.read(1)
+
+            if marker in {b'\xd8', b'\xd9'}:
+                continue
+
+            seg_len_bytes = f.read(2)
+            if len(seg_len_bytes) != 2:
+                break
+            seg_len = struct.unpack('>H', seg_len_bytes)[0]
+
+            if marker in {b'\xc0', b'\xc1', b'\xc2', b'\xc3', b'\xc5', b'\xc6', b'\xc7', b'\xc9', b'\xca', b'\xcb', b'\xcd', b'\xce', b'\xcf'}:
+                payload = f.read(5)
+                if len(payload) != 5:
+                    break
+                _, height, width = struct.unpack('>BHH', payload)
+                return width, height
+
+            f.seek(seg_len - 2, 1)
+
+    raise ValueError(f"Failed to parse JPEG size: {image_path}")
 
 
 def convert_bbox_to_yolo_format(bbox_2d: Dict, img_width: int, img_height: int) -> tuple:
@@ -79,8 +138,10 @@ def convert_dairv2x_to_yolo(data_root: str, output_dir: str, split: str = "train
     # 创建输出目录
     images_dir = output_dir / "images" / split
     labels_dir = output_dir / "labels" / split
+    labels_meta_dir = output_dir / "labels_meta" / split
     images_dir.mkdir(parents=True, exist_ok=True)
     labels_dir.mkdir(parents=True, exist_ok=True)
+    labels_meta_dir.mkdir(parents=True, exist_ok=True)
     
     # 加载数据信息
     data_info_path = data_root / "metadata" / "data_info.json"
@@ -116,13 +177,12 @@ def convert_dairv2x_to_yolo(data_root: str, output_dir: str, split: str = "train
             skipped_count += 1
             continue
         
-        # 读取图像获取尺寸
-        image = cv2.imread(str(image_path))
-        if image is None:
+        # 读取图像尺寸
+        try:
+            img_width, img_height = read_jpeg_size(image_path)
+        except ValueError:
             skipped_count += 1
             continue
-        
-        img_height, img_width = image.shape[:2]
         
         # 复制图像到输出目录
         output_image_path = images_dir / f"{idx:06d}.jpg"
@@ -134,6 +194,8 @@ def convert_dairv2x_to_yolo(data_root: str, output_dir: str, split: str = "train
             # 创建空的标注文件
             output_label_path = labels_dir / f"{idx:06d}.txt"
             output_label_path.write_text("")
+            output_meta_path = labels_meta_dir / f"{idx:06d}.json"
+            output_meta_path.write_text("[]", encoding='utf-8')
             converted_count += 1
             continue
         
@@ -142,6 +204,7 @@ def convert_dairv2x_to_yolo(data_root: str, output_dir: str, split: str = "train
         
         # 转换标注
         yolo_lines = []
+        yolo_meta = []
         for ann in annotations:
             class_name = ann["type"]
             
@@ -163,13 +226,34 @@ def convert_dairv2x_to_yolo(data_root: str, output_dir: str, split: str = "train
             yolo_bbox = convert_bbox_to_yolo_format(bbox_2d, img_width, img_height)
             if yolo_bbox is None:
                 continue
+
+            states = extract_states(ann)
             
             cx, cy, w, h = yolo_bbox
             yolo_lines.append(f"{class_id} {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}\n")
+            yolo_meta.append({
+                "class_id": class_id,
+                "class_name": class_name,
+                "bbox_yolo": {
+                    "cx": round(cx, 6),
+                    "cy": round(cy, 6),
+                    "w": round(w, 6),
+                    "h": round(h, 6)
+                },
+                "truncated_state": states["truncated_state"],
+                "occluded_state": states["occluded_state"]
+            })
         
         # 保存标注文件
         output_label_path = labels_dir / f"{idx:06d}.txt"
         output_label_path.write_text("".join(yolo_lines))
+
+        # 保存 sidecar 元数据（与 YOLO txt 同名）
+        output_meta_path = labels_meta_dir / f"{idx:06d}.json"
+        output_meta_path.write_text(
+            json.dumps(yolo_meta, ensure_ascii=False),
+            encoding='utf-8'
+        )
         
         converted_count += 1
     

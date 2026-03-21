@@ -67,12 +67,11 @@ runs/
 tensorboard/
 
 # Experiment logs (batch runs)
-experiments/logs/**/*.txt
-experiments/logs/**/*.csv
-experiments/logs/**/*.log
-experiments/**/logs/**/training.log
-experiments/**/logs/**/config.yaml
-
+experiments/**/logs/**/*.txt
+experiments/**/logs/**/*.csv
+experiments/**/logs/**/*.log
+experiments/**/logs/**/*.png
+experiments/**/logs/**/*.yaml
 # Temporary files
 tmp/
 temp/

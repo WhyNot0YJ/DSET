@@ -22,6 +22,19 @@ from ..transforms import (
 
 __all__ = ['DAIRV2XDetection']
 
+
+def _normalize_state(value) -> int:
+    """将状态值标准化到 [0, 1, 2]。"""
+    try:
+        state = int(float(value))
+    except (TypeError, ValueError):
+        return 0
+    if state < 0:
+        return 0
+    if state > 2:
+        return 2
+    return state
+
 @register()
 class DAIRV2XDetection(DetDataset):
     """DAIR-V2X数据集检测器 - 支持COCO格式评估"""
@@ -201,11 +214,15 @@ class DAIRV2XDetection(DetDataset):
             labels = torch.tensor([ann['class_id'] for ann in annotations], dtype=torch.int64)
             areas = torch.tensor([ann['area'] for ann in annotations], dtype=torch.float32)
             iscrowd = torch.tensor([ann.get('iscrowd', 0) for ann in annotations], dtype=torch.int64)
+            occluded_states = torch.tensor([ann.get('occluded_state', 0) for ann in annotations], dtype=torch.int64)
+            truncated_states = torch.tensor([ann.get('truncated_state', 0) for ann in annotations], dtype=torch.int64)
         else:
             boxes = torch.zeros((0, 4), dtype=torch.float32)
             labels = torch.zeros((0,), dtype=torch.int64)
             areas = torch.zeros((0,), dtype=torch.float32)
             iscrowd = torch.zeros((0,), dtype=torch.int64)
+            occluded_states = torch.zeros((0,), dtype=torch.int64)
+            truncated_states = torch.zeros((0,), dtype=torch.int64)
         
         # 包装成 BoundingBoxes
         boxes = BoundingBoxes(boxes, format='xyxy', canvas_size=(h, w))
@@ -216,6 +233,8 @@ class DAIRV2XDetection(DetDataset):
             'area': areas,
             'image_id': torch.tensor([actual_idx]),
             'iscrowd': iscrowd,
+            'occluded_state': occluded_states,
+            'truncated_state': truncated_states,
             'orig_size': torch.tensor([h, w]), # H, W
         }
         
@@ -272,6 +291,8 @@ class DAIRV2XDetection(DetDataset):
             width = x2 - x1
             height = y2 - y1
             area = width * height
+            occluded_state = _normalize_state(ann.get("occluded_state", ann.get("occulated_state", 0)))
+            truncated_state = _normalize_state(ann.get("truncated_state", ann.get("turncated_state", 0)))
             
             if class_name in self.ignore_classes:
                 # 训练时：如果split是train，可以过滤掉ignore框
@@ -281,7 +302,9 @@ class DAIRV2XDetection(DetDataset):
                     'class_id': 0,
                     'bbox': bbox,
                     'area': area,
-                    'iscrowd': 1
+                    'iscrowd': 1,
+                    'occluded_state': occluded_state,
+                    'truncated_state': truncated_state
                 })
             elif class_name in self.class_merge_map:
                 class_id = self.class_merge_map[class_name]
@@ -289,7 +312,9 @@ class DAIRV2XDetection(DetDataset):
                     'class_id': class_id,
                     'bbox': bbox,
                     'area': area,
-                    'iscrowd': 0
+                    'iscrowd': 0,
+                    'occluded_state': occluded_state,
+                    'truncated_state': truncated_state
                 })
             elif class_name in self.class_to_id:
                 class_id = self.class_to_id[class_name]
@@ -297,7 +322,9 @@ class DAIRV2XDetection(DetDataset):
                     'class_id': class_id,
                     'bbox': bbox,
                     'area': area,
-                    'iscrowd': 0
+                    'iscrowd': 0,
+                    'occluded_state': occluded_state,
+                    'truncated_state': truncated_state
                 })
         
         # 如果是训练集，且为了避免ignore框干扰训练（如DETR matching），可以过滤掉iscrowd=1的框

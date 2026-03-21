@@ -5,7 +5,7 @@ model:
 training:
   epochs: 200
   batch_size: 32
-  imgsz: 1280
+  imgsz: 640
   optimizer: "auto"
   lr0: 0.01
   lrf: 0.01

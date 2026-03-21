@@ -13,6 +13,7 @@ DEFAULT_CHECKPOINT=${CHECKPOINT:-logs/*/weights/best.pt}
 DEFAULT_IMAGE_DIR=${IMAGE_DIR:-/root/autodl-tmp/datasets/DAIR-V2X/image}
 DEFAULT_OUTPUT_DIR=${OUTPUT_DIR:-/root/autodl-tmp/datasets/DAIR-V2X/image_results}
 DEFAULT_CONF=${CONF:-0.5}
+DEFAULT_IMGSZ=${IMGSZ:-640}
 DEFAULT_DEVICE=${DEVICE:-cuda}
 DEFAULT_MAX_IMAGES=${MAX_IMAGES:-50}
 
@@ -21,6 +22,7 @@ CHECKPOINT_FILE=$DEFAULT_CHECKPOINT
 IMAGE_DIR=$DEFAULT_IMAGE_DIR
 OUTPUT_DIR=$DEFAULT_OUTPUT_DIR
 CONF_THRESHOLD=$DEFAULT_CONF
+IMGSZ=$DEFAULT_IMGSZ
 DEVICE=$DEFAULT_DEVICE
 MAX_IMAGES=$DEFAULT_MAX_IMAGES
 
@@ -46,6 +48,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --device)
             DEVICE="$2"
+            shift 2
+            ;;
+        --imgsz)
+            IMGSZ="$2"
             shift 2
             ;;
         --max_images)
@@ -75,6 +81,7 @@ echo "模型检查点: $CHECKPOINT_FILE"
 echo "输入图像目录: $IMAGE_DIR"
 echo "输出目录: $OUTPUT_DIR"
 echo "置信度阈值: $CONF_THRESHOLD"
+echo "输入尺寸: $IMGSZ"
 echo "设备: $DEVICE"
 echo "最大处理图像数: $MAX_IMAGES"
 echo "============================================================"
@@ -102,6 +109,7 @@ python batch_inference.py \
     --image_dir "$IMAGE_DIR" \
     --output_dir "$OUTPUT_DIR" \
     --conf "$CONF_THRESHOLD" \
+    --imgsz "$IMGSZ" \
     --device "$DEVICE" \
     --max_images "$MAX_IMAGES" \
     "${ARGS[@]}"

@@ -198,7 +198,7 @@ def inference_from_preprocessed_image(img_tensor, model, postprocessor, orig_ima
     return result_image
 
 
-def preprocess_image(image_path: str, target_size: int = 1280):
+def preprocess_image(image_path: str, target_size: int = 640):
     """
     预处理图像 - PIL 版本 (保证与训练数据流一致)
     逻辑：PIL读取(RGB) -> Resize(Rect) -> Normalize -> Top-Left Pad
@@ -212,17 +212,8 @@ def preprocess_image(image_path: str, target_size: int = 1280):
     orig_w, orig_h = image_pil.size  # PIL 是 (W, H)
     
     # 2. 智能缩放计算 (Rectangular Resize)
-    # 逻辑：尝试短边缩放到 720
-    im_size_min = min(orig_h, orig_w)
     im_size_max = max(orig_h, orig_w)
-    
-    # 目标短边设为 720 (对应 target_size=1280 的长边限制逻辑)
-    target_short = 720
-    
-    scale = target_short / float(im_size_min)
-    # 如果缩放后长边超过 target_size (1280)，则按长边缩放
-    if round(scale * im_size_max) > target_size:
-        scale = target_size / float(im_size_max)
+    scale = target_size / float(im_size_max)
     
     new_w = int(round(orig_w * scale))
     new_h = int(round(orig_h * scale))
@@ -240,10 +231,9 @@ def preprocess_image(image_path: str, target_size: int = 1280):
     std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
     image_tensor = (image_tensor - mean) / std
     
-    # 5. 左上角对齐填充 (Top-Left Padding to Stride 32)
-    stride = 32
-    padded_h = int(np.ceil(new_h / stride) * stride)
-    padded_w = int(np.ceil(new_w / stride) * stride)
+    # 5. 左上角对齐填充 (Top-Left Padding to Fixed target_size)
+    padded_h = target_size
+    padded_w = target_size
     
     # 创建画布 (填充 0)
     padded_image = torch.zeros(3, padded_h, padded_w, dtype=torch.float32)
@@ -447,7 +437,7 @@ def load_gt_boxes(json_path, class_names_list):
 
 
 def process_single_image(image_path: Path, model, postprocessor, output_dir: Path, 
-                        conf_threshold: float, device: str, target_size: int = 1280):
+                        conf_threshold: float, device: str, target_size: int = 640):
     """处理单张图像"""
     try:
         # 预处理图像
@@ -494,7 +484,7 @@ def process_single_image(image_path: Path, model, postprocessor, output_dir: Pat
 def batch_inference(image_dir: str, config_path: str, checkpoint_path: str, 
                    output_dir: str = None, conf_threshold: float = 0.3, 
                    device: str = "cuda", max_images: int = None,
-                   target_size: int = 1280,
+                   target_size: int = 640,
                    image_extensions: tuple = ('.jpg', '.jpeg', '.png', '.bmp')):
     """批量推理"""
     # 加载模型
@@ -582,8 +572,8 @@ if __name__ == "__main__":
                        help="设备 (cuda/cpu)")
     parser.add_argument("--max_images", type=int, default=None,
                        help="最大处理图像数量（默认：处理所有图像）")
-    parser.add_argument("--target_size", type=int, default=1280,
-                       help="推理图像尺寸（长边限制，默认1280）")
+    parser.add_argument("--target_size", type=int, default=640,
+                       help="推理图像尺寸（长边限制，默认640）")
     
     args = parser.parse_args()
     

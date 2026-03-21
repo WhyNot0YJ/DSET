@@ -914,7 +914,7 @@ class AdaptiveExpertTrainer:
                     self.postprocessor,
                     orig_image_path,
                     conf_threshold=0.3,
-                    target_size=1280,  # [FIX] 与验证集一致，使用 1280
+                    target_size=640,
                     device=str(self.device),
                     class_names=self.class_names,
                     colors=self.colors,
@@ -937,8 +937,8 @@ class AdaptiveExpertTrainer:
                 with torch.no_grad():
                     outputs = self.ema.module(single_image)
                 
-                # [FIX] 根据 box_revert 文档，orig_sizes 应该是 (w, h)
-                # 之前的 [h, w] 可能导致了左下角偏移或宽高反转
+                # 根据 box_revert 文档，orig_sizes 应该是 (w, h)
+                _, _, h, w = single_image.shape
                 eval_sizes = torch.tensor([[w, h]], device=self.device)
                 
                 results = self.postprocessor(outputs, orig_sizes=eval_sizes)
@@ -979,6 +979,91 @@ class AdaptiveExpertTrainer:
             if hasattr(self, 'ema') and hasattr(self.ema, 'module'):
                 self.ema.module.train()
     
+    def _evaluate_best_model_and_print_all_ap(self):
+        """训练结束后使用 best_model 在验证集上做一次完整评估并打印全部 AP。"""
+        best_model_path = self.log_dir / 'best_model.pth'
+        latest_checkpoint_path = self.log_dir / 'latest_checkpoint.pth'
+        if best_model_path.exists():
+            checkpoint_path = best_model_path
+        elif latest_checkpoint_path.exists():
+            checkpoint_path = latest_checkpoint_path
+            self.logger.warning("未找到best_model.pth，改用latest_checkpoint.pth进行训练结束评估")
+        else:
+            self.logger.warning("未找到best_model.pth和latest_checkpoint.pth，跳过训练结束评估")
+            return
+
+        original_ema_state = None
+        try:
+            checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
+            best_ema_state = checkpoint.get('ema_state_dict', None)
+            best_epoch = checkpoint.get('epoch', None)
+
+            if hasattr(self, 'ema') and self.ema and best_ema_state is not None:
+                original_ema_state = self.ema.state_dict()
+                self.ema.load_state_dict(best_ema_state)
+
+            self.ema.module.eval()
+            all_predictions = []
+            all_targets = []
+            current_h, current_w = 640, 640
+
+            with torch.no_grad():
+                for batch_idx, (images, targets) in enumerate(self.val_loader):
+                    _, _, current_h, current_w = images.shape
+                    images = images.to(self.device)
+                    targets = [{k: v.to(self.device) if isinstance(v, torch.Tensor) else v
+                               for k, v in t.items()} for t in targets]
+
+                    outputs = self.ema.module(images, targets)
+                    has_predictions = (
+                        ('pred_logits' in outputs and 'pred_boxes' in outputs) or
+                        ('class_scores' in outputs and 'bboxes' in outputs)
+                    )
+                    if has_predictions:
+                        self._collect_predictions(
+                            outputs, targets, batch_idx,
+                            all_predictions, all_targets,
+                            current_w, current_h
+                        )
+
+            if len(all_predictions) == 0 or len(all_targets) == 0:
+                self.logger.warning("best_model评估无有效预测或标注，跳过打印AP")
+                return
+
+            metrics = self._compute_map_metrics(
+                all_predictions,
+                all_targets,
+                img_h=current_h,
+                img_w=current_w,
+                print_per_category=True,
+                compute_difficulty=True
+            )
+
+            self.logger.info(
+                "  best_model COCO AP: "
+                f"AP={metrics.get('mAP_0.5_0.95', 0.0):.4f}, "
+                f"AP50={metrics.get('mAP_0.5', 0.0):.4f}, "
+                f"AP75={metrics.get('mAP_0.75', 0.0):.4f}, "
+                f"AP_small={metrics.get('AP_small', 0.0):.4f}, "
+                f"AP_medium={metrics.get('AP_medium', 0.0):.4f}, "
+                f"AP_large={metrics.get('AP_large', 0.0):.4f}"
+            )
+            self.logger.info(
+                "  best_model KITTI风格AP: "
+                f"Easy={metrics.get('AP_easy', 0.0):.4f}, "
+                f"Moderate={metrics.get('AP_moderate', 0.0):.4f}, "
+                f"Hard={metrics.get('AP_hard', 0.0):.4f}"
+            )
+            self.logger.info(f"✓ best_model 评估完成 (epoch={best_epoch})")
+        except Exception as e:
+            self.logger.warning(f"训练结束后的best_model评估失败: {e}")
+        finally:
+            if original_ema_state is not None and hasattr(self, 'ema') and self.ema:
+                try:
+                    self.ema.load_state_dict(original_ema_state)
+                except Exception:
+                    pass
+
     def _run_inference_on_best_model(self, best_ema_state=None, best_epoch=None):
         """使用best_model运行推理，输出5张验证图像的推理结果
         
@@ -1196,7 +1281,7 @@ class AdaptiveExpertTrainer:
         all_targets = []
         
         # 初始化默认尺寸 (防止 val_loader 为空)
-        current_h, current_w = 736, 1280
+        current_h, current_w = 640, 640
         
         # 前30个epoch只计算loss，不进行cocoEval评估
         
@@ -1315,18 +1400,119 @@ class AdaptiveExpertTrainer:
                     # 获取iscrowd字段（评估时存在）
                     has_iscrowd = 'iscrowd' in targets[i]
                     iscrowd_values = targets[i]['iscrowd'] if has_iscrowd else torch.zeros(len(true_labels), dtype=torch.int64)
+                    has_occluded = 'occluded_state' in targets[i]
+                    has_truncated = 'truncated_state' in targets[i]
+                    occluded_values = targets[i]['occluded_state'] if has_occluded else torch.zeros(len(true_labels), dtype=torch.int64)
+                    truncated_values = targets[i]['truncated_state'] if has_truncated else torch.zeros(len(true_labels), dtype=torch.int64)
                     
                     for j in range(len(true_labels)):
                         ann_dict = {
                             'image_id': batch_idx * self.config['training']['batch_size'] + i,
                             'category_id': int(true_labels[j].item()) + 1,
                             'bbox': true_boxes_coco[j].cpu().numpy().tolist(),
-                            'area': float((true_boxes_coco[j, 2] * true_boxes_coco[j, 3]).item())
+                            'area': float((true_boxes_coco[j, 2] * true_boxes_coco[j, 3]).item()),
+                            'bbox_height': float(true_boxes_coco[j, 3].item())
                         }
                         # 评估时添加iscrowd字段，让COCOeval自动处理
                         if has_iscrowd:
                             ann_dict['iscrowd'] = int(iscrowd_values[j].item())
+                        if has_occluded:
+                            ann_dict['occluded_state'] = int(occluded_values[j].item())
+                        if has_truncated:
+                            ann_dict['truncated_state'] = int(truncated_values[j].item())
                         all_targets.append(ann_dict)
+
+    def _get_kitti_difficulty(self, target: Dict) -> str:
+        """按 KITTI 风格规则映射难度档位（Easy ⊂ Moderate ⊂ Hard）。"""
+        bbox = target.get('bbox', [0, 0, 0, 0])
+        bbox_h = float(target.get('bbox_height', bbox[3] if len(bbox) > 3 else 0.0))
+        occluded = int(target.get('occluded_state', 0))
+        truncated = int(target.get('truncated_state', 0))
+
+        if bbox_h >= 40 and occluded == 0 and truncated == 0:
+            return 'easy'
+        if bbox_h >= 25 and occluded <= 1 and truncated <= 1:
+            return 'moderate'
+        if bbox_h >= 25 and occluded <= 2 and truncated <= 2:
+            return 'hard'
+        return 'ignore'
+
+    def _run_coco_eval(self, predictions: List[Dict], targets: List[Dict], categories: List[Dict],
+                       img_h: int, img_w: int, print_summary: bool = False):
+        """执行一次 COCOeval，返回 coco_eval 对象；无目标时返回 None。"""
+        if len(targets) == 0:
+            return None
+
+        coco_gt = {
+            'images': [],
+            'annotations': [],
+            'categories': categories,
+            'info': {
+                'description': 'DAIR-V2X Dataset',
+                'version': '1.0',
+                'year': 2024
+            }
+        }
+
+        image_ids = set(target['image_id'] for target in targets)
+        for img_id in image_ids:
+            coco_gt['images'].append({'id': img_id, 'width': img_w, 'height': img_h})
+
+        for i, target in enumerate(targets):
+            ann = target.copy()
+            ann['id'] = i + 1
+            coco_gt['annotations'].append(ann)
+
+        from io import StringIO
+        import sys
+
+        coco_gt_obj = COCO()
+        coco_gt_obj.dataset = coco_gt
+
+        old_stdout = sys.stdout
+        sys.stdout = StringIO()
+        try:
+            coco_gt_obj.createIndex()
+            coco_dt = coco_gt_obj.loadRes(predictions)
+            coco_eval = COCOeval(coco_gt_obj, coco_dt, 'bbox')
+            coco_eval.evaluate()
+            coco_eval.accumulate()
+        finally:
+            sys.stdout = old_stdout
+
+        if print_summary:
+            coco_eval.summarize()
+
+        return coco_eval
+
+    def _compute_difficulty_aps(self, predictions: List[Dict], targets: List[Dict], categories: List[Dict],
+                                img_h: int, img_w: int) -> Dict[str, float]:
+        """计算 KITTI 风格 AP_easy / AP_moderate / AP_hard。"""
+        easy_targets = []
+        moderate_targets = []
+        hard_targets = []
+
+        for target in targets:
+            level = self._get_kitti_difficulty(target)
+            if level == 'easy':
+                easy_targets.append(target)
+                moderate_targets.append(target)
+                hard_targets.append(target)
+            elif level == 'moderate':
+                moderate_targets.append(target)
+                hard_targets.append(target)
+            elif level == 'hard':
+                hard_targets.append(target)
+
+        easy_eval = self._run_coco_eval(predictions, easy_targets, categories, img_h, img_w, print_summary=False)
+        moderate_eval = self._run_coco_eval(predictions, moderate_targets, categories, img_h, img_w, print_summary=False)
+        hard_eval = self._run_coco_eval(predictions, hard_targets, categories, img_h, img_w, print_summary=False)
+
+        return {
+            'AP_easy': float(easy_eval.stats[0]) if easy_eval is not None else 0.0,
+            'AP_moderate': float(moderate_eval.stats[0]) if moderate_eval is not None else 0.0,
+            'AP_hard': float(hard_eval.stats[0]) if hard_eval is not None else 0.0,
+        }
     
     def _print_best_model_per_category_map(self):
         """使用best_model时打印详细的每类mAP（8类），重新计算以输出COCO详细评估表格
@@ -1365,10 +1551,38 @@ class AdaptiveExpertTrainer:
                 per_category_map = mAP_metrics.get('per_category_map', {})
         except Exception as e:
             self.logger.warning(f"打印best_model每类mAP失败: {e}")
+
+    def _extract_per_category_ap_from_eval(self, coco_eval, categories: List[Dict]) -> Dict[str, float]:
+        """从一次 COCOeval 结果中提取各类别 AP@0.5:0.95，避免重复评估。"""
+        per_category_map = {cat['name']: 0.0 for cat in categories}
+        if coco_eval is None or not hasattr(coco_eval, 'eval') or 'precision' not in coco_eval.eval:
+            return per_category_map
+
+        try:
+            precision = coco_eval.eval['precision']
+            area_index = 0
+            max_det_index = len(coco_eval.params.maxDets) - 1
+            cat_id_to_index = {cat_id: idx for idx, cat_id in enumerate(coco_eval.params.catIds)}
+
+            for cat in categories:
+                cat_id = cat['id']
+                cat_name = cat['name']
+                if cat_id not in cat_id_to_index:
+                    continue
+
+                cat_index = cat_id_to_index[cat_id]
+                precision_cat = precision[:, :, cat_index, area_index, max_det_index]
+                valid = precision_cat[precision_cat > -1]
+                per_category_map[cat_name] = float(np.mean(valid)) if valid.size > 0 else 0.0
+        except Exception as e:
+            self.logger.debug(f"从COCOeval提取每类AP失败: {e}")
+
+        return per_category_map
     
     def _compute_map_metrics(self, predictions: List[Dict], targets: List[Dict], 
-                             img_h: int = 736, img_w: int = 1280,
-                             print_per_category: bool = False) -> Dict[str, float]:
+                             img_h: int = 640, img_w: int = 640,
+                             print_per_category: bool = False,
+                             compute_difficulty: bool = False) -> Dict[str, float]:
         """计算mAP指标。
         
         Args:
@@ -1383,7 +1597,13 @@ class AdaptiveExpertTrainer:
                 return {
                     'mAP_0.5': 0.0,
                     'mAP_0.75': 0.0,
-                    'mAP_0.5_0.95': 0.0
+                    'mAP_0.5_0.95': 0.0,
+                    'AP_small': 0.0,
+                    'AP_medium': 0.0,
+                    'AP_large': 0.0,
+                    'AP_easy': 0.0,
+                    'AP_moderate': 0.0,
+                    'AP_hard': 0.0
                 }
             
             # 获取类别信息
@@ -1470,48 +1690,8 @@ class AdaptiveExpertTrainer:
                 finally:
                     sys.stdout = old_stdout
             
-            # 只在需要时（print_per_category=True）才计算每个类别的 mAP，避免每个epoch都计算8次
-            per_category_map = {}
-            if print_per_category:
-                # 提取每个类别的 mAP@0.5:0.95
-                category_map = {cat['id']: cat['name'] for cat in categories}
-                
-                # 方法：为每个类别单独计算 AP
-                # 通过设置 catIds 参数，只评估特定类别
-                cat_ids = coco_eval.params.catIds
-                
-                for cat_id, cat_name in category_map.items():
-                    if cat_id in cat_ids:
-                        try:
-                            # 为当前类别创建单独的 COCOeval 对象
-                            coco_eval_cat = COCOeval(coco_gt_obj, coco_dt, 'bbox')
-                            coco_eval_cat.params.catIds = [cat_id]  # 只评估当前类别
-                            # 抑制所有输出（evaluate、accumulate、summarize都会产生输出）
-                            sys.stdout = StringIO()
-                            try:
-                                coco_eval_cat.evaluate()
-                                coco_eval_cat.accumulate()
-                                coco_eval_cat.summarize()
-                            finally:
-                                sys.stdout = old_stdout
-                            
-                            # 检查 stats 是否存在且有足够的元素
-                            # stats[0] = AP@0.5:0.95, 需要确保至少有1个元素
-                            if hasattr(coco_eval_cat, 'stats') and len(coco_eval_cat.stats) > 0:
-                                per_category_map[cat_name] = float(coco_eval_cat.stats[0])
-                            else:
-                                # 如果没有检测结果，stats 可能为空，设为0
-                                per_category_map[cat_name] = 0.0
-                        except (IndexError, AttributeError, ValueError) as e:
-                            # 捕获可能的索引错误、属性错误或值错误
-                            # 如果该类别没有检测结果，这些错误是正常的
-                            per_category_map[cat_name] = 0.0
-                        except Exception as e:
-                            # 其他异常也捕获，确保不会中断整个评估过程
-                            self.logger.debug(f"类别 {cat_name} AP计算失败: {e}")
-                            per_category_map[cat_name] = 0.0
-                    else:
-                        per_category_map[cat_name] = 0.0
+            # 每类 AP 从同一次 COCOeval 的 precision 张量提取，避免重复评估
+            per_category_map = self._extract_per_category_ap_from_eval(coco_eval, categories) if print_per_category else {}
             
             # 只在best_model时打印每个类别的详细mAP
             if print_per_category:
@@ -1522,10 +1702,31 @@ class AdaptiveExpertTrainer:
                     map_val = per_category_map.get(cat_name, 0.0)
                     self.logger.info(f"    {cat_name:12s}: {map_val:.4f}")
             
+            difficulty_metrics = {
+                'AP_easy': 0.0,
+                'AP_moderate': 0.0,
+                'AP_hard': 0.0,
+            }
+            if compute_difficulty:
+                difficulty_metrics = self._compute_difficulty_aps(predictions, targets, categories, img_h, img_w)
+            if print_per_category and compute_difficulty:
+                self.logger.info(
+                    "  KITTI风格难度AP: "
+                    f"Easy={difficulty_metrics['AP_easy']:.4f}, "
+                    f"Moderate={difficulty_metrics['AP_moderate']:.4f}, "
+                    f"Hard={difficulty_metrics['AP_hard']:.4f}"
+                )
+
             result = {
                 'mAP_0.5': coco_eval.stats[1],
                 'mAP_0.75': coco_eval.stats[2],
                 'mAP_0.5_0.95': coco_eval.stats[0],
+                'AP_small': coco_eval.stats[3] if len(coco_eval.stats) > 3 else 0.0,
+                'AP_medium': coco_eval.stats[4] if len(coco_eval.stats) > 4 else 0.0,
+                'AP_large': coco_eval.stats[5] if len(coco_eval.stats) > 5 else 0.0,
+                'AP_easy': difficulty_metrics['AP_easy'],
+                'AP_moderate': difficulty_metrics['AP_moderate'],
+                'AP_hard': difficulty_metrics['AP_hard'],
                 'per_category_map': per_category_map  # 保存每个类别的mAP
             }
             
@@ -1540,7 +1741,13 @@ class AdaptiveExpertTrainer:
             return {
                 'mAP_0.5': 0.0,
                 'mAP_0.75': 0.0,
-                'mAP_0.5_0.95': 0.0
+                'mAP_0.5_0.95': 0.0,
+                'AP_small': 0.0,
+                'AP_medium': 0.0,
+                'AP_large': 0.0,
+                'AP_easy': 0.0,
+                'AP_moderate': 0.0,
+                'AP_hard': 0.0
             }
     
     def _safe_save(self, checkpoint: Dict, path: Path, desc: str = "检查点") -> bool:
@@ -1601,9 +1808,6 @@ class AdaptiveExpertTrainer:
             
             best_path = self.log_dir / 'best_model.pth'
             self._safe_save(checkpoint, best_path, "最佳模型")
-            
-            # 在best_model时重新计算并打印详细的每类mAP（8类）
-            self._print_best_model_per_category_map()
     
     def save_latest_checkpoint(self, epoch: int) -> None:
         """保存最新检查点用于断点续训（带重试机制）"""
@@ -1761,21 +1965,27 @@ class AdaptiveExpertTrainer:
         except Exception as e:
             self.logger.error(f"绘制最终训练曲线失败: {e}")
         
+        # 训练结束时使用best_model进行完整评估并打印全部AP指标
+        self.logger.info("=" * 60)
+        self.logger.info("使用best_model进行完整评估（含AP_small/AP_medium/AP_large）...")
+        self._evaluate_best_model_and_print_all_ap()
+        
         # 训练结束时使用best_model输出5张推理图像
         self.logger.info("=" * 60)
         self.logger.info("使用best_model生成推理结果（5张图像）...")
         try:
             best_model_path = self.log_dir / 'best_model.pth'
-            if best_model_path.exists():
-                # 加载best_model的checkpoint
-                checkpoint = torch.load(best_model_path, map_location=self.device, weights_only=False)
+            latest_checkpoint_path = self.log_dir / 'latest_checkpoint.pth'
+            checkpoint_path = best_model_path if best_model_path.exists() else latest_checkpoint_path
+            if checkpoint_path.exists():
+                if checkpoint_path == latest_checkpoint_path:
+                    self.logger.warning("未找到best_model.pth，改用latest_checkpoint.pth进行推理")
+                checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
                 best_ema_state = checkpoint.get('ema_state_dict', None)
-                best_epoch = checkpoint.get('epoch', None)  # 获取best_model保存时的epoch
-                
-                # 使用best_model进行推理（传入best_epoch用于文件名）
+                best_epoch = checkpoint.get('epoch', None)
                 self._run_inference_on_best_model(best_ema_state, best_epoch=best_epoch)
             else:
-                self.logger.warning("未找到best_model.pth，跳过推理")
+                self.logger.warning("未找到best_model.pth和latest_checkpoint.pth，跳过推理")
         except Exception as e:
             self.logger.warning(f"训练结束时推理失败（不影响训练结果）: {e}")
 

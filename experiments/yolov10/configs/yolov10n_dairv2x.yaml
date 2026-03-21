@@ -1,6 +1,6 @@
 model:
-  model_name: "yolov10s.pt"
-  pretrained_weights: "pretrained/yolov10s.pt"
+  model_name: "yolov10n.pt"
+  pretrained_weights: "pretrained/yolov10n.pt"
 
 training:
   epochs: 200
@@ -19,7 +19,7 @@ training:
   seed: 42
   deterministic: false
   patience: 20
-  
+
   hsv_h: 0.015
   hsv_s: 0.7
   hsv_v: 0.4
@@ -40,4 +40,3 @@ checkpoint:
 misc:
   device: "cuda"
   num_workers: 16
-

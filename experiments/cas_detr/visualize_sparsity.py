@@ -122,7 +122,7 @@ def visualize_heatmap(image, scores, alpha=0.6):
     return output
 
 
-def run_visualization(model, image_path, device='cuda', output_dir=None, target_size=1280, mode='teaser'):
+def run_visualization(model, image_path, device='cuda', output_dir=None, target_size=640, mode='teaser'):
     """
     Main visualization routine.
     """
@@ -138,6 +138,7 @@ def run_visualization(model, image_path, device='cuda', output_dir=None, target_
     # Dimensions for aligning mask back to original image (crop padding)
     orig_h, orig_w = meta['orig_size'][0].tolist()
     padded_h, padded_w = meta['padded_h'], meta['padded_w']
+    print(f"  ✓ Inference size: target={target_size}, padded=({padded_h}, {padded_w})")
 
     # 2. Register Hook & Run Inference
     hook_handle = None
@@ -194,6 +195,8 @@ def run_visualization(model, image_path, device='cuda', output_dir=None, target_
         new_w = orig_w * scale
         valid_h_feat = int(round(new_h * (h_feat / H_tensor)))
         valid_w_feat = int(round(new_w * (w_feat / W_tensor)))
+        valid_h_feat = max(1, min(h_feat, valid_h_feat))
+        valid_w_feat = max(1, min(w_feat, valid_w_feat))
         
         # Step 2: Crop padding at feature map level
         map_valid = map_2d[:valid_h_feat, :valid_w_feat]
@@ -420,7 +423,7 @@ if __name__ == "__main__":
                         help="Visualization mode: 'teaser' (binary mask, 3-color) or 'heatmap' (continuous scores)")
     parser.add_argument("--output_dir", type=str, default=None, help="Output directory")
     parser.add_argument("--device", type=str, default="cuda", help="Device (cuda/cpu)")
-    parser.add_argument("--target_size", type=int, default=1280, help="Inference size")
+    parser.add_argument("--target_size", type=int, default=640, help="Inference size")
     
     args = parser.parse_args()
     

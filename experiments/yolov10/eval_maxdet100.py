@@ -292,7 +292,7 @@ def evaluate_with_max_det(
     conf_threshold: float = 0.001,  # 使用低阈值以获取更多候选框，然后由max_det限制
     iou_threshold: float = 0.6,
     device: str = "cuda",
-    imgsz: int = 1280,
+    imgsz: int = 640,
     split: str = "val"
 ):
     """
@@ -379,8 +379,8 @@ def main():
                        help='置信度阈值（默认: 0.001，用于获取更多候选框）')
     parser.add_argument('--iou', type=float, default=0.6,
                        help='NMS IoU阈值（默认: 0.6）')
-    parser.add_argument('--imgsz', type=int, default=1280,
-                       help='图像尺寸（默认: 1280）')
+    parser.add_argument('--imgsz', type=int, default=640,
+                       help='图像尺寸（默认: 640）')
     parser.add_argument('--device', type=str, default='cuda',
                        help='设备（默认: cuda）')
     parser.add_argument('--split', type=str, default='val',
