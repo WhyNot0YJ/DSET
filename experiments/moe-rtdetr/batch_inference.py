@@ -141,11 +141,8 @@ def inference_from_preprocessed_image(img_tensor, model, postprocessor, orig_ima
     orig_h, orig_w = orig_image.shape[:2]
     input_h, input_w = img_tensor.shape[-2:]
     
-    im_size_min = min(orig_h, orig_w)
     im_size_max = max(orig_h, orig_w)
-    scale = 720 / float(im_size_min)
-    if round(scale * im_size_max) > 1280:
-        scale = 1280 / float(im_size_max)
+    scale = 640 / float(im_size_max)
         
     meta = {
         'orig_size': torch.tensor([[orig_h, orig_w]]),
@@ -184,12 +181,9 @@ def preprocess_image(image_path: str, target_size: int = 1280):
         raise ValueError(f"无法读取图像: {image_path}, 错误: {e}")
     
     orig_w, orig_h = image_pil.size
-    im_size_min = min(orig_h, orig_w)
     im_size_max = max(orig_h, orig_w)
-    target_short = 720
-    scale = target_short / float(im_size_min)
-    if round(scale * im_size_max) > target_size:
-        scale = target_size / float(im_size_max)
+    target_max = 640
+    scale = target_max / float(im_size_max)
     
     new_w = int(round(orig_w * scale))
     new_h = int(round(orig_h * scale))
@@ -200,9 +194,8 @@ def preprocess_image(image_path: str, target_size: int = 1280):
     std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
     image_tensor = (image_tensor - mean) / std
     
-    stride = 32
-    padded_h = int(np.ceil(new_h / stride) * stride)
-    padded_w = int(np.ceil(new_w / stride) * stride)
+    padded_h = 640
+    padded_w = 640
     
     padded_image = torch.zeros(3, padded_h, padded_w, dtype=torch.float32)
     padded_image[:, :new_h, :new_w] = image_tensor

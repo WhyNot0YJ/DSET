@@ -1221,13 +1221,7 @@ class Cas_DETRTrainer:
             aug_saturation=aug_config.get('saturation', 0.1),
             aug_hue=aug_config.get('hue', 0.05),
             aug_color_jitter_prob=aug_config.get('color_jitter_prob', 0.0),
-            aug_crop_min=aug_config.get('crop_min', 0.3),
-            aug_crop_max=aug_config.get('crop_max', 1.0),
             aug_flip_prob=aug_config.get('flip_prob', 0.5),
-            train_scales_min=aug_config.get('scales_min', 480),
-            train_scales_max=aug_config.get('scales_max', 800),
-            train_scales_step=aug_config.get('scales_step', 32),
-            train_max_size=aug_config.get('max_size', 1333),
             aug_mosaic_prob=aug_config.get('mosaic', 0.0),
             aug_mixup_prob=aug_config.get('mixup', 0.0)
         )
@@ -2064,21 +2058,25 @@ class Cas_DETRTrainer:
                 
                 # 转换为COCO格式
                 if filtered_boxes.shape[0] > 0:
+                    # 获取原始图像尺寸，映射回原始比例
+                    orig_h, orig_w = targets[i]['orig_size'].tolist()
+                    scale = img_w / float(max(orig_h, orig_w))  # img_w 实际上是 640
+                    
                     boxes_coco = torch.zeros_like(filtered_boxes)
                     if filtered_boxes.max() <= 1.0:
-                        # 归一化坐标 -> 像素坐标
-                        boxes_coco[:, 0] = (filtered_boxes[:, 0] - filtered_boxes[:, 2] / 2) * img_w
-                        boxes_coco[:, 1] = (filtered_boxes[:, 1] - filtered_boxes[:, 3] / 2) * img_h
-                        boxes_coco[:, 2] = filtered_boxes[:, 2] * img_w
-                        boxes_coco[:, 3] = filtered_boxes[:, 3] * img_h
+                        # 归一化坐标 -> padded像素坐标 -> 原始图像坐标
+                        boxes_coco[:, 0] = ((filtered_boxes[:, 0] - filtered_boxes[:, 2] / 2) * img_w) / scale
+                        boxes_coco[:, 1] = ((filtered_boxes[:, 1] - filtered_boxes[:, 3] / 2) * img_h) / scale
+                        boxes_coco[:, 2] = (filtered_boxes[:, 2] * img_w) / scale
+                        boxes_coco[:, 3] = (filtered_boxes[:, 3] * img_h) / scale
                     else:
-                        boxes_coco = filtered_boxes.clone()
+                        boxes_coco = filtered_boxes.clone() / scale
                     
                     # Clamp坐标
-                    boxes_coco[:, 0] = torch.clamp(boxes_coco[:, 0], 0, img_w)
-                    boxes_coco[:, 1] = torch.clamp(boxes_coco[:, 1], 0, img_h)
-                    boxes_coco[:, 2] = torch.clamp(boxes_coco[:, 2], 1, img_w)
-                    boxes_coco[:, 3] = torch.clamp(boxes_coco[:, 3], 1, img_h)
+                    boxes_coco[:, 0] = torch.clamp(boxes_coco[:, 0], 0, orig_w)
+                    boxes_coco[:, 1] = torch.clamp(boxes_coco[:, 1], 0, orig_h)
+                    boxes_coco[:, 2] = torch.clamp(boxes_coco[:, 2], 1, orig_w)
+                    boxes_coco[:, 3] = torch.clamp(boxes_coco[:, 3], 1, orig_h)
                     
                     for j in range(boxes_coco.shape[0]):
                         all_predictions.append({
@@ -2098,19 +2096,23 @@ class Cas_DETRTrainer:
                     max_val = float(true_boxes.max().item()) if true_boxes.numel() > 0 else 0.0
                     scale = img_size if max_val <= 1.0 + 1e-6 else 1.0
                     
+                    # 获取原始图像尺寸，映射回原始比例
+                    orig_h, orig_w = targets[i]['orig_size'].tolist()
+                    scale = img_w / float(max(orig_h, orig_w))  # img_w 是 padded_size
+                    
                     true_boxes_coco = torch.zeros_like(true_boxes)
                     if max_val <= 1.0 + 1e-6:
-                        true_boxes_coco[:, 0] = (true_boxes[:, 0] - true_boxes[:, 2] / 2) * img_w
-                        true_boxes_coco[:, 1] = (true_boxes[:, 1] - true_boxes[:, 3] / 2) * img_h
-                        true_boxes_coco[:, 2] = true_boxes[:, 2] * img_w
-                        true_boxes_coco[:, 3] = true_boxes[:, 3] * img_h
+                        true_boxes_coco[:, 0] = ((true_boxes[:, 0] - true_boxes[:, 2] / 2) * img_w) / scale
+                        true_boxes_coco[:, 1] = ((true_boxes[:, 1] - true_boxes[:, 3] / 2) * img_h) / scale
+                        true_boxes_coco[:, 2] = (true_boxes[:, 2] * img_w) / scale
+                        true_boxes_coco[:, 3] = (true_boxes[:, 3] * img_h) / scale
                     else:
-                        true_boxes_coco = true_boxes.clone()
+                        true_boxes_coco = true_boxes.clone() / scale
                     
-                    true_boxes_coco[:, 0] = torch.clamp(true_boxes_coco[:, 0], 0, img_w)
-                    true_boxes_coco[:, 1] = torch.clamp(true_boxes_coco[:, 1], 0, img_h)
-                    true_boxes_coco[:, 2] = torch.clamp(true_boxes_coco[:, 2], 1, img_w)
-                    true_boxes_coco[:, 3] = torch.clamp(true_boxes_coco[:, 3], 1, img_h)
+                    true_boxes_coco[:, 0] = torch.clamp(true_boxes_coco[:, 0], 0, orig_w)
+                    true_boxes_coco[:, 1] = torch.clamp(true_boxes_coco[:, 1], 0, orig_h)
+                    true_boxes_coco[:, 2] = torch.clamp(true_boxes_coco[:, 2], 1, orig_w)
+                    true_boxes_coco[:, 3] = torch.clamp(true_boxes_coco[:, 3], 1, orig_h)
                     
                     # 获取iscrowd字段（评估时存在）
                     has_iscrowd = 'iscrowd' in targets[i]
@@ -2785,8 +2787,6 @@ def main() -> None:
                 'contrast': 0.4,     # 原 0.15 -> 0.4
                 'saturation': 0.7,   # 原 0.1 -> 0.7
                 'hue': 0.015,        # 原 0.05 -> 0.015
-                'crop_min': 0.1,
-                'crop_max': 1.0,
                 'flip_prob': 0.5,
                 'color_jitter_prob': 0.0
             }

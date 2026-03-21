@@ -16,8 +16,8 @@ from ._dataset import DetDataset
 from .._misc import convert_to_tv_tensor, BoundingBoxes
 from ...core import register
 from ..transforms import (
-    RandomPhotometricDistort, RandomIoUCrop, RandomHorizontalFlip, 
-    RandomResize, ConvertBoxes, Normalize, SanitizeBoundingBoxes
+    RandomPhotometricDistort, RandomHorizontalFlip, 
+    ConvertBoxes, Normalize, SanitizeBoundingBoxes, PadToSize
 )
 
 __all__ = ['DAIRV2XDetection']
@@ -32,13 +32,7 @@ class DAIRV2XDetection(DetDataset):
                  aug_saturation: float = 0.0,
                  aug_hue: float = 0.0,
                  aug_color_jitter_prob: float = 0.0,
-                 aug_crop_min: float = 0.3,
-                 aug_crop_max: float = 1.0,
                  aug_flip_prob: float = 0.5,
-                 train_scales_min: int = 480,
-                 train_scales_max: int = 800,
-                 train_scales_step: int = 32,
-                 train_max_size: int = 1333,
                  aug_mosaic_prob: float = 0.0,
                  aug_mixup_prob: float = 0.0):
         """
@@ -49,10 +43,6 @@ class DAIRV2XDetection(DetDataset):
             split: Dataset split ('train' or 'val')
             transforms: Data transforms (if None, default Unified Task-Adapted Augmentation will be used)
             aug_*: Retained for compatibility, but overridden by new augmentation strategy
-            train_scales_min: Minimum short edge size for multi-scale training
-            train_scales_max: Maximum short edge size for multi-scale training
-            train_scales_step: Step size for generating scale options
-            train_max_size: Maximum long edge size for multi-scale training
             aug_mosaic_prob: Probability of applying Mosaic augmentation
             aug_mixup_prob: Probability of applying Mixup augmentation
         """
@@ -89,7 +79,6 @@ class DAIRV2XDetection(DetDataset):
         
         # Initialize Transform Strategy (Unified Task-Adapted Augmentation)
         if transforms is None:
-            scales = list(range(train_scales_min, train_scales_max + 1, train_scales_step))
             if split == 'train':
                 # Note: Mosaic and Mixup are handled in __getitem__ or separate wrapper because they need multiple images
                 # Here we only define the per-image transform pipeline
@@ -101,13 +90,13 @@ class DAIRV2XDetection(DetDataset):
                         saturation=(max(0, 1 - aug_saturation), 1 + aug_saturation), 
                         hue=(-aug_hue, aug_hue)
                     ),
-                    RandomIoUCrop(min_scale=aug_crop_min, max_scale=aug_crop_max, p=1.0),
                     RandomHorizontalFlip(p=aug_flip_prob),
-                    RandomResize(scales=scales, max_size=train_max_size),
+                    T.Resize(size=640, max_size=640, antialias=True),
                     SanitizeBoundingBoxes(),
                     T.ToImage(),
                     T.ToDtype(torch.float32, scale=True),
                     Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+                    PadToSize(size=(640, 640), fill=0.0),
                     ConvertBoxes(fmt='cxcywh', normalize=False)
                 ])
                 
@@ -115,17 +104,16 @@ class DAIRV2XDetection(DetDataset):
                 if self.aug_mosaic_prob > 0:
                     from ..transforms.mosaic import Mosaic
                     # Initialize Mosaic helper (not as a transform pipeline but as a helper object)
-                    self.mosaic_helper = Mosaic(size=train_scales_max) 
+                    self.mosaic_helper = Mosaic(size=640) 
                     
             else:
-                # Val/Inference Config: Rectangular Inference
-                # Resize to 720 (short edge), max 1280 (long edge, keep aspect ratio)
-                # 1920x1080 -> 1280x720 (16:9)
+                # Val/Inference Config: 640x640 LetterBox
                 self.transforms = T.Compose([
-                    T.Resize(size=720, max_size=1280, antialias=True),
+                    T.Resize(size=640, max_size=640, antialias=True),
                     T.ToImage(),
                     T.ToDtype(torch.float32, scale=True),
                     Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+                    PadToSize(size=(640, 640), fill=0.0),
                     ConvertBoxes(fmt='cxcywh', normalize=False)
                 ])
         else:

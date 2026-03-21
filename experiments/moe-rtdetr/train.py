@@ -564,8 +564,6 @@ class AdaptiveExpertTrainer:
         aug_saturation = aug_config.get('saturation', 0.1)
         aug_hue = aug_config.get('hue', 0.05)
         aug_color_jitter_prob = aug_config.get('color_jitter_prob', 0.0)
-        aug_crop_min = aug_config.get('crop_min', 0.3)
-        aug_crop_max = aug_config.get('crop_max', 1.0)
         aug_flip_prob = aug_config.get('flip_prob', 0.5)
         
         # Mosaic 和 Mixup (新增)
@@ -574,12 +572,6 @@ class AdaptiveExpertTrainer:
         
         if aug_mosaic_prob > 0 or aug_mixup_prob > 0:
             self.logger.info(f"🛠️  高级增强已启用: Mosaic={aug_mosaic_prob}, Mixup={aug_mixup_prob}")
-        
-        # 读取多尺度训练配置
-        train_scales_min = aug_config.get('scales_min', 480)
-        train_scales_max = aug_config.get('scales_max', 800)
-        train_scales_step = aug_config.get('scales_step', 32)
-        train_max_size = aug_config.get('max_size', 1333)
         
         train_dataset = DAIRV2XDetection(
             data_root=self.config['data']['data_root'],
@@ -590,13 +582,7 @@ class AdaptiveExpertTrainer:
             aug_saturation=aug_saturation,
             aug_hue=aug_hue,
             aug_color_jitter_prob=aug_color_jitter_prob,
-            aug_crop_min=aug_crop_min,
-            aug_crop_max=aug_crop_max,
             aug_flip_prob=aug_flip_prob,
-            train_scales_min=train_scales_min,
-            train_scales_max=train_scales_max,
-            train_scales_step=train_scales_step,
-            train_max_size=train_max_size,
             aug_mosaic_prob=aug_mosaic_prob,
             aug_mixup_prob=aug_mixup_prob
         )
@@ -1275,21 +1261,25 @@ class AdaptiveExpertTrainer:
                 
                 # 转换为COCO格式
                 if filtered_boxes.shape[0] > 0:
+                    # 获取原始图像尺寸，映射回原始比例
+                    orig_h, orig_w = targets[i]['orig_size'].tolist()
+                    scale = img_w / float(max(orig_h, orig_w))  # img_w 实际上是 640
+                    
                     boxes_coco = torch.zeros_like(filtered_boxes)
                     if filtered_boxes.max() <= 1.0:
-                        # 归一化坐标 -> 像素坐标
-                        boxes_coco[:, 0] = (filtered_boxes[:, 0] - filtered_boxes[:, 2] / 2) * img_w
-                        boxes_coco[:, 1] = (filtered_boxes[:, 1] - filtered_boxes[:, 3] / 2) * img_h
-                        boxes_coco[:, 2] = filtered_boxes[:, 2] * img_w
-                        boxes_coco[:, 3] = filtered_boxes[:, 3] * img_h
+                        # 归一化坐标 -> padded像素坐标 -> 原始图像坐标
+                        boxes_coco[:, 0] = ((filtered_boxes[:, 0] - filtered_boxes[:, 2] / 2) * img_w) / scale
+                        boxes_coco[:, 1] = ((filtered_boxes[:, 1] - filtered_boxes[:, 3] / 2) * img_h) / scale
+                        boxes_coco[:, 2] = (filtered_boxes[:, 2] * img_w) / scale
+                        boxes_coco[:, 3] = (filtered_boxes[:, 3] * img_h) / scale
                     else:
-                        boxes_coco = filtered_boxes.clone()
+                        boxes_coco = filtered_boxes.clone() / scale
                     
                     # Clamp坐标
-                    boxes_coco[:, 0] = torch.clamp(boxes_coco[:, 0], 0, img_w)
-                    boxes_coco[:, 1] = torch.clamp(boxes_coco[:, 1], 0, img_h)
-                    boxes_coco[:, 2] = torch.clamp(boxes_coco[:, 2], 1, img_w)
-                    boxes_coco[:, 3] = torch.clamp(boxes_coco[:, 3], 1, img_h)
+                    boxes_coco[:, 0] = torch.clamp(boxes_coco[:, 0], 0, orig_w)
+                    boxes_coco[:, 1] = torch.clamp(boxes_coco[:, 1], 0, orig_h)
+                    boxes_coco[:, 2] = torch.clamp(boxes_coco[:, 2], 1, orig_w)
+                    boxes_coco[:, 3] = torch.clamp(boxes_coco[:, 3], 1, orig_h)
                     
                     for j in range(boxes_coco.shape[0]):
                         all_predictions.append({
@@ -1910,8 +1900,6 @@ def main() -> None:
                 'contrast': 0.4,
                 'saturation': 0.7,
                 'hue': 0.015,
-                'crop_min': 0.1,  # 关键修改：小目标优化
-                'crop_max': 1.0,
                 'flip_prob': 0.5,
                 'color_jitter_prob': 0.0
             }

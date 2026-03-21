@@ -16,8 +16,8 @@ from ._dataset import DetDataset
 from .._misc import convert_to_tv_tensor, BoundingBoxes
 from ...core import register
 from ..transforms import (
-    RandomPhotometricDistort, RandomIoUCrop, RandomHorizontalFlip, 
-    RandomResize, ConvertBoxes, Normalize, SanitizeBoundingBoxes
+    RandomPhotometricDistort, RandomHorizontalFlip, 
+    ConvertBoxes, Normalize, SanitizeBoundingBoxes, PadToSize
 )
 
 __all__ = ['DAIRV2XDetection']
@@ -33,13 +33,7 @@ class DAIRV2XDetection(DetDataset):
                  aug_saturation: float = 0.0,
                  aug_hue: float = 0.0,
                  aug_color_jitter_prob: float = 0.0,
-                 aug_crop_min: float = 0.3,
-                 aug_crop_max: float = 1.0,
                  aug_flip_prob: float = 0.5,
-                 train_scales_min: int = 480,
-                 train_scales_max: int = 800,
-                 train_scales_step: int = 32,
-                 train_max_size: int = 1333,
                  aug_mosaic_prob: float = 0.0,
                  aug_mixup_prob: float = 0.0):
         """
@@ -51,10 +45,6 @@ class DAIRV2XDetection(DetDataset):
             transforms: 数据变换 (如果为None，将使用默认的Unified Task-Adapted Augmentation)
             target_size: 目标图像尺寸 (保留参数以兼容，但会被新的增强策略覆盖)
             aug_*: 保留参数以兼容，但会被新的增强策略覆盖
-            train_scales_min: Minimum short edge size for multi-scale training
-            train_scales_max: Maximum short edge size for multi-scale training
-            train_scales_step: Step size for generating scale options
-            train_max_size: Maximum long edge size for multi-scale training
             aug_mosaic_prob: Probability of applying Mosaic augmentation
             aug_mixup_prob: Probability of applying Mixup augmentation
         """
@@ -92,7 +82,6 @@ class DAIRV2XDetection(DetDataset):
         
         # 初始化变换策略 (Unified Task-Adapted Augmentation)
         if transforms is None:
-            scales = list(range(train_scales_min, train_scales_max + 1, train_scales_step))
             if split == 'train':
                 self.transforms = T.Compose([
                     RandomPhotometricDistort(
@@ -101,13 +90,13 @@ class DAIRV2XDetection(DetDataset):
                         saturation=(max(0, 1 - aug_saturation), 1 + aug_saturation), 
                         hue=(-aug_hue, aug_hue)
                     ),
-                    RandomIoUCrop(min_scale=aug_crop_min, max_scale=aug_crop_max, p=1.0),
                     RandomHorizontalFlip(p=aug_flip_prob),
-                    RandomResize(scales=scales, max_size=train_max_size),
+                    T.Resize(size=640, max_size=640, antialias=True),
                     SanitizeBoundingBoxes(),
                     T.ToImage(),
                     T.ToDtype(torch.float32, scale=True),
                     Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+                    PadToSize(size=(640, 640), fill=0.0),
                     ConvertBoxes(fmt='cxcywh', normalize=False)
                 ])
                 
@@ -115,16 +104,17 @@ class DAIRV2XDetection(DetDataset):
                 if self.aug_mosaic_prob > 0:
                     from ..transforms.mosaic import Mosaic
                     # Initialize Mosaic helper
-                    self.mosaic_helper = Mosaic(size=train_scales_max)
+                    self.mosaic_helper = Mosaic(size=640)
             else:
                 # 验证/推理配置：矩形推理 (Rectangular Inference)
                 # Resize到720 (短边)，长边最大1280 (保持长宽比)
                 # 1920x1080 -> 1280x720 (16:9)
                 self.transforms = T.Compose([
-                    T.Resize(size=720, max_size=1280, antialias=True),
+                    T.Resize(size=640, max_size=640, antialias=True),
                     T.ToImage(),
                     T.ToDtype(torch.float32, scale=True),
                     Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+                    PadToSize(size=(640, 640), fill=0.0),
                     ConvertBoxes(fmt='cxcywh', normalize=False)
                 ])
         else:

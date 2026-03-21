@@ -186,30 +186,14 @@ def run_visualization(model, image_path, device='cuda', output_dir=None, target_
         feature_mask = np.ones((h_s4, w_s4), dtype=np.float32)
 
     # Align Map to Image: Use train.py's physical alignment strategy
-    def align_map_to_image(map_2d, h_feat, w_feat, H_tensor, W_tensor, orig_h, orig_w, normalize_before_resize=False):
+    def align_map_to_image(map_2d, h_feat, w_feat, H_tensor, W_tensor, orig_h, orig_w, scale, normalize_before_resize=False):
         """
         Align feature map to original image using physical space calibration.
-        
-        Strategy (matching train.py):
-        1. Calculate valid region size in feature map coordinate system
-        2. Crop padding at feature map level
-        3. (Optional) Normalize on cropped valid region (matching train.py exactly)
-        4. Single resize from feature map to original image
-        
-        Args:
-            map_2d: Feature map of shape (h_feat, w_feat)
-            h_feat, w_feat: Feature map dimensions
-            H_tensor, W_tensor: Padded tensor dimensions (same as padded_h, padded_w)
-            orig_h, orig_w: Original image dimensions
-            normalize_before_resize: If True, normalize on cropped region before resize (matches train.py exactly)
-        
-        Returns:
-            Aligned map of shape (orig_h, orig_w), values in [0, 1] if normalize_before_resize=True
         """
-        # Step 1: Calculate valid region size in feature map coordinate system
-        # Formula from train.py: valid_h_feat = round(orig_h × (h_feat / H_tensor))
-        valid_h_feat = int(round(orig_h * (h_feat / H_tensor)))
-        valid_w_feat = int(round(orig_w * (w_feat / W_tensor)))
+        new_h = orig_h * scale
+        new_w = orig_w * scale
+        valid_h_feat = int(round(new_h * (h_feat / H_tensor)))
+        valid_w_feat = int(round(new_w * (w_feat / W_tensor)))
         
         # Step 2: Crop padding at feature map level
         map_valid = map_2d[:valid_h_feat, :valid_w_feat]
@@ -231,7 +215,7 @@ def run_visualization(model, image_path, device='cuda', output_dir=None, target_
         
         return map_final
 
-    feature_mask_final = align_map_to_image(feature_mask, h_feat, w_feat, padded_h, padded_w, orig_h, orig_w)
+    feature_mask_final = align_map_to_image(feature_mask, h_feat, w_feat, padded_h, padded_w, orig_h, orig_w, meta['scale'])
 
     # (B) Get Importance Scores — reshape S4 portion to 2D
     importance_scores_2d = None
