@@ -1,8 +1,8 @@
 model:
-  num_experts: 8
-  top_k: 4
+  num_experts: 6
+  top_k: 3
   moe_noise_std: 0.1
-  backbone: presnet18
+  backbone: presnet34
   encoder:
     use_encoder_idx:
     - 1
@@ -13,15 +13,15 @@ model:
     - 512
     expansion: 0.5
     num_encoder_layers: 1
-  pretrained_weights: pretrained/rtdetrv2_r18vd_120e_coco_rerun_48.1.pth
-  num_decoder_layers: 3
+  pretrained_weights: pretrained/rtdetrv2_r34vd_120e_coco_ema.pth
+  num_decoder_layers: 4
   hidden_dim: 256
   decoder_hidden_dim: 256
   num_queries: 300
   cas_detr:
-    token_keep_ratio: 0.3
-    encoder_moe_num_experts: 4
-    encoder_moe_top_k: 2
+    token_keep_ratio: 0.5
+    encoder_moe_num_experts: 6
+    encoder_moe_top_k: 1
     use_cass: true
     cass_loss_weight: 0.05
     cass_expansion_ratio: 0.8
@@ -32,7 +32,7 @@ model:
     cass_focal_beta: 4.0
 training:
   epochs: 200
-  batch_size: 16
+  batch_size: 4
   warmup_epochs: 3
   pretrained_lr: 0.00001
   new_lr: 0.0001
@@ -66,4 +66,3 @@ data_augmentation:
   flip_prob: 0.5
   mosaic: 1.0
   mixup: 0.0
-
