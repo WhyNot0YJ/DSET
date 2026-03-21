@@ -91,9 +91,9 @@ class DAIRV2XDetection(DetDataset):
                     ),
                     RandomHorizontalFlip(p=aug_flip_prob),
                     T.Resize(size=(640, 640), antialias=True),
-                    SanitizeBoundingBoxes(),
                     T.ToImage(),
                     T.ToDtype(torch.float32, scale=True),
+                    SanitizeBoundingBoxes(),
                     Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
                     PadToSize(size=(640, 640), fill=0.0),
                     ConvertBoxes(fmt='cxcywh', normalize=False)
