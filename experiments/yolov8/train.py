@@ -206,8 +206,25 @@ class YOLOv8Trainer:
         
         # 数据配置
         data_yaml = self.data_config.get('data_yaml')
-        if not Path(data_yaml).exists():
-            raise FileNotFoundError(f"数据配置文件不存在: {data_yaml}")
+        data_yaml_path = Path(data_yaml)
+        
+        if not data_yaml_path.exists():
+            # 尝试相对于项目根目录 (CaS_DETR/)
+            # 当前文件是 experiments/yolov8/train.py
+            # 绝对路径回退：train.py -> yolov8 -> experiments -> CaS_DETR
+            project_root = Path(__file__).resolve().parent.parent.parent
+            
+            # 第一种尝试：相对于项目根目录 (CaS_DETR/)
+            alt_path = project_root / data_yaml
+            # 第二种尝试：相对于项目根目录的同级目录 (与 CaS_DETR/ 并列的 datasets/)
+            alt_path2 = project_root.parent / data_yaml
+            
+            if alt_path.exists():
+                data_yaml = str(alt_path)
+            elif alt_path2.exists():
+                data_yaml = str(alt_path2)
+            else:
+                raise FileNotFoundError(f"数据配置文件不存在: {data_yaml}\n尝试路径1: {alt_path}\n尝试路径2: {alt_path2}")
         
         # 训练参数
         # 注意：ultralytics会在project/name目录下创建训练结果
