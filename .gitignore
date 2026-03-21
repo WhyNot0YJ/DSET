@@ -73,3 +73,4 @@ temp/
 *.temp
 *.jpg
 *.png
+dataset/*
