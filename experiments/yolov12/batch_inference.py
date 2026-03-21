@@ -140,7 +140,7 @@ def draw_boxes(image, boxes, labels, scores, conf_threshold=0.3):
     return image
 
 
-def inference_image(model, image_path: str, conf_threshold: float = 0.3, device: str = "cuda"):
+def inference_image(model, image_path: str, conf_threshold: float = 0.3, device: str = "cuda", imgsz: int = 640):
     """对单张图像进行推理
     
     Args:
@@ -156,6 +156,7 @@ def inference_image(model, image_path: str, conf_threshold: float = 0.3, device:
     results = model.predict(
         source=str(image_path),
         conf=conf_threshold,
+        imgsz=imgsz,
         device=device,
         verbose=False
     )
@@ -190,7 +191,8 @@ def batch_inference(
     output_dir: str,
     conf_threshold: float = 0.5,
     device: str = "cuda",
-    max_images: int = None
+    max_images: int = None,
+    imgsz: int = 640
 ):
     """批量推理
     
@@ -228,7 +230,7 @@ def batch_inference(
         try:
             # 推理
             boxes, labels, scores = inference_image(
-                model, str(image_path), conf_threshold, device
+                model, str(image_path), conf_threshold, device, imgsz
             )
             
             # 加载原始图像用于绘制
@@ -273,6 +275,8 @@ def main():
                        help='设备（默认: cuda）')
     parser.add_argument('--max_images', type=int, default=None,
                        help='最大处理图像数（默认: 处理所有）')
+    parser.add_argument('--imgsz', type=int, default=640,
+                       help='推理输入尺寸（默认: 640）')
     
     args = parser.parse_args()
     
@@ -284,6 +288,7 @@ def main():
     print(f"输出目录: {args.output_dir}")
     print(f"置信度阈值: {args.conf}")
     print(f"设备: {args.device}")
+    print(f"输入尺寸: {args.imgsz}")
     if args.max_images:
         print(f"最大处理数: {args.max_images}")
     print("="*60)
@@ -298,7 +303,8 @@ def main():
         output_dir=args.output_dir,
         conf_threshold=args.conf,
         device=args.device,
-        max_images=args.max_images
+        max_images=args.max_images,
+        imgsz=args.imgsz
     )
 
 

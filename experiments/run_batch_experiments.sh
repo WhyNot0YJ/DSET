@@ -125,19 +125,23 @@ declare -A CaS_DETR_CONFIGS=(
 )
 
 declare -A YOLOV8_CONFIGS=(
+    ["yolov8n"]="yolov8/configs/yolov8n_dairv2x.yaml"
     ["yolov8s"]="yolov8/configs/yolov8s_dairv2x.yaml"
 )
 
 declare -A YOLOV10_CONFIGS=(
+    ["yolov10n"]="yolov10/configs/yolov10n_dairv2x.yaml"
     ["yolov10s"]="yolov10/configs/yolov10s_dairv2x.yaml"
 )
 
 declare -A YOLOV11_CONFIGS=(
+    ["yolov11n"]="yolov11/configs/yolov11n_dairv2x.yaml"
     ["yolov11s"]="yolov11/configs/yolov11s_dairv2x.yaml"
 )
 
 declare -A YOLOV12_CONFIGS=(
-    ["yolov12s"]="yolov12/configs/yolov12s_dairv2x.yaml"
+    ["yolov12n"]="yolov12/configs/yolov12n_dairv2x.yaml"
+    ["yolov12n"]="yolov12/configs/yolov12n_dairv2x.yaml"
 )
 
 declare -A DEFORMABLE_DETR_CONFIGS=(

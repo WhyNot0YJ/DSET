@@ -1613,17 +1613,29 @@ class RTDETRTrainer:
                 if filtered_boxes.shape[0] > 0:
                     # 获取原始图像尺寸，映射回原始比例
                     orig_h, orig_w = targets[i]['orig_size'].tolist()
-                    scale = img_w / float(max(orig_h, orig_w))  # img_w 实际上是 640
+                    
+                    # 计算 Letterbox 缩放比例和偏移量 (保持比例的 Resize + Padding)
+                    # 匹配 torchvision.transforms.v2.Resize(size=(640, 640)) 行为
+                    scale = min(img_w / float(orig_w), img_h / float(orig_h))
+                    nw, nh = int(round(orig_w * scale)), int(round(orig_h * scale))
+                    
+                    # PadToSize 默认是在右下角填充 (padding=[0, 0, w_pad, h_pad])
+                    # 所以偏移量为 0
+                    dw, dh = 0, 0
                     
                     boxes_coco = torch.zeros_like(filtered_boxes)
-                    if filtered_boxes.max() <= 1.0:
-                        # 归一化坐标 -> padded像素坐标 -> 原始图像坐标
-                        boxes_coco[:, 0] = ((filtered_boxes[:, 0] - filtered_boxes[:, 2] / 2) * img_w) / scale
-                        boxes_coco[:, 1] = ((filtered_boxes[:, 1] - filtered_boxes[:, 3] / 2) * img_h) / scale
+                    if filtered_boxes.max() <= 1.01:
+                        # 归一化 cxcywh -> 像素坐标 -> 减去 padding -> 缩放回原始尺寸
+                        boxes_coco[:, 0] = (filtered_boxes[:, 0] * img_w - filtered_boxes[:, 2] * img_w / 2 - dw) / scale
+                        boxes_coco[:, 1] = (filtered_boxes[:, 1] * img_h - filtered_boxes[:, 3] * img_h / 2 - dh) / scale
                         boxes_coco[:, 2] = (filtered_boxes[:, 2] * img_w) / scale
                         boxes_coco[:, 3] = (filtered_boxes[:, 3] * img_h) / scale
                     else:
-                        boxes_coco = filtered_boxes.clone() / scale
+                        # 像素坐标 cxcywh -> 减去 padding -> 缩放回原始尺寸
+                        boxes_coco[:, 0] = (filtered_boxes[:, 0] - filtered_boxes[:, 2] / 2 - dw) / scale
+                        boxes_coco[:, 1] = (filtered_boxes[:, 1] - filtered_boxes[:, 3] / 2 - dh) / scale
+                        boxes_coco[:, 2] = filtered_boxes[:, 2] / scale
+                        boxes_coco[:, 3] = filtered_boxes[:, 3] / scale
                     
                     # Clamp坐标
                     boxes_coco[:, 0] = torch.clamp(boxes_coco[:, 0], 0, orig_w)
@@ -1651,16 +1663,24 @@ class RTDETRTrainer:
                     
                     # 获取原始图像尺寸，映射回原始比例
                     orig_h, orig_w = targets[i]['orig_size'].tolist()
-                    scale = img_w / float(max(orig_h, orig_w))  # img_w 是 padded_size
+                    
+                    # 计算 Letterbox 缩放比例
+                    scale = min(img_w / float(orig_w), img_h / float(orig_h))
+                    dw, dh = 0, 0
                     
                     true_boxes_coco = torch.zeros_like(true_boxes)
                     if max_val <= 1.0 + 1e-6:
-                        true_boxes_coco[:, 0] = ((true_boxes[:, 0] - true_boxes[:, 2] / 2) * img_w) / scale
-                        true_boxes_coco[:, 1] = ((true_boxes[:, 1] - true_boxes[:, 3] / 2) * img_h) / scale
+                        # 归一化 cxcywh -> 像素坐标 -> 缩放
+                        true_boxes_coco[:, 0] = (true_boxes[:, 0] * img_w - true_boxes[:, 2] * img_w / 2 - dw) / scale
+                        true_boxes_coco[:, 1] = (true_boxes[:, 1] * img_h - true_boxes[:, 3] * img_h / 2 - dh) / scale
                         true_boxes_coco[:, 2] = (true_boxes[:, 2] * img_w) / scale
                         true_boxes_coco[:, 3] = (true_boxes[:, 3] * img_h) / scale
                     else:
-                        true_boxes_coco = true_boxes.clone() / scale
+                        # 像素坐标 cxcywh -> 缩放
+                        true_boxes_coco[:, 0] = (true_boxes[:, 0] - true_boxes[:, 2] / 2 - dw) / scale
+                        true_boxes_coco[:, 1] = (true_boxes[:, 1] - true_boxes[:, 3] / 2 - dh) / scale
+                        true_boxes_coco[:, 2] = true_boxes[:, 2] / scale
+                        true_boxes_coco[:, 3] = true_boxes[:, 3] / scale
                     
                     true_boxes_coco[:, 0] = torch.clamp(true_boxes_coco[:, 0], 0, orig_w)
                     true_boxes_coco[:, 1] = torch.clamp(true_boxes_coco[:, 1], 0, orig_h)
@@ -1743,10 +1763,19 @@ class RTDETRTrainer:
         sys.stdout = StringIO()
         try:
             coco_gt_obj.createIndex()
-            coco_dt = coco_gt_obj.loadRes(predictions)
+            # 过滤 predictions，只保留当前 targets 中存在的 image_id，减少 loadRes 匹配压力
+            target_img_ids = set(coco_gt_obj.imgs.keys())
+            filtered_predictions = [p for p in predictions if p['image_id'] in target_img_ids]
+            
+            if not filtered_predictions:
+                return None
+                
+            coco_dt = coco_gt_obj.loadRes(filtered_predictions)
             coco_eval = COCOeval(coco_gt_obj, coco_dt, 'bbox')
             coco_eval.evaluate()
             coco_eval.accumulate()
+        except Exception as e:
+            return None
         finally:
             sys.stdout = old_stdout
 
@@ -1941,12 +1970,12 @@ class RTDETRTrainer:
                 )
             
             result = {
-                'mAP_0.5': coco_eval.stats[1],
-                'mAP_0.75': coco_eval.stats[2],
-                'mAP_0.5_0.95': coco_eval.stats[0],
-                'AP_small': coco_eval.stats[3],
-                'AP_medium': coco_eval.stats[4],
-                'AP_large': coco_eval.stats[5],
+                'mAP_0.5': coco_eval.stats[1] if len(coco_eval.stats) > 1 else 0.0,
+                'mAP_0.75': coco_eval.stats[2] if len(coco_eval.stats) > 2 else 0.0,
+                'mAP_0.5_0.95': coco_eval.stats[0] if len(coco_eval.stats) > 0 else 0.0,
+                'AP_small': coco_eval.stats[3] if len(coco_eval.stats) > 3 else 0.0,
+                'AP_medium': coco_eval.stats[4] if len(coco_eval.stats) > 4 else 0.0,
+                'AP_large': coco_eval.stats[5] if len(coco_eval.stats) > 5 else 0.0,
                 'AP_easy': difficulty_metrics['AP_easy'],
                 'AP_moderate': difficulty_metrics['AP_moderate'],
                 'AP_hard': difficulty_metrics['AP_hard'],
