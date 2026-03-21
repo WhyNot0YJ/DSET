@@ -91,7 +91,7 @@ class DAIRV2XDetection(DetDataset):
                         hue=(-aug_hue, aug_hue)
                     ),
                     RandomHorizontalFlip(p=aug_flip_prob),
-                    T.Resize(size=640, max_size=640, antialias=True),
+                    T.Resize(size=(640, 640), antialias=True),
                     SanitizeBoundingBoxes(),
                     T.ToImage(),
                     T.ToDtype(torch.float32, scale=True),
@@ -110,7 +110,7 @@ class DAIRV2XDetection(DetDataset):
                 # Resize到720 (短边)，长边最大1280 (保持长宽比)
                 # 1920x1080 -> 1280x720 (16:9)
                 self.transforms = T.Compose([
-                    T.Resize(size=640, max_size=640, antialias=True),
+                    T.Resize(size=(640, 640), antialias=True),
                     T.ToImage(),
                     T.ToDtype(torch.float32, scale=True),
                     Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),

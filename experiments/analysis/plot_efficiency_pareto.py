@@ -2,7 +2,7 @@
 """
 Edge-Focus Efficiency vs. Accuracy Plot for CVPR/ICCV Paper (Section 4.2.2)
 
-Zoomed-in scatter plot comparing Cas_DETR-R18 vs RT-DETR-R18, YOLOv8-S, YOLOv10-S.
+Zoomed-in scatter plot comparing CaS_DETR-R18 vs RT-DETR-R18, YOLOv8-S, YOLOv10-S.
 Highlights the "Sweet Spot" (High Accuracy, Low GFLOPs) in the top-left.
 
 Dependencies:
@@ -29,13 +29,13 @@ import seaborn as sns
 # Hardcoded Data Points - Edge-Focus (R18, S only)
 # =============================================================================
 
-# Cas_DETR-R18 (Ours) - Red Star, Size 250
-Cas_DETR = {
-    "points": [{"name": "Cas_DETR-R18", "gflops": 68.3, "mAP": 0.680}],
+# CaS_DETR-R18 (Ours) - Red Star, Size 250
+CaS_DETR = {
+    "points": [{"name": "CaS_DETR-R18", "gflops": 68.3, "mAP": 0.680}],
     "color": "#C41E3A",
     "marker": "*",
     "size": 250,
-    "label": "Cas_DETR (Ours)",
+    "label": "CaS_DETR (Ours)",
 }
 
 # RT-DETR-R18 (Base) - Blue Circle, Size 180
@@ -102,14 +102,14 @@ def plot_pareto_frontier(output_dir: Path):
 
     # --- Plot Data (Scatter only) ---
 
-    # Cas_DETR-R18: Red Star, Size 250
-    for p in Cas_DETR["points"]:
+    # CaS_DETR-R18: Red Star, Size 250
+    for p in CaS_DETR["points"]:
         ax.scatter(
             p["gflops"], p["mAP"],
-            c=Cas_DETR["color"],
-            marker=Cas_DETR["marker"],
-            s=Cas_DETR["size"],
-            label=Cas_DETR["label"],
+            c=CaS_DETR["color"],
+            marker=CaS_DETR["marker"],
+            s=CaS_DETR["size"],
+            label=CaS_DETR["label"],
             zorder=5,
             edgecolors="white",
             linewidths=1,
@@ -141,7 +141,7 @@ def plot_pareto_frontier(output_dir: Path):
             linewidths=0.5,
         )
 
-    # --- Arrow 1: Accuracy Boost (RT-DETR-R18 UP to Cas_DETR-R18) ---
+    # --- Arrow 1: Accuracy Boost (RT-DETR-R18 UP to CaS_DETR-R18) ---
     arrow_vert = FancyArrowPatch(
         (rtdetr_x, rtdetr_y),
         (cas_detr_x, cas_detr_y),
@@ -166,8 +166,8 @@ def plot_pareto_frontier(output_dir: Path):
         zorder=6,
     )
 
-    # --- Arrow 2: Compute Savings (YOLOv10-S LEFT towards Cas_DETR-R18) ---
-    # Arrow points down-left to Cas_DETR center for accurate pointing
+    # --- Arrow 2: Compute Savings (YOLOv10-S LEFT towards CaS_DETR-R18) ---
+    # Arrow points down-left to CaS_DETR center for accurate pointing
     arrow_horiz = FancyArrowPatch(
         (yolo10_x, yolo10_y),
         (cas_detr_x, cas_detr_y),

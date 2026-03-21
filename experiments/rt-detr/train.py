@@ -196,6 +196,29 @@ class RTDETRTrainer:
             (0, 255, 255),    # Motorcyclist - 青色
             (128, 128, 128),  # Trafficcone - 灰色
         ]
+
+    def _apply_vram_batch_size_rule(self):
+        """按显存动态设置: batch_size(来自YAML 8G基准), num_workers(8G=4), prefetch(8G=1)"""
+        if self.device.type != 'cuda' or not torch.cuda.is_available():
+            return
+
+        base_bs_8g = max(1, int(self.config.get('training', {}).get('batch_size', 16)))
+
+        device_index = self.device.index if self.device.index is not None else torch.cuda.current_device()
+        total_vram_gb = torch.cuda.get_device_properties(device_index).total_memory / (1024 ** 3)
+        scale = max(1, int(round(total_vram_gb / 8.0)))
+        new_bs = max(1, base_bs_8g * scale)
+        new_num_workers = max(1, 4 * scale)
+        new_prefetch_factor = max(1, 1 * scale)
+
+        self.config['training']['batch_size'] = new_bs
+        self.config.setdefault('misc', {})['num_workers'] = new_num_workers
+        self.config.setdefault('misc', {})['prefetch_factor'] = new_prefetch_factor
+
+        if 'train_dataloader' in self.config and isinstance(self.config['train_dataloader'], dict):
+            self.config['train_dataloader']['batch_size'] = new_bs
+        if 'val_dataloader' in self.config and isinstance(self.config['val_dataloader'], dict):
+            self.config['val_dataloader']['batch_size'] = new_bs
     
     def _validate_config_file(self):
         """验证配置文件是否包含所有必需的配置项"""
@@ -608,6 +631,7 @@ class RTDETRTrainer:
         # num_workers在misc配置中
         num_workers = self.config.get('misc', {}).get('num_workers', 16)
         pin_memory = self.config.get('misc', {}).get('pin_memory', True)
+        prefetch_factor = self.config.get('misc', {}).get('prefetch_factor', 2)
         
         train_loader = DataLoader(
             train_dataset,
@@ -617,7 +641,7 @@ class RTDETRTrainer:
             collate_fn=collate_fn,
             pin_memory=pin_memory,
             persistent_workers=True if num_workers > 0 else False,
-            prefetch_factor=2 if num_workers > 0 else None
+            prefetch_factor=prefetch_factor if num_workers > 0 else None
         )
         val_loader = DataLoader(
             val_dataset,
@@ -627,7 +651,7 @@ class RTDETRTrainer:
             collate_fn=collate_fn,
             pin_memory=pin_memory,
             persistent_workers=True if num_workers > 0 else False,
-            prefetch_factor=2 if num_workers > 0 else None
+            prefetch_factor=prefetch_factor if num_workers > 0 else None
         )
         
         return train_loader, val_loader
@@ -642,7 +666,7 @@ class RTDETRTrainer:
         # 分组参数
         param_groups = []
         
-        # 定义新增结构的关键词（rt-detr没有MoE/Cas_DETR结构，所以为空）
+        # 定义新增结构的关键词（rt-detr没有MoE/CaS_DETR结构，所以为空）
         new_structure_keywords = []
         
         # 1. 预训练参数组（backbone、encoder、decoder的标准层，排除norm层和新增结构）
@@ -685,7 +709,7 @@ class RTDETRTrainer:
             })
             self.logger.info(f"✓ Norm层参数组: {len(norm_params)} 个参数, lr={new_lr}, wd=0")
         
-        # 3. 新参数组（MoE层、Cas_DETR层等新增结构，即使它们在encoder/decoder中）
+        # 3. 新参数组（MoE层、CaS_DETR层等新增结构，即使它们在encoder/decoder中）
         new_params = []
         new_names = []
         processed_params = set(id(p) for p in pretrained_params + norm_params)
@@ -843,6 +867,9 @@ class RTDETRTrainer:
         
         # 重新设置日志（现在可以正确处理恢复训练的情况）
         self.setup_logging()
+
+        # 按显存动态调整batch_size（8G基准，16G/32G按倍数放大）
+        self._apply_vram_batch_size_rule()
         
         self.logger.info("=" * 80)
         self.logger.info("🚀 开始RT-DETR训练")

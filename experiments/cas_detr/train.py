@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Cas_DETR Training Script - Dual-Sparse Expert Transformer (Token Pruning + Encoder MoE + Decoder MoE)"""
+"""CaS_DETR Training Script - Dual-Sparse Expert Transformer (Token Pruning + Encoder MoE + Decoder MoE)"""
 
 import os
 import sys
@@ -121,12 +121,12 @@ def create_backbone(backbone_type: str, **kwargs) -> nn.Module:
 
 
 
-class Cas_DETRRTDETR(nn.Module):
-    """Cas_DETR (Dual-Sparse Expert Transformer) RT-DETR model.
+class CaS_DETRRTDETR(nn.Module):
+    """CaS_DETR (Dual-Sparse Expert Transformer) RT-DETR model.
     
     Architecture Design:
     1. Shared Backbone: Extracts multi-scale features
-    2. Cas_DETR Encoder (Dual-Sparse):
+    2. CaS_DETR Encoder (Dual-Sparse):
        - Token Pruning: Prunes redundant tokens
        - Encoder MoE: Sparse expert processing for spatial features
     3. MoE Decoder: MoELayer in FFN
@@ -158,7 +158,7 @@ class Cas_DETRRTDETR(nn.Module):
                 cass_focal_beta: float = 2.0,
                 # MoE noise_std config
                 moe_noise_std: float = 0.1):
-        """Initialize Cas_DETR RT-DETR model.
+        """Initialize CaS_DETR RT-DETR model.
         
         Args:
             hidden_dim: Encoder hidden dimension
@@ -187,7 +187,7 @@ class Cas_DETRRTDETR(nn.Module):
             cass_focal_beta: Focal/VFL beta/gamma parameter (hard example mining strength)
             
         Note:
-            - Encoder-MoE and Token-level Pruning are always enabled (Cas_DETR core features)
+            - Encoder-MoE and Token-level Pruning are always enabled (CaS_DETR core features)
             - No need to configure use_encoder_moe and use_token_pruning
         """
         super().__init__()
@@ -205,7 +205,7 @@ class Cas_DETRRTDETR(nn.Module):
         self.num_encoder_layers = num_encoder_layers
         self.use_encoder_idx = use_encoder_idx
         
-        # Cas_DETR双稀疏配置（Encoder MoE 必然启用，无需存储）
+        # CaS_DETR双稀疏配置（Encoder MoE 必然启用，无需存储）
         self.token_keep_ratio = token_keep_ratio
         self.encoder_moe_num_experts = encoder_moe_num_experts
         self.encoder_moe_top_k = encoder_moe_top_k
@@ -285,7 +285,7 @@ class Cas_DETRRTDETR(nn.Module):
         return create_backbone(self.backbone_type)
     
     def _build_encoder(self) -> nn.Module:
-        """Build encoder - Supports Cas_DETR dual-sparse mechanism."""
+        """Build encoder - Supports CaS_DETR dual-sparse mechanism."""
         # Support Shared MoE
         
         return HybridEncoder(
@@ -298,7 +298,7 @@ class Cas_DETRRTDETR(nn.Module):
             nhead=8,
             dropout=0.0,
             act='silu',
-            # Cas_DETR dual-sparse params
+            # CaS_DETR dual-sparse params
             token_keep_ratio=self.token_keep_ratio,
             encoder_moe_num_experts=self.encoder_moe_num_experts,
             encoder_moe_top_k=self.encoder_moe_top_k,
@@ -382,8 +382,8 @@ class Cas_DETRRTDETR(nn.Module):
         # 共享特征提取
         backbone_features = self.backbone(images)
         
-        # Cas_DETR Encoder（双稀疏：Token Pruning + Encoder MoE）
-        # ⚠️ Encoder MoE 和 Token Pruning 必然启用（Cas_DETR核心特性）
+        # CaS_DETR Encoder（双稀疏：Token Pruning + Encoder MoE）
+        # ⚠️ Encoder MoE 和 Token Pruning 必然启用（CaS_DETR核心特性）
         encoder_features, encoder_info = self.encoder(backbone_features, return_encoder_info=True)
         
         # MoE Decoder前向（内部自动处理路由和专家融合）
@@ -403,7 +403,7 @@ class Cas_DETRRTDETR(nn.Module):
             detection_loss = sum(v for v in detection_loss_dict.values() 
                                if isinstance(v, torch.Tensor))
             
-            # ========== Cas_DETR双稀疏损失 ==========
+            # ========== CaS_DETR双稀疏损失 ==========
             # 1. Decoder MoE负载均衡损失（仅训练时）
             if self.training:
                 decoder_moe_loss = decoder_output.get('moe_load_balance_loss', 
@@ -412,7 +412,7 @@ class Cas_DETRRTDETR(nn.Module):
                 decoder_moe_loss = torch.tensor(0.0, device=images.device)
             
             # 2. Encoder MoE损失（仅训练时）- 负载均衡损失
-            # ⚠️ Encoder MoE 默认启用，Cas_DETR核心特性
+            # ⚠️ Encoder MoE 默认启用，CaS_DETR核心特性
             if self.training:
                 encoder_moe_loss_dict = self.encoder.get_encoder_moe_loss(encoder_info)
                 encoder_moe_loss = encoder_moe_loss_dict['balance_loss']
@@ -527,8 +527,8 @@ class Cas_DETRRTDETR(nn.Module):
         return output
 
 
-class Cas_DETRTrainer:
-    """Cas_DETR (Dual-Sparse Expert Transformer) 训练器。
+class CaS_DETRTrainer:
+    """CaS_DETR (Dual-Sparse Expert Transformer) 训练器。
     
     负责模型训练、验证、检查点管理等功能。
     支持双稀疏机制的渐进式训练。
@@ -672,8 +672,8 @@ class Cas_DETRTrainer:
             with open(self.log_dir / 'config.yaml', 'w', encoding='utf-8') as f:
                 yaml.dump(self.config, f, default_flow_style=False)
     
-    def _create_model(self) -> Cas_DETRRTDETR:
-        """创建Cas_DETR模型（支持双稀疏）。"""
+    def _create_model(self) -> CaS_DETRRTDETR:
+        """创建CaS_DETR模型（支持双稀疏）。"""
         # 从配置文件读取encoder配置
         encoder_config = self.config['model']['encoder']
         encoder_in_channels = encoder_config['in_channels']
@@ -686,9 +686,9 @@ class Cas_DETRTrainer:
         # 从配置文件读取 MoE noise_std
         moe_noise_std = self.config['model'].get('moe_noise_std', 0.1)
         
-        # Cas_DETR双稀疏配置
+        # CaS_DETR双稀疏配置
         cas_detr_config = self.config['model'].get('cas_detr', {})
-        # ⚠️ 注意：Encoder MoE 和 Token Pruning 必然启用（Cas_DETR核心特性），无需配置
+        # ⚠️ 注意：Encoder MoE 和 Token Pruning 必然启用（CaS_DETR核心特性），无需配置
         token_keep_ratio = cas_detr_config.get('token_keep_ratio', 0.7)
         encoder_moe_num_experts = cas_detr_config.get('encoder_moe_num_experts', 4)
         encoder_moe_top_k = cas_detr_config.get('encoder_moe_top_k', 2)
@@ -713,7 +713,7 @@ class Cas_DETRTrainer:
         num_encoder_layers = self.config.get('model', {}).get('encoder', {}).get('num_encoder_layers', 1)
         decoder_hidden_dim = self.config['model'].get('decoder_hidden_dim', None)
         
-        model = Cas_DETRRTDETR(
+        model = CaS_DETRRTDETR(
             hidden_dim=self.config['model']['hidden_dim'],
             decoder_hidden_dim=decoder_hidden_dim,
             num_queries=self.config['model']['num_queries'],
@@ -725,7 +725,7 @@ class Cas_DETRTrainer:
             num_experts=num_experts,
             num_encoder_layers=num_encoder_layers,
             use_encoder_idx=use_encoder_idx,
-            # Cas_DETR双稀疏参数（Encoder MoE 必然启用，无需传递）
+            # CaS_DETR双稀疏参数（Encoder MoE 必然启用，无需传递）
             token_keep_ratio=token_keep_ratio,
             encoder_moe_num_experts=encoder_moe_num_experts,
             encoder_moe_top_k=encoder_moe_top_k,
@@ -746,7 +746,7 @@ class Cas_DETRTrainer:
             moe_noise_std=moe_noise_std
         )
         
-        # [修复] 移除 _create_model 内部的加载逻辑，统一在 Cas_DETRTrainer.__init__ 中处理
+        # [修复] 移除 _create_model 内部的加载逻辑，统一在 CaS_DETRTrainer.__init__ 中处理
         
         model = model.to(self.device)
         
@@ -762,12 +762,12 @@ class Cas_DETRTrainer:
         # 获取实际的num_encoder_layers用于日志输出
         num_encoder_layers = self.config.get('model', {}).get('encoder', {}).get('num_encoder_layers', 1)
         
-        self.logger.info(f"✓ 创建Cas_DETR RT-DETR模型")
+        self.logger.info(f"✓ 创建CaS_DETR RT-DETR模型")
         self.logger.info(f"  Decoder专家数量: {model.num_experts}")
         self.logger.info(f"  Backbone: {model.backbone_type}")
         self.logger.info(f"  Encoder: in_channels={encoder_in_channels}, expansion={encoder_expansion}, num_layers={num_encoder_layers}")
         self.logger.info(f"  Encoder MoE设计: 层间共享")
-        self.logger.info(f"  双稀疏配置（Cas_DETR核心特性，必然启用）:")
+        self.logger.info(f"  双稀疏配置（CaS_DETR核心特性，必然启用）:")
         self.logger.info(f"    - Encoder-MoE: 启用 (experts={encoder_moe_num_experts}, top_k={encoder_moe_top_k})")
         self.logger.info(f"    - Token Pruning: 启用（与 Encoder MoE 兼容）")
         self.logger.info(f"      → keep_ratio={token_keep_ratio}")
@@ -782,7 +782,7 @@ class Cas_DETRTrainer:
         
         return model
     
-    def _load_pretrained_weights(self, model: Cas_DETRRTDETR, pretrained_path: str) -> None:
+    def _load_pretrained_weights(self, model: CaS_DETRRTDETR, pretrained_path: str) -> None:
         """从本地文件加载预训练权重
         
         Args:
@@ -1309,11 +1309,11 @@ class Cas_DETRTrainer:
         # 分组参数（与rt-detr保持一致的分组策略）
         param_groups = []
         
-        # 定义新增结构的关键词（MoE、Cas_DETR等）
+        # 定义新增结构的关键词（MoE、CaS_DETR等）
         # 基于实际代码中的模块命名：
-        # - decoder.layers.X.decoder_moe_layer.* (Cas_DETR的decoder MoE)
-        # - encoder.layers.X.encoder_moe_layer.* (Cas_DETR的encoder Encoder-MoE)
-        # - encoder.shared_token_pruner.* (Cas_DETR的token pruning)
+        # - decoder.layers.X.decoder_moe_layer.* (CaS_DETR的decoder MoE)
+        # - encoder.layers.X.encoder_moe_layer.* (CaS_DETR的encoder Encoder-MoE)
+        # - encoder.shared_token_pruner.* (CaS_DETR的token pruning)
         # - importance_predictor (token pruning中的重要性预测器)
         new_structure_keywords = [
             'decoder_moe_layer',  # decoder中的MoE层
@@ -1362,7 +1362,7 @@ class Cas_DETRTrainer:
             })
             self.logger.info(f"✓ Norm层参数组: {len(norm_params)} 个参数, lr={new_lr}, wd=0")
         
-        # 3. 新参数组（MoE层、Cas_DETR层等新增结构，即使它们在encoder/decoder中）
+        # 3. 新参数组（MoE层、CaS_DETR层等新增结构，即使它们在encoder/decoder中）
         new_params = []
         new_names = []
         processed_params = set(id(p) for p in pretrained_params + norm_params)
@@ -1754,7 +1754,7 @@ class Cas_DETRTrainer:
             self.logger.error(f"恢复检查点失败: {e}")
     
     def train_epoch(self) -> Dict[str, float]:
-        """训练一个epoch（支持Cas_DETR渐进式训练，采用即产即清原则优化）。"""
+        """训练一个epoch（支持CaS_DETR渐进式训练，采用即产即清原则优化）。"""
         self.model.train()
         
         # 设置模型的epoch（Token Pruning从epoch 0开始就启用）
@@ -2556,7 +2556,7 @@ class Cas_DETRTrainer:
                 mAP_0_75=val_metrics.get('mAP_0.75', 0.0),
                 mAP_0_5_0_95=val_metrics.get('mAP_0.5_0.95', 0.0),
                 learning_rate=current_lr,
-                # Cas_DETR特有的可视化参数
+                # CaS_DETR特有的可视化参数
                 detection_loss=train_metrics.get('detection_loss', 0.0),
                 encoder_moe_loss=train_metrics.get('encoder_moe_loss', 0.0),  # Encoder MoE loss
                 decoder_moe_loss=train_metrics.get('decoder_moe_loss', 0.0),
@@ -2799,7 +2799,7 @@ def main() -> None:
             config['checkpoint'] = {'resume_from_checkpoint': args.resume_from_checkpoint}
     
     # 创建训练器
-    trainer = Cas_DETRTrainer(config, config_file_path=config_file_path)
+    trainer = CaS_DETRTrainer(config, config_file_path=config_file_path)
     
     # 开始训练
     trainer.train()

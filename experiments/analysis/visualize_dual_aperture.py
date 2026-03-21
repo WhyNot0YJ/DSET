@@ -409,7 +409,7 @@ def run_dual_aperture_visualization(
         encoder_info = outputs["encoder_info"]
 
     if encoder_info is None:
-        raise RuntimeError("Could not extract encoder_info from model output. Is the model Cas_DETR with dual-scale encoder?")
+        raise RuntimeError("Could not extract encoder_info from model output. Is the model CaS_DETR with dual-scale encoder?")
 
     # 5. Parse S4 (index 1) and S5 (index 2) from encoder
     use_encoder_idx = getattr(model.encoder, "use_encoder_idx", [1, 2])

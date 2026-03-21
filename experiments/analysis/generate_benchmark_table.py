@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-模型理论效率评估脚本 - 支持 Cas_DETR, RT-DETR, Deformable-DETR, YOLOv8, YOLOv10
+模型理论效率评估脚本 - 支持 CaS_DETR, RT-DETR, Deformable-DETR, YOLOv8, YOLOv10
 
 功能：
 1. 自动从 logs/ 目录查找最新的 best_model.pth 或使用指定的检查点
@@ -243,14 +243,14 @@ def get_model_info(model, input_size: Tuple[int, int, int, int] = (1, 3, 736, 12
 
 
 def load_cas_detr_model(config_path: str, checkpoint_path: str, device: str = "cuda"):
-    """加载 Cas_DETR 模型"""
+    """加载 CaS_DETR 模型"""
     try:
-        from experiments.cas_detr.train import Cas_DETRTrainer
+        from experiments.cas_detr.train import CaS_DETRTrainer
     except ImportError:
         cas_detr_dir = Path(config_path).parent.parent
         if str(cas_detr_dir) not in sys.path:
             sys.path.insert(0, str(cas_detr_dir))
-        from train import Cas_DETRTrainer
+        from train import CaS_DETRTrainer
     
     with open(config_path, 'r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
@@ -259,7 +259,7 @@ def load_cas_detr_model(config_path: str, checkpoint_path: str, device: str = "c
         config['misc'] = {}
     config['misc']['device'] = device
     
-    trainer = Cas_DETRTrainer(config, config_file_path=str(config_path))
+    trainer = CaS_DETRTrainer(config, config_file_path=str(config_path))
     model = trainer.model
     
     checkpoint = _load_checkpoint(checkpoint_path)
@@ -622,12 +622,12 @@ def evaluate_deformable_detr_full(config_path: str,
 def _get_outputs_info(outputs: Dict) -> Tuple[torch.Tensor, torch.Tensor, bool]:
     """从模型输出中提取 logits 和 boxes
     
-    注意：Cas_DETR 和 RT-DETR 均使用 Focal Loss，推理时应使用 Sigmoid 激活
+    注意：CaS_DETR 和 RT-DETR 均使用 Focal Loss，推理时应使用 Sigmoid 激活
     """
     if 'pred_logits' in outputs:
         return outputs['pred_logits'], outputs['pred_boxes'], True  # RT-DETR: sigmoid
     elif 'class_scores' in outputs:
-        return outputs['class_scores'], outputs['bboxes'], True  # Cas_DETR: sigmoid (Focal Loss)
+        return outputs['class_scores'], outputs['bboxes'], True  # CaS_DETR: sigmoid (Focal Loss)
     return None, None, False
 
 
@@ -733,13 +733,13 @@ def evaluate_accuracy(model, config_path: str, device: str = "cuda",
         # 导入 Trainer
         if model_type == "cas_detr":
             try:
-                from experiments.cas_detr.train import Cas_DETRTrainer
+                from experiments.cas_detr.train import CaS_DETRTrainer
             except ImportError:
                 cas_detr_dir = Path(config_path).parent.parent
                 if str(cas_detr_dir) not in sys.path:
                     sys.path.insert(0, str(cas_detr_dir))
-                from train import Cas_DETRTrainer
-            TrainerClass = Cas_DETRTrainer
+                from train import CaS_DETRTrainer
+            TrainerClass = CaS_DETRTrainer
         elif model_type == "rtdetr":
             rtdetr_dir = Path(config_path).parent.parent
             if str(rtdetr_dir) not in sys.path:
@@ -1101,7 +1101,7 @@ def find_latest_best_model(logs_dir: Path, model_type: str = "cas_detr") -> Opti
         best_models.extend(list(logs_dir.rglob("best.pt")))
         best_models.extend(list(logs_dir.rglob("best_model.pth")))
     else:
-        # Cas_DETR/RT-DETR: 查找 best_model.pth
+        # CaS_DETR/RT-DETR: 查找 best_model.pth
         # 优先查找 weights/ 目录
         best_models.extend(list(logs_dir.rglob("weights/best_model.pth")))
         best_models.extend(list(logs_dir.rglob("best_model.pth")))
@@ -1125,7 +1125,7 @@ def _format_evaluation_results(model_type: str, total_params_m: float, active_pa
                                gpu_name: str = "GPU") -> None:
     """格式化并输出评估结果（理论效率视角）"""
     model_names = {
-        'cas_detr': 'Cas_DETR', 'rtdetr': 'RT-DETRv2', 'deformable-detr': 'Deformable-DETR',
+        'cas_detr': 'CaS_DETR', 'rtdetr': 'RT-DETRv2', 'deformable-detr': 'Deformable-DETR',
         'yolov8s': 'YOLOv8-s', 'yolov8m': 'YOLOv8-m',
         'yolov10s': 'YOLOv10-s', 'yolov10m': 'YOLOv10-m'
     }

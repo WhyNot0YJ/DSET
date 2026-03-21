@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Cas_DETR (Dual-Sparse Expert Transformer) 批量推理脚本
+# CaS_DETR (Dual-Sparse Expert Transformer) 批量推理脚本
 # 使用方法: ./run_inference.sh [参数覆盖...]
 # 
 # 示例:
@@ -71,7 +71,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-echo "🚀 开始批量推理 Cas_DETR"
+echo "🚀 开始批量推理 CaS_DETR"
 echo "="*60
 echo "配置文件: $CONFIG_FILE"
 echo "模型检查点: $CHECKPOINT_FILE"

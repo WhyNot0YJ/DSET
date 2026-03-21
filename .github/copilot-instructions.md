@@ -1,19 +1,19 @@
-# Cas_DETR Project — Copilot Instructions
+# CaS_DETR Project — Copilot Instructions
 
 ## Project Overview
 
-Research project benchmarking object detection models on the **DAIR-V2X** (车路协同) dataset. The core contribution is **Cas_DETR (Dual-Sparse Expert Transformer)** — an RT-DETR variant that combines **token pruning** (discard background patches) and **Mixture-of-Experts** (route tokens to expert subsets) for efficient detection.
+Research project benchmarking object detection models on the **DAIR-V2X** (车路协同) dataset. The core contribution is **CaS_DETR (Dual-Sparse Expert Transformer)** — an RT-DETR variant that combines **token pruning** (discard background patches) and **Mixture-of-Experts** (route tokens to expert subsets) for efficient detection.
 
 **8 detection classes**: Car, Truck, Van, Bus, Pedestrian, Cyclist, Motorcyclist, Trafficcone.
 
 ## Repository Layout
 
-- `experiments/cas_detr/` — **Primary Cas_DETR implementation** (model, training, inference)
+- `experiments/cas_detr/` — **Primary CaS_DETR implementation** (model, training, inference)
   - `src/zoo/rtdetr/` — Core architecture: `hybrid_encoder.py`, `moe_components.py`, `token_level_pruning.py`, `rtdetrv2_decoder.py`
   - `src/nn/backbone/` — Backbones (PResNet, HGNetv2, CSPResNet)
   - `src/data/dataset/dairv2x_detection.py` — DAIR-V2X dataset loader (COCO format)
   - `configs/` — YAML configs named `cas_detr{experts}_r{backbone}_ratio{ratio}.yaml`
-  - `train.py` — `Cas_DETRTrainer` class: full training/validation pipeline with EMA, AMP, early stopping
+  - `train.py` — `CaS_DETRTrainer` class: full training/validation pipeline with EMA, AMP, early stopping
 - `experiments/moe-rtdetr/`, `experiments/rt-detr/` — RT-DETR baselines (MoE-only and vanilla)
 - `experiments/deformable-detr/`, `experiments/yolov8/`, `experiments/yolov10/` — Comparison models
 - `experiments/analysis/` — Benchmarking, Pareto plots, report generation
@@ -62,7 +62,7 @@ Naming convention: `cas_detr{num_experts}_r{18|34}_ratio{keep_ratio}.yaml`
 ## Common Workflows
 
 ```bash
-# Train Cas_DETR (default config or specify)
+# Train CaS_DETR (default config or specify)
 ./experiments/cas_detr/run_training.sh
 ./experiments/cas_detr/run_training.sh configs/cas_detr6_r18_ratio0.5.yaml
 
@@ -72,7 +72,7 @@ Naming convention: `cas_detr{num_experts}_r{18|34}_ratio{keep_ratio}.yaml`
 # Batch experiments (all model variants)
 ./experiments/run_batch_experiments.sh
 ./experiments/run_batch_experiments.sh --test       # Quick 2-epoch test
-./experiments/run_batch_experiments.sh --cas_detr --r18  # Only Cas_DETR R18 variants
+./experiments/run_batch_experiments.sh --cas_detr --r18  # Only CaS_DETR R18 variants
 
 # Inference
 ./experiments/cas_detr/run_inference.sh --config configs/cas_detr6_r18.yaml \

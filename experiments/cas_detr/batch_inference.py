@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Cas_DETR 批量推理脚本 - 处理整个图像目录"""
+"""CaS_DETR 批量推理脚本 - 处理整个图像目录"""
 
 import sys
 import argparse
@@ -48,11 +48,11 @@ def _setup_paths():
 def _import_modules():
     """延迟导入模块"""
     _setup_paths()
-    # [CHANGE] 使用 Cas_DETRTrainer
-    from train import Cas_DETRTrainer, create_backbone
+    # [CHANGE] 使用 CaS_DETRTrainer
+    from train import CaS_DETRTrainer, create_backbone
     from src.nn.postprocessor.detr_postprocessor import DetDETRPostProcessor
     from src.nn.postprocessor.box_revert import box_revert, BoxProcessFormat
-    return Cas_DETRTrainer, create_backbone, DetDETRPostProcessor, BoxProcessFormat
+    return CaS_DETRTrainer, create_backbone, DetDETRPostProcessor, BoxProcessFormat
 
 # 类别名称（8类）
 CLASS_NAMES = [
@@ -73,17 +73,17 @@ COLORS = [
 
 def load_model(config_path: str, checkpoint_path: str, device: str = "cuda"):
     """Load model and weights."""
-    # [CHANGE] Import Cas_DETRTrainer
-    Cas_DETRTrainer, _, DetDETRPostProcessor, BoxProcessFormat = _import_modules()
+    # [CHANGE] Import CaS_DETRTrainer
+    CaS_DETRTrainer, _, DetDETRPostProcessor, BoxProcessFormat = _import_modules()
     
     # Load config
     with open(config_path, 'r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
     
-    # Build model without running Cas_DETRTrainer.__init__ (which requires the dataset).
+    # Build model without running CaS_DETRTrainer.__init__ (which requires the dataset).
     # _create_model() only reads self.config, so we can safely bypass __init__.
     import logging
-    trainer = object.__new__(Cas_DETRTrainer)
+    trainer = object.__new__(CaS_DETRTrainer)
     trainer.config = config
     trainer.logger = logging.getLogger(__name__)
     trainer.device = torch.device(device)
@@ -450,7 +450,7 @@ def batch_inference(image_dir: str, config_path: str, checkpoint_path: str,
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Cas_DETR 批量推理脚本")
+    parser = argparse.ArgumentParser(description="CaS_DETR 批量推理脚本")
     parser.add_argument("--image_dir", type=str, required=True, help="输入图像目录路径")
     parser.add_argument("--config", type=str, required=True, help="配置文件路径")
     parser.add_argument("--checkpoint", type=str, required=True, help="模型checkpoint路径")

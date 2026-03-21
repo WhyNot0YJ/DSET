@@ -1,4 +1,4 @@
-# Cas_DETR vs Baselines 终极实验评估报告
+# CaS_DETR vs Baselines 终极实验评估报告
 生成时间: 2025-12-05
 ---
 
@@ -8,12 +8,12 @@
 
 | Model | Input Resolution | Status |
 |:---|:---|:---|
-| Cas_DETR | 1280 | ✅ |
-| Cas_DETR | 1280 | ✅ |
-| Cas_DETR | 1280 | ✅ |
-| Cas_DETR | 1280 | ✅ |
-| Cas_DETR | 1280 | ✅ |
-| Cas_DETR | 1280 | ✅ |
+| CaS_DETR | 1280 | ✅ |
+| CaS_DETR | 1280 | ✅ |
+| CaS_DETR | 1280 | ✅ |
+| CaS_DETR | 1280 | ✅ |
+| CaS_DETR | 1280 | ✅ |
+| CaS_DETR | 1280 | ✅ |
 | RT-DETR | 1280 | ✅ |
 | RT-DETR | 1280 | ✅ |
 | YOLOV8 | 1280 | ✅ |
@@ -24,12 +24,12 @@
 
 | Model | conf_thres | max_det | Status |
 |:---|:---|:---|:---|
-| Cas_DETR | 0.001 | 100 | ✅ |
-| Cas_DETR | 0.001 | 100 | ✅ |
-| Cas_DETR | 0.001 | 100 | ✅ |
-| Cas_DETR | 0.001 | 100 | ✅ |
-| Cas_DETR | 0.001 | 100 | ✅ |
-| Cas_DETR | 0.001 | 100 | ✅ |
+| CaS_DETR | 0.001 | 100 | ✅ |
+| CaS_DETR | 0.001 | 100 | ✅ |
+| CaS_DETR | 0.001 | 100 | ✅ |
+| CaS_DETR | 0.001 | 100 | ✅ |
+| CaS_DETR | 0.001 | 100 | ✅ |
+| CaS_DETR | 0.001 | 100 | ✅ |
 | RT-DETR | 0.001 | 100 | ✅ |
 | RT-DETR | 0.001 | 100 | ✅ |
 | YOLOV8 | 0.001 | 100 | ✅ |
@@ -40,12 +40,12 @@
 
 | Model | Mosaic | Mixup | Status |
 |:---|:---|:---|:---|
-| Cas_DETR | 0.0 | None | ✅ |
-| Cas_DETR | 0.0 | None | ✅ |
-| Cas_DETR | 0.0 | None | ✅ |
-| Cas_DETR | 0.0 | None | ✅ |
-| Cas_DETR | 0.0 | None | ✅ |
-| Cas_DETR | 0.0 | None | ✅ |
+| CaS_DETR | 0.0 | None | ✅ |
+| CaS_DETR | 0.0 | None | ✅ |
+| CaS_DETR | 0.0 | None | ✅ |
+| CaS_DETR | 0.0 | None | ✅ |
+| CaS_DETR | 0.0 | None | ✅ |
+| CaS_DETR | 0.0 | None | ✅ |
 | RT-DETR | None | None | ✅ |
 | RT-DETR | 0.0 | None | ✅ |
 | YOLOV8 | None | None | ✅ |
@@ -58,15 +58,15 @@
 |:---|:---|:---|:---|:---|
 | **yolo_v10l_20251202_112836** | **0.73** | 0.92 | 94 | 200 |
 | yolo_v8l_20251201_150106 | 0.72 | 0.92 | 67 | 200 |
-| Cas_DETR-6 (R34) | 0.70 | 0.89 | 125 | 200 |
-| Cas_DETR-48 (R34) | 0.70 | 0.89 | 130 | 200 |
+| CaS_DETR-6 (R34) | 0.70 | 0.89 | 125 | 200 |
+| CaS_DETR-48 (R34) | 0.70 | 0.89 | 130 | 200 |
 | yolo_v8s_20251201_110541 | 0.69 | 0.89 | 99 | 200 |
-| Cas_DETR-4 (R34) | 0.69 | 0.88 | 135 | 200 |
+| CaS_DETR-4 (R34) | 0.69 | 0.88 | 135 | 200 |
 | RT-DETR (R34) | 0.69 | 0.88 | 140 | 200 |
-| Cas_DETR-48 (R18) | 0.65 | 0.87 | 125 | 200 |
-| Cas_DETR-6 (R18) | 0.65 | 0.87 | 130 | 200 |
+| CaS_DETR-48 (R18) | 0.65 | 0.87 | 125 | 200 |
+| CaS_DETR-6 (R18) | 0.65 | 0.87 | 130 | 200 |
 | RT-DETR (R18) | 0.65 | 0.87 | 149 | 200 |
-| Cas_DETR-4 (R18) | 0.65 | 0.86 | 105 | 200 |
+| CaS_DETR-4 (R18) | 0.65 | 0.86 | 105 | 200 |
 
 ## 3. 细粒度优势分析 (Critical for Paper)
 
@@ -76,27 +76,27 @@
 
 | Model | Pedestrian AP | Cyclist AP |
 |:---|:---|:---|
-| Cas_DETR-48 (R18) | **0.58** | **0.65** |
-| Cas_DETR-6 (R18) | **0.59** | **0.66** |
+| CaS_DETR-48 (R18) | **0.58** | **0.65** |
+| CaS_DETR-6 (R18) | **0.59** | **0.66** |
 | RT-DETR (R18) | 0.58 | 0.63 |
-| Cas_DETR-4 (R18) | 0.57 | 0.63 |
+| CaS_DETR-4 (R18) | 0.57 | 0.63 |
 
-#### 3.1.2 Cas_DETR vs RT-DETR R18 提升分析 (Small Objects)
+#### 3.1.2 CaS_DETR vs RT-DETR R18 提升分析 (Small Objects)
 
 | Model | Pedestrian AP | vs RT-DETR R18 | Cyclist AP | vs RT-DETR R18 |
 |:---|:---|:---|:---|:---|
-| Cas_DETR-48 (R18) | 0.58 | +0.64% | 0.65 | +3.45% |
-| Cas_DETR-6 (R18) | 0.59 | +0.98% | 0.66 | +4.33% |
-| Cas_DETR-4 (R18) | 0.57 | -2.21% | 0.63 | +0.45% |
+| CaS_DETR-48 (R18) | 0.58 | +0.64% | 0.65 | +3.45% |
+| CaS_DETR-6 (R18) | 0.59 | +0.98% | 0.66 | +4.33% |
+| CaS_DETR-4 (R18) | 0.57 | -2.21% | 0.63 | +0.45% |
 
 #### 3.1.3 困难类别组 (Hard Categories)
 
 | Model | Van AP | Truck AP |
 |:---|:---|:---|
-| Cas_DETR-48 (R18) | N/A | **0.51** |
-| Cas_DETR-6 (R18) | N/A | **0.52** |
+| CaS_DETR-48 (R18) | N/A | **0.51** |
+| CaS_DETR-6 (R18) | N/A | **0.52** |
 | RT-DETR (R18) | N/A | **0.53** |
-| Cas_DETR-4 (R18) | N/A | 0.51 |
+| CaS_DETR-4 (R18) | N/A | 0.51 |
 
 ### 3.2 R34 Backbone 对比
 
@@ -104,26 +104,26 @@
 
 | Model | Pedestrian AP | Cyclist AP |
 |:---|:---|:---|
-| Cas_DETR-6 (R34) | **0.63** | **0.69** |
-| Cas_DETR-48 (R34) | **0.64** | 0.69 |
-| Cas_DETR-4 (R34) | 0.61 | 0.68 |
+| CaS_DETR-6 (R34) | **0.63** | **0.69** |
+| CaS_DETR-48 (R34) | **0.64** | 0.69 |
+| CaS_DETR-4 (R34) | 0.61 | 0.68 |
 | RT-DETR (R34) | 0.62 | 0.68 |
 
-#### 3.2.2 Cas_DETR vs RT-DETR R34 提升分析 (Small Objects)
+#### 3.2.2 CaS_DETR vs RT-DETR R34 提升分析 (Small Objects)
 
 | Model | Pedestrian AP | vs RT-DETR R34 | Cyclist AP | vs RT-DETR R34 |
 |:---|:---|:---|:---|:---|
-| Cas_DETR-6 (R34) | 0.63 | +1.43% | 0.69 | +1.72% |
-| Cas_DETR-48 (R34) | 0.64 | +2.37% | 0.69 | +1.62% |
-| Cas_DETR-4 (R34) | 0.61 | -0.98% | 0.68 | -0.01% |
+| CaS_DETR-6 (R34) | 0.63 | +1.43% | 0.69 | +1.72% |
+| CaS_DETR-48 (R34) | 0.64 | +2.37% | 0.69 | +1.62% |
+| CaS_DETR-4 (R34) | 0.61 | -0.98% | 0.68 | -0.01% |
 
 #### 3.2.3 困难类别组 (Hard Categories)
 
 | Model | Van AP | Truck AP |
 |:---|:---|:---|
-| Cas_DETR-6 (R34) | N/A | **0.56** |
-| Cas_DETR-48 (R34) | N/A | 0.54 |
-| Cas_DETR-4 (R34) | N/A | 0.54 |
+| CaS_DETR-6 (R34) | N/A | **0.56** |
+| CaS_DETR-48 (R34) | N/A | 0.54 |
+| CaS_DETR-4 (R34) | N/A | 0.54 |
 | RT-DETR (R34) | N/A | 0.54 |
 
 ## 4. 动态计算与稀疏性 (Sparsity Analysis)
@@ -132,15 +132,15 @@
 |:---|:---|:---|
 | yolo_v10l_20251202_112836 | N/A | N/A |
 | yolo_v8l_20251201_150106 | N/A | N/A |
-| Cas_DETR-6 (R34) | 0.90 | 0.10 |
-| Cas_DETR-48 (R34) | 0.90 | 0.10 |
+| CaS_DETR-6 (R34) | 0.90 | 0.10 |
+| CaS_DETR-48 (R34) | 0.90 | 0.10 |
 | yolo_v8s_20251201_110541 | N/A | N/A |
-| Cas_DETR-4 (R34) | 0.90 | 0.10 |
+| CaS_DETR-4 (R34) | 0.90 | 0.10 |
 | RT-DETR (R34) | N/A | N/A |
-| Cas_DETR-48 (R18) | 0.90 | 0.10 |
-| Cas_DETR-6 (R18) | 0.90 | 0.10 |
+| CaS_DETR-48 (R18) | 0.90 | 0.10 |
+| CaS_DETR-6 (R18) | 0.90 | 0.10 |
 | RT-DETR (R18) | N/A | N/A |
-| Cas_DETR-4 (R18) | 0.90 | 0.10 |
+| CaS_DETR-4 (R18) | 0.90 | 0.10 |
 
 ## 5. 异常与Debug信息
 
@@ -150,12 +150,12 @@
 |:---|:---|:---|
 | yolo_v10l_20251202_112836 | ✅ Completed | Best at epoch 94 |
 | yolo_v8l_20251201_150106 | ✅ Completed | Best at epoch 67 |
-| Cas_DETR-6 (R34) | ✅ Completed | Best at epoch 125 |
-| Cas_DETR-48 (R34) | ✅ Completed | Best at epoch 130 |
+| CaS_DETR-6 (R34) | ✅ Completed | Best at epoch 125 |
+| CaS_DETR-48 (R34) | ✅ Completed | Best at epoch 130 |
 | yolo_v8s_20251201_110541 | ✅ Completed | Best at epoch 99 |
-| Cas_DETR-4 (R34) | ✅ Completed | Best at epoch 135 |
+| CaS_DETR-4 (R34) | ✅ Completed | Best at epoch 135 |
 | RT-DETR (R34) | ✅ Completed | Best at epoch 140 |
-| Cas_DETR-48 (R18) | ✅ Completed | Best at epoch 125 |
-| Cas_DETR-6 (R18) | ✅ Completed | Best at epoch 130 |
+| CaS_DETR-48 (R18) | ✅ Completed | Best at epoch 125 |
+| CaS_DETR-6 (R18) | ✅ Completed | Best at epoch 130 |
 | RT-DETR (R18) | ✅ Completed | Best at epoch 149 |
-| Cas_DETR-4 (R18) | ✅ Completed | Best at epoch 105 |
+| CaS_DETR-4 (R18) | ✅ Completed | Best at epoch 105 |

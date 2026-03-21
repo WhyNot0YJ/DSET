@@ -3,7 +3,9 @@ set -euo pipefail
 
 IMAGE="rtdetr:latest"           # 你用 docker build -t rtdetr:latest . 构建的镜像
 NAME="rtdetr_dev"               # 容器名
-WORKDIR="$HOME/proj/Cas_DETR"   # 项目目录（含 external/RT-DETR）
+WORKDIR="$HOME/proj/CaS_DETR"   # 主机项目目录
+HOST_ROOT="$HOME/proj"
+CONTAINER_WORKDIR="/root/autodl-tmp/CaS_DETR"
 PORT_JUPYTER=8899               # 避免和 yolov8 冲突，给个不同端口
 PORT_TENSORBOARD=6007
 SHM_SIZE="4g"
@@ -23,13 +25,14 @@ if docker ps -a --format '{{.Names}}' | grep -wq "$NAME"; then
     echo "[INFO] 启动容器 $NAME ..."
     docker start "$NAME" >/dev/null
   fi
-  exec docker exec -it "$NAME" bash
+  exec docker exec -it -w "$CONTAINER_WORKDIR" "$NAME" bash
 fi
 
 # 首次创建并进入
 echo "[INFO] 创建并进入容器：$NAME"
 exec docker run --gpus all -it --name "$NAME" \
   --shm-size="$SHM_SIZE" \
-  -v "$WORKDIR:/workspace" \
+  -v "$HOST_ROOT:/root/autodl-tmp" \
+  -w "$CONTAINER_WORKDIR" \
   -p "$PORT_JUPYTER:8888" -p "$PORT_TENSORBOARD:6006" \
   "$IMAGE"

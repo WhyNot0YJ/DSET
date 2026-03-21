@@ -52,8 +52,29 @@ class PadToSize(T.Pad):
         Mask,
         BoundingBoxes,
     )
+
+    @staticmethod
+    def _spatial_size(inpt: Any):
+        get_spatial_size = getattr(F, 'get_spatial_size', None)
+        if callable(get_spatial_size):
+            return get_spatial_size(inpt)
+
+        get_size = getattr(F, 'get_size', None)
+        if callable(get_size):
+            size = get_size(inpt)
+            return size[0], size[1]
+
+        if isinstance(inpt, PIL.Image.Image):
+            w, h = inpt.size
+            return h, w
+
+        if hasattr(inpt, 'shape') and len(inpt.shape) >= 2:
+            return int(inpt.shape[-2]), int(inpt.shape[-1])
+
+        raise TypeError(f'Unsupported input type for spatial size: {type(inpt)}')
+
     def _get_params(self, flat_inputs: List[Any]) -> Dict[str, Any]:
-        sp = F.get_spatial_size(flat_inputs[0])
+        sp = self._spatial_size(flat_inputs[0])
         h, w = self.size[1] - sp[0], self.size[0] - sp[1]
         self.padding = [0, 0, w, h]
         return dict(padding=self.padding)
@@ -67,8 +88,15 @@ class PadToSize(T.Pad):
         self.size = size
         super().__init__(0, fill, padding_mode)
 
+    def _resolve_fill(self, inpt: Any):
+        if isinstance(self._fill, dict):
+            for cls in type(inpt).__mro__:
+                if cls in self._fill:
+                    return self._fill[cls]
+        return self.fill
+
     def _transform(self, inpt: Any, params: Dict[str, Any]) -> Any:        
-        fill = self._fill[type(inpt)]
+        fill = self._resolve_fill(inpt)
         padding = params['padding']
         return F.pad(inpt, padding=padding, fill=fill, padding_mode=self.padding_mode)  # type: ignore[arg-type]
 

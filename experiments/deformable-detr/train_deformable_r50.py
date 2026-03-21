@@ -63,11 +63,11 @@ def main():
     cfg.val_evaluator.ann_file = data_root + 'annotations/instances_val2017.json'
     cfg.test_evaluator = cfg.val_evaluator
 
-    # 4. 训练周期：200 Epochs (对标 Cas_DETR)
+    # 4. 训练周期：200 Epochs (对标 CaS_DETR)
     cfg.train_cfg.max_epochs = 200
     cfg.train_cfg.val_interval = 10
 
-    # 5. 优化器、调度器：沿用 Cas_DETR 设定的 CosineAnnealing 调度和学习率缩放
+    # 5. 优化器、调度器：沿用 CaS_DETR 设定的 CosineAnnealing 调度和学习率缩放
     cfg.optim_wrapper.optimizer.lr = 1e-4
     cfg.optim_wrapper.optimizer.weight_decay = 1e-4
 

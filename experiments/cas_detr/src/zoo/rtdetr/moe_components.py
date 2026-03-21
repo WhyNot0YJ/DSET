@@ -1,4 +1,4 @@
-"""Universal Token-Level MoE Components for Cas_DETR - Vectorized Implementation"""
+"""Universal Token-Level MoE Components for CaS_DETR - Vectorized Implementation"""
 
 import torch
 import torch.nn as nn

@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Cas_DETR Sparsity Visualization 可视化脚本
+# CaS_DETR Sparsity Visualization 可视化脚本
 # 使用方法: ./run_visualize_sparsity.sh [参数覆盖...]
 # 
 # 示例:
@@ -65,7 +65,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-echo "🎨 Cas_DETR Sparsity Visualization"
+echo "🎨 CaS_DETR Sparsity Visualization"
 echo "============================================================"
 echo "输入图像: $IMAGE_FILE"
 echo "配置文件: $CONFIG_FILE"

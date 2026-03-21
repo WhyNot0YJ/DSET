@@ -7,13 +7,13 @@
 - 实时绘制训练曲线
 - 支持checkpoint保存和恢复
 - 专为MOE模型设计的专家使用率可视化
-- 专为Cas_DETR模型设计的双稀疏机制可视化（Token Pruning + 双MoE）
+- 专为CaS_DETR模型设计的双稀疏机制可视化（Token Pruning + 双MoE）
 - 灵活的接口，易于集成到不同训练脚本
 
 支持的模型类型：
 - 'standard': 标准模型
 - 'moe': MOE模型（单MoE）
-- 'cas_detr': Cas_DETR模型（Token Pruning + Encoder MoE + Decoder MoE）
+- 'cas_detr': CaS_DETR模型（Token Pruning + Encoder MoE + Decoder MoE）
 
 用法示例：
     from src.misc.training_visualizer import TrainingVisualizer
@@ -30,7 +30,7 @@
         router_loss=0.05
     )
     
-    # Cas_DETR模型
+    # CaS_DETR模型
     visualizer = TrainingVisualizer(log_dir='logs/cas_detr_exp', model_type='cas_detr')
     visualizer.record(
         epoch=0,
@@ -84,7 +84,7 @@ class TrainingVisualizer:
             model_type: 模型类型
                 - 'standard': 标准模型
                 - 'moe': MOE模型（单MoE）
-                - 'cas_detr': Cas_DETR模型（Token Pruning + 双MoE）
+                - 'cas_detr': CaS_DETR模型（Token Pruning + 双MoE）
             experiment_name: 实验名称，用于在曲线标题中显示（如 'cas_detr2_r18'）
         """
         self.log_dir = Path(log_dir)
@@ -102,17 +102,17 @@ class TrainingVisualizer:
             'learning_rate': [],
             
             # MOE模型专用
-            'expert_usage': [],  # MOE/Cas_DETR的decoder专家使用率
+            'expert_usage': [],  # MOE/CaS_DETR的decoder专家使用率
             'router_loss': [],   # MOE balance loss
             
-            # Cas_DETR模型专用
+            # CaS_DETR模型专用
             'detection_loss': [],
             'encoder_moe_loss': [],
             'decoder_moe_loss': [],
             'token_pruning_loss': [],
             'token_pruning_ratio': [],
-            'encoder_expert_usage': [],  # Cas_DETR的encoder MoE 专家使用率
-            'decoder_expert_usage': [],  # Cas_DETR的decoder MoE 专家使用率
+            'encoder_expert_usage': [],  # CaS_DETR的encoder MoE 专家使用率
+            'decoder_expert_usage': [],  # CaS_DETR的decoder MoE 专家使用率
         }
     
     def record(
@@ -126,7 +126,7 @@ class TrainingVisualizer:
         learning_rate: float = 0.0,
         expert_usage: Optional[List[float]] = None,
         router_loss: Optional[float] = None,
-        # Cas_DETR专用参数
+        # CaS_DETR专用参数
         detection_loss: float = 0.0,
         encoder_moe_loss: float = 0.0,
         decoder_moe_loss: float = 0.0,
@@ -147,13 +147,13 @@ class TrainingVisualizer:
             learning_rate: 当前学习率
             expert_usage: 专家使用率列表（MOE模型的decoder专家）
             router_loss: 路由器损失（MOE模型）
-            detection_loss: 检测损失（Cas_DETR模型）
-            encoder_moe_loss: Encoder MoE balance loss（Cas_DETR模型）
-            decoder_moe_loss: Decoder MoE balance loss（Cas_DETR模型）
-            token_pruning_loss: Token pruning辅助损失（Cas_DETR模型）
-            token_pruning_ratio: 实际token pruning比例（Cas_DETR模型）
-            encoder_expert_usage: Encoder MoE 专家使用率（Cas_DETR模型）
-            decoder_expert_usage: Decoder MoE 专家使用率（Cas_DETR模型）
+            detection_loss: 检测损失（CaS_DETR模型）
+            encoder_moe_loss: Encoder MoE balance loss（CaS_DETR模型）
+            decoder_moe_loss: Decoder MoE balance loss（CaS_DETR模型）
+            token_pruning_loss: Token pruning辅助损失（CaS_DETR模型）
+            token_pruning_ratio: 实际token pruning比例（CaS_DETR模型）
+            encoder_expert_usage: Encoder MoE 专家使用率（CaS_DETR模型）
+            decoder_expert_usage: Decoder MoE 专家使用率（CaS_DETR模型）
         """
         self.history['train_loss'].append(train_loss)
         self.history['val_loss'].append(val_loss)
@@ -168,7 +168,7 @@ class TrainingVisualizer:
         if router_loss is not None:
             self.history['router_loss'].append(router_loss)
         
-        # Cas_DETR模型参数
+        # CaS_DETR模型参数
         if self.model_type == 'cas_detr':
             self.history['detection_loss'].append(detection_loss)
             self.history['encoder_moe_loss'].append(encoder_moe_loss)
@@ -186,7 +186,7 @@ class TrainingVisualizer:
         根据model_type自动选择合适的绘图布局：
         - 标准模型: 3个子图（损失、mAP、学习率）
         - MOE模型: 4个子图（损失、mAP、学习率、专家使用率）
-        - Cas_DETR模型: 多图（主曲线、Token Pruning分析、双MoE分析、Loss分解）
+        - CaS_DETR模型: 多图（主曲线、Token Pruning分析、双MoE分析、Loss分解）
         
         生成的图像保存在log_dir下。
         """
@@ -428,12 +428,12 @@ class TrainingVisualizer:
         return best_idx + 1
     
     def _plot_cas_detr(self) -> None:
-        """绘制Cas_DETR模型的专用可视化（双稀疏架构）。"""
+        """绘制CaS_DETR模型的专用可视化（双稀疏架构）。"""
         epochs = range(1, len(self.history['train_loss']) + 1)
         
         # 1. 主训练曲线 (2x2布局)
         fig, axes = plt.subplots(2, 2, figsize=(16, 12))
-        title = f'Cas_DETR Training: {self.experiment_name}' if self.experiment_name else 'Cas_DETR Training Curves'
+        title = f'CaS_DETR Training: {self.experiment_name}' if self.experiment_name else 'CaS_DETR Training Curves'
         fig.suptitle(title, fontsize=18, fontweight='bold')
         
         # 1.1 Total Loss

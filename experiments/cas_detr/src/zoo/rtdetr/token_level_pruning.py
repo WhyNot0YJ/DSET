@@ -1,4 +1,4 @@
-"""Token-level Pruning Module for Cas_DETR"""
+"""Token-level Pruning Module for CaS_DETR"""
 
 import math
 import torch

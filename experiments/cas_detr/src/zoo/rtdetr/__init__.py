@@ -13,5 +13,5 @@ from .rtdetrv2_criterion import RTDETRCriterionv2
 # MoE Components (Token-level MoE for Decoder and Encoder)
 from .moe_components import MoELayer, compute_moe_balance_loss
 
-# Token Pruning Components (Cas_DETR)
+# Token Pruning Components (CaS_DETR)
 from .token_level_pruning import TokenLevelPruner, LinearImportancePredictor

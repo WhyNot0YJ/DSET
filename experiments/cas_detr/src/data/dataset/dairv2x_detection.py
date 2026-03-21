@@ -54,8 +54,7 @@ class DAIRV2XDetection(DetDataset):
         # Store augmentation probabilities for use in __getitem__ or custom wrapper
         self.aug_mosaic_prob = aug_mosaic_prob
         self.aug_mixup_prob = aug_mixup_prob
-        
-        # DAIR-V2X Class Definitions (8 classes: first 7 are traffic participants, Trafficcone is road facility)
+
         self.class_names = [
             "Car", "Truck", "Van", "Bus", "Pedestrian", 
             "Cyclist", "Motorcyclist", "Trafficcone"
@@ -91,7 +90,7 @@ class DAIRV2XDetection(DetDataset):
                         hue=(-aug_hue, aug_hue)
                     ),
                     RandomHorizontalFlip(p=aug_flip_prob),
-                    T.Resize(size=640, max_size=640, antialias=True),
+                    T.Resize(size=(640, 640), antialias=True),
                     SanitizeBoundingBoxes(),
                     T.ToImage(),
                     T.ToDtype(torch.float32, scale=True),
@@ -109,7 +108,7 @@ class DAIRV2XDetection(DetDataset):
             else:
                 # Val/Inference Config: 640x640 LetterBox
                 self.transforms = T.Compose([
-                    T.Resize(size=640, max_size=640, antialias=True),
+                    T.Resize(size=(640, 640), antialias=True),
                     T.ToImage(),
                     T.ToDtype(torch.float32, scale=True),
                     Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),

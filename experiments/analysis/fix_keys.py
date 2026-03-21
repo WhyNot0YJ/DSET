@@ -20,8 +20,8 @@ import os
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
-OLD_CKPT_PATH = "/root/autodl-tmp/Cas_DETR/experiments/cas_detr/logs/S5only/cas_detr6_r18_20251229_195505/best_model.pth"
-NEW_CKPT_PATH = "/root/autodl-tmp/Cas_DETR/experiments/cas_detr/logs/S5only/cas_detr6_r18_20251229_195505/best_model_fixed.pth"
+OLD_CKPT_PATH = "/root/autodl-tmp/CaS_DETR/experiments/cas_detr/logs/S5only/cas_detr6_r18_20251229_195505/best_model.pth"
+NEW_CKPT_PATH = "/root/autodl-tmp/CaS_DETR/experiments/cas_detr/logs/S5only/cas_detr6_r18_20251229_195505/best_model_fixed.pth"
 
 # 多组替换：(old_substring, new_substring)，按顺序应用
 KEY_MAPPINGS: List[Tuple[str, str]] = [
@@ -113,7 +113,7 @@ def fix_checkpoint_keys(old_path: str, new_path: str,
         except TypeError:
             checkpoint = torch.load(old_path, map_location='cpu')
         
-        # Determine checkpoint structure (Cas_DETR uses model_state_dict, ema_state_dict)
+        # Determine checkpoint structure (CaS_DETR uses model_state_dict, ema_state_dict)
         model_keys = ['model', 'state_dict', 'model_state_dict']
         has_model = isinstance(checkpoint, dict) and any(k in checkpoint for k in model_keys)
         
@@ -123,7 +123,7 @@ def fix_checkpoint_keys(old_path: str, new_path: str,
             print("Detected wrapped checkpoint structure.")
             new_checkpoint = {}
             
-            # Process model state_dict (try model_state_dict first for Cas_DETR format)
+            # Process model state_dict (try model_state_dict first for CaS_DETR format)
             model_sdict = None
             model_key_used = None
             for k in ['model_state_dict', 'model', 'state_dict']:
@@ -139,7 +139,7 @@ def fix_checkpoint_keys(old_path: str, new_path: str,
                 total_renamed += count
                 print(f"  Renamed {count} keys in model weights.")
             
-            # Process EMA weights if present (Cas_DETR uses ema_state_dict)
+            # Process EMA weights if present (CaS_DETR uses ema_state_dict)
             # 重要：benchmark 评估时加载的是 EMA，必须同时 fix EMA 才能得到正确精度
             ema_sdict = checkpoint.get('ema_state_dict') or checkpoint.get('ema')
             if ema_sdict is not None:

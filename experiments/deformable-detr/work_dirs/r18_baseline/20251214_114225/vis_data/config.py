@@ -20,7 +20,7 @@ env_cfg = dict(
     cudnn_benchmark=False,
     dist_cfg=dict(backend='nccl'),
     mp_cfg=dict(mp_start_method='fork', opencv_num_threads=0))
-load_from = '/root/autodl-tmp/Cas_DETR/experiments/deformable-detr/work_dirs/r18_baseline/latest.pth'
+load_from = '/root/autodl-tmp/CaS_DETR/experiments/deformable-detr/work_dirs/r18_baseline/latest.pth'
 log_level = 'INFO'
 log_processor = dict(by_epoch=True, type='LogProcessor', window_size=50)
 max_epochs = 50
@@ -501,4 +501,4 @@ visualizer = dict(
     vis_backends=[
         dict(type='LocalVisBackend'),
     ])
-work_dir = '/root/autodl-tmp/Cas_DETR/experiments/deformable-detr/work_dirs/r18_baseline'
+work_dir = '/root/autodl-tmp/CaS_DETR/experiments/deformable-detr/work_dirs/r18_baseline'

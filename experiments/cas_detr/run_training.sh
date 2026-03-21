@@ -1,5 +1,5 @@
 #!/bin/bash
-# Cas_DETR训练启动脚本
+# CaS_DETR训练启动脚本
 
 # 设置CUDA设备
 export CUDA_VISIBLE_DEVICES=0
@@ -69,7 +69,7 @@ fi
 
 # 启动训练
 echo "=========================================="
-echo "启动Cas_DETR训练"
+echo "启动CaS_DETR训练"
 echo "配置文件: $CONFIG"
 echo "=========================================="
 echo ""

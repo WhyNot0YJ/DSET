@@ -1,6 +1,6 @@
-# Cas_DETR Model Structure and Explanation
+# CaS_DETR Model Structure and Explanation
 
-## 1. Cas_DETR Model Structure Diagram
+## 1. CaS_DETR Model Structure Diagram
 
 ```mermaid
 graph TD
@@ -62,7 +62,7 @@ graph TD
 
 ## 2. Module Explanations
 
-Cas_DETR (Dual-Sparse Expert Transformer) is an efficient and task-selective object detection model based on RT-DETR. It introduces "Dual-Sparse" mechanisms (Sparse Tokens via pruning and Sparse Experts via MoE) in both the Encoder and Decoder to achieve high efficiency and specialized processing.
+CaS_DETR (Dual-Sparse Expert Transformer) is an efficient and task-selective object detection model based on RT-DETR. It introduces "Dual-Sparse" mechanisms (Sparse Tokens via pruning and Sparse Experts via MoE) in both the Encoder and Decoder to achieve high efficiency and specialized processing.
 
 ### 1. Backbone
 *   **Function:** Extracts multi-scale feature maps from the input image.

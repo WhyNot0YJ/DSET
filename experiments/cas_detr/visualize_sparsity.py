@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-Cas_DETR Visualization Tool
+CaS_DETR Visualization Tool
 Supports multiple visualization modes for Token Pruning / Sparsity.
 
 Modes:
 1. --mode teaser (Default): 
    Generates the paper's Teaser Figure (Figure 1).
    - RT-DETR: Dense Paradigm (Uniform Orange).
-   - Cas_DETR: Sparse Paradigm (Blue=Filtered/Background, Red=Focus/Foreground).
+   - CaS_DETR: Sparse Paradigm (Blue=Filtered/Background, Red=Focus/Foreground).
    - Uses actual binary masks captured via Forward Hook.
 
 2. --mode heatmap:
@@ -412,7 +412,7 @@ def run_visualization(model, image_path, device='cuda', output_dir=None, target_
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Cas_DETR Sparsity Visualization")
+    parser = argparse.ArgumentParser(description="CaS_DETR Sparsity Visualization")
     parser.add_argument("--image", type=str, required=True, help="Input image path")
     parser.add_argument("--config", type=str, required=True, help="Model config YAML")
     parser.add_argument("--checkpoint", type=str, required=True, help="Model checkpoint")

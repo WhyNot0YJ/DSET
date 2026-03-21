@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Cas_DETR Pruning Curve Benchmark Script
+CaS_DETR Pruning Curve Benchmark Script
 ====================================
 
 功能 (Functionality):
@@ -12,7 +12,7 @@ Cas_DETR Pruning Curve Benchmark Script
         python benchmark_pruning_curve.py \
             --config experiments/cas_detr/configs/cas_detr6_r18_ratio0.5.yaml \
             --checkpoint experiments/cas_detr/logs/cas_detr6_r18_20251209_155547/best_model.pth \
-            --name "Cas_DETR_r18_0.5" \
+            --name "CaS_DETR_r18_0.5" \
             --output pruning_tradeoff.png
     
     测试多个模型（多次调用或使用脚本循环）：
@@ -37,20 +37,20 @@ Cas_DETR Pruning Curve Benchmark Script
     python benchmark_pruning_curve.py \
         --config experiments/cas_detr/configs/cas_detr6_r18_ratio0.5.yaml \
         --checkpoint experiments/cas_detr/logs/cas_detr6_r18_20251209_155547/best_model.pth \
-        --name "Cas_DETR_r18_0.5"
+        --name "CaS_DETR_r18_0.5"
     
     # 2. 测试多个模型（在一张图上）
     # 首先创建 JSON 配置文件（例如 models.json）：
     # {
-    #   "Cas_DETR_r18_0.3": {
+    #   "CaS_DETR_r18_0.3": {
     #     "config": "experiments/cas_detr/configs/cas_detr6_r18_ratio0.3.yaml",
     #     "checkpoint": "experiments/cas_detr/logs/cas_detr6_r18_20251209_155547/best_model.pth"
     #   },
-    #   "Cas_DETR_r18_0.5": {
+    #   "CaS_DETR_r18_0.5": {
     #     "config": "experiments/cas_detr/configs/cas_detr6_r18_ratio0.5.yaml",
     #     "checkpoint": "experiments/cas_detr/logs/cas_detr6_r18_20251209_155547/best_model.pth"
     #   },
-    #   "Cas_DETR_r18_0.9": {
+    #   "CaS_DETR_r18_0.9": {
     #     "config": "experiments/cas_detr/configs/cas_detr6_r18_ratio0.9.yaml",
     #     "checkpoint": "experiments/cas_detr/logs/cas_detr6_r18_20251209_155547/best_model.pth"
     #   }
@@ -92,12 +92,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
 
-# Heavy imports (torch, Cas_DETRTrainer) are deferred until benchmark mode is needed
+# Heavy imports (torch, CaS_DETRTrainer) are deferred until benchmark mode is needed
 
 def setup_trainer(config_path, checkpoint_path, device='cuda'):
     """
-    初始化 Cas_DETRTrainer 并加载模型权重
-    Initialize Cas_DETRTrainer and load model weights
+    初始化 CaS_DETRTrainer 并加载模型权重
+    Initialize CaS_DETRTrainer and load model weights
     """
     # Resolve paths if relative
     config_path_abs = os.path.abspath(config_path) if not os.path.isabs(config_path) else config_path
@@ -116,8 +116,8 @@ def setup_trainer(config_path, checkpoint_path, device='cuda'):
     config['misc']['device'] = device
     
     # Initialize Trainer (this builds model and loaders)
-    # We suppress training-related initializations if possible, but Cas_DETRTrainer does it all in init
-    trainer = Cas_DETRTrainer(config)
+    # We suppress training-related initializations if possible, but CaS_DETRTrainer does it all in init
+    trainer = CaS_DETRTrainer(config)
     
     # Load checkpoint
     print(f"Loading checkpoint from {checkpoint_path_abs}...")
@@ -172,7 +172,7 @@ def set_inference_keep_ratio(trainer, keep_ratio):
     # 2. Update Pruners in EMA Model (Validation uses EMA)
     model = trainer.ema.module if hasattr(trainer, 'ema') and trainer.ema else trainer.model
 
-    # Cas_DETR uses shared_token_pruner (singular), not token_pruners (plural)
+    # CaS_DETR uses shared_token_pruner (singular), not token_pruners (plural)
     if hasattr(model, 'encoder') and model.encoder is not None:
         if hasattr(model.encoder, 'shared_token_pruner'):
             _update_pruner(model.encoder.shared_token_pruner)
@@ -255,7 +255,7 @@ def plot_results(inference_ratios, results, output_path="pruning_tradeoff.pdf"):
     # Vertical dashed line at training threshold r=0.3
     ax.axvline(x=0.3, color="grey", linestyle="--", alpha=0.6, linewidth=1.5)
 
-    # Professional color palette (Cas_DETR primary: #d62728)
+    # Professional color palette (CaS_DETR primary: #d62728)
     palette = ["#d62728", "#2ca02c", "#1f77b4", "#9467bd", "#ff7f0e"]
     markers = ["o", "s", "^", "D", "v"]
 
@@ -305,7 +305,7 @@ def plot_results(inference_ratios, results, output_path="pruning_tradeoff.pdf"):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Cas_DETR Pruning Curve Benchmark - Test model performance at different keep_ratios",
+        description="CaS_DETR Pruning Curve Benchmark - Test model performance at different keep_ratios",
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     
@@ -364,7 +364,7 @@ def main():
         plot_results(inference_ratios, results, output_path=args.output)
         return
 
-    # --- Benchmark mode (requires torch, yaml, Cas_DETRTrainer) ---
+    # --- Benchmark mode (requires torch, yaml, CaS_DETRTrainer) ---
     import yaml
     import torch
     from tqdm import tqdm
@@ -373,7 +373,7 @@ def main():
     project_root = _script_dir.parent.parent
     if str(project_root) not in sys.path:
         sys.path.insert(0, str(project_root))
-    from experiments.cas_detr.train import Cas_DETRTrainer
+    from experiments.cas_detr.train import CaS_DETRTrainer
 
     # 1. Parse models configuration
     models = {}

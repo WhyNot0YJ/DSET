@@ -1,16 +1,16 @@
-# Cas_DETR (Dual-Sparse Expert Transformer) 技术报告
+# CaS_DETR (Dual-Sparse Expert Transformer) 技术报告
 
 ## 1. 概述
 
-**Cas_DETR (Dual-Sparse Expert Transformer)** 是基于RT-DETR架构的创新目标检测模型，通过**双稀疏设计**在保持检测精度的同时显著提升计算效率。Cas_DETR在Encoder和Decoder两个关键组件中引入了稀疏机制，实现了模型性能与计算效率的平衡。
+**CaS_DETR (Dual-Sparse Expert Transformer)** 是基于RT-DETR架构的创新目标检测模型，通过**双稀疏设计**在保持检测精度的同时显著提升计算效率。CaS_DETR在Encoder和Decoder两个关键组件中引入了稀疏机制，实现了模型性能与计算效率的平衡。
 
 ---
 
-## 2. Cas_DETR架构详解
+## 2. CaS_DETR架构详解
 
 ### 2.1 整体架构
 
-Cas_DETR的整体架构遵循RT-DETR的设计范式，由以下核心组件构成：
+CaS_DETR的整体架构遵循RT-DETR的设计范式，由以下核心组件构成：
 
 ```
 输入图像
@@ -29,7 +29,7 @@ RTDETRTransformer (Decoder with MoE)
 
 ### 2.2 Encoder层：双稀疏设计
 
-Cas_DETR的核心创新在于Encoder层的**双稀疏机制**：
+CaS_DETR的核心创新在于Encoder层的**双稀疏机制**：
 
 #### 2.2.1 Encoder MoE (Mixture of Experts)
 
@@ -112,7 +112,7 @@ Encoder MoE和Token Pruning的协同工作：
 
 ### 2.4 损失函数设计
 
-Cas_DETR的损失函数包含多个组件：
+CaS_DETR的损失函数包含多个组件：
 
 1. **检测损失**:
    - VFL Loss (Varifocal Loss): 分类损失
@@ -130,17 +130,17 @@ Cas_DETR的损失函数包含多个组件：
 
 ---
 
-## 3. Cas_DETR vs RT-DETR 对比
+## 3. CaS_DETR vs RT-DETR 对比
 
 ### 3.1 架构对比
 
-| 组件 | RT-DETR | Cas_DETR | 说明 |
+| 组件 | RT-DETR | CaS_DETR | 说明 |
 |------|---------|------|------|
 | **Backbone** | ResNet18/34 | ResNet18/34 | 相同 |
-| **Encoder FFN** | 标准FFN | **Encoder MoE** | Cas_DETR创新点1 |
-| **Encoder Token处理** | 全部处理 | **Token Pruning** | Cas_DETR创新点2 |
-| **Decoder FFN** | 标准FFN | **Expert MoE** | Cas_DETR创新点3 |
-| **稀疏机制** | ❌ | ✅ **双稀疏** | Cas_DETR核心特性 |
+| **Encoder FFN** | 标准FFN | **Encoder MoE** | CaS_DETR创新点1 |
+| **Encoder Token处理** | 全部处理 | **Token Pruning** | CaS_DETR创新点2 |
+| **Decoder FFN** | 标准FFN | **Expert MoE** | CaS_DETR创新点3 |
+| **稀疏机制** | ❌ | ✅ **双稀疏** | CaS_DETR核心特性 |
 
 ### 3.2 计算复杂度对比
 
@@ -148,13 +148,13 @@ Cas_DETR的损失函数包含多个组件：
 
 1. **Encoder层**:
    - RT-DETR: O(N × d²) - N个tokens，d为特征维度
-   - Cas_DETR: O(N × d² × keep_ratio × top_k / num_experts)
+   - CaS_DETR: O(N × d² × keep_ratio × top_k / num_experts)
      - Token Pruning减少tokens数量（keep_ratio）
      - Encoder MoE通过专家并行减少计算（top_k / num_experts）
 
 2. **Decoder层**:
    - RT-DETR: O(Q × d²) - Q个queries
-   - Cas_DETR: O(Q × d² × top_k / num_experts)
+   - CaS_DETR: O(Q × d² × top_k / num_experts)
      - MoE通过专家并行减少计算
 
 3. **总体效率提升**:
@@ -167,13 +167,13 @@ Cas_DETR的损失函数包含多个组件：
 **参数量分析**：
 
 - **RT-DETR**: 标准Transformer参数
-- **Cas_DETR额外参数**:
+- **CaS_DETR额外参数**:
   - Encoder MoE: num_experts × FFN参数（但只激活top_k个）
   - Decoder MoE: num_experts × FFN参数（但只激活top_k个）
   - Token Pruning: 轻量级MLP（约128×d参数）
 
 **实际参数量**：
-- Cas_DETR的参数量略高于RT-DETR（约10-20%）
+- CaS_DETR的参数量略高于RT-DETR（约10-20%）
 - 但推理时只激活部分参数，实际计算量更少
 
 ### 3.4 性能对比（实验数据）
@@ -183,31 +183,31 @@ Cas_DETR的损失函数包含多个组件：
 | 模型 | Backbone | mAP@0.5:0.95 | mAP@0.5 | mAP@0.75 | 相对提升 |
 |------|----------|--------------|---------|----------|----------|
 | **RT-DETR-R34** | R34 | 0.5898 | 0.8146 | 0.6654 | Baseline |
-| **Cas_DETR-R34** | R34 | **0.5960** | **0.8185** | **0.6766** | **+1.06%** |
+| **CaS_DETR-R34** | R34 | **0.5960** | **0.8185** | **0.6766** | **+1.06%** |
 | **RT-DETR-R18** | R18 | 0.5851 | 0.8077 | 0.6658 | Baseline |
-| **Cas_DETR-R18** | R18 | **0.5780** | **0.8054** | **0.6554** | -1.21% |
+| **CaS_DETR-R18** | R18 | **0.5780** | **0.8054** | **0.6554** | -1.21% |
 
 **关键发现**：
 
 1. **R34 Backbone下性能提升**:
-   - Cas_DETR-R34相比RT-DETR-R34有**1.06%的mAP提升**
+   - CaS_DETR-R34相比RT-DETR-R34有**1.06%的mAP提升**
    - 在保持计算效率的同时实现了性能改进
 
 2. **R18 Backbone下的表现**:
-   - Cas_DETR-R18略低于RT-DETR-R18（-1.21%）
+   - CaS_DETR-R18略低于RT-DETR-R18（-1.21%）
    - 可能原因：
      - 双稀疏设计在较小backbone下带来的计算开销相对更大
      - Token Pruning在特征表达能力有限时可能影响性能
      - 需要更强的backbone来支撑稀疏机制
 
 3. **收敛速度**:
-   - Cas_DETR-R34: 64 epochs（最佳性能）
+   - CaS_DETR-R34: 64 epochs（最佳性能）
    - RT-DETR-R34: 68 epochs
-   - Cas_DETR收敛略快，可能得益于MoE机制的学习效率
+   - CaS_DETR收敛略快，可能得益于MoE机制的学习效率
 
 ---
 
-## 4. Cas_DETR的核心优势
+## 4. CaS_DETR的核心优势
 
 ### 4.1 计算效率优势
 
@@ -267,7 +267,7 @@ Cas_DETR的损失函数包含多个组件：
 
 ---
 
-## 5. Cas_DETR的创新点
+## 5. CaS_DETR的创新点
 
 ### 5.1 双稀疏设计（Dual-Sparse Design）
 
@@ -327,7 +327,7 @@ Cas_DETR的损失函数包含多个组件：
 
 ### 6.1 预期目标
 
-基于Cas_DETR的设计理念，预期实现以下目标：
+基于CaS_DETR的设计理念，预期实现以下目标：
 
 1. **性能目标**:
    - 在保持或略微提升检测精度的同时，显著提升计算效率
@@ -345,13 +345,13 @@ Cas_DETR的损失函数包含多个组件：
 
 #### 6.2.1 性能表现
 
-**Cas_DETR-R34 vs RT-DETR-R34**:
+**CaS_DETR-R34 vs RT-DETR-R34**:
 - ✅ **mAP@0.5:0.95**: 0.5960 vs 0.5898 (**+1.06%**)
 - ✅ **mAP@0.5**: 0.8185 vs 0.8146 (**+0.48%**)
 - ✅ **mAP@0.75**: 0.6766 vs 0.6654 (**+1.68%**)
 - ✅ **收敛速度**: 64 epochs vs 68 epochs（更快收敛）
 
-**结论**: Cas_DETR在R34 backbone下**成功实现了性能提升**，达到了预期目标。
+**结论**: CaS_DETR在R34 backbone下**成功实现了性能提升**，达到了预期目标。
 
 #### 6.2.2 效率表现
 
@@ -373,7 +373,7 @@ Cas_DETR的损失函数包含多个组件：
 - ✅ 检测损失正常收敛
 - ✅ 无训练不稳定现象
 
-**结论**: Cas_DETR的训练过程**稳定可靠**，所有损失函数正常收敛。
+**结论**: CaS_DETR的训练过程**稳定可靠**，所有损失函数正常收敛。
 
 ### 6.3 与预期对比
 
@@ -405,7 +405,7 @@ Cas_DETR的损失函数包含多个组件：
 
 ### 7.1 关键配置参数
 
-**典型配置（Cas_DETR-R34）**:
+**典型配置（CaS_DETR-R34）**:
 ```yaml
 model:
   num_experts: 6
@@ -504,7 +504,7 @@ model:
    - 3D目标检测
 
 2. **其他架构**:
-   - 将Cas_DETR设计应用到其他DETR变体
+   - 将CaS_DETR设计应用到其他DETR变体
    - 探索在YOLO系列中的应用
 
 3. **跨域泛化**:
@@ -538,7 +538,7 @@ model:
 
 ### 9.4 结论
 
-Cas_DETR通过**双稀疏设计**成功实现了性能与效率的平衡，在保持检测精度的同时显著提升了计算效率。虽然在某些配置下（如R18 backbone）性能略有下降，但在R34 backbone下成功实现了预期目标。Cas_DETR为高效目标检测提供了一个新的设计思路，具有重要的研究价值和应用潜力。
+CaS_DETR通过**双稀疏设计**成功实现了性能与效率的平衡，在保持检测精度的同时显著提升了计算效率。虽然在某些配置下（如R18 backbone）性能略有下降，但在R34 backbone下成功实现了预期目标。CaS_DETR为高效目标检测提供了一个新的设计思路，具有重要的研究价值和应用潜力。
 
 ---
 

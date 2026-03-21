@@ -1,10 +1,10 @@
 2026-03-02 18:15:02,037 - INFO - ✓ 已启用GPU优化: cudnn.benchmark=True, TF32=True
-2026-03-02 18:15:02,037 - INFO - ✓ 创建Cas_DETR RT-DETR模型
+2026-03-02 18:15:02,037 - INFO - ✓ 创建CaS_DETR RT-DETR模型
 2026-03-02 18:15:02,037 - INFO -   Decoder专家数量: 6
 2026-03-02 18:15:02,037 - INFO -   Backbone: presnet18
 2026-03-02 18:15:02,037 - INFO -   Encoder: in_channels=[128, 256, 512], expansion=0.5, num_layers=1
 2026-03-02 18:15:02,038 - INFO -   Encoder MoE设计: 层间共享
-2026-03-02 18:15:02,038 - INFO -   双稀疏配置（Cas_DETR核心特性，必然启用）:
+2026-03-02 18:15:02,038 - INFO -   双稀疏配置（CaS_DETR核心特性，必然启用）:
 2026-03-02 18:15:02,038 - INFO -     - Encoder-MoE: 启用 (experts=6, top_k=1)
 2026-03-02 18:15:02,038 - INFO -     - Token Pruning: 启用（与 Encoder MoE 兼容）
 2026-03-02 18:15:02,038 - INFO -       → keep_ratio=0.3
@@ -33,12 +33,12 @@
 2026-03-02 18:15:02,488 - INFO - ⏱️  Early Stopping: 启用 (patience=20, metric=mAP_0.5_0.95, mode=max)
 2026-03-02 18:15:02,488 - INFO - 推理输出目录: logs/cas_detr6_r18_20260302_181501/inference_samples
 2026-03-02 18:15:02,682 - INFO - ✓ 已启用GPU优化: cudnn.benchmark=True, TF32=True
-2026-03-02 18:15:02,682 - INFO - ✓ 创建Cas_DETR RT-DETR模型
+2026-03-02 18:15:02,682 - INFO - ✓ 创建CaS_DETR RT-DETR模型
 2026-03-02 18:15:02,683 - INFO -   Decoder专家数量: 6
 2026-03-02 18:15:02,683 - INFO -   Backbone: presnet18
 2026-03-02 18:15:02,683 - INFO -   Encoder: in_channels=[128, 256, 512], expansion=0.5, num_layers=1
 2026-03-02 18:15:02,683 - INFO -   Encoder MoE设计: 层间共享
-2026-03-02 18:15:02,683 - INFO -   双稀疏配置（Cas_DETR核心特性，必然启用）:
+2026-03-02 18:15:02,683 - INFO -   双稀疏配置（CaS_DETR核心特性，必然启用）:
 2026-03-02 18:15:02,683 - INFO -     - Encoder-MoE: 启用 (experts=6, top_k=1)
 2026-03-02 18:15:02,683 - INFO -     - Token Pruning: 启用（与 Encoder MoE 兼容）
 2026-03-02 18:15:02,683 - INFO -       → keep_ratio=0.3

@@ -1,4 +1,4 @@
-"""Cas_DETR HybridEncoder - 集成Token Pruning和Encoder MoE"""
+"""CaS_DETR HybridEncoder - 集成Token Pruning和Encoder MoE"""
 
 import copy
 from collections import OrderedDict
@@ -236,7 +236,7 @@ class HybridEncoder(nn.Module):
                  depth_mult=1.0,
                  act='silu',
                  version='v2',
-                 # Cas_DETR 双稀疏参数
+                 # CaS_DETR 双稀疏参数
                  token_keep_ratio=0.7,
                  encoder_moe_num_experts=4,
                  encoder_moe_top_k=2,
@@ -276,7 +276,7 @@ class HybridEncoder(nn.Module):
         self.out_channels = [hidden_dim for _ in range(len(in_channels))]
         self.out_strides = feat_strides
         
-        # Cas_DETR dual-sparse parameters - 保存参数以便后续使用
+        # CaS_DETR dual-sparse parameters - 保存参数以便后续使用
         self.token_keep_ratio = token_keep_ratio
         self.encoder_moe_num_experts = encoder_moe_num_experts
         self.encoder_moe_top_k = encoder_moe_top_k

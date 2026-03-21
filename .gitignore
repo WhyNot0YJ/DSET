@@ -66,6 +66,13 @@ checkpoints/
 runs/
 tensorboard/
 
+# Experiment logs (batch runs)
+experiments/logs/**/*.txt
+experiments/logs/**/*.csv
+experiments/logs/**/*.log
+experiments/**/logs/**/training.log
+experiments/**/logs/**/config.yaml
+
 # Temporary files
 tmp/
 temp/

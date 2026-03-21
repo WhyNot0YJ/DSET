@@ -699,7 +699,7 @@ class AdaptiveExpertTrainer:
         # 分组参数（与rt-detr保持一致的分组策略）
         param_groups = []
         
-        # 定义新增结构的关键词（MoE、Cas_DETR等）
+        # 定义新增结构的关键词（MoE、CaS_DETR等）
         # 基于实际代码中的模块命名：
         # - decoder.layers.X.decoder_moe_layer.* (MoE-RTDETR的decoder MoE)
         new_structure_keywords = [
@@ -746,7 +746,7 @@ class AdaptiveExpertTrainer:
             })
             self.logger.info(f"✓ Norm层参数组: {len(norm_params)} 个参数, lr={new_lr}, wd=0")
         
-        # 3. 新参数组（MoE层、Cas_DETR层等新增结构，即使它们在encoder/decoder中）
+        # 3. 新参数组（MoE层、CaS_DETR层等新增结构，即使它们在encoder/decoder中）
         new_params = []
         new_names = []
         processed_params = set(id(p) for p in pretrained_params + norm_params)
