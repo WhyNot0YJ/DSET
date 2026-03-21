@@ -153,21 +153,19 @@ def inference_from_preprocessed_image(img_tensor, model, postprocessor, orig_ima
     orig_h, orig_w = orig_image.shape[:2]
     input_h, input_w = img_tensor.shape[-2:]
     
-    # 重新计算 scale (参考 preprocess_image 的逻辑，假设是短边 resize 到了 720 或者类似的)
-    # 但 validation loader 的 transform 逻辑是 T.Resize(size=720, max_size=1280)
-    # 我们近似反推 scale
-    im_size_min = min(orig_h, orig_w)
-    im_size_max = max(orig_h, orig_w)
-    scale = 720 / float(im_size_min)
-    if round(scale * im_size_max) > 1280:
-        scale = 1280 / float(im_size_max)
+    # 近拟反推 scale
+    # 验证集使用 T.Resize(size=(640, 640))，这会强制将图片拉伸到 640x640，不保持比例
+    # 因此 scale_h 和 scale_w 是不同的
+    scale_h = 640.0 / float(orig_h)
+    scale_w = 640.0 / float(orig_w)
         
     # 构建简化的 meta
     meta = {
         'orig_size': torch.tensor([[orig_h, orig_w]]),
         'padded_h': input_h,
         'padded_w': input_w,
-        'scale': scale # 近似值，用于绘图
+        'scale_h': scale_h,
+        'scale_w': scale_w
     }
     
     # 推理
@@ -284,10 +282,13 @@ def postprocess_outputs(outputs, postprocessor, meta, conf_threshold=0.3, target
     scores = result['scores'].cpu().numpy()
     
     # 3. 映射回原图
-    # 因为是左上角对齐，原点 (0,0) 没变，所以只需要除以缩放比例 scale
-    scale = meta['scale']
-    
-    boxes /= scale  # ✅ 核心修正：直接除以比例，无需减 padding
+    # [FIX] 如果存在不同的 scale_h/scale_w，分别缩放
+    if 'scale_h' in meta and 'scale_w' in meta:
+        boxes[:, [0, 2]] /= meta['scale_w']
+        boxes[:, [1, 3]] /= meta['scale_h']
+    else:
+        scale = meta.get('scale', 1.0)
+        boxes /= scale
     
     # 4. 裁剪边界 (防止超出原图)
     orig_h, orig_w = meta['orig_size'][0].tolist()
