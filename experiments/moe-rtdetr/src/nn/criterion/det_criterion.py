@@ -98,9 +98,6 @@ class DetCriterion(torch.nn.Module):
         target_classes[idx] = target_classes_o
 
         target = F.one_hot(target_classes, num_classes=self.num_classes + 1)[..., :-1].to(src_logits.dtype)
-        sm = getattr(self, "label_smoothing", 0.01)
-        if sm > 0.0:
-            target = target.float() * (1.0 - sm) + sm / self.num_classes
         loss = torchvision.ops.sigmoid_focal_loss(src_logits, target, self.alpha, self.gamma, reduction='none')
         loss = loss.sum() / num_boxes
         return {'loss_focal': loss}
@@ -122,9 +119,6 @@ class DetCriterion(torch.nn.Module):
                                     dtype=torch.int64, device=src_logits.device)
         target_classes[idx] = target_classes_o
         target = F.one_hot(target_classes, num_classes=self.num_classes + 1)[..., :-1]
-        sm = getattr(self, "label_smoothing", 0.01)
-        if sm > 0.0:
-            target = target.float() * (1.0 - sm) + sm / self.num_classes
 
         target_score_o = torch.zeros_like(target_classes, dtype=src_logits.dtype)
         target_score_o[idx] = iou.to(src_logits.dtype)
