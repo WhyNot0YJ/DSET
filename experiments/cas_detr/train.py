@@ -2311,6 +2311,16 @@ class CaS_DETRTrainer:
 
         if print_summary:
             coco_eval.summarize()
+        else:
+            # 即使不打印，也要调用以生成 stats 属性
+            from io import StringIO
+            import sys
+            old_stdout = sys.stdout
+            sys.stdout = StringIO()
+            try:
+                coco_eval.summarize()
+            finally:
+                sys.stdout = old_stdout
 
         return coco_eval
 
@@ -2339,9 +2349,9 @@ class CaS_DETRTrainer:
         hard_eval = self._run_coco_eval(predictions, hard_targets, categories, img_h, img_w, image_id_to_size=image_id_to_size, print_summary=False)
 
         return {
-            'AP_easy': float(easy_eval.stats[0]) if easy_eval is not None else 0.0,
-            'AP_moderate': float(moderate_eval.stats[0]) if moderate_eval is not None else 0.0,
-            'AP_hard': float(hard_eval.stats[0]) if hard_eval is not None else 0.0,
+            'AP_easy': float(easy_eval.stats[0]) if easy_eval is not None and hasattr(easy_eval, 'stats') and len(easy_eval.stats) > 0 else 0.0,
+            'AP_moderate': float(moderate_eval.stats[0]) if moderate_eval is not None and hasattr(moderate_eval, 'stats') and len(moderate_eval.stats) > 0 else 0.0,
+            'AP_hard': float(hard_eval.stats[0]) if hard_eval is not None and hasattr(hard_eval, 'stats') and len(hard_eval.stats) > 0 else 0.0,
         }
     
     def _print_best_model_per_category_map(self):
