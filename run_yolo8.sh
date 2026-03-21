@@ -8,6 +8,9 @@ PORT_JUPYTER=8888
 PORT_TENSORBOARD=6006
 SHM_SIZE="4g"
 
+# 解决 32G 环境下 Dataloader 多进程与 OpenMP 线程池冲突导致的 libgomp 报错
+export OMP_NUM_THREADS=1
+
 mkdir -p "$WORKDIR"
 
 if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then

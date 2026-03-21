@@ -10,6 +10,9 @@ PORT_JUPYTER=8899               # 避免和 yolov8 冲突，给个不同端口
 PORT_TENSORBOARD=6007
 SHM_SIZE="4g"
 
+# 解决 32G 环境下 Dataloader 多进程与 OpenMP 线程池冲突导致的 libgomp 报错
+export OMP_NUM_THREADS=1
+
 mkdir -p "$WORKDIR"
 
 # 镜像存在性检查
