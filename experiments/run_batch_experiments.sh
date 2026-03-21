@@ -88,16 +88,10 @@ declare -A RT_DETR_CONFIGS=(
     ["rt-detr-r34"]="rt-detr/configs/rtdetr_r34.yaml"
 )
 
-# 核心实验配置（8个实验，按顺序）
+# 核心实验配置（2个0.5比例实验）
 declare -a CORE_EXPERIMENTS=(
-    "rt-detr/configs/rtdetr_r18.yaml"           # 1. RT-DETR-R18 (Baseline)
-    "cas_detr/configs/cas_detr6_r18_ratio0.5.yaml"      # 2. CaS_DETR6-R18-0.5 (⭐⭐⭐ 最重要)
-    "rt-detr/configs/rtdetr_r34.yaml"           # 3. RT-DETR-R34 (Baseline)
-    "cas_detr/configs/cas_detr6_r34_ratio0.3.yaml"      # 4. CaS_DETR6-R34-0.3
-    "cas_detr/configs/cas_detr6_r18_ratio0.3.yaml"      # 5. CaS_DETR6-R18-0.3
-    "cas_detr/configs/cas_detr6_r18_ratio0.9.yaml"       # 6. CaS_DETR6-R18-0.9
-    "cas_detr/configs/cas_detr4_r18_ratio0.3.yaml"      # 7. CaS_DETR4-R18-0.3
-    "cas_detr/configs/cas_detr48_r18_ratio0.3.yaml"      # 8. CaS_DETR48-R18-0.3
+    "cas_detr/configs/cas_detr6_r18_ratio0.5.yaml"      # 1. CaS_DETR6-R18-0.5
+    "cas_detr/configs/cas_detr6_r34_ratio0.5.yaml"      # 2. CaS_DETR6-R34-0.5
 )
 
 declare -A MOE_RTDETR_CONFIGS=(
@@ -110,21 +104,8 @@ declare -A MOE_RTDETR_CONFIGS=(
 )
 
 declare -A CaS_DETR_CONFIGS=(
-    # 核心实验配置（按实验顺序）
-    # 1. CaS_DETR6-R18-0.5 (⭐⭐⭐ 最重要) - 核心模型
     ["cas_detr6-r18-0.5"]="cas_detr/configs/cas_detr6_r18_ratio0.5.yaml"
-    # 2. CaS_DETR6-R34-0.3 - 证明可扩展性
-    ["cas_detr6-r34-0.3"]="cas_detr/configs/cas_detr6_r34_ratio0.3.yaml"
-    # 3. CaS_DETR6-R18-0.3 - 低bound (Fast)
-    ["cas_detr6-r18-0.3"]="cas_detr/configs/cas_detr6_r18_ratio0.3.yaml"
-    # 4. CaS_DETR6-R18-0.7 - 中等bound
-    ["cas_detr6-r18-0.7"]="cas_detr/configs/cas_detr6_r18_ratio0.7.yaml"
-    # 5. CaS_DETR6-R18-0.9 - 高bound (Slow)
-    ["cas_detr6-r18-0.9"]="cas_detr/configs/cas_detr6_r18_ratio0.9.yaml"
-    # 6. CaS_DETR4-R18-0.3 - 专家数量影响 (Lite)
-    ["cas_detr4-r18-0.3"]="cas_detr/configs/cas_detr4_r18_ratio0.3.yaml"
-    # 7. CaS_DETR48-R18-0.3 - 专家数量影响 (Heavy)
-    ["cas_detr48-r18-0.3"]="cas_detr/configs/cas_detr48_r18_ratio0.3.yaml"
+    ["cas_detr6-r34-0.5"]="cas_detr/configs/cas_detr6_r34_ratio0.5.yaml"
 )
 
 declare -A YOLOV8_CONFIGS=(
