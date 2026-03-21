@@ -338,6 +338,7 @@ class AdaptiveExpertTrainer:
         self.close_mosaic_epochs = aug_config.get('close_mosaic_epochs', 0)
         
         self._setup_logging()
+        self._apply_vram_batch_size_rule()
         self.model = self._create_model()
         self.train_loader, self.val_loader = self._create_data_loaders()
         self.optimizer = self._create_optimizer()
@@ -352,6 +353,27 @@ class AdaptiveExpertTrainer:
         
         if self.resume_from_checkpoint:
             self._resume_from_checkpoint()
+            
+    def _apply_vram_batch_size_rule(self):
+        """根据 VRAM 动态调整 batch_size 和相关配置。"""
+        # 获取 CUDA 显存
+        if torch.cuda.is_available():
+            total_vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+            # 32G显存(5090) 6倍, 16G显存(4080/3090) 3倍
+            if total_vram_gb > 28:
+                scale = 6
+            elif total_vram_gb > 12:
+                scale = 3
+            else:
+                scale = 1
+                
+            orig_bs = self.config['training']['batch_size']
+            orig_nw = self.config.get('misc', {}).get('num_workers', 16)
+            orig_pf = self.config.get('misc', {}).get('prefetch_factor', 4)
+            
+            self.config['training']['batch_size'] = orig_bs * scale
+            self.config['misc']['num_workers'] = orig_nw * scale
+            self.config['misc']['prefetch_factor'] = orig_pf * scale
     
     def _validate_config_file(self):
         """验证配置文件是否包含所有必需的配置项"""
@@ -556,6 +578,11 @@ class AdaptiveExpertTrainer:
         batch_size = self.config['training']['batch_size']
         target_size = self.model.image_size
         
+        # 获取基础 Dataloader 配置
+        num_workers = self.config.get('misc', {}).get('num_workers', 16)
+        pin_memory = self.config.get('misc', {}).get('pin_memory', True)
+        prefetch_factor = self.config.get('misc', {}).get('prefetch_factor', 4)
+        
         # 获取数据增强配置
         aug_config = self.config.get('data_augmentation', {})
         # 默认使用Unified Task-Adapted Augmentation的参数
@@ -597,12 +624,6 @@ class AdaptiveExpertTrainer:
             aug_hue=0.0,
             aug_color_jitter_prob=0.0
         )
-        
-        # 从misc配置中读取num_workers和pin_memory
-        num_workers = self.config.get('misc', {}).get('num_workers', 16)
-        pin_memory = self.config.get('misc', {}).get('pin_memory', True)
-        # 增加预取因子：让 CPU 始终领先 GPU 4-8 个 Batch 的进度
-        prefetch_factor = self.config.get('misc', {}).get('prefetch_factor', 4)
         
         # 创建collate_fn类
         class CustomCollateFunction(BaseCollateFunction):
@@ -1040,19 +1061,10 @@ class AdaptiveExpertTrainer:
             )
 
             self.logger.info(
-                "  best_model COCO AP: "
-                f"AP={metrics.get('mAP_0.5_0.95', 0.0):.4f}, "
+                f"  best_model AP: AP={metrics.get('mAP_0.5_0.95', 0.0):.4f}, "
                 f"AP50={metrics.get('mAP_0.5', 0.0):.4f}, "
-                f"AP75={metrics.get('mAP_0.75', 0.0):.4f}, "
-                f"AP_small={metrics.get('AP_small', 0.0):.4f}, "
-                f"AP_medium={metrics.get('AP_medium', 0.0):.4f}, "
-                f"AP_large={metrics.get('AP_large', 0.0):.4f}"
-            )
-            self.logger.info(
-                "  best_model KITTI风格AP: "
-                f"Easy={metrics.get('AP_easy', 0.0):.4f}, "
-                f"Moderate={metrics.get('AP_moderate', 0.0):.4f}, "
-                f"Hard={metrics.get('AP_hard', 0.0):.4f}"
+                f"AP_S/M/L={metrics.get('AP_small', 0.0):.4f}/{metrics.get('AP_medium', 0.0):.4f}/{metrics.get('AP_large', 0.0):.4f} | "
+                f"E/M/H={metrics.get('AP_easy', 0.0):.4f}/{metrics.get('AP_moderate', 0.0):.4f}/{metrics.get('AP_hard', 0.0):.4f}"
             )
             self.logger.info(f"✓ best_model 评估完成 (epoch={best_epoch})")
         except Exception as e:
@@ -1722,14 +1734,19 @@ class AdaptiveExpertTrainer:
             # 每类 AP 从同一次 COCOeval 的 precision 张量提取，避免重复评估
             per_category_map = self._extract_per_category_ap_from_eval(coco_eval, categories) if print_per_category else {}
             
-            # 只在best_model时打印每个类别的详细mAP
+            # [精简日志] 移除由于 compute_difficulty 导致的重复打印（已被底部的 best_model AP 覆盖）
+            # 以及整理类别 AP 的显示格式
             if print_per_category:
                 self.logger.info("  每个类别的 mAP@0.5:0.95:")
                 category_order = ['Car', 'Truck', 'Van', 'Bus', 'Pedestrian', 
                                 'Cyclist', 'Motorcyclist', 'Trafficcone']
+                cat_lines = []
                 for cat_name in category_order:
                     map_val = per_category_map.get(cat_name, 0.0)
-                    self.logger.info(f"    {cat_name:12s}: {map_val:.4f}")
+                    cat_lines.append(f"{cat_name}: {map_val:.4f}")
+                # 分两行显示，减少日志长度
+                self.logger.info(f"    {' | '.join(cat_lines[:4])}")
+                self.logger.info(f"    {' | '.join(cat_lines[4:])}")
             
             difficulty_metrics = {
                 'AP_easy': 0.0,
@@ -1738,14 +1755,7 @@ class AdaptiveExpertTrainer:
             }
             if compute_difficulty:
                 difficulty_metrics = self._compute_difficulty_aps(predictions, targets, categories, img_h, img_w)
-            if print_per_category and compute_difficulty:
-                self.logger.info(
-                    "  KITTI风格难度AP: "
-                    f"Easy={difficulty_metrics['AP_easy']:.4f}, "
-                    f"Moderate={difficulty_metrics['AP_moderate']:.4f}, "
-                    f"Hard={difficulty_metrics['AP_hard']:.4f}"
-                )
-
+            
             result = {
                 'mAP_0.5': coco_eval.stats[1],
                 'mAP_0.75': coco_eval.stats[2],
