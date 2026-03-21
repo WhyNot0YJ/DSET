@@ -359,11 +359,11 @@ class AdaptiveExpertTrainer:
         # 获取 CUDA 显存
         if torch.cuda.is_available():
             total_vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
-            # 32G显存(5090) 6倍, 16G显存(4080/3090) 3倍
+            # 32G显存(5090) 4倍, 16G显存(4080/3090) 2倍
             if total_vram_gb > 28:
-                scale = 6
+                scale = 4
             elif total_vram_gb > 12:
-                scale = 3
+                scale = 2
             else:
                 scale = 1
                 

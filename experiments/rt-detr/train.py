@@ -206,11 +206,11 @@ class RTDETRTrainer:
 
         device_index = self.device.index if self.device.index is not None else torch.cuda.current_device()
         total_vram_gb = torch.cuda.get_device_properties(device_index).total_memory / (1024 ** 3)
-        # 修改倍率：16G(14-18G)->3倍, 32G(30-34G)->6倍
+        # 显存 > 28GB (如 RTX 5090 32G): 4倍基准
         if total_vram_gb > 28:
-            scale = 6
+            scale = 4
         elif total_vram_gb > 12:
-            scale = 3
+            scale = 2
         else:
             scale = 1
             
