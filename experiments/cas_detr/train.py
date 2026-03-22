@@ -2750,15 +2750,11 @@ class CaS_DETRTrainer:
             train_metrics = self.train_epoch()
             
             # 验证策略：
-            # - 前100 epoch：每10轮验证一次
-            # - 100-140 epoch：每5轮验证一次
-            # - 140 epoch以后：每轮验证
+            # - 前50 epoch：每10轮验证一次
+            # - 50 epoch以后：每轮验证
             should_validate = False
-            if epoch < 100:
+            if epoch < 50:
                 if (epoch + 1) % 10 == 0:
-                    should_validate = True
-            elif epoch < 140:
-                if (epoch + 1) % 5 == 0:
                     should_validate = True
             else:
                 should_validate = True

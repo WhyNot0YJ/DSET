@@ -1099,15 +1099,11 @@ class RTDETRTrainer:
             train_metrics = self._train_epoch()
             
             # 验证策略：
-            # - 前100 epoch：每10轮验证一次
-            # - 100-160 epoch：每5轮验证一次
-            # - 160 epoch以后：每轮验证
+            # - 前50 epoch：每10轮验证一次
+            # - 50 epoch以后：每轮验证
             should_validate = False
-            if epoch < 100:
+            if epoch < 50:
                 if (epoch + 1) % 10 == 0:
-                    should_validate = True
-            elif epoch < 160:
-                if (epoch + 1) % 5 == 0:
                     should_validate = True
             else:
                 should_validate = True
@@ -2023,6 +2019,7 @@ def main():
                        help='Backbone类型')
     parser.add_argument('--data_root', type=str, default='datasets/DAIR-V2X', 
                        help='DAIR-V2X数据集路径')
+                       
     parser.add_argument('--epochs', type=int, default=100, help='训练轮数')
     parser.add_argument('--batch_size', type=int, default=16, help='批次大小')
     parser.add_argument('--pretrained_lr', type=float, default=1e-5, help='预训练组件学习率')

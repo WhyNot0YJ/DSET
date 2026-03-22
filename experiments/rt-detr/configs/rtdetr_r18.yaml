@@ -41,6 +41,6 @@ data_augmentation:
   saturation: 0.1
   hue: 0.05
   flip_prob: 0.5
-  mosaic: 0.0
+  mosaic: 1.0
   mixup: 0.0
   close_mosaic_epochs: 20
