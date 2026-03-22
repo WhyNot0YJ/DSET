@@ -127,7 +127,7 @@ class DAIRV2XDetection(DetDataset):
 
     def _init_transforms(self):
         """初始化或更新变换策略"""
-        逻辑：根据当前 epoch 切换增强策略
+        # 逻辑: 根据当前 epoch 切换增强策略
         if self.split == 'train':
             # 判断是否进入最后阶段
             if self.epoch >= self.stop_epoch:
