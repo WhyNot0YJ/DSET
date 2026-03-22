@@ -17,16 +17,31 @@ from .._misc import convert_to_tv_tensor, BoundingBoxes
 from ...core import register
 from ..transforms import (
     RandomPhotometricDistort, RandomHorizontalFlip, 
-    ConvertBoxes, Normalize, SanitizeBoundingBoxes, PadToSize
+    ConvertBoxes, Normalize, SanitizeBoundingBoxes, PadToSize,
+    RandomZoomOut, RandomIoUCrop, ConvertPILImage
 )
 
 __all__ = ['DAIRV2XDetection']
 
+
+def _normalize_state(value) -> int:
+    """将状态值标准化到 [0, 1, 2]。"""
+    try:
+        state = int(float(value))
+    except (TypeError, ValueError):
+        return 0
+    if state < 0:
+        return 0
+    if state > 2:
+        return 2
+    return state
+
 @register()
 class DAIRV2XDetection(DetDataset):
-    """DAIR-V2X Dataset Detector - Supports COCO format evaluation"""
+    """DAIR-V2X数据集检测器 - 支持COCO格式评估"""
     
     def __init__(self, data_root: str, split: str = "train", transforms=None, 
+                 target_size: int = 640,
                  aug_brightness: float = 0.0,
                  aug_contrast: float = 0.0,
                  aug_saturation: float = 0.0,
@@ -34,101 +49,204 @@ class DAIRV2XDetection(DetDataset):
                  aug_color_jitter_prob: float = 0.0,
                  aug_flip_prob: float = 0.5,
                  aug_mosaic_prob: float = 0.0,
-                 aug_mixup_prob: float = 0.0):
+                 aug_mixup_prob: float = 0.0,
+                 aug_config_path: str = None):
         """
-        Initialize DAIR-V2X Dataset
+        初始化DAIR-V2X数据集
         
         Args:
-            data_root: Dataset root directory
-            split: Dataset split ('train' or 'val')
-            transforms: Data transforms (if None, default Unified Task-Adapted Augmentation will be used)
-            aug_*: Retained for compatibility, but overridden by new augmentation strategy
+            data_root: 数据集根目录
+            split: 数据集分割 ('train' 或 'val')
+            transforms: 数据变换 (如果为None，将使用默认的Unified Task-Adapted Augmentation)
+            target_size: 目标图像尺寸 (保留参数以兼容，但会被新的增强策略覆盖)
+            aug_*: 保留参数以兼容，但会被新的增强策略覆盖
             aug_mosaic_prob: Probability of applying Mosaic augmentation
             aug_mixup_prob: Probability of applying Mixup augmentation
+            aug_config_path: Path to the augmentation configuration file
         """
         super().__init__()
         
         self.data_root = Path(data_root)
         self.split = split
+        self.target_size = target_size
+        self.aug_config_path = aug_config_path
+        
+        # 加载外部配置
+        self.aug_config = self._load_aug_config() if aug_config_path else None
         
         # Store augmentation probabilities for use in __getitem__ or custom wrapper
         self.aug_mosaic_prob = aug_mosaic_prob
         self.aug_mixup_prob = aug_mixup_prob
-
+        
+        # DAIR-V2X类别定义（8类：前7类是交通参与者，Trafficcone是道路设施）
         self.class_names = [
             "Car", "Truck", "Van", "Bus", "Pedestrian", 
             "Cyclist", "Motorcyclist", "Trafficcone"
         ]
         self.class_to_id = {name: i for i, name in enumerate(self.class_names)}
         
-        # Class Merge Mapping: Barrowlist -> Cyclist (ID=5)
+        # 类别合并映射：Barrowlist -> Cyclist (ID=5)
         self.class_merge_map = {
             "Barrowlist": 5,
         }
         
-        # Ignore Class List (should be filtered during training, not involved in AP calculation)
+        # Ignore类别列表（训练时应过滤，不参与AP计算）
         self.ignore_classes = [
             "PedestrianIgnore", "CarIgnore", "OtherIgnore", 
             "Unknown_movable", "Unknown_unmovable"
         ]
         
-        # Load Data Info
         self.data_info = self._load_data_info()
         self.split_indices = self._load_split_indices()
         
-        # Initialize Transform Strategy (Unified Task-Adapted Augmentation)
-        if transforms is None:
-            if split == 'train':
-                # Note: Mosaic and Mixup are handled in __getitem__ or separate wrapper because they need multiple images
-                # Here we only define the per-image transform pipeline
-                
-                self.transforms = T.Compose([
-                    RandomPhotometricDistort(
-                        brightness=(max(0, 1 - aug_brightness), 1 + aug_brightness), 
-                        contrast=(max(0, 1 - aug_contrast), 1 + aug_contrast), 
-                        saturation=(max(0, 1 - aug_saturation), 1 + aug_saturation), 
-                        hue=(-aug_hue, aug_hue)
-                    ),
-                    RandomHorizontalFlip(p=aug_flip_prob),
-                    T.Resize(size=(640, 640), antialias=True),
-                    T.ToImage(),
-                    T.ToDtype(torch.float32, scale=True),
-                    SanitizeBoundingBoxes(),
-                    Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-                    PadToSize(size=(640, 640), fill=0.0),
-                    ConvertBoxes(fmt='cxcywh', normalize=False)
-                ])
-                
-                # Initialize Mosaic/Mixup helpers if needed
-                if self.aug_mosaic_prob > 0:
-                    from ..transforms.mosaic import Mosaic
-                    # Initialize Mosaic helper (not as a transform pipeline but as a helper object)
-                    self.mosaic_helper = Mosaic(size=640) 
-                    
+        # 保存增强参数
+        self.aug_params = {
+            'brightness': aug_brightness,
+            'contrast': aug_contrast,
+            'saturation': aug_saturation,
+            'hue': aug_hue,
+            'flip_prob': aug_flip_prob
+        }
+        
+        self.epoch = 0
+        
+        # 从配置中读取 stop_epoch
+        if self.aug_config and 'multi_scale' in self.aug_config:
+            self.stop_epoch = self.aug_config['multi_scale'].get('stop_epoch', 71)
+        else:
+            self.stop_epoch = 71
+        
+        self._init_transforms(aug_brightness, aug_contrast, aug_saturation, aug_hue, aug_flip_prob)
+
+    def _load_aug_config(self):
+        """加载外部增强配置"""
+        import yaml
+        if self.aug_config_path and Path(self.aug_config_path).exists():
+            with open(self.aug_config_path, 'r', encoding='utf-8') as f:
+                return yaml.safe_load(f)
+        return None
+
+    def _build_transforms_from_config(self, transform_list):
+        """根据配置列表构建变换"""
+        if not transform_list:
+            return None
+        
+        t_list = []
+        for t_cfg in transform_list:
+            t_type = t_cfg['type']
+            params = {k: v for k, v in t_cfg.items() if k != 'type'}
+            
+            # 动态映射
+            if t_type == 'RandomPhotometricDistort':
+                t_list.append(RandomPhotometricDistort(**params))
+            elif t_type == 'RandomZoomOut':
+                t_list.append(RandomZoomOut(**params))
+            elif t_type == 'RandomIoUCrop':
+                t_list.append(RandomIoUCrop(**params))
+            elif t_type == 'SanitizeBoundingBoxes':
+                t_list.append(SanitizeBoundingBoxes(**params))
+            elif t_type == 'RandomHorizontalFlip':
+                t_list.append(RandomHorizontalFlip(**params))
+            elif t_type == 'Resize':
+                t_list.append(T.Resize(**params))
+            elif t_type == 'ConvertPILImage':
+                t_list.append(ConvertPILImage(**params))
+            elif t_type == 'ToDtype':
+                # 处理 dtype 字符串
+                if params.get('dtype') == 'float32':
+                    params['dtype'] = torch.float32
+                t_list.append(T.ToDtype(**params))
+            elif t_type == 'Normalize':
+                t_list.append(Normalize(**params))
+            elif t_type == 'ConvertBoxes':
+                t_list.append(ConvertBoxes(**params))
             else:
-                # Val/Inference Config: 640x640 LetterBox
+                self.logger.warning(f"Unknown transform type in config: {t_type}")
+                
+        return T.Compose(t_list)
+
+    def _init_transforms(self, aug_brightness, aug_contrast, aug_saturation, aug_hue, aug_flip_prob):
+        """初始化或更新变换策略"""
+        if self.aug_config:
+            # 兼容嵌套的 dataloader 结构
+            key = 'train_dataloader' if self.split == 'train' else 'val_dataloader'
+            if key in self.aug_config:
+                transforms_cfg = self.aug_config[key]['dataset']['transforms']
+                ops = transforms_cfg['ops']
+                policy = transforms_cfg.get('policy', None)
+                
+                # 应用 policy
+                if policy and policy['name'] == 'stop_epoch' and self.epoch >= policy['epoch']:
+                    filtered_ops = [op for op in ops if op['type'] not in policy['ops']]
+                    self.transforms = self._build_transforms_from_config(filtered_ops)
+                else:
+                    self.transforms = self._build_transforms_from_config(ops)
+                return
+
+        # 以下为硬编码备用逻辑 (兼容老版本)
+        if self.split == 'train':
+            # 判断是否进入最后阶段
+            if self.epoch >= self.stop_epoch:
+                # 阶段 2: 仅保留基础 Resize 和 Normalize
                 self.transforms = T.Compose([
                     T.Resize(size=(640, 640), antialias=True),
-                    T.ToImage(),
+                    ConvertPILImage(),
                     T.ToDtype(torch.float32, scale=True),
                     Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-                    PadToSize(size=(640, 640), fill=0.0),
-                    ConvertBoxes(fmt='cxcywh', normalize=False)
+                    ConvertBoxes(fmt='cxcywh', normalize=True)
+                ])
+            else:
+                # 阶段 1: 官方标准顺序增强
+                self.transforms = T.Compose([
+                    # 1. 颜色增强
+                    RandomPhotometricDistort(p=0.5),
+                    # 2. 空间扩展
+                    RandomZoomOut(fill=0),
+                    # 3. IoU 约束裁剪
+                    RandomIoUCrop(p=0.8),
+                    # 4. bbox 清洗
+                    SanitizeBoundingBoxes(),
+                    # 5. 随机翻转
+                    RandomHorizontalFlip(p=aug_flip_prob),
+                    # 6. Resize (基础尺寸 640)
+                    T.Resize(size=(640, 640), antialias=True),
+                    # 7. 格式转换
+                    ConvertPILImage(),
+                    T.ToDtype(torch.float32, scale=True),
+                    Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+                    ConvertBoxes(fmt='cxcywh', normalize=True)
                 ])
         else:
-            self.transforms = transforms
-    
+            # 验证/推理配置
+            self.transforms = T.Compose([
+                T.Resize(size=(640, 640), antialias=True),
+                ConvertPILImage(),
+                T.ToDtype(torch.float32, scale=True),
+                Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+                ConvertBoxes(fmt='cxcywh', normalize=True)
+            ])
+
+    def set_epoch(self, epoch):
+        """更新当前 epoch 并根据需要重新初始化 transforms"""
+        self.epoch = epoch
+        # 重新初始化以应用分阶段策略
+        self._init_transforms(self.aug_params['brightness'], 
+                             self.aug_params['contrast'], 
+                             self.aug_params['saturation'], 
+                             self.aug_params['hue'], 
+                             self.aug_params['flip_prob'])
+
     def _load_data_info(self):
-        """Load data info"""
+        """加载数据信息"""
         data_info_path = self.data_root / "metadata" / "data_info.json"
         if data_info_path.exists():
             with open(data_info_path, 'r', encoding='utf-8') as f:
                 return json.load(f)
         else:
-            raise FileNotFoundError(f"Data info file not found: {data_info_path}")
+            raise FileNotFoundError(f"数据信息文件不存在: {data_info_path}")
     
     def _load_split_indices(self):
-        """Load train/val split"""
+        """加载训练/验证分割"""
         split_path = self.data_root / "metadata" / "split_data.json"
         if split_path.exists():
             with open(split_path, 'r', encoding='utf-8') as f:
@@ -145,7 +263,7 @@ class DAIRV2XDetection(DetDataset):
             return self._create_random_split()
     
     def _create_random_split(self):
-        """Create random split (stratified by intersection location)"""
+        """创建随机分割（按路口分层随机分割）"""
         import random
         from collections import defaultdict
         
@@ -184,28 +302,32 @@ class DAIRV2XDetection(DetDataset):
             
         actual_idx = self.split_indices[idx]
         
-        # Load Image (PIL)
+        # 加载图像 (PIL)
         image_path = self.data_root / "image" / f"{actual_idx:06d}.jpg"
         image = Image.open(image_path).convert("RGB")
         w, h = image.size
         
-        # Load Annotations
+        # 加载标注
         annotation_path = self.data_root / "annotations" / "camera" / f"{actual_idx:06d}.json"
         annotations = self._load_annotations(annotation_path)
         
-        # Prepare Target
+        # 准备Target
         if len(annotations) > 0:
             boxes = torch.tensor([ann['bbox'] for ann in annotations], dtype=torch.float32) # XYXY
             labels = torch.tensor([ann['class_id'] for ann in annotations], dtype=torch.int64)
             areas = torch.tensor([ann['area'] for ann in annotations], dtype=torch.float32)
             iscrowd = torch.tensor([ann.get('iscrowd', 0) for ann in annotations], dtype=torch.int64)
+            occluded_states = torch.tensor([ann.get('occluded_state', 0) for ann in annotations], dtype=torch.int64)
+            truncated_states = torch.tensor([ann.get('truncated_state', 0) for ann in annotations], dtype=torch.int64)
         else:
             boxes = torch.zeros((0, 4), dtype=torch.float32)
             labels = torch.zeros((0,), dtype=torch.int64)
             areas = torch.zeros((0,), dtype=torch.float32)
             iscrowd = torch.zeros((0,), dtype=torch.int64)
+            occluded_states = torch.zeros((0,), dtype=torch.int64)
+            truncated_states = torch.zeros((0,), dtype=torch.int64)
         
-        # Wrap as BoundingBoxes
+        # 包装成 BoundingBoxes
         boxes = BoundingBoxes(boxes, format='xyxy', canvas_size=(h, w))
         
         target = {
@@ -214,43 +336,39 @@ class DAIRV2XDetection(DetDataset):
             'area': areas,
             'image_id': torch.tensor([actual_idx]),
             'iscrowd': iscrowd,
+            'occluded_state': occluded_states,
+            'truncated_state': truncated_states,
             'orig_size': torch.tensor([h, w]), # H, W
         }
         
         return image, target
 
     def __getitem__(self, idx):
-        """Get data item - returns COCO format data"""
+        """获取数据项 - 返回COCO格式的数据"""
         # 1. Load Base Item
         image, target = self.load_item(idx)
         
         # 2. Apply Mosaic / Mixup (if enabled and in training)
-        if self.split == 'train' and self.transforms is not None:
+        if self.split == 'train' and self.epoch < self.stop_epoch:
             # Mosaic Augmentation
             if hasattr(self, 'aug_mosaic_prob') and self.aug_mosaic_prob > 0:
                 import random
                 if random.random() < self.aug_mosaic_prob:
-                    # Pass self (dataset) to mosaic helper to load other images
-                    # Note: self.mosaic_helper was initialized in __init__
                     if hasattr(self, 'mosaic_helper'):
                          image, target, _ = self.mosaic_helper(image, target, self)
 
-            # Mixup Augmentation (Future Work)
-            # if hasattr(self, 'aug_mixup_prob') and self.aug_mixup_prob > 0:
-            #     pass
-
-        # 3. Apply Standard Transforms
+        # 3. 应用标准变换
         if self.transforms is not None:
             image, target = self.transforms(image, target)
         
-        # Update size (transformed size)
+        # 更新size（变换后的尺寸）
         if isinstance(image, torch.Tensor):
             target['size'] = torch.tensor(image.shape[-2:]) # H, W
         
         return image, target
     
     def _load_annotations(self, annotation_path: Path) -> List[Dict]:
-        """Load annotation file, mark ignore boxes with iscrowd=1"""
+        """加载标注文件，Ignore框标记为iscrowd=1"""
         if not annotation_path.exists():
             return []
         
@@ -261,7 +379,7 @@ class DAIRV2XDetection(DetDataset):
         for ann in annotations:
             class_name = ann["type"]
             
-            # Get 2D BBox
+            # 获取2D边界框
             bbox_2d = ann["2d_box"]
             x1 = float(bbox_2d["xmin"])
             y1 = float(bbox_2d["ymin"])
@@ -276,16 +394,20 @@ class DAIRV2XDetection(DetDataset):
             width = x2 - x1
             height = y2 - y1
             area = width * height
+            occluded_state = _normalize_state(ann.get("occluded_state", ann.get("occulated_state", 0)))
+            truncated_state = _normalize_state(ann.get("truncated_state", ann.get("turncated_state", 0)))
             
             if class_name in self.ignore_classes:
-                # Training: If split is train, can filter ignore boxes
-                # But for consistency, we keep and mark iscrowd=1
-                # SanitizeBoundingBoxes might not filter iscrowd=1
+                # 训练时：如果split是train，可以过滤掉ignore框
+                # 但为了保持代码一致性，这里保留并标记iscrowd=1
+                # SanitizeBoundingBoxes 可能不会过滤 iscrowd=1
                 processed_annotations.append({
                     'class_id': 0,
                     'bbox': bbox,
                     'area': area,
-                    'iscrowd': 1
+                    'iscrowd': 1,
+                    'occluded_state': occluded_state,
+                    'truncated_state': truncated_state
                 })
             elif class_name in self.class_merge_map:
                 class_id = self.class_merge_map[class_name]
@@ -293,7 +415,9 @@ class DAIRV2XDetection(DetDataset):
                     'class_id': class_id,
                     'bbox': bbox,
                     'area': area,
-                    'iscrowd': 0
+                    'iscrowd': 0,
+                    'occluded_state': occluded_state,
+                    'truncated_state': truncated_state
                 })
             elif class_name in self.class_to_id:
                 class_id = self.class_to_id[class_name]
@@ -301,20 +425,22 @@ class DAIRV2XDetection(DetDataset):
                     'class_id': class_id,
                     'bbox': bbox,
                     'area': area,
-                    'iscrowd': 0
+                    'iscrowd': 0,
+                    'occluded_state': occluded_state,
+                    'truncated_state': truncated_state
                 })
         
-        # If training set, filter out iscrowd=1 boxes to avoid interference
-        # But Transform might crop them out.
-        # We keep them here, but filter in __getitem__ if needed
-        # Logic: Filter ignore boxes during training
+        # 如果是训练集，且为了避免ignore框干扰训练（如DETR matching），可以过滤掉iscrowd=1的框
+        # 但Transform可能会crop掉它们。
+        # 这里我们保留，但在__getitem__中可以根据需要过滤
+        # 按照之前的逻辑：训练时过滤ignore框
         if self.split == 'train':
             processed_annotations = [ann for ann in processed_annotations if ann['iscrowd'] == 0]
             
         return processed_annotations
     
     def get_categories(self):
-        """Get category info - COCO format"""
+        """获取类别信息 - COCO格式"""
         categories = []
         for i, class_name in enumerate(self.class_names):
             categories.append({
@@ -325,11 +451,12 @@ class DAIRV2XDetection(DetDataset):
         return categories
     
     def get_image_info(self, image_id: int):
-        """Get image info - COCO format"""
+        """获取图像信息 - COCO格式"""
         if image_id < len(self.data_info):
             data_item = self.data_info[image_id]
-            # Should read image for real size or use metadata
-            # For simplicity, not reading image here
+            # 注意：这里的size可能是原始尺寸，或者默认target_size
+            # 实际上应该读取图片获取真实尺寸，或者使用metadata中的信息
+            # 简单起见，这里暂时不读取图片
             return {
                 'id': image_id,
                 'file_name': data_item["image_path"],

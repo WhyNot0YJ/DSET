@@ -1200,6 +1200,18 @@ class CaS_DETRTrainer:
         
         self.logger.info(f"📦 初始化训练: epoch={self.current_epoch}, 当前使用 batch_size={current_batch_size}")
         
+        # 外部增强配置文件路径 [新增]
+        aug_config_path = self.config.get('data_augmentation_config', None)
+        aug_config_data = None
+        full_aug_path = None
+        if aug_config_path:
+            import os, yaml
+            full_aug_path = os.path.join(os.getcwd(), aug_config_path)
+            self.logger.info(f"📂 加载外部增强配置: {full_aug_path}")
+            if os.path.exists(full_aug_path):
+                with open(full_aug_path, 'r') as f:
+                    aug_config_data = yaml.safe_load(f)
+        
         train_loader = self._build_train_loader(current_batch_size)
         
         # 验证集通常不剪枝或保持稳定，可以使用固定 batch_size（或者也随之调整）
@@ -1210,7 +1222,8 @@ class CaS_DETRTrainer:
             aug_contrast=0.0,
             aug_saturation=0.0,
             aug_hue=0.0,
-            aug_color_jitter_prob=0.0
+            aug_color_jitter_prob=0.0,
+            aug_config_path=full_aug_path
         )
         self.val_dataset = val_dataset
         
@@ -1218,12 +1231,23 @@ class CaS_DETRTrainer:
         pin_memory = self.config.get('misc', {}).get('pin_memory', True)
         prefetch_factor = self.config.get('misc', {}).get('prefetch_factor', 4)
         
+        # [新增] 动态从配置加载 collate_fn 参数
+        collate_args = {}
+        if aug_config_data and 'train_dataloader' in aug_config_data:
+            collate_cfg = aug_config_data['train_dataloader'].get('collate_fn', {})
+            if collate_cfg:
+                collate_args['scales'] = collate_cfg.get('scales')
+                collate_args['stop_epoch'] = collate_cfg.get('stop_epoch')
+        
+        from src.data.dataloader import BatchImageCollateFuncion
+        val_collate_fn = BatchImageCollateFuncion() # 验证集不使用 multi-scale
+        
         val_loader = DataLoader(
             val_dataset, 
             batch_size=current_batch_size, # 验证集同步使用调整后的 BS
             shuffle=False,
             num_workers=num_workers,
-            collate_fn=self._collate_fn,
+            collate_fn=val_collate_fn,
             pin_memory=pin_memory,
             persistent_workers=True if num_workers > 0 else False,
             prefetch_factor=prefetch_factor if num_workers > 0 else None
@@ -1234,6 +1258,18 @@ class CaS_DETRTrainer:
     def _build_train_loader(self, batch_size: int) -> DataLoader:
         """根据指定的 batch_size 构建训练加载器。"""
         aug_config = self.config.get('data_augmentation', {})
+        
+        # 外部增强配置文件路径 [新增]
+        aug_config_path = self.config.get('data_augmentation_config', None)
+        aug_config_data = None
+        full_aug_path = None
+        if aug_config_path:
+            import os, yaml
+            full_aug_path = os.path.join(os.getcwd(), aug_config_path)
+            if os.path.exists(full_aug_path):
+                with open(full_aug_path, 'r') as f:
+                    aug_config_data = yaml.safe_load(f)
+
         train_dataset = DAIRV2XDetection(
             data_root=self.config['data']['data_root'],
             split='train',
@@ -1244,19 +1280,31 @@ class CaS_DETRTrainer:
             aug_color_jitter_prob=aug_config.get('color_jitter_prob', 0.0),
             aug_flip_prob=aug_config.get('flip_prob', 0.5),
             aug_mosaic_prob=aug_config.get('mosaic', 0.0),
-            aug_mixup_prob=aug_config.get('mixup', 0.0)
+            aug_mixup_prob=aug_config.get('mixup', 0.0),
+            aug_config_path=full_aug_path
         )
         
         num_workers = self.config.get('misc', {}).get('num_workers', 16)
         pin_memory = self.config.get('misc', {}).get('pin_memory', True)
         prefetch_factor = self.config.get('misc', {}).get('prefetch_factor', 4)
+
+        # [新增] 动态从配置加载 collate_fn 参数
+        collate_args = {}
+        if aug_config_data and 'train_dataloader' in aug_config_data:
+            collate_cfg = aug_config_data['train_dataloader'].get('collate_fn', {})
+            if collate_cfg:
+                collate_args['scales'] = collate_cfg.get('scales')
+                collate_args['stop_epoch'] = collate_cfg.get('stop_epoch')
+        
+        from src.data.dataloader import BatchImageCollateFuncion
+        train_collate_fn = BatchImageCollateFuncion(**collate_args)
         
         return DataLoader(
             train_dataset, 
             batch_size=batch_size, 
             shuffle=True,
             num_workers=num_workers,
-            collate_fn=self._collate_fn,
+            collate_fn=train_collate_fn,
             pin_memory=pin_memory,
             persistent_workers=True if num_workers > 0 else False,
             prefetch_factor=prefetch_factor if num_workers > 0 else None
@@ -2733,6 +2781,18 @@ class CaS_DETRTrainer:
         
         for epoch in range(self.current_epoch, epochs):
             self.current_epoch = epoch
+
+            # 更新数据集的 epoch 以便切换增强策略 (新增)
+            if hasattr(self.train_loader.dataset, 'set_epoch'):
+                self.train_loader.dataset.set_epoch(epoch)
+            if hasattr(self.val_loader.dataset, 'set_epoch'):
+                self.val_loader.dataset.set_epoch(epoch)
+            
+            # [新增] 动态关闭 Multi-scale (可选, 默认为 71)
+            close_mosaic_epochs = self.config.get('data_augmentation', {}).get('close_mosaic_epochs', 71)
+            if epoch >= close_mosaic_epochs:
+                if hasattr(self.train_loader.collate_fn, 'set_epoch'):
+                    self.train_loader.collate_fn.set_epoch(epoch)
 
             base_batch_size = self.config['training']['batch_size']
             current_target_batch_size = base_batch_size

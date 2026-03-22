@@ -295,30 +295,6 @@ class YOLOv11Trainer:
         if 'patience' in self.training_config:
             train_kwargs['patience'] = self.training_config['patience']
         
-        # 颜色增强
-        if 'hsv_h' in self.training_config:
-            train_kwargs['hsv_h'] = self.training_config['hsv_h']
-        if 'hsv_s' in self.training_config:
-            train_kwargs['hsv_s'] = self.training_config['hsv_s']
-        if 'hsv_v' in self.training_config:
-            train_kwargs['hsv_v'] = self.training_config['hsv_v']
-            
-        # 几何增强
-        if 'degrees' in self.training_config:
-            train_kwargs['degrees'] = self.training_config['degrees']
-        if 'translate' in self.training_config:
-            train_kwargs['translate'] = self.training_config['translate']
-        if 'scale' in self.training_config:
-            train_kwargs['scale'] = self.training_config['scale']
-        if 'flipud' in self.training_config:
-            train_kwargs['flipud'] = self.training_config['flipud']
-        if 'fliplr' in self.training_config:
-            train_kwargs['fliplr'] = self.training_config['fliplr']
-        if 'mosaic' in self.training_config:
-            train_kwargs['mosaic'] = self.training_config['mosaic']
-        if 'mixup' in self.training_config:
-            train_kwargs['mixup'] = self.training_config['mixup']
-        
         # 检测框数量限制（默认300）
         if 'max_det' in self.training_config:
             train_kwargs['max_det'] = self.training_config['max_det']

@@ -92,16 +92,11 @@ class BatchImageCollateFuncion(BaseCollateFunction):
         targets = [x[1] for x in items]
 
         if self.scales is not None and self.epoch < self.stop_epoch:
-            # sz = random.choice(self.scales)
-            # sz = [sz] if isinstance(sz, int) else list(sz)
-            # VF.resize(inpt, sz, interpolation=self.interpolation)
-
             sz = random.choice(self.scales)
-            images = F.interpolate(images, size=sz)
-            if 'masks' in targets[0]:
-                for tg in targets:
-                    tg['masks'] = F.interpolate(tg['masks'], size=sz, mode='nearest')
-                raise NotImplementedError('')
+            # Ensure sz is (h, w)
+            if isinstance(sz, int):
+                sz = (sz, sz)
+            images = F.interpolate(images, size=sz, mode='bilinear', align_corners=False)
 
         return images, targets
 

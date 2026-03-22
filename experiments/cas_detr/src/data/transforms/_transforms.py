@@ -124,6 +124,20 @@ class RandomIoUCrop(T.RandomIoUCrop):
 
 
 @register()
+class ConvertPILImage(T.Transform):
+    def __init__(self) -> None:
+        super().__init__()
+
+    def _transform(self, inpt: Any, params: Dict[str, Any]) -> Any:
+        if isinstance(inpt, PIL.Image.Image):
+            return F.to_image(inpt)
+        return inpt
+
+    def transform(self, inpt: Any, params: Dict[str, Any]) -> Any:
+        return self._transform(inpt, params)
+
+
+@register()
 class ConvertBoxes(T.Transform):
     _transformed_types = (
         BoundingBoxes,

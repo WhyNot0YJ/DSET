@@ -593,6 +593,19 @@ class AdaptiveExpertTrainer:
         aug_color_jitter_prob = aug_config.get('color_jitter_prob', 0.0)
         aug_flip_prob = aug_config.get('flip_prob', 0.5)
         
+        # 外部增强配置文件路径 [新增]
+        aug_config_path = self.config.get('data_augmentation_config', None)
+        aug_config_data = None
+        if aug_config_path:
+            full_aug_path = os.path.join(os.getcwd(), aug_config_path)
+            self.logger.info(f"📂 加载外部增强配置: {full_aug_path}")
+            if os.path.exists(full_aug_path):
+                import yaml
+                with open(full_aug_path, 'r') as f:
+                    aug_config_data = yaml.safe_load(f)
+        else:
+            full_aug_path = None
+
         # Mosaic 和 Mixup (新增)
         aug_mosaic_prob = aug_config.get('mosaic', 0.0)
         aug_mixup_prob = aug_config.get('mixup', 0.0)
@@ -611,7 +624,8 @@ class AdaptiveExpertTrainer:
             aug_color_jitter_prob=aug_color_jitter_prob,
             aug_flip_prob=aug_flip_prob,
             aug_mosaic_prob=aug_mosaic_prob,
-            aug_mixup_prob=aug_mixup_prob
+            aug_mixup_prob=aug_mixup_prob,
+            aug_config_path=full_aug_path
         )
         
         val_dataset = DAIRV2XDetection(
@@ -622,42 +636,20 @@ class AdaptiveExpertTrainer:
             aug_contrast=0.0,
             aug_saturation=0.0,
             aug_hue=0.0,
-            aug_color_jitter_prob=0.0
+            aug_color_jitter_prob=0.0,
+            aug_config_path=full_aug_path
         )
-        
-        # 创建collate_fn类
-        class CustomCollateFunction(BaseCollateFunction):
-            def __call__(self, batch):
-                images, targets = zip(*batch)
-                
-                # 1. 处理图像 (保持 Tensor 格式)
-                if not isinstance(images[0], torch.Tensor):
-                    processed_images = [T.functional.to_tensor(img) for img in images]
-                else:
-                    processed_images = list(images)
 
-                # 2. 计算 Batch 最大尺寸
-                sizes = [img.shape[-2:] for img in processed_images]
-                stride = 32
-                max_h_raw = max(s[0] for s in sizes)
-                max_w_raw = max(s[1] for s in sizes)
-                # 向上取整到 32 倍数
-                max_h = (max_h_raw + stride - 1) // stride * stride
-                max_w = (max_w_raw + stride - 1) // stride * stride
-                
-                # 3. 创建画布并填充 (左上角对齐)
-                batch_images = torch.zeros(len(processed_images), 3, max_h, max_w, 
-                                           dtype=processed_images[0].dtype)
-                
-                for i, img in enumerate(processed_images):
-                    h, w = img.shape[-2:]
-                    batch_images[i, :, :h, :w] = img
-                    
-                # 4. 根据最终 Batch 尺寸进行归一化
-                new_targets = []
-                for t in list(targets):
-                    # [FIX] 使用 deepcopy 或者 clone 确保不修改原始数据
-                    new_t = t.copy()
+        # [新增] 动态从配置加载 collate_fn 参数
+        collate_args = {}
+        if aug_config_data and 'train_dataloader' in aug_config_data:
+            collate_cfg = aug_config_data['train_dataloader'].get('collate_fn', {})
+            if collate_cfg:
+                collate_args['scales'] = collate_cfg.get('scales')
+                collate_args['stop_epoch'] = collate_cfg.get('stop_epoch')
+        
+        from src.data.dataloader import BatchImageCollateFuncion
+        collate_fn = BatchImageCollateFuncion(**collate_args)
                     # 必须 clone，否则 boxes[:, 0] = ... 会修改源 tensor
                     boxes = new_t['boxes'].clone()
                     
@@ -1162,8 +1154,8 @@ class AdaptiveExpertTrainer:
             self.logger.error(f"恢复检查点失败: {e}")
     
     def _disable_mosaic_mixup(self):
-        """Disable Mosaic and Mixup for the last N epochs."""
-        self.logger.info(f"🛑 Reached final {self.close_mosaic_epochs} epochs. Disabling Mosaic & Mixup for finetuning!")
+        """Disable Mosaic and Mixup for the last N epochs, and update dataset transforms."""
+        self.logger.info(f"🛑 Reached final {self.close_mosaic_epochs} epochs. Disabling Mosaic & Mixup and switching to stage 2 transforms!")
         
         count = 0
         def _update_dataset(dataset):
@@ -1177,8 +1169,13 @@ class AdaptiveExpertTrainer:
                 dataset.aug_mixup_prob = 0.0
                 updated = True
             
+            # [新增] 调用 set_epoch 触发 transform 切换
+            if hasattr(dataset, 'set_epoch'):
+                dataset.set_epoch(self.current_epoch)
+                updated = True
+            
             if updated:
-                self.logger.info(f"  - Disabled Mosaic/Mixup for {type(dataset).__name__}")
+                self.logger.info(f"  - Updated augmentation settings for {type(dataset).__name__}")
                 count += 1
             
             # 递归处理 Subset 或其他 Wrapper
@@ -1886,6 +1883,14 @@ class AdaptiveExpertTrainer:
 
             # 训练
             train_metrics = self.train_epoch()
+            
+            # [新增] 这里也确保每个 epoch 传一次，虽然上面 _disable_mosaic_mixup 已经处理了触发点
+            def _update_epoch(dataset, e):
+                if hasattr(dataset, 'set_epoch'):
+                    dataset.set_epoch(e)
+                if hasattr(dataset, 'dataset'):
+                    _update_epoch(dataset.dataset, e)
+            _update_epoch(self.train_loader.dataset, epoch)
             
             # 验证策略：
             # - 前50 epoch：每10轮验证一次

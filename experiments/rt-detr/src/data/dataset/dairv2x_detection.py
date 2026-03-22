@@ -17,7 +17,8 @@ from .._misc import convert_to_tv_tensor, BoundingBoxes
 from ...core import register
 from ..transforms import (
     RandomPhotometricDistort, RandomHorizontalFlip, 
-    ConvertBoxes, Normalize, SanitizeBoundingBoxes, PadToSize
+    ConvertBoxes, Normalize, SanitizeBoundingBoxes, PadToSize,
+    RandomZoomOut, RandomIoUCrop, ConvertPILImage
 )
 
 __all__ = ['DAIRV2XDetection']
@@ -48,7 +49,8 @@ class DAIRV2XDetection(DetDataset):
                  aug_color_jitter_prob: float = 0.0,
                  aug_flip_prob: float = 0.5,
                  aug_mosaic_prob: float = 0.0,
-                 aug_mixup_prob: float = 0.0):
+                 aug_mixup_prob: float = 0.0,
+                 aug_config_path: str = None):
         """
         初始化DAIR-V2X数据集
         
@@ -60,12 +62,17 @@ class DAIRV2XDetection(DetDataset):
             aug_*: 保留参数以兼容，但会被新的增强策略覆盖
             aug_mosaic_prob: Probability of applying Mosaic augmentation
             aug_mixup_prob: Probability of applying Mixup augmentation
+            aug_config_path: Path to the augmentation configuration file
         """
         super().__init__()
         
         self.data_root = Path(data_root)
         self.split = split
         self.target_size = target_size
+        self.aug_config_path = aug_config_path
+        
+        # 加载外部配置
+        self.aug_config = self._load_aug_config() if aug_config_path else None
         
         # Store augmentation probabilities for use in __getitem__ or custom wrapper
         self.aug_mosaic_prob = aug_mosaic_prob
@@ -89,50 +96,146 @@ class DAIRV2XDetection(DetDataset):
             "Unknown_movable", "Unknown_unmovable"
         ]
         
-        # 加载数据信息
         self.data_info = self._load_data_info()
         self.split_indices = self._load_split_indices()
         
-        # 初始化变换策略 (Unified Task-Adapted Augmentation)
-        if transforms is None:
-            if split == 'train':
-                self.transforms = T.Compose([
-                    RandomPhotometricDistort(
-                        brightness=(max(0, 1 - aug_brightness), 1 + aug_brightness), 
-                        contrast=(max(0, 1 - aug_contrast), 1 + aug_contrast), 
-                        saturation=(max(0, 1 - aug_saturation), 1 + aug_saturation), 
-                        hue=(-aug_hue, aug_hue)
-                    ),
-                    RandomHorizontalFlip(p=aug_flip_prob),
-                    T.Resize(size=(640, 640), antialias=True),
-                    T.ToImage(),
-                    T.ToDtype(torch.float32, scale=True),
-                    SanitizeBoundingBoxes(),
-                    Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-                    PadToSize(size=(640, 640), fill=0.0),
-                    ConvertBoxes(fmt='cxcywh', normalize=False)
-                ])
-                
-                # Initialize Mosaic/Mixup helpers if needed
-                if self.aug_mosaic_prob > 0:
-                    from ..transforms.mosaic import Mosaic
-                    # Initialize Mosaic helper
-                    self.mosaic_helper = Mosaic(size=640)
+        # 保存增强参数
+        self.aug_params = {
+            'brightness': aug_brightness,
+            'contrast': aug_contrast,
+            'saturation': aug_saturation,
+            'hue': aug_hue,
+            'flip_prob': aug_flip_prob
+        }
+        
+        self.epoch = 0
+        
+        # 从配置中读取 stop_epoch
+        if self.aug_config and 'multi_scale' in self.aug_config:
+            self.stop_epoch = self.aug_config['multi_scale'].get('stop_epoch', 71)
+        else:
+            self.stop_epoch = 71
+        
+        self._init_transforms(aug_brightness, aug_contrast, aug_saturation, aug_hue, aug_flip_prob)
+
+    def _load_aug_config(self):
+        """加载外部增强配置"""
+        import yaml
+        if self.aug_config_path and Path(self.aug_config_path).exists():
+            with open(self.aug_config_path, 'r', encoding='utf-8') as f:
+                return yaml.safe_load(f)
+        return None
+
+    def _build_transforms_from_config(self, transform_list):
+        """根据配置列表构建变换"""
+        if not transform_list:
+            return None
+        
+        t_list = []
+        for t_cfg in transform_list:
+            t_type = t_cfg['type']
+            params = {k: v for k, v in t_cfg.items() if k != 'type'}
+            
+            # 动态映射
+            if t_type == 'RandomPhotometricDistort':
+                t_list.append(RandomPhotometricDistort(**params))
+            elif t_type == 'RandomZoomOut':
+                t_list.append(RandomZoomOut(**params))
+            elif t_type == 'RandomIoUCrop':
+                t_list.append(RandomIoUCrop(**params))
+            elif t_type == 'SanitizeBoundingBoxes':
+                t_list.append(SanitizeBoundingBoxes(**params))
+            elif t_type == 'RandomHorizontalFlip':
+                t_list.append(RandomHorizontalFlip(**params))
+            elif t_type == 'Resize':
+                t_list.append(T.Resize(**params))
+            elif t_type == 'ConvertPILImage':
+                t_list.append(ConvertPILImage(**params))
+            elif t_type == 'ToDtype':
+                # 处理 dtype 字符串
+                if params.get('dtype') == 'float32':
+                    params['dtype'] = torch.float32
+                t_list.append(T.ToDtype(**params))
+            elif t_type == 'Normalize':
+                t_list.append(Normalize(**params))
+            elif t_type == 'ConvertBoxes':
+                t_list.append(ConvertBoxes(**params))
             else:
-                # 验证/推理配置：矩形推理 (Rectangular Inference)
-                # Resize到720 (短边)，长边最大1280 (保持长宽比)
-                # 1920x1080 -> 1280x720 (16:9)
+                self.logger.warning(f"Unknown transform type in config: {t_type}")
+                
+        return T.Compose(t_list)
+
+    def _init_transforms(self, aug_brightness, aug_contrast, aug_saturation, aug_hue, aug_flip_prob):
+        """初始化或更新变换策略"""
+        if self.aug_config:
+            # 兼容嵌套的 dataloader 结构
+            key = 'train_dataloader' if self.split == 'train' else 'val_dataloader'
+            if key in self.aug_config:
+                transforms_cfg = self.aug_config[key]['dataset']['transforms']
+                ops = transforms_cfg['ops']
+                policy = transforms_cfg.get('policy', None)
+                
+                # 应用 policy
+                if policy and policy['name'] == 'stop_epoch' and self.epoch >= policy['epoch']:
+                    filtered_ops = [op for op in ops if op['type'] not in policy['ops']]
+                    self.transforms = self._build_transforms_from_config(filtered_ops)
+                else:
+                    self.transforms = self._build_transforms_from_config(ops)
+                return
+
+        # 以下为硬编码备用逻辑 (兼容老版本)
+        if self.split == 'train':
+            # 判断是否进入最后阶段
+            if self.epoch >= self.stop_epoch:
+                # 阶段 2: 仅保留基础 Resize 和 Normalize
                 self.transforms = T.Compose([
                     T.Resize(size=(640, 640), antialias=True),
-                    T.ToImage(),
+                    ConvertPILImage(),
                     T.ToDtype(torch.float32, scale=True),
                     Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-                    PadToSize(size=(640, 640), fill=0.0),
-                    ConvertBoxes(fmt='cxcywh', normalize=False)
+                    ConvertBoxes(fmt='cxcywh', normalize=True)
+                ])
+            else:
+                # 阶段 1: 官方标准顺序增强
+                self.transforms = T.Compose([
+                    # 1. 颜色增强
+                    RandomPhotometricDistort(p=0.5),
+                    # 2. 空间扩展
+                    RandomZoomOut(fill=0),
+                    # 3. IoU 约束裁剪
+                    RandomIoUCrop(p=0.8),
+                    # 4. bbox 清洗
+                    SanitizeBoundingBoxes(),
+                    # 5. 随机翻转
+                    RandomHorizontalFlip(p=aug_flip_prob),
+                    # 6. Resize (基础尺寸 640)
+                    T.Resize(size=(640, 640), antialias=True),
+                    # 7. 格式转换
+                    ConvertPILImage(),
+                    T.ToDtype(torch.float32, scale=True),
+                    Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+                    ConvertBoxes(fmt='cxcywh', normalize=True)
                 ])
         else:
-            self.transforms = transforms
-    
+            # 验证/推理配置
+            self.transforms = T.Compose([
+                T.Resize(size=(640, 640), antialias=True),
+                ConvertPILImage(),
+                T.ToDtype(torch.float32, scale=True),
+                Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+                ConvertBoxes(fmt='cxcywh', normalize=True)
+            ])
+
+    def set_epoch(self, epoch):
+        """更新当前 epoch 并根据需要重新初始化 transforms"""
+        self.epoch = epoch
+        # 重新初始化以应用分阶段策略
+        self._init_transforms(self.aug_params['brightness'], 
+                             self.aug_params['contrast'], 
+                             self.aug_params['saturation'], 
+                             self.aug_params['hue'], 
+                             self.aug_params['flip_prob'])
+
     def _load_data_info(self):
         """加载数据信息"""
         data_info_path = self.data_root / "metadata" / "data_info.json"
@@ -246,7 +349,7 @@ class DAIRV2XDetection(DetDataset):
         image, target = self.load_item(idx)
         
         # 2. Apply Mosaic / Mixup (if enabled and in training)
-        if self.split == 'train' and self.transforms is not None:
+        if self.split == 'train' and self.epoch < self.stop_epoch:
             # Mosaic Augmentation
             if hasattr(self, 'aug_mosaic_prob') and self.aug_mosaic_prob > 0:
                 import random

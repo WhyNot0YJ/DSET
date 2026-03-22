@@ -604,6 +604,18 @@ class RTDETRTrainer:
         aug_color_jitter_prob = aug_config.get('color_jitter_prob', 0.0)
         aug_flip_prob = aug_config.get('flip_prob', 0.5)
         
+        # 外部增强配置文件路径
+        aug_config_path = self.config.get('data_augmentation_config', None)
+        aug_config_data = None
+        if aug_config_path:
+            full_aug_path = os.path.join(os.getcwd(), aug_config_path)
+            self.logger.info(f"📂 加载外部增强配置: {full_aug_path}")
+            if os.path.exists(full_aug_path):
+                with open(full_aug_path, 'r') as f:
+                    aug_config_data = yaml.safe_load(f)
+        else:
+            full_aug_path = None
+        
         # Mosaic 和 Mixup (新增)
         aug_mosaic_prob = aug_config.get('mosaic', 0.0)
         aug_mixup_prob = aug_config.get('mixup', 0.0)
@@ -622,7 +634,8 @@ class RTDETRTrainer:
             aug_color_jitter_prob=aug_color_jitter_prob,
             aug_flip_prob=aug_flip_prob,
             aug_mosaic_prob=aug_mosaic_prob,
-            aug_mixup_prob=aug_mixup_prob
+            aug_mixup_prob=aug_mixup_prob,
+            aug_config_path=full_aug_path
         )
         
         val_dataset = DAIRV2XDetection(
@@ -633,10 +646,20 @@ class RTDETRTrainer:
             aug_contrast=0.0,
             aug_saturation=0.0,
             aug_hue=0.0,
-            aug_color_jitter_prob=0.0
+            aug_color_jitter_prob=0.0,
+            aug_config_path=full_aug_path
         )
+
+        # [新增] 动态从配置加载 collate_fn 参数
+        collate_args = {}
+        if aug_config_data and 'train_dataloader' in aug_config_data:
+            collate_cfg = aug_config_data['train_dataloader'].get('collate_fn', {})
+            if collate_cfg:
+                collate_args['scales'] = collate_cfg.get('scales')
+                collate_args['stop_epoch'] = collate_cfg.get('stop_epoch')
         
-        collate_fn = CustomCollateFunction()
+        from src.data.dataloader import BatchImageCollateFuncion
+        collate_fn = BatchImageCollateFuncion(**collate_args)
         
         # num_workers在misc配置中
         num_workers = self.config.get('misc', {}).get('num_workers', 16)
@@ -1051,8 +1074,8 @@ class RTDETRTrainer:
         )
     
     def _disable_mosaic_mixup(self):
-        """Disable Mosaic and Mixup for the last N epochs."""
-        self.logger.info(f"🛑 Reached final {self.close_mosaic_epochs} epochs. Disabling Mosaic & Mixup for finetuning!")
+        """Disable Mosaic and Mixup for the last N epochs, and update dataset transforms."""
+        self.logger.info(f"🛑 Reached final {self.close_mosaic_epochs} epochs. Disabling Mosaic & Mixup and switching to stage 2 transforms!")
         
         count = 0
         def _update_dataset(dataset):
@@ -1066,8 +1089,13 @@ class RTDETRTrainer:
                 dataset.aug_mixup_prob = 0.0
                 updated = True
             
+            # 调用 set_epoch 触发 transform 切换
+            if hasattr(dataset, 'set_epoch'):
+                dataset.set_epoch(self.last_epoch)
+                updated = True
+            
             if updated:
-                self.logger.info(f"  - Disabled Mosaic/Mixup for {type(dataset).__name__}")
+                self.logger.info(f"  - augmentation settings for {type(dataset).__name__}")
                 count += 1
             
             # 递归处理 Subset 或其他 Wrapper
@@ -1097,6 +1125,14 @@ class RTDETRTrainer:
 
             # 训练一个epoch
             train_metrics = self._train_epoch()
+            
+            # [新增] 这里也确保每个 epoch 传一次，虽然上面 _disable_mosaic_mixup 已经处理了触发点
+            def _update_epoch(dataset, e):
+                if hasattr(dataset, 'set_epoch'):
+                    dataset.set_epoch(e)
+                if hasattr(dataset, 'dataset'):
+                    _update_epoch(dataset.dataset, e)
+            _update_epoch(self.train_dataloader.dataset, epoch)
             
             # 验证策略：
             # - 前50 epoch：每10轮验证一次

@@ -43,6 +43,8 @@ training:
   scheduler: cosine
   early_stopping_patience: 20
   early_stopping_metric: mAP_0.5_0.95
+
+data_augmentation_config: configs/augmentation/rtdetr_aug.yaml
   seed: 42
   deterministic: false
   decoder_moe_balance_weight: 0.01
