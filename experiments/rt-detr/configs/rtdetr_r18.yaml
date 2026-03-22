@@ -68,12 +68,3 @@ misc:
   num_workers: 4
   pin_memory: true
   prefetch_factor: 1
-data_augmentation:
-  brightness: 0.15
-  contrast: 0.15
-  saturation: 0.1
-  hue: 0.05
-  flip_prob: 0.5
-  mosaic: 0.0
-  mixup: 0.0
-  close_mosaic_epochs: 20
