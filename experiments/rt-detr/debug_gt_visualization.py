@@ -161,7 +161,7 @@ if __name__ == "__main__":
         data_root=data_root, 
         split='val', 
         target_size=640,
-        stop_epoch=31
+        stop_epoch=71
     )
     
     loader = DataLoader(dataset, batch_size=4, collate_fn=CustomCollateFunction(), shuffle=False)

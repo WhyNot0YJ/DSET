@@ -589,19 +589,19 @@ class AdaptiveExpertTrainer:
             data_root=self.config['data']['data_root'],
             split='train',
             target_size=target_size,
-            stop_epoch=31  
+            stop_epoch=71  
         )
         
         val_dataset = DAIRV2XDetection(
             data_root=self.config['data']['data_root'],
             split='val',
             target_size=target_size,
-            stop_epoch=31  
+            stop_epoch=71  
         )
 
         # 多尺度训练配置
         scales = [480, 512, 544, 576, 608, 640, 640, 640, 672, 704, 736, 768, 800]
-        collate_fn = BatchImageCollateFuncion(scales=scales, stop_epoch=31)
+        collate_fn = BatchImageCollateFuncion(scales=scales, stop_epoch=71)
                     # 必须 clone，否则 boxes[:, 0] = ... 会修改源 tensor
                     boxes = new_t['boxes'].clone()
                     
@@ -1804,11 +1804,15 @@ class AdaptiveExpertTrainer:
             train_metrics = self.train_epoch()
             
             # 验证策略：
-            # - 前50 epoch：每10轮验证一次
-            # - 50 epoch以后：每轮验证
+            # - 0-69 epoch：每10轮验证一次
+            # - 70-89 epoch：每2轮验证一次
+            # - 90-99 epoch：每1轮验证一次
             should_validate = False
-            if epoch < 50:
+            if epoch < 70:
                 if (epoch + 1) % 10 == 0:
+                    should_validate = True
+            elif epoch < 90:
+                if (epoch + 1) % 2 == 0:
                     should_validate = True
             else:
                 should_validate = True

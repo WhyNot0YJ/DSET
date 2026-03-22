@@ -1207,7 +1207,7 @@ class CaS_DETRTrainer:
             data_root=self.config['data']['data_root'],
             split='val',
             target_size=640,
-            stop_epoch=31
+            stop_epoch=71
         )
         self.val_dataset = val_dataset
         
@@ -1238,7 +1238,7 @@ class CaS_DETRTrainer:
         train_dataset = DAIRV2XDetection(
             data_root=self.config['data']['data_root'],
             split='train',
-            stop_epoch=31  
+            stop_epoch=71  
         )
         
         num_workers = self.config.get('misc', {}).get('num_workers', 16)
@@ -1247,7 +1247,7 @@ class CaS_DETRTrainer:
 
         # 多尺度训练配置
         scales = [480, 512, 544, 576, 608, 640, 640, 640, 672, 704, 736, 768, 800]
-        train_collate_fn = BatchImageCollateFuncion(scales=scales, stop_epoch=31)
+        train_collate_fn = BatchImageCollateFuncion(scales=scales, stop_epoch=71)
         
         return DataLoader(
             train_dataset, 
@@ -2758,11 +2758,15 @@ class CaS_DETRTrainer:
             train_metrics = self.train_epoch()
             
             # 验证策略：
-            # - 前50 epoch：每10轮验证一次
-            # - 50 epoch以后：每轮验证
+            # - 0-69 epoch：每10轮验证一次
+            # - 70-89 epoch：每2轮验证一次
+            # - 90-99 epoch：每1轮验证一次
             should_validate = False
-            if epoch < 50:
+            if epoch < 70:
                 if (epoch + 1) % 10 == 0:
+                    should_validate = True
+            elif epoch < 90:
+                if (epoch + 1) % 2 == 0:
                     should_validate = True
             else:
                 should_validate = True

@@ -12,7 +12,7 @@ model:
   hidden_dim: 256
   num_queries: 100
 training:
-  epochs: 200
+  epochs: 100
   batch_size: 8
   warmup_epochs: 3
   pretrained_lr: 1e-5

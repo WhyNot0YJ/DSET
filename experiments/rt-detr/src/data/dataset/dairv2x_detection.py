@@ -42,7 +42,7 @@ class DAIRV2XDetection(DetDataset):
     
     def __init__(self, data_root: str, split: str = "train", transforms=None, 
                  target_size: int = 640,
-                 stop_epoch: int = 31):
+                 stop_epoch: int = 71):
         """
         初始化DAIR-V2X数据集
         
@@ -107,7 +107,7 @@ class DAIRV2XDetection(DetDataset):
                     # 2. 空间扩展
                     RandomZoomOut(fill=0),
                     # 3. IoU 约束裁剪
-                    RandomIoUCrop(p=0.8),
+                    RandomIoUCrop(p=0.2),
                     # 4. bbox 清洗
                     SanitizeBoundingBoxes(),
                     # 5. 随机翻转

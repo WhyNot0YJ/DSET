@@ -533,19 +533,19 @@ class RTDETRTrainer:
             data_root=data_root,
             split='train',
             target_size=target_size,
-            stop_epoch=31  
+            stop_epoch=71  
         )
         
         val_dataset = DAIRV2XDetection(
             data_root=data_root,
             split='val',
             target_size=target_size,
-            stop_epoch=31  
+            stop_epoch=71  
         )
 
         # 多尺度训练配置
         scales = [480, 512, 544, 576, 608, 640, 640, 640, 672, 704, 736, 768, 800]
-        collate_fn = BatchImageCollateFuncion(scales=scales, stop_epoch=31)
+        collate_fn = BatchImageCollateFuncion(scales=scales, stop_epoch=71)
         
         # num_workers在misc配置中
         num_workers = self.config.get('misc', {}).get('num_workers', 16)
