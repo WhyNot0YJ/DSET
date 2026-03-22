@@ -523,6 +523,8 @@ class RTDETRTrainer:
     
     def create_datasets(self):
         """创建数据集"""
+        from src.data.dataloader import BatchImageCollateFuncion
+        
         # 直接使用DAIRV2XDetection类
         data_root = self.config['data']['data_root']
         target_size = 640

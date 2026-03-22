@@ -574,6 +574,8 @@ class AdaptiveExpertTrainer:
     
     def _create_data_loaders(self) -> Tuple[DataLoader, DataLoader]:
         """创建数据加载器。"""
+        from src.data.dataloader import BatchImageCollateFuncion
+        
         # 修改：移除不必要的max()，使用配置值
         batch_size = self.config['training']['batch_size']
         target_size = self.model.image_size

@@ -1233,6 +1233,7 @@ class CaS_DETRTrainer:
 
     def _build_train_loader(self, batch_size: int) -> DataLoader:
         """根据指定的 batch_size 构建训练加载器。"""
+        from src.data.dataloader import BatchImageCollateFuncion
         
         train_dataset = DAIRV2XDetection(
             data_root=self.config['data']['data_root'],
@@ -1246,7 +1247,6 @@ class CaS_DETRTrainer:
 
         # 多尺度训练配置
         scales = [480, 512, 544, 576, 608, 640, 640, 640, 672, 704, 736, 768, 800]
-        from src.data.dataloader import BatchImageCollateFuncion
         train_collate_fn = BatchImageCollateFuncion(scales=scales, stop_epoch=31)
         
         return DataLoader(
