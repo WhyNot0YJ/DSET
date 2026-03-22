@@ -593,20 +593,11 @@ class AdaptiveExpertTrainer:
         aug_color_jitter_prob = aug_config.get('color_jitter_prob', 0.0)
         aug_flip_prob = aug_config.get('flip_prob', 0.5)
         
-        # 外部增强配置文件路径 [新增]
-        aug_config_path = self.config.get('data_augmentation_config', None)
-        aug_config_data = None
-        if aug_config_path:
-            full_aug_path = os.path.join(os.getcwd(), aug_config_path)
-            self.logger.info(f"📂 加载外部增强配置: {full_aug_path}")
-            if os.path.exists(full_aug_path):
-                import yaml
-                with open(full_aug_path, 'r') as f:
-                    aug_config_data = yaml.safe_load(f)
-        else:
-            full_aug_path = None
+        # 外部增强配置 (动态从 self.config 获取支持锚点合并后的字典)
+        aug_ops = self.config.get('aug_ops', None)
+        aug_policy = self.config.get('aug_policy', None)
 
-        # Mosaic 和 Mixup (新增)
+        # Mosaic 和 Mixup (legacy 兼容)
         aug_mosaic_prob = aug_config.get('mosaic', 0.0)
         aug_mixup_prob = aug_config.get('mixup', 0.0)
         
@@ -625,7 +616,8 @@ class AdaptiveExpertTrainer:
             aug_flip_prob=aug_flip_prob,
             aug_mosaic_prob=aug_mosaic_prob,
             aug_mixup_prob=aug_mixup_prob,
-            aug_config_path=full_aug_path
+            aug_ops=aug_ops,
+            aug_policy=aug_policy
         )
         
         val_dataset = DAIRV2XDetection(
@@ -637,13 +629,14 @@ class AdaptiveExpertTrainer:
             aug_saturation=0.0,
             aug_hue=0.0,
             aug_color_jitter_prob=0.0,
-            aug_config_path=full_aug_path
+            aug_ops=self.config.get('val_dataloader', {}).get('dataset', {}).get('transforms', {}).get('ops', None)
         )
 
         # [新增] 动态从配置加载 collate_fn 参数
         collate_args = {}
-        if aug_config_data and 'train_dataloader' in aug_config_data:
-            collate_cfg = aug_config_data['train_dataloader'].get('collate_fn', {})
+        dataloader_cfg = self.config.get('train_dataloader', {})
+        if dataloader_cfg:
+            collate_cfg = dataloader_cfg.get('collate_fn', {})
             if collate_cfg:
                 collate_args['scales'] = collate_cfg.get('scales')
                 collate_args['stop_epoch'] = collate_cfg.get('stop_epoch')
@@ -1877,20 +1870,22 @@ class AdaptiveExpertTrainer:
         for epoch in range(self.current_epoch, epochs):
             self.current_epoch = epoch
             
-            # [新增] Close Mosaic 策略 check
-            if self.close_mosaic_epochs > 0 and epoch == (epochs - self.close_mosaic_epochs):
-                self._disable_mosaic_mixup()
-
-            # 训练
-            train_metrics = self.train_epoch()
-            
-            # [新增] 这里也确保每个 epoch 传一次，虽然上面 _disable_mosaic_mixup 已经处理了触发点
+            # [新增] 动态更新受策略控制的增强 epoch (同步 RT-DETR 修改)
             def _update_epoch(dataset, e):
                 if hasattr(dataset, 'set_epoch'):
                     dataset.set_epoch(e)
                 if hasattr(dataset, 'dataset'):
                     _update_epoch(dataset.dataset, e)
             _update_epoch(self.train_loader.dataset, epoch)
+            _update_epoch(self.val_loader.dataset, epoch)
+
+            # [新增] 动态关闭 Multi-scale (如有 collate_fn 支持)
+            if hasattr(self.train_loader.collate_fn, 'set_epoch'):
+                self.train_loader.collate_fn.set_epoch(epoch)
+
+            # [新增] Close Mosaic 策略 check
+            if self.close_mosaic_epochs > 0 and epoch == (epochs - self.close_mosaic_epochs):
+                self._disable_mosaic_mixup()
             
             # 验证策略：
             # - 前50 epoch：每10轮验证一次
