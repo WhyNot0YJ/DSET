@@ -85,46 +85,6 @@ class DAIRV2XDetection(DetDataset):
         self.set_epoch(0)
         self._init_transforms()
 
-
-    def _build_transforms_from_config(self, transform_list):
-        """根据配置列表构建变换"""
-        if not transform_list:
-            return None
-        
-        t_list = []
-        for t_cfg in transform_list:
-            t_type = t_cfg['type']
-            params = {k: v for k, v in t_cfg.items() if k != 'type'}
-            
-            # 动态映射
-            if t_type == 'RandomPhotometricDistort':
-                t_list.append(RandomPhotometricDistort(**params))
-            elif t_type == 'RandomZoomOut':
-                t_list.append(RandomZoomOut(**params))
-            elif t_type == 'RandomIoUCrop':
-                t_list.append(RandomIoUCrop(**params))
-            elif t_type == 'SanitizeBoundingBoxes':
-                t_list.append(SanitizeBoundingBoxes(**params))
-            elif t_type == 'RandomHorizontalFlip':
-                t_list.append(RandomHorizontalFlip(**params))
-            elif t_type == 'Resize':
-                t_list.append(T.Resize(**params))
-            elif t_type == 'ConvertPILImage':
-                t_list.append(ConvertPILImage(**params))
-            elif t_type == 'ToDtype':
-                # 处理 dtype 字符串
-                if params.get('dtype') == 'float32':
-                    params['dtype'] = torch.float32
-                t_list.append(T.ToDtype(**params))
-            elif t_type == 'Normalize':
-                t_list.append(Normalize(**params))
-            elif t_type == 'ConvertBoxes':
-                t_list.append(ConvertBoxes(**params))
-            else:
-                self.logger.warning(f"Unknown transform type in config: {t_type}")
-                
-        return T.Compose(t_list)
-
     def _init_transforms(self):
         """初始化或更新变换策略"""
         # 逻辑: 根据当前 epoch 切换增强策略

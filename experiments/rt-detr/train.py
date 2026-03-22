@@ -966,17 +966,17 @@ class RTDETRTrainer:
         
         for epoch in range(self.last_epoch + 1, epochs):
             self.last_epoch = epoch
+            
+            # 更新 epoch（同步 train/val_loader 和 collate_fn，确保多尺度策略正确切换）
+            self.train_dataloader.set_epoch(epoch)
+            self.val_dataloader.set_epoch(epoch)
+            if hasattr(self.train_dataloader.collate_fn, 'set_epoch'):
+                self.train_dataloader.collate_fn.set_epoch(epoch)
+            if hasattr(self.val_dataloader.collate_fn, 'set_epoch'):
+                self.val_dataloader.collate_fn.set_epoch(epoch)
 
             # 训练一个epoch
             train_metrics = self._train_epoch()
-            
-            # [新增] 这里也确保每个 epoch 传一次，虽然上面 _disable_mosaic_mixup 已经处理了触发点
-            def _update_epoch(dataset, e):
-                if hasattr(dataset, 'set_epoch'):
-                    dataset.set_epoch(e)
-                if hasattr(dataset, 'dataset'):
-                    _update_epoch(dataset.dataset, e)
-            _update_epoch(self.train_dataloader.dataset, epoch)
             
             # 验证策略：
             # - 前50 epoch：每10轮验证一次

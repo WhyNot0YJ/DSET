@@ -2732,11 +2732,13 @@ class CaS_DETRTrainer:
         for epoch in range(self.current_epoch, epochs):
             self.current_epoch = epoch
 
-            # 更新数据集的 epoch 以便切换增强策略 (新增)
-            if hasattr(self.train_loader.dataset, 'set_epoch'):
-                self.train_loader.dataset.set_epoch(epoch)
-            if hasattr(self.val_loader.dataset, 'set_epoch'):
-                self.val_loader.dataset.set_epoch(epoch)
+            # 更新 epoch（同步 train/val_loader 和 collate_fn，确保多尺度策略正确切换）
+            self.train_loader.set_epoch(epoch)
+            self.val_loader.set_epoch(epoch)
+            if hasattr(self.train_loader.collate_fn, 'set_epoch'):
+                self.train_loader.collate_fn.set_epoch(epoch)
+            if hasattr(self.val_loader.collate_fn, 'set_epoch'):
+                self.val_loader.collate_fn.set_epoch(epoch)
 
             base_batch_size = self.config['training']['batch_size']
             current_target_batch_size = base_batch_size
@@ -2749,6 +2751,11 @@ class CaS_DETRTrainer:
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
                 self.train_loader = self._build_train_loader(current_target_batch_size)
+                
+                # 重建后必须重新设置 epoch 状态
+                self.train_loader.set_epoch(epoch)
+                if hasattr(self.train_loader.collate_fn, 'set_epoch'):
+                    self.train_loader.collate_fn.set_epoch(epoch)
 
             # 训练
             train_metrics = self.train_epoch()

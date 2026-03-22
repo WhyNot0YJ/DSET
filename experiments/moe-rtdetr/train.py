@@ -1795,18 +1795,16 @@ class AdaptiveExpertTrainer:
         for epoch in range(self.current_epoch, epochs):
             self.current_epoch = epoch
             
-            # [新增] 动态更新受策略控制的增强 epoch (同步 RT-DETR 修改)
-            def _update_epoch(dataset, e):
-                if hasattr(dataset, 'set_epoch'):
-                    dataset.set_epoch(e)
-                if hasattr(dataset, 'dataset'):
-                    _update_epoch(dataset.dataset, e)
-            _update_epoch(self.train_loader.dataset, epoch)
-            _update_epoch(self.val_loader.dataset, epoch)
-
-            # [新增] 动态关闭 Multi-scale (如有 collate_fn 支持)
+            # 更新 epoch（同步 train/val_loader 和 collate_fn，确保多尺度策略正确切换）
+            self.train_loader.set_epoch(epoch)
+            self.val_loader.set_epoch(epoch)
             if hasattr(self.train_loader.collate_fn, 'set_epoch'):
                 self.train_loader.collate_fn.set_epoch(epoch)
+            if hasattr(self.val_loader.collate_fn, 'set_epoch'):
+                self.val_loader.collate_fn.set_epoch(epoch)
+            
+            # 训练一个epoch
+            train_metrics = self.train_epoch()
             
             # 验证策略：
             # - 前50 epoch：每10轮验证一次
