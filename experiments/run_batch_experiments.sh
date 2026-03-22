@@ -95,12 +95,8 @@ declare -a CORE_EXPERIMENTS=(
 )
 
 declare -A MOE_RTDETR_CONFIGS=(
-    ["moe4-r18"]="moe-rtdetr/configs/moe4_r18.yaml"
-    ["moe4-r34"]="moe-rtdetr/configs/moe4_r34.yaml"
     ["moe6-r18"]="moe-rtdetr/configs/moe6_r18.yaml"
     ["moe6-r34"]="moe-rtdetr/configs/moe6_r34.yaml"
-    ["moe8-r18"]="moe-rtdetr/configs/moe8_r18.yaml"
-    ["moe8-r34"]="moe-rtdetr/configs/moe8_r34.yaml"
 )
 
 declare -A CaS_DETR_CONFIGS=(
@@ -125,7 +121,7 @@ declare -A YOLOV11_CONFIGS=(
 
 declare -A YOLOV12_CONFIGS=(
     ["yolov12n"]="yolov12/configs/yolov12n_dairv2x.yaml"
-    ["yolov12n"]="yolov12/configs/yolov12n_dairv2x.yaml"
+    ["yolov12s"]="yolov12/configs/yolov12s_dairv2x.yaml"
 )
 
 declare -A DEFORMABLE_DETR_CONFIGS=(
