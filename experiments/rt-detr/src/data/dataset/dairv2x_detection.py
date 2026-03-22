@@ -50,7 +50,7 @@ class DAIRV2XDetection(DetDataset):
                  aug_flip_prob: float = 0.5,
                  aug_mosaic_prob: float = 0.0,
                  aug_mixup_prob: float = 0.0,
-                 aug_config_path: str = None):
+                 stop_epoch: int = 31):
         """
         初始化DAIR-V2X数据集
         
@@ -62,17 +62,14 @@ class DAIRV2XDetection(DetDataset):
             aug_*: 保留参数以兼容，但会被新的增强策略覆盖
             aug_mosaic_prob: Probability of applying Mosaic augmentation
             aug_mixup_prob: Probability of applying Mixup augmentation
-            aug_config_path: Path to the augmentation configuration file
+            stop_epoch: Training epoch at which to stop heavy augmentation (Crop, ZoomOut)
         """
         super().__init__()
         
         self.data_root = Path(data_root)
         self.split = split
         self.target_size = target_size
-        self.aug_config_path = aug_config_path
-        
-        # 加载外部配置
-        self.aug_config = self._load_aug_config() if aug_config_path else None
+        self.stop_epoch = stop_epoch
         
         # Store augmentation probabilities for use in __getitem__ or custom wrapper
         self.aug_mosaic_prob = aug_mosaic_prob
@@ -108,23 +105,11 @@ class DAIRV2XDetection(DetDataset):
             'flip_prob': aug_flip_prob
         }
         
-        self.epoch = 0
-        
-        # 从配置中读取 stop_epoch
-        if self.aug_config and 'multi_scale' in self.aug_config:
-            self.stop_epoch = self.aug_config['multi_scale'].get('stop_epoch', 71)
-        else:
-            self.stop_epoch = 71
+        self.set_epoch(0)
         
         self._init_transforms(aug_brightness, aug_contrast, aug_saturation, aug_hue, aug_flip_prob)
 
-    def _load_aug_config(self):
-        """加载外部增强配置"""
-        import yaml
-        if self.aug_config_path and Path(self.aug_config_path).exists():
-            with open(self.aug_config_path, 'r', encoding='utf-8') as f:
-                return yaml.safe_load(f)
-        return None
+
 
     def _build_transforms_from_config(self, transform_list):
         """根据配置列表构建变换"""
@@ -167,23 +152,7 @@ class DAIRV2XDetection(DetDataset):
 
     def _init_transforms(self, aug_brightness, aug_contrast, aug_saturation, aug_hue, aug_flip_prob):
         """初始化或更新变换策略"""
-        if self.aug_config:
-            # 兼容嵌套的 dataloader 结构
-            key = 'train_dataloader' if self.split == 'train' else 'val_dataloader'
-            if key in self.aug_config:
-                transforms_cfg = self.aug_config[key]['dataset']['transforms']
-                ops = transforms_cfg['ops']
-                policy = transforms_cfg.get('policy', None)
-                
-                # 应用 policy
-                if policy and policy['name'] == 'stop_epoch' and self.epoch >= policy['epoch']:
-                    filtered_ops = [op for op in ops if op['type'] not in policy['ops']]
-                    self.transforms = self._build_transforms_from_config(filtered_ops)
-                else:
-                    self.transforms = self._build_transforms_from_config(ops)
-                return
-
-        # 以下为硬编码备用逻辑 (兼容老版本)
+        # 硬编码逻辑：根据当前 epoch 切换增强策略
         if self.split == 'train':
             # 判断是否进入最后阶段
             if self.epoch >= self.stop_epoch:
@@ -228,7 +197,7 @@ class DAIRV2XDetection(DetDataset):
 
     def set_epoch(self, epoch):
         """更新当前 epoch 并根据需要重新初始化 transforms"""
-        self.epoch = epoch
+        super().set_epoch(epoch)
         # 重新初始化以应用分阶段策略
         self._init_transforms(self.aug_params['brightness'], 
                              self.aug_params['contrast'], 

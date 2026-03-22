@@ -592,17 +592,18 @@ class AdaptiveExpertTrainer:
         aug_hue = aug_config.get('hue', 0.05)
         aug_color_jitter_prob = aug_config.get('color_jitter_prob', 0.0)
         aug_flip_prob = aug_config.get('flip_prob', 0.5)
-        
-        # 外部增强配置 (动态从 self.config 获取支持锚点合并后的字典)
-        aug_ops = self.config.get('aug_ops', None)
-        aug_policy = self.config.get('aug_policy', None)
 
-        # Mosaic 和 Mixup (legacy 兼容)
+        # Mosaic 和 Mixup
         aug_mosaic_prob = aug_config.get('mosaic', 0.0)
         aug_mixup_prob = aug_config.get('mixup', 0.0)
         
         if aug_mosaic_prob > 0 or aug_mixup_prob > 0:
             self.logger.info(f"🛠️  高级增强已启用: Mosaic={aug_mosaic_prob}, Mixup={aug_mixup_prob}")
+        
+        # 从主配置读取 train_dataloader 和 collate_fn 参数
+        train_dataloader_cfg = self.config.get('train_dataloader', {})
+        collate_cfg = train_dataloader_cfg.get('collate_fn', {})
+        stop_epoch = collate_cfg.get('stop_epoch', 31)
         
         train_dataset = DAIRV2XDetection(
             data_root=self.config['data']['data_root'],
@@ -616,8 +617,7 @@ class AdaptiveExpertTrainer:
             aug_flip_prob=aug_flip_prob,
             aug_mosaic_prob=aug_mosaic_prob,
             aug_mixup_prob=aug_mixup_prob,
-            aug_ops=aug_ops,
-            aug_policy=aug_policy
+            stop_epoch=stop_epoch
         )
         
         val_dataset = DAIRV2XDetection(
@@ -629,17 +629,14 @@ class AdaptiveExpertTrainer:
             aug_saturation=0.0,
             aug_hue=0.0,
             aug_color_jitter_prob=0.0,
-            aug_ops=self.config.get('val_dataloader', {}).get('dataset', {}).get('transforms', {}).get('ops', None)
+            stop_epoch=stop_epoch
         )
 
-        # [新增] 动态从配置加载 collate_fn 参数
-        collate_args = {}
-        dataloader_cfg = self.config.get('train_dataloader', {})
-        if dataloader_cfg:
-            collate_cfg = dataloader_cfg.get('collate_fn', {})
-            if collate_cfg:
-                collate_args['scales'] = collate_cfg.get('scales')
-                collate_args['stop_epoch'] = collate_cfg.get('stop_epoch')
+        # 从配置提取 collate_fn 参数
+        collate_args = {
+            'scales': collate_cfg.get('scales'),
+            'stop_epoch': stop_epoch
+        }
         
         from src.data.dataloader import BatchImageCollateFuncion
         collate_fn = BatchImageCollateFuncion(**collate_args)

@@ -604,24 +604,17 @@ class RTDETRTrainer:
         aug_color_jitter_prob = aug_config.get('color_jitter_prob', 0.0)
         aug_flip_prob = aug_config.get('flip_prob', 0.5)
         
-        # 外部增强配置文件路径
-        aug_config_path = self.config.get('data_augmentation_config', None)
-        aug_config_data = None
-        if aug_config_path:
-            full_aug_path = os.path.join(os.getcwd(), aug_config_path)
-            self.logger.info(f"📂 加载外部增强配置: {full_aug_path}")
-            if os.path.exists(full_aug_path):
-                with open(full_aug_path, 'r') as f:
-                    aug_config_data = yaml.safe_load(f)
-        else:
-            full_aug_path = None
-        
-        # Mosaic 和 Mixup (新增)
+        # Mosaic 和 Mixup
         aug_mosaic_prob = aug_config.get('mosaic', 0.0)
         aug_mixup_prob = aug_config.get('mixup', 0.0)
         
         if aug_mosaic_prob > 0 or aug_mixup_prob > 0:
             self.logger.info(f"🛠️  高级增强已启用: Mosaic={aug_mosaic_prob}, Mixup={aug_mixup_prob}")
+        
+        # 从主配置读取 train_dataloader 和 collate_fn 参数
+        train_dataloader_cfg = self.config.get('train_dataloader', {})
+        collate_cfg = train_dataloader_cfg.get('collate_fn', {})
+        stop_epoch = collate_cfg.get('stop_epoch', 31)
         
         train_dataset = DAIRV2XDetection(
             data_root=data_root,
@@ -635,7 +628,7 @@ class RTDETRTrainer:
             aug_flip_prob=aug_flip_prob,
             aug_mosaic_prob=aug_mosaic_prob,
             aug_mixup_prob=aug_mixup_prob,
-            aug_config_path=full_aug_path
+            stop_epoch=stop_epoch
         )
         
         val_dataset = DAIRV2XDetection(
@@ -647,16 +640,14 @@ class RTDETRTrainer:
             aug_saturation=0.0,
             aug_hue=0.0,
             aug_color_jitter_prob=0.0,
-            aug_config_path=full_aug_path
+            stop_epoch=stop_epoch
         )
 
-        # [新增] 动态从配置加载 collate_fn 参数
-        collate_args = {}
-        if aug_config_data and 'train_dataloader' in aug_config_data:
-            collate_cfg = aug_config_data['train_dataloader'].get('collate_fn', {})
-            if collate_cfg:
-                collate_args['scales'] = collate_cfg.get('scales')
-                collate_args['stop_epoch'] = collate_cfg.get('stop_epoch')
+        # 从配置提取 collate_fn 参数
+        collate_args = {
+            'scales': collate_cfg.get('scales'),
+            'stop_epoch': stop_epoch
+        }
         
         from src.data.dataloader import BatchImageCollateFuncion
         collate_fn = BatchImageCollateFuncion(**collate_args)
