@@ -544,7 +544,7 @@ class RTDETRTrainer:
         )
 
         # 多尺度训练配置 (固定视角下关闭多尺度以保留几何先验)
-        scales = [640]
+        scales = [480, 512, 544, 576, 608, 640, 640, 640, 672, 704, 736, 768, 800]
         collate_fn = BatchImageCollateFuncion(scales=scales, stop_epoch=71)
         
         # num_workers在misc配置中
@@ -1679,21 +1679,31 @@ class RTDETRTrainer:
     def _compute_difficulty_aps(self, predictions: List[Dict], targets: List[Dict], categories: List[Dict],
                                 img_h: int, img_w: int) -> Dict[str, float]:
         """计算 KITTI 风格 AP_easy / AP_moderate / AP_hard。"""
+        import copy
         easy_targets = []
         moderate_targets = []
         hard_targets = []
 
         for target in targets:
             level = self._get_kitti_difficulty(target)
-            if level == 'easy':
-                easy_targets.append(target)
-                moderate_targets.append(target)
-                hard_targets.append(target)
-            elif level == 'moderate':
-                moderate_targets.append(target)
-                hard_targets.append(target)
-            elif level == 'hard':
-                hard_targets.append(target)
+            
+            # Easy targets: M, H, and Ignore are ignored (iscrowd=1)
+            t_easy = copy.deepcopy(target)
+            if level != 'easy':
+                t_easy['iscrowd'] = 1
+            easy_targets.append(t_easy)
+            
+            # Moderate targets: H and Ignore are ignored
+            t_mod = copy.deepcopy(target)
+            if level not in ['easy', 'moderate']:
+                t_mod['iscrowd'] = 1
+            moderate_targets.append(t_mod)
+            
+            # Hard targets: Ignore is ignored
+            t_hard = copy.deepcopy(target)
+            if level == 'ignore':
+                t_hard['iscrowd'] = 1
+            hard_targets.append(t_hard)
 
         easy_eval = self._run_coco_eval(predictions, easy_targets, categories, img_h, img_w, print_summary=False)
         moderate_eval = self._run_coco_eval(predictions, moderate_targets, categories, img_h, img_w, print_summary=False)
