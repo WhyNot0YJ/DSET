@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CaS_DETR Training Script - Dual-Sparse Expert Transformer (Token Pruning + Encoder MoE + Decoder MoE)"""
+"""CaS_DETR Training Script - Dual-Sparse Expert Transformer (Token Pruning + Decoder MoE)"""
 
 import os
 import sys
@@ -128,7 +128,6 @@ class CaS_DETRRTDETR(nn.Module):
     1. Shared Backbone: Extracts multi-scale features
     2. CaS_DETR Encoder (Dual-Sparse):
        - Token Pruning: Prunes redundant tokens
-       - Encoder MoE: Sparse expert processing for spatial features
     3. MoE Decoder: MoELayer in FFN
     4. Unified Output: Directly outputs detection results
     """
@@ -141,11 +140,8 @@ class CaS_DETRRTDETR(nn.Module):
                  num_encoder_layers: int = 1,
                  use_encoder_idx: list = None,
                  token_keep_ratio: Union[float, Dict[int, float]] = None,
-                 encoder_moe_num_experts: int = 4,
-                 encoder_moe_top_k: int = 2,
                  # MoE weight config
                  decoder_moe_balance_weight: float = None,
-                 encoder_moe_balance_weight: float = None,
                  moe_balance_warmup_epochs: int = 0,
                 # CASS (Context-Aware Soft Supervision) config
                 use_cass: bool = False,
@@ -173,10 +169,7 @@ class CaS_DETRRTDETR(nn.Module):
             num_encoder_layers: Number of encoder transformer layers
             use_encoder_idx: Which feature pyramid levels (P3, P4, P5) to process with Transformer Encoder
             token_keep_ratio: Patch retention ratio, can be float (uniform) or dict mapping layer index to ratio (e.g., {2: 0.9})
-            encoder_moe_num_experts: Number of Encoder-MoE experts
-            encoder_moe_top_k: Encoder-MoE top-k
             decoder_moe_balance_weight: Decoder MoE balance loss weight
-            encoder_moe_balance_weight: Encoder MoE balance loss weight
             moe_balance_warmup_epochs: Number of epochs before applying MOE balance loss (default: 0)
             use_cass: Whether to use Context-Aware Soft Supervision for token pruning
             cass_loss_weight: CASS loss weight
@@ -187,8 +180,6 @@ class CaS_DETRRTDETR(nn.Module):
             cass_focal_beta: Focal/VFL beta/gamma parameter (hard example mining strength)
             
         Note:
-            - Encoder-MoE and Token-level Pruning are always enabled (CaS_DETR core features)
-            - No need to configure use_encoder_moe and use_token_pruning
         """
         super().__init__()
         
@@ -205,10 +196,8 @@ class CaS_DETRRTDETR(nn.Module):
         self.num_encoder_layers = num_encoder_layers
         self.use_encoder_idx = use_encoder_idx
         
-        # CaS_DETR双稀疏配置（Encoder MoE 必然启用，无需存储）
+        # CaS_DETR双稀疏配置（ 必然启用，无需存储）
         self.token_keep_ratio = token_keep_ratio
-        self.encoder_moe_num_experts = encoder_moe_num_experts
-        self.encoder_moe_top_k = encoder_moe_top_k
         
         # CASS configuration
         self.use_cass = use_cass
@@ -226,8 +215,6 @@ class CaS_DETRRTDETR(nn.Module):
         # MoE和Token Pruning权重配置
         if decoder_moe_balance_weight is not None:
             self.decoder_moe_balance_weight = decoder_moe_balance_weight
-        if encoder_moe_balance_weight is not None:
-            self.encoder_moe_balance_weight = encoder_moe_balance_weight
         
         # MOE Balance Warmup配置：在前N个epoch内不应用MOE平衡损失，让专家自然分化
         self.moe_balance_warmup_epochs = moe_balance_warmup_epochs
@@ -300,8 +287,6 @@ class CaS_DETRRTDETR(nn.Module):
             act='silu',
             # CaS_DETR dual-sparse params
             token_keep_ratio=self.token_keep_ratio,
-            encoder_moe_num_experts=self.encoder_moe_num_experts,
-            encoder_moe_top_k=self.encoder_moe_top_k,
             # CASS parameters
             use_cass=self.use_cass,
             cass_expansion_ratio=self.cass_expansion_ratio,
@@ -382,8 +367,8 @@ class CaS_DETRRTDETR(nn.Module):
         # 共享特征提取
         backbone_features = self.backbone(images)
         
-        # CaS_DETR Encoder（双稀疏：Token Pruning + Encoder MoE）
-        # ⚠️ Encoder MoE 和 Token Pruning 必然启用（CaS_DETR核心特性）
+        # CaS_DETR Encoder（双稀疏：Token Pruning）
+        # ⚠️  和 Token Pruning 必然启用（CaS_DETR核心特性）
         encoder_features, encoder_info = self.encoder(backbone_features, return_encoder_info=True)
         
         # MoE Decoder前向（内部自动处理路由和专家融合）
@@ -411,16 +396,6 @@ class CaS_DETRRTDETR(nn.Module):
             else:
                 decoder_moe_loss = torch.tensor(0.0, device=images.device)
             
-            # 2. Encoder MoE损失（仅训练时）- 负载均衡损失
-            # ⚠️ Encoder MoE 默认启用，CaS_DETR核心特性
-            if self.training:
-                encoder_moe_loss_dict = self.encoder.get_encoder_moe_loss(encoder_info)
-                encoder_moe_loss = encoder_moe_loss_dict['balance_loss']
-                if encoder_moe_loss.device != images.device:
-                    encoder_moe_loss = encoder_moe_loss.to(images.device)
-            else:
-                encoder_moe_loss = torch.tensor(0.0, device=images.device)
-            
             # 检查是否在 MOE Balance Warmup 期间
             # 在 warmup 期间，MOE 平衡损失权重设为 0，让专家自然分化
             in_moe_balance_warmup = self.current_epoch < self.moe_balance_warmup_epochs
@@ -433,16 +408,7 @@ class CaS_DETRRTDETR(nn.Module):
             else:
                 decoder_moe_weight = 0.05
             
-            # Encoder MoE权重
-            if in_moe_balance_warmup:
-                encoder_moe_weight = 0.0
-            elif hasattr(self, 'encoder_moe_balance_weight'):
-                encoder_moe_weight = self.encoder_moe_balance_weight
-            else:
-                # 默认值：0.05（中等值）
-                encoder_moe_weight = 0.05
-            
-            # 3. CASS (Context-Aware Soft Supervision) Loss
+            # 2. CASS (Context-Aware Soft Supervision) Loss
             # Provides explicit supervision for token importance predictor using GT bboxes
             if self.use_cass and self.training and encoder_info and targets is not None:
                 importance_scores_list = encoder_info.get('importance_scores_list', [])
@@ -502,22 +468,19 @@ class CaS_DETRRTDETR(nn.Module):
             # CASS Loss weight
             cass_weight = self.cass_loss_weight if hasattr(self, 'cass_loss_weight') else 0.2
             
-            # 总损失：L = L_task + Decoder MoE损失 + Encoder MoE损失 + CASS损失
+            # 总损失：L = L_task + Decoder MoE损失 + CASS损失
             total_loss = detection_loss + \
                         decoder_moe_weight * decoder_moe_loss + \
-                        encoder_moe_weight * encoder_moe_loss + \
                         cass_weight * cass_loss
             
             output['detection_loss'] = detection_loss
             output['decoder_moe_loss'] = decoder_moe_loss
-            output['encoder_moe_loss'] = encoder_moe_loss
             output['cass_loss'] = cass_loss
-            output['moe_load_balance_loss'] = decoder_moe_loss + encoder_moe_loss  # 保持向后兼容
+            output['moe_load_balance_loss'] = decoder_moe_loss  # 保持向后兼容
             output['total_loss'] = total_loss
             output['loss_dict'] = detection_loss_dict
             
             output['decoder_moe_weight'] = decoder_moe_weight
-            output['encoder_moe_balance_weight'] = encoder_moe_weight
             output['cass_weight'] = cass_weight
             
             # 添加encoder info到输出（用于监控）
@@ -659,17 +622,11 @@ class CaS_DETRTrainer:
             backbone_type = self.config.get('model', {}).get('backbone', 'unknown')
             # 移除presnet前缀，只保留数字部分（如presnet18 -> r18, presnet34 -> r34）
             backbone_short = backbone_type.replace('presnet', 'r').replace('pres', 'r') if 'presnet' in backbone_type or 'pres' in backbone_type else backbone_type
-            # 从配置文件读取encoder和decoder专家数量
+            # 从配置文件读取decoder专家数量
             num_decoder_experts = self.config.get('model', {}).get('num_experts', 6)
             cas_detr_config = self.config.get('model', {}).get('cas_detr', {})
-            num_encoder_experts = cas_detr_config.get('encoder_moe_num_experts', 4)
             # 生成实验名称（不带时间戳）
-            # 如果encoder和decoder相同，使用 cas_detr{num}_{backbone} 格式
-            # 如果不同，使用 cas_detr{encoder}{decoder}_{backbone} 格式
-            if num_encoder_experts == num_decoder_experts:
-                self.experiment_name = f"cas_detr{num_decoder_experts}_{backbone_short}"
-            else:
-                self.experiment_name = f"cas_detr{num_encoder_experts}{num_decoder_experts}_{backbone_short}"
+            self.experiment_name = f"cas_detr{num_decoder_experts}_{backbone_short}"
             self.log_dir = Path(f"logs/{self.experiment_name}_{timestamp}")
             self.log_dir.mkdir(parents=True, exist_ok=True)
         
@@ -710,10 +667,8 @@ class CaS_DETRTrainer:
         
         # CaS_DETR双稀疏配置
         cas_detr_config = self.config['model'].get('cas_detr', {})
-        # ⚠️ 注意：Encoder MoE 和 Token Pruning 必然启用（CaS_DETR核心特性），无需配置
+        # ⚠️ 注意： 和 Token Pruning 必然启用（CaS_DETR核心特性），无需配置
         token_keep_ratio = cas_detr_config.get('token_keep_ratio', 0.7)
-        encoder_moe_num_experts = cas_detr_config.get('encoder_moe_num_experts', 4)
-        encoder_moe_top_k = cas_detr_config.get('encoder_moe_top_k', 2)
         
         # CASS (Context-Aware Soft Supervision) 配置
         use_cass = cas_detr_config.get('use_cass', False)
@@ -727,7 +682,6 @@ class CaS_DETRTrainer:
         
         # 从配置文件读取MoE权重
         decoder_moe_balance_weight = self.config.get('training', {}).get('decoder_moe_balance_weight', None)
-        encoder_moe_balance_weight = self.config.get('training', {}).get('encoder_moe_balance_weight', None)
         # MOE Balance Warmup: 在前N个epoch内不应用MOE平衡损失
         moe_balance_warmup_epochs = self.config.get('training', {}).get('moe_balance_warmup_epochs', 0)
         
@@ -747,13 +701,10 @@ class CaS_DETRTrainer:
             num_experts=num_experts,
             num_encoder_layers=num_encoder_layers,
             use_encoder_idx=use_encoder_idx,
-            # CaS_DETR双稀疏参数（Encoder MoE 必然启用，无需传递）
+            # CaS_DETR双稀疏参数（ 必然启用，无需传递）
             token_keep_ratio=token_keep_ratio,
-            encoder_moe_num_experts=encoder_moe_num_experts,
-            encoder_moe_top_k=encoder_moe_top_k,
             # MoE权重配置
             decoder_moe_balance_weight=decoder_moe_balance_weight,
-            encoder_moe_balance_weight=encoder_moe_balance_weight,
             moe_balance_warmup_epochs=moe_balance_warmup_epochs,
             # CASS配置
             use_cass=use_cass,
@@ -788,17 +739,15 @@ class CaS_DETRTrainer:
         self.logger.info(f"  Decoder专家数量: {model.num_experts}")
         self.logger.info(f"  Backbone: {model.backbone_type}")
         self.logger.info(f"  Encoder: in_channels={encoder_in_channels}, expansion={encoder_expansion}, num_layers={num_encoder_layers}")
-        self.logger.info(f"  Encoder MoE设计: 层间共享")
+        self.logger.info(f"  设计: 层间共享")
         self.logger.info(f"  双稀疏配置（CaS_DETR核心特性，必然启用）:")
-        self.logger.info(f"    - Encoder-MoE: 启用 (experts={encoder_moe_num_experts}, top_k={encoder_moe_top_k})")
-        self.logger.info(f"    - Token Pruning: 启用（与 Encoder MoE 兼容）")
+        self.logger.info(f"    - Token Pruning: 启用（与  兼容）")
         self.logger.info(f"      → keep_ratio={token_keep_ratio}")
         self.logger.info(f"  损失权重配置:")
         self.logger.info(f"    - CASS Supervision: {use_cass} (loss_type={cass_loss_type}, weight={cass_loss_weight}, expansion={cass_expansion_ratio}, min_size={cass_min_size})")
         if use_cass:
             self.logger.info(f"      → CASS Loss params: alpha={cass_focal_alpha}, beta={cass_focal_beta}")
         self.logger.info(f"    - Decoder MoE: {decoder_moe_balance_weight if decoder_moe_balance_weight else 'auto'}")
-        self.logger.info(f"    - Encoder MoE: {encoder_moe_balance_weight if encoder_moe_balance_weight else 'auto'}")
         if moe_balance_warmup_epochs > 0:
             self.logger.info(f"    - MOE Balance Warmup: {moe_balance_warmup_epochs} epochs (延迟平衡策略：前{moe_balance_warmup_epochs}个epoch不应用MOE平衡损失)")
         
@@ -1020,7 +969,6 @@ class CaS_DETRTrainer:
                         self.logger.debug(f"Decoder层{layer_idx}未找到MoE层参数，跳过专家克隆")
             
             # 第二步（续）：将Encoder FFN权重复制到MoE专家
-            encoder_num_experts = model.encoder_moe_num_experts
             
             if encoder_ffn_weights_to_clone:
                 self.logger.info(f"  - 找到 {len(encoder_ffn_weights_to_clone)} 个Encoder层的FFN权重，准备克隆到MoE")
@@ -1148,7 +1096,7 @@ class CaS_DETRTrainer:
                             decoder_clone_count += 4
                     
                     elif clone_type == 'encoder':
-                        # 获取Encoder MoE层：model.encoder 是 HybridEncoder，它包含 encoder.encoder (TransformerEncoder)
+                        # 获取层：model.encoder 是 HybridEncoder，它包含 encoder.encoder (TransformerEncoder)
                         encoder_layer = model.encoder.encoder.layers[layer_idx]
                         if hasattr(encoder_layer, 'moe_layer'):
                             moe_layer = encoder_layer.moe_layer
@@ -1331,12 +1279,10 @@ class CaS_DETRTrainer:
         # 定义新增结构的关键词（MoE、CaS_DETR等）
         # 基于实际代码中的模块命名：
         # - decoder.layers.X.decoder_moe_layer.* (CaS_DETR的decoder MoE)
-        # - encoder.layers.X.encoder_moe_layer.* (CaS_DETR的encoder Encoder-MoE)
         # - encoder.shared_token_pruner.* (CaS_DETR的token pruning)
         # - importance_predictor (token pruning中的重要性预测器)
         new_structure_keywords = [
             'decoder_moe_layer',  # decoder中的MoE层
-            'encoder_moe_layer',        # encoder中的Encoder-MoE层
             'shared_token_pruner',    # token pruning模块
             'importance_predictor'     # importance predictor
         ]
@@ -1866,19 +1812,15 @@ class CaS_DETRTrainer:
         
         # [极致优化] 核心优化：在GPU上直接维护计数器，不再缓存巨大的Logits列表
         num_decoder_experts = self.model.num_experts
-        num_encoder_experts = self.model.encoder_moe_num_experts if hasattr(self.model, 'encoder_moe_num_experts') else 4
         
         # 统计整个Epoch的累加器（在GPU上，极小的内存占用）
         decoder_expert_usage_total = torch.zeros(num_decoder_experts, dtype=torch.long, device=self.device)
-        encoder_expert_usage_total = torch.zeros(num_encoder_experts, dtype=torch.long, device=self.device)
         total_dec_tokens = 0
-        total_enc_tokens = 0
         
         # 损失统计
         total_loss = 0.0
         detection_loss = 0.0
         moe_lb_loss = 0.0  # MoE load balance loss
-        encoder_moe_loss_sum = 0.0  # Encoder MoE loss
         cass_loss_sum = 0.0  # CASS supervision loss
         token_pruning_ratios = []
         
@@ -1920,15 +1862,12 @@ class CaS_DETRTrainer:
                 if 'decoder_moe_loss' in outputs:
                     moe_loss_val = outputs['decoder_moe_loss']
                     moe_lb_loss += moe_loss_val.item() if isinstance(moe_loss_val, torch.Tensor) else float(moe_loss_val)
-                if 'encoder_moe_loss' in outputs:
-                    enc_moe_loss_val = outputs['encoder_moe_loss']
-                    encoder_moe_loss_sum += enc_moe_loss_val.item() if isinstance(enc_moe_loss_val, torch.Tensor) else float(enc_moe_loss_val)
                 if 'cass_loss' in outputs:
                     cass_loss_val = outputs['cass_loss']
                     cass_loss_sum += cass_loss_val.item() if isinstance(cass_loss_val, torch.Tensor) else float(cass_loss_val)
             
             # [极致优化] 即产即清：不保留Logits列表，计算完TopK和bincount后立即释放显存
-            # 处理Encoder MoE统计
+            # 处理统计
             if isinstance(outputs, dict) and 'encoder_info' in outputs:
                 enc_info = outputs['encoder_info']
                 # Token Pruning比例
@@ -1936,16 +1875,12 @@ class CaS_DETRTrainer:
                     avg_ratio = sum(enc_info['token_pruning_ratios']) / len(enc_info['token_pruning_ratios'])
                     token_pruning_ratios.append(avg_ratio)
                 
-                # Encoder专家使用率统计（即产即清）
                 enc_logits = enc_info.get('moe_router_logits', [])
                 if enc_logits and isinstance(enc_logits, list) and len(enc_logits) > 0:
                     # [安全脱钩] 使用 detach() 创建统计副本，确保不影响反向传播
                     enc_logits_detached = [logits.detach() if isinstance(logits, torch.Tensor) else logits for logits in enc_logits]
                     enc_logits_tensor = torch.cat(enc_logits_detached, dim=0)
-                    enc_top_k = self.model.encoder_moe_top_k if hasattr(self.model, 'encoder_moe_top_k') else 2
                     _, enc_indices = torch.topk(enc_logits_tensor, enc_top_k, dim=-1)
-                    encoder_expert_usage_total.add_(torch.bincount(enc_indices.flatten(), minlength=num_encoder_experts))
-                    total_enc_tokens += enc_indices.numel()
                     # 显式释放临时张量
                     del enc_logits_detached, enc_logits_tensor, enc_indices
             
@@ -1989,12 +1924,10 @@ class CaS_DETRTrainer:
         avg_loss = total_loss / num_batches
         avg_detection_loss = detection_loss / num_batches
         avg_decoder_moe_lb_loss = moe_lb_loss / num_batches
-        avg_encoder_moe_loss = encoder_moe_loss_sum / num_batches
         avg_cass_loss = cass_loss_sum / num_batches
         
         # 计算专家使用率（从GPU累加器转换）
         decoder_expert_usage_count = decoder_expert_usage_total.cpu().tolist()
-        encoder_expert_usage_count = encoder_expert_usage_total.cpu().tolist()
         
         expert_usage_rate = []
         if total_dec_tokens > 0:
@@ -2002,13 +1935,6 @@ class CaS_DETRTrainer:
                 expert_usage_rate.append(count / total_dec_tokens)
         else:
             expert_usage_rate = [1.0 / num_decoder_experts] * num_decoder_experts
-        
-        encoder_expert_usage_rate = []
-        if total_enc_tokens > 0:
-            for count in encoder_expert_usage_count:
-                encoder_expert_usage_rate.append(count / total_enc_tokens)
-        else:
-            encoder_expert_usage_rate = [1.0 / num_encoder_experts] * num_encoder_experts
         
         # 计算平均Token Pruning比例
         avg_token_pruning_ratio = sum(token_pruning_ratios) / len(token_pruning_ratios) if token_pruning_ratios else 0.0
@@ -2026,18 +1952,16 @@ class CaS_DETRTrainer:
             'total_loss': avg_loss,
             'detection_loss': avg_detection_loss,
             'decoder_moe_loss': avg_decoder_moe_lb_loss,
-            'encoder_moe_loss': avg_encoder_moe_loss,  # Encoder MoE loss
             'cass_loss': avg_cass_loss,  # CASS supervision loss
             'token_pruning_ratio': avg_token_pruning_ratio,
-            'moe_load_balance_loss': avg_decoder_moe_lb_loss + avg_encoder_moe_loss,  # 总MoE损失（向后兼容）
+            'moe_load_balance_loss': avg_decoder_moe_lb_loss,  # 总MoE损失（向后兼容）
             'expert_usage': decoder_expert_usage_count,
             'expert_usage_rate': expert_usage_rate,
-            'encoder_expert_usage_rate': encoder_expert_usage_rate
         }
         
         # [内存优化] 释放临时统计变量
-        del decoder_expert_usage_total, encoder_expert_usage_total
-        del decoder_expert_usage_count, encoder_expert_usage_count
+        del decoder_expert_usage_total
+        del decoder_expert_usage_count
         
         return result
     
@@ -2802,16 +2726,12 @@ class CaS_DETRTrainer:
             if should_show_details:
                 self.logger.info(f"  检测损失: {train_metrics['detection_loss']:.2f}")
                 self.logger.info(f"  Decoder MoE损失: {train_metrics.get('decoder_moe_loss', 0.0):.4f}")
-                self.logger.info(f"  Encoder MoE损失: {train_metrics.get('encoder_moe_loss', 0.0):.4f}")
                 if self.model.use_cass:
                     self.logger.info(f"  CASS Loss: {train_metrics.get('cass_loss', 0.0):.4f}")
                 self.logger.info(f"  MoE总损失: {train_metrics['moe_load_balance_loss']:.4f}")
                 # 显示专家使用率（每个epoch显示一次）
                 usage_str = [f"{rate*100:.2f}%" for rate in train_metrics['expert_usage_rate']]
                 self.logger.info(f"  Decoder专家使用率: [{', '.join(usage_str)}]")
-                if 'encoder_expert_usage_rate' in train_metrics and train_metrics['encoder_expert_usage_rate']:
-                    enc_usage_str = [f"{rate*100:.2f}%" for rate in train_metrics['encoder_expert_usage_rate']]
-                    self.logger.info(f"  Encoder专家使用率: [{', '.join(enc_usage_str)}]")
             
             # 记录训练指标到可视化器
             current_lr = self.optimizer.param_groups[0]['lr']
@@ -2825,11 +2745,9 @@ class CaS_DETRTrainer:
                 learning_rate=current_lr,
                 # CaS_DETR特有的可视化参数
                 detection_loss=train_metrics.get('detection_loss', 0.0),
-                encoder_moe_loss=train_metrics.get('encoder_moe_loss', 0.0),  # Encoder MoE loss
                 decoder_moe_loss=train_metrics.get('decoder_moe_loss', 0.0),
                 token_pruning_ratio=train_metrics.get('token_pruning_ratio', 0.0),
                 # 传递encoder和decoder专家使用率
-                encoder_expert_usage=train_metrics.get('encoder_expert_usage_rate', []),
                 decoder_expert_usage=train_metrics.get('expert_usage_rate', [])
             )
             

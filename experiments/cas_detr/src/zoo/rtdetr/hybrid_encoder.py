@@ -1,4 +1,4 @@
-"""CaS_DETR HybridEncoder - 集成Token Pruning和Encoder MoE"""
+"""CaS_DETR HybridEncoder - 集成Token Pruning"""
 
 import copy
 from collections import OrderedDict
@@ -11,7 +11,6 @@ import torch.utils.checkpoint as cp
 
 from .utils import get_activation
 from .token_level_pruning import TokenLevelPruner
-from .moe_components import MoELayer
 
 from ...core import register
 
@@ -123,36 +122,16 @@ class TransformerEncoderLayer(nn.Module):
                  dim_feedforward=2048,
                  dropout=0.1,
                  activation="relu",
-                 normalize_before=False,
-                 use_moe=False,
-                 num_experts=4,
-                 moe_top_k=2,
-                 moe_noise_std=0.1,
-                 router_init_std=0.02): 
+                 normalize_before=False): 
         super().__init__()
         self.normalize_before = normalize_before
-        self.use_moe = use_moe
 
         self.self_attn = nn.MultiheadAttention(d_model, nhead, dropout, batch_first=True)
-
-        # FFN层：支持MoE
-        if use_moe:
-            # 使用统一的Token-Level MoE层
-            self.moe_layer = MoELayer(
-                d_model=d_model,
-                dim_feedforward=dim_feedforward,
-                num_experts=num_experts,
-                top_k=moe_top_k,
-                dropout=dropout,
-                activation=activation,
-                noise_std=moe_noise_std,
-                router_init_std=router_init_std # [新增]
-            )
-        else:
-            # 标准FFN
-            self.linear1 = nn.Linear(d_model, dim_feedforward)
-            self.dropout = nn.Dropout(dropout)
-            self.linear2 = nn.Linear(dim_feedforward, d_model)
+        
+        # 标准FFN
+        self.linear1 = nn.Linear(d_model, dim_feedforward)
+        self.dropout = nn.Dropout(dropout)
+        self.linear2 = nn.Linear(dim_feedforward, d_model)
 
         self.norm1 = nn.LayerNorm(d_model)
         self.norm2 = nn.LayerNorm(d_model)
@@ -165,18 +144,8 @@ class TransformerEncoderLayer(nn.Module):
         return tensor if pos_embed is None else tensor + pos_embed
 
     def forward_ffn(self, src, spatial_shape=None):
-        """FFN前向传播（支持MoE）"""
-        if self.use_moe:
-            # spatial_shape 仅作为元数据传递，不再用于计算
-            return self.moe_layer(src, spatial_shape=spatial_shape)
-        else:
-            return self.linear2(self.dropout(self.activation(self.linear1(src))))
-
-    def forward(self, src, src_mask=None, pos_embed=None, spatial_shape=None) -> torch.Tensor:
-        residual = src
-        if self.normalize_before:
-            src = self.norm1(src)
-        q = k = self.with_pos_embed(src, pos_embed)
+        """FFN前向传播"""
+        return self.linear2(self.dropout(self.activation(self.linear1(src))))
         src, _ = self.self_attn(q, k, value=src, attn_mask=src_mask)
 
         src = residual + self.dropout1(src)
@@ -238,8 +207,6 @@ class HybridEncoder(nn.Module):
                  version='v2',
                  # CaS_DETR 双稀疏参数
                  token_keep_ratio=0.7,
-                 encoder_moe_num_experts=4,
-                 encoder_moe_top_k=2,
                  # CASS (Context-Aware Soft Supervision) 参数
                  use_cass=False,
                  cass_expansion_ratio=0.3,
@@ -249,15 +216,10 @@ class HybridEncoder(nn.Module):
                  cass_loss_type='vfl',  # 'focal' or 'vfl'
                  cass_focal_alpha=0.75,
                  cass_focal_beta=2.0,
-                 # MoE noise_std parameter
-                 moe_noise_std=0.1,
-                 router_init_std=0.02,
                  **kwargs):  # **kwargs for backward compatibility (accepts but ignores token_pruning_warmup_epochs)
         """
         Args:
             token_keep_ratio: Patch retention ratio (0.5-0.7)
-            encoder_moe_num_experts: Number of experts for Encoder-MoE
-            encoder_moe_top_k: Top-K experts for Encoder-MoE
             use_cass: Whether to use Context-Aware Soft Supervision
             cass_expansion_ratio: Context band expansion ratio (0.2-0.8)
             cass_min_size: Minimum box size on feature map (protects small objects)
@@ -278,8 +240,6 @@ class HybridEncoder(nn.Module):
         
         # CaS_DETR dual-sparse parameters - 保存参数以便后续使用
         self.token_keep_ratio = token_keep_ratio
-        self.encoder_moe_num_experts = encoder_moe_num_experts
-        self.encoder_moe_top_k = encoder_moe_top_k
         
         # CASS parameters - 保存参数以便后续使用
         self.use_cass = use_cass
@@ -291,11 +251,6 @@ class HybridEncoder(nn.Module):
         self.cass_focal_alpha = cass_focal_alpha
         self.cass_focal_beta = cass_focal_beta
         
-        # MoE parameters
-        self.moe_noise_std = moe_noise_std
-        self.router_init_std = router_init_std # [新增]
-        
-        self.use_encoder_moe = True
         self.use_token_pruning = True
         self.use_token_level_pruning = True
         
@@ -344,12 +299,7 @@ class HybridEncoder(nn.Module):
             nhead=nhead,
             dim_feedforward=dim_feedforward, 
             dropout=dropout,
-            activation=enc_act,
-            use_moe=True,
-            num_experts=encoder_moe_num_experts,
-            moe_top_k=encoder_moe_top_k,
-            moe_noise_std=moe_noise_std,
-            router_init_std=router_init_std) # [新增]
+            activation=enc_act)
 
         self.encoder = TransformerEncoder(encoder_layer, num_encoder_layers)
         
@@ -473,43 +423,15 @@ class HybridEncoder(nn.Module):
         """设置当前epoch"""
         if self.shared_token_pruner is not None:
             self.shared_token_pruner.set_epoch(epoch)
-    
-    def get_encoder_moe_loss(self, encoder_info: dict) -> Dict[str, torch.Tensor]:
-        """Compute Encoder MoE balance loss."""
-        # Encoder MoE is always enabled
-        from .moe_components import compute_moe_balance_loss
-        
-        router_logits_list = encoder_info.get('moe_router_logits', [])
-        expert_indices_list = encoder_info.get('moe_expert_indices', [])
-        
-        if len(router_logits_list) == 0:
-            device = None
-            if 'moe_expert_indices' in encoder_info and len(encoder_info['moe_expert_indices']) > 0:
-                device = encoder_info['moe_expert_indices'][0].device
-            zero_tensor = torch.tensor(0.0, device=device) if device is not None else torch.tensor(0.0)
-            return {'balance_loss': zero_tensor}
-        
-        num_experts = router_logits_list[0].shape[-1] if len(router_logits_list) > 0 else 4
-        top_k = self.encoder_moe_top_k if hasattr(self, 'encoder_moe_top_k') else 2
-        balance_loss = compute_moe_balance_loss(router_logits_list, num_experts, expert_indices_list, top_k=top_k)
-        
-        return {'balance_loss': balance_loss}
 
     def forward(self, feats, return_encoder_info=False):
         assert len(feats) == len(self.in_channels)
         proj_feats = [self.input_proj[i](feat) for i, feat in enumerate(feats)]
         
-        # [修复] 共享层模式下，每个 Batch 开始前清空 MoE 记录
-        for layer in self.encoder.layers:
-            if hasattr(layer, 'moe_layer') and hasattr(layer.moe_layer, 'reset_cache'):
-                layer.moe_layer.reset_cache()
-        
         encoder_info = {
             'token_pruning_ratios': [],
             'importance_scores_list': [],
             'feat_shapes_list': [],  # Store feature map shapes for CASS
-            'moe_router_logits': [],
-            'moe_expert_indices': []
         }
         
         if self.num_encoder_layers > 0 and self.use_encoder_idx:
@@ -577,15 +499,6 @@ class HybridEncoder(nn.Module):
                 pos_embed=pos_embed_pruned,
                 spatial_shape=None
             )
-
-            # Collect MoE info
-            for layer in self.encoder.layers:
-                if hasattr(layer, 'moe_layer'):
-                    moe_layer = layer.moe_layer
-                    if hasattr(moe_layer, 'router_logits_cache') and moe_layer.router_logits_cache:
-                        encoder_info['moe_router_logits'].extend(moe_layer.router_logits_cache)
-                    if hasattr(moe_layer, 'expert_indices_cache') and moe_layer.expert_indices_cache:
-                        encoder_info['moe_expert_indices'].extend(moe_layer.expert_indices_cache)
 
             # Scatter back into full sequence
             B = memory.shape[0]

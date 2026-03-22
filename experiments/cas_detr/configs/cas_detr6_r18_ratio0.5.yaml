@@ -21,8 +21,6 @@ model:
   num_queries: 300
   cas_detr:
     token_keep_ratio: 0.5
-    encoder_moe_num_experts: 6
-    encoder_moe_top_k: 1
     use_cass: true
     cass_loss_weight: 0.05
     cass_expansion_ratio: 0.8
@@ -48,7 +46,6 @@ training:
   seed: 42
   deterministic: false
   decoder_moe_balance_weight: 0.01
-  encoder_moe_balance_weight: 0.001
   moe_balance_warmup_epochs: 0
 data:
   data_root: /root/autodl-tmp/datasets/DAIR-V2X
