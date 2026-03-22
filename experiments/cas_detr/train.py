@@ -2732,13 +2732,10 @@ class CaS_DETRTrainer:
         for epoch in range(self.current_epoch, epochs):
             self.current_epoch = epoch
 
-            # 更新 epoch（同步 train/val_loader 和 collate_fn，确保多尺度策略正确切换）
+            # 更新训练集 epoch（验证集无论什么 epoch 都不增强，无需更新）
             self.train_loader.set_epoch(epoch)
-            self.val_loader.set_epoch(epoch)
             if hasattr(self.train_loader.collate_fn, 'set_epoch'):
                 self.train_loader.collate_fn.set_epoch(epoch)
-            if hasattr(self.val_loader.collate_fn, 'set_epoch'):
-                self.val_loader.collate_fn.set_epoch(epoch)
 
             base_batch_size = self.config['training']['batch_size']
             current_target_batch_size = base_batch_size

@@ -1795,13 +1795,10 @@ class AdaptiveExpertTrainer:
         for epoch in range(self.current_epoch, epochs):
             self.current_epoch = epoch
             
-            # 更新 epoch（同步 train/val_loader 和 collate_fn，确保多尺度策略正确切换）
+            # 更新训练集 epoch
             self.train_loader.set_epoch(epoch)
-            self.val_loader.set_epoch(epoch)
             if hasattr(self.train_loader.collate_fn, 'set_epoch'):
                 self.train_loader.collate_fn.set_epoch(epoch)
-            if hasattr(self.val_loader.collate_fn, 'set_epoch'):
-                self.val_loader.collate_fn.set_epoch(epoch)
             
             # 训练一个epoch
             train_metrics = self.train_epoch()

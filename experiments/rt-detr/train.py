@@ -967,13 +967,10 @@ class RTDETRTrainer:
         for epoch in range(self.last_epoch + 1, epochs):
             self.last_epoch = epoch
             
-            # 更新 epoch（同步 train/val_loader 和 collate_fn，确保多尺度策略正确切换）
+            # 更新训练集 epoch
             self.train_dataloader.set_epoch(epoch)
-            self.val_dataloader.set_epoch(epoch)
             if hasattr(self.train_dataloader.collate_fn, 'set_epoch'):
                 self.train_dataloader.collate_fn.set_epoch(epoch)
-            if hasattr(self.val_dataloader.collate_fn, 'set_epoch'):
-                self.val_dataloader.collate_fn.set_epoch(epoch)
 
             # 训练一个epoch
             train_metrics = self._train_epoch()
