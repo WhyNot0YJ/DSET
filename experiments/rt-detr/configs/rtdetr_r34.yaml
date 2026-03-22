@@ -9,7 +9,7 @@ model:
   pretrained_weights: pretrained/rtdetrv2_r34vd_120e_coco_ema.pth
   num_decoder_layers: 4
   hidden_dim: 256
-  num_queries: 300
+  num_queries: 100
 training:
   epochs: 200
   batch_size: 4
@@ -41,6 +41,6 @@ data_augmentation:
   saturation: 0.1
   hue: 0.05
   flip_prob: 0.5
-  mosaic: 1.0
+  mosaic: 0.0
   mixup: 0.0
   close_mosaic_epochs: 20

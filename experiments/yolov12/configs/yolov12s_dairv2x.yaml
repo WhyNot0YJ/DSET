@@ -39,5 +39,5 @@ checkpoint:
 
 misc:
   device: "cuda"
-  num_workers: 16
+  num_workers: 2
 
