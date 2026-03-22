@@ -152,13 +152,6 @@ class RTDETRTrainer:
         
         if warmup_epochs is not None:
             self.config['training']['warmup_epochs'] = warmup_epochs
-        
-        # [新增] 读取 close_mosaic_epochs 参数
-        # 优先从 data_augmentation 读取，兼容 augmentation
-        aug_config = self.config.get('data_augmentation', {})
-        if not aug_config:
-            aug_config = self.config.get('augmentation', {})
-        self.close_mosaic_epochs = aug_config.get('close_mosaic_epochs', 0)
 
         if using_config_file:
             if 'misc' not in self.config or 'device' not in self.config['misc']:
@@ -224,11 +217,6 @@ class RTDETRTrainer:
         self.config['training']['batch_size'] = new_bs
         self.config.setdefault('misc', {})['num_workers'] = new_num_workers
         self.config.setdefault('misc', {})['prefetch_factor'] = new_prefetch_factor
-
-        if 'train_dataloader' in self.config and isinstance(self.config['train_dataloader'], dict):
-            self.config['train_dataloader']['batch_size'] = new_bs
-        if 'val_dataloader' in self.config and isinstance(self.config['val_dataloader'], dict):
-            self.config['val_dataloader']['batch_size'] = new_bs
     
     def _validate_config_file(self):
         """验证配置文件是否包含所有必需的配置项"""
@@ -535,122 +523,27 @@ class RTDETRTrainer:
     
     def create_datasets(self):
         """创建数据集"""
-        from src.data.dataloader import BaseCollateFunction
-        
-        # 创建collate_fn类
-        class CustomCollateFunction(BaseCollateFunction):
-            def __call__(self, batch):
-                images, targets = zip(*batch)
-                
-                # 1. 处理图像 (保持 Tensor 格式)
-                if not isinstance(images[0], torch.Tensor):
-                    processed_images = [T.functional.to_tensor(img) for img in images]
-                else:
-                    processed_images = list(images)
-
-                # 2. 计算 Batch 最大尺寸
-                sizes = [img.shape[-2:] for img in processed_images]
-                stride = 32
-                max_h_raw = max(s[0] for s in sizes)
-                max_w_raw = max(s[1] for s in sizes)
-                # 向上取整到 32 倍数
-                max_h = (max_h_raw + stride - 1) // stride * stride
-                max_w = (max_w_raw + stride - 1) // stride * stride
-                
-                # 3. 创建画布并填充 (左上角对齐)
-                batch_images = torch.zeros(len(processed_images), 3, max_h, max_w, 
-                                           dtype=processed_images[0].dtype)
-                
-                for i, img in enumerate(processed_images):
-                    h, w = img.shape[-2:]
-                    batch_images[i, :, :h, :w] = img
-                    
-                # 4. 根据最终 Batch 尺寸进行归一化
-                new_targets = []
-                for t in list(targets):
-                    # [FIX] 使用 deepcopy 或者 clone 确保不修改原始数据
-                    new_t = t.copy()
-                    # 必须 clone，否则 boxes[:, 0] = ... 会修改源 tensor
-                    boxes = new_t['boxes'].clone()
-                    
-                    # 手动归一化：除以 max_w 和 max_h
-                    # 格式是 cx, cy, w, h
-                    # x轴数据 (cx, w) 除以 max_w
-                    # y轴数据 (cy, h) 除以 max_h
-                    boxes[:, 0] = boxes[:, 0] / max_w
-                    boxes[:, 1] = boxes[:, 1] / max_h
-                    boxes[:, 2] = boxes[:, 2] / max_w
-                    boxes[:, 3] = boxes[:, 3] / max_h
-                    
-                    # 限制数值在 0-1 之间 (防止浮点溢出)
-                    boxes = torch.clamp(boxes, 0.0, 1.0)
-                    
-                    new_t['boxes'] = boxes
-                    new_targets.append(new_t)
-                
-                return batch_images, new_targets
-        
-        # 直接使用DAIRV2XDetection类（直接使用配置文件中的data.data_root）
+        # 直接使用DAIRV2XDetection类
         data_root = self.config['data']['data_root']
         target_size = 640
-        
-        # 获取数据增强配置
-        aug_config = self.config.get('data_augmentation', {})
-        # 默认使用Unified Task-Adapted Augmentation的参数
-        aug_brightness = aug_config.get('brightness', 0.15)
-        aug_contrast = aug_config.get('contrast', 0.15)
-        aug_saturation = aug_config.get('saturation', 0.1)
-        aug_hue = aug_config.get('hue', 0.05)
-        aug_color_jitter_prob = aug_config.get('color_jitter_prob', 0.0)
-        aug_flip_prob = aug_config.get('flip_prob', 0.5)
-        
-        # Mosaic 和 Mixup
-        aug_mosaic_prob = aug_config.get('mosaic', 0.0)
-        aug_mixup_prob = aug_config.get('mixup', 0.0)
-        
-        if aug_mosaic_prob > 0 or aug_mixup_prob > 0:
-            self.logger.info(f"🛠️  高级增强已启用: Mosaic={aug_mosaic_prob}, Mixup={aug_mixup_prob}")
-        
-        # 从主配置读取 train_dataloader 和 collate_fn 参数
-        train_dataloader_cfg = self.config.get('train_dataloader', {})
-        collate_cfg = train_dataloader_cfg.get('collate_fn', {})
-        stop_epoch = collate_cfg.get('stop_epoch', 31)
         
         train_dataset = DAIRV2XDetection(
             data_root=data_root,
             split='train',
             target_size=target_size,
-            aug_brightness=aug_brightness,
-            aug_contrast=aug_contrast,
-            aug_saturation=aug_saturation,
-            aug_hue=aug_hue,
-            aug_color_jitter_prob=aug_color_jitter_prob,
-            aug_flip_prob=aug_flip_prob,
-            aug_mosaic_prob=aug_mosaic_prob,
-            aug_mixup_prob=aug_mixup_prob,
-            stop_epoch=stop_epoch
+            stop_epoch=31  
         )
         
         val_dataset = DAIRV2XDetection(
             data_root=data_root,
             split='val',
             target_size=target_size,
-            aug_brightness=0.0,
-            aug_contrast=0.0,
-            aug_saturation=0.0,
-            aug_hue=0.0,
-            aug_color_jitter_prob=0.0,
-            stop_epoch=stop_epoch
+            stop_epoch=31  
         )
 
-        # 从配置提取 collate_fn 参数
-        collate_args = {
-            'scales': collate_cfg.get('scales'),
-            'stop_epoch': stop_epoch
-        }
-        
-        from src.data.dataloader import BatchImageCollateFuncion
-        collate_fn = BatchImageCollateFuncion(**collate_args)
+        # 多尺度训练配置
+        scales = [480, 512, 544, 576, 608, 640, 640, 640, 672, 704, 736, 768, 800]
+        collate_fn = BatchImageCollateFuncion(scales=scales, stop_epoch=31)
         
         # num_workers在misc配置中
         num_workers = self.config.get('misc', {}).get('num_workers', 16)
@@ -1064,44 +957,6 @@ class RTDETRTrainer:
             logger=self.logger
         )
     
-    def _disable_mosaic_mixup(self):
-        """Disable Mosaic and Mixup for the last N epochs, and update dataset transforms."""
-        self.logger.info(f"🛑 Reached final {self.close_mosaic_epochs} epochs. Disabling Mosaic & Mixup and switching to stage 2 transforms!")
-        
-        count = 0
-        def _update_dataset(dataset):
-            nonlocal count
-            updated = False
-            # 直接修改 dataset 的属性
-            if hasattr(dataset, 'aug_mosaic_prob'):
-                dataset.aug_mosaic_prob = 0.0
-                updated = True
-            if hasattr(dataset, 'aug_mixup_prob'):
-                dataset.aug_mixup_prob = 0.0
-                updated = True
-            
-            # 调用 set_epoch 触发 transform 切换
-            if hasattr(dataset, 'set_epoch'):
-                dataset.set_epoch(self.last_epoch)
-                updated = True
-            
-            if updated:
-                self.logger.info(f"  - augmentation settings for {type(dataset).__name__}")
-                count += 1
-            
-            # 递归处理 Subset 或其他 Wrapper
-            if hasattr(dataset, 'dataset'):
-                _update_dataset(dataset.dataset)
-                
-        # train_dataloader 可能还没有被创建，或者名字不同
-        if hasattr(self, 'train_dataloader') and self.train_dataloader:
-             _update_dataset(self.train_dataloader.dataset)
-        else:
-             self.logger.warning("Train dataloader not found, cannot disable Mosaic/Mixup")
-             
-        if count == 0:
-            self.logger.warning("⚠️ Warning: No dataset with aug_mosaic_prob/aug_mixup_prob found! Mosaic/Mixup might not be disabled.")
-
     def _custom_training_loop(self):
         """自定义训练循环"""
         epochs = self.config['training']['epochs']
@@ -1109,10 +964,6 @@ class RTDETRTrainer:
         
         for epoch in range(self.last_epoch + 1, epochs):
             self.last_epoch = epoch
-            
-            # [新增] Close Mosaic 策略 check
-            if self.close_mosaic_epochs > 0 and epoch == (epochs - self.close_mosaic_epochs):
-                self._disable_mosaic_mixup()
 
             # 训练一个epoch
             train_metrics = self._train_epoch()

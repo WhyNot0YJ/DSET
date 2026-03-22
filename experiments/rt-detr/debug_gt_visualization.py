@@ -160,12 +160,8 @@ if __name__ == "__main__":
     dataset = DAIRV2XDetection(
         data_root=data_root, 
         split='val', 
-        target_size=640, # 保持与 train.py 一致
-        aug_brightness=0.0,
-        aug_contrast=0.0,
-        aug_saturation=0.0,
-        aug_hue=0.0,
-        aug_color_jitter_prob=0.0
+        target_size=640,
+        stop_epoch=31
     )
     
     loader = DataLoader(dataset, batch_size=4, collate_fn=CustomCollateFunction(), shuffle=False)

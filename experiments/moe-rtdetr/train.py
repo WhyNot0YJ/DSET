@@ -582,64 +582,24 @@ class AdaptiveExpertTrainer:
         num_workers = self.config.get('misc', {}).get('num_workers', 16)
         pin_memory = self.config.get('misc', {}).get('pin_memory', True)
         prefetch_factor = self.config.get('misc', {}).get('prefetch_factor', 4)
-        
-        # 获取数据增强配置
-        aug_config = self.config.get('data_augmentation', {})
-        # 默认使用Unified Task-Adapted Augmentation的参数
-        aug_brightness = aug_config.get('brightness', 0.15)
-        aug_contrast = aug_config.get('contrast', 0.15)
-        aug_saturation = aug_config.get('saturation', 0.1)
-        aug_hue = aug_config.get('hue', 0.05)
-        aug_color_jitter_prob = aug_config.get('color_jitter_prob', 0.0)
-        aug_flip_prob = aug_config.get('flip_prob', 0.5)
 
-        # Mosaic 和 Mixup
-        aug_mosaic_prob = aug_config.get('mosaic', 0.0)
-        aug_mixup_prob = aug_config.get('mixup', 0.0)
-        
-        if aug_mosaic_prob > 0 or aug_mixup_prob > 0:
-            self.logger.info(f"🛠️  高级增强已启用: Mosaic={aug_mosaic_prob}, Mixup={aug_mixup_prob}")
-        
-        # 从主配置读取 train_dataloader 和 collate_fn 参数
-        train_dataloader_cfg = self.config.get('train_dataloader', {})
-        collate_cfg = train_dataloader_cfg.get('collate_fn', {})
-        stop_epoch = collate_cfg.get('stop_epoch', 31)
-        
         train_dataset = DAIRV2XDetection(
             data_root=self.config['data']['data_root'],
             split='train',
             target_size=target_size,
-            aug_brightness=aug_brightness,
-            aug_contrast=aug_contrast,
-            aug_saturation=aug_saturation,
-            aug_hue=aug_hue,
-            aug_color_jitter_prob=aug_color_jitter_prob,
-            aug_flip_prob=aug_flip_prob,
-            aug_mosaic_prob=aug_mosaic_prob,
-            aug_mixup_prob=aug_mixup_prob,
-            stop_epoch=stop_epoch
+            stop_epoch=31  
         )
         
         val_dataset = DAIRV2XDetection(
             data_root=self.config['data']['data_root'],
             split='val',
             target_size=target_size,
-            aug_brightness=0.0,
-            aug_contrast=0.0,
-            aug_saturation=0.0,
-            aug_hue=0.0,
-            aug_color_jitter_prob=0.0,
-            stop_epoch=stop_epoch
+            stop_epoch=31  
         )
 
-        # 从配置提取 collate_fn 参数
-        collate_args = {
-            'scales': collate_cfg.get('scales'),
-            'stop_epoch': stop_epoch
-        }
-        
-        from src.data.dataloader import BatchImageCollateFuncion
-        collate_fn = BatchImageCollateFuncion(**collate_args)
+        # 多尺度训练配置
+        scales = [480, 512, 544, 576, 608, 640, 640, 640, 672, 704, 736, 768, 800]
+        collate_fn = BatchImageCollateFuncion(scales=scales, stop_epoch=31)
                     # 必须 clone，否则 boxes[:, 0] = ... 会修改源 tensor
                     boxes = new_t['boxes'].clone()
                     
@@ -1143,40 +1103,6 @@ class AdaptiveExpertTrainer:
         except Exception as e:
             self.logger.error(f"恢复检查点失败: {e}")
     
-    def _disable_mosaic_mixup(self):
-        """Disable Mosaic and Mixup for the last N epochs, and update dataset transforms."""
-        self.logger.info(f"🛑 Reached final {self.close_mosaic_epochs} epochs. Disabling Mosaic & Mixup and switching to stage 2 transforms!")
-        
-        count = 0
-        def _update_dataset(dataset):
-            nonlocal count
-            updated = False
-            # 直接修改 dataset 的属性
-            if hasattr(dataset, 'aug_mosaic_prob'):
-                dataset.aug_mosaic_prob = 0.0
-                updated = True
-            if hasattr(dataset, 'aug_mixup_prob'):
-                dataset.aug_mixup_prob = 0.0
-                updated = True
-            
-            # [新增] 调用 set_epoch 触发 transform 切换
-            if hasattr(dataset, 'set_epoch'):
-                dataset.set_epoch(self.current_epoch)
-                updated = True
-            
-            if updated:
-                self.logger.info(f"  - Updated augmentation settings for {type(dataset).__name__}")
-                count += 1
-            
-            # 递归处理 Subset 或其他 Wrapper
-            if hasattr(dataset, 'dataset'):
-                _update_dataset(dataset.dataset)
-                
-        _update_dataset(self.train_loader.dataset)
-        
-        if count == 0:
-            self.logger.warning("⚠️ Warning: No dataset with aug_mosaic_prob/aug_mixup_prob found! Mosaic/Mixup might not be disabled.")
-
     def train_epoch(self) -> Dict[str, float]:
         """训练一个epoch。"""
         self.model.train()
@@ -1879,10 +1805,6 @@ class AdaptiveExpertTrainer:
             # [新增] 动态关闭 Multi-scale (如有 collate_fn 支持)
             if hasattr(self.train_loader.collate_fn, 'set_epoch'):
                 self.train_loader.collate_fn.set_epoch(epoch)
-
-            # [新增] Close Mosaic 策略 check
-            if self.close_mosaic_epochs > 0 and epoch == (epochs - self.close_mosaic_epochs):
-                self._disable_mosaic_mixup()
             
             # 验证策略：
             # - 前50 epoch：每10轮验证一次

@@ -42,14 +42,6 @@ class DAIRV2XDetection(DetDataset):
     
     def __init__(self, data_root: str, split: str = "train", transforms=None, 
                  target_size: int = 640,
-                 aug_brightness: float = 0.0,
-                 aug_contrast: float = 0.0,
-                 aug_saturation: float = 0.0,
-                 aug_hue: float = 0.0,
-                 aug_color_jitter_prob: float = 0.0,
-                 aug_flip_prob: float = 0.5,
-                 aug_mosaic_prob: float = 0.0,
-                 aug_mixup_prob: float = 0.0,
                  stop_epoch: int = 31):
         """
         初始化DAIR-V2X数据集
@@ -57,11 +49,8 @@ class DAIRV2XDetection(DetDataset):
         Args:
             data_root: 数据集根目录
             split: 数据集分割 ('train' 或 'val')
-            transforms: 数据变换 (如果为None，将使用默认的Unified Task-Adapted Augmentation)
-            target_size: 目标图像尺寸 (保留参数以兼容，但会被新的增强策略覆盖)
-            aug_*: 保留参数以兼容，但会被新的增强策略覆盖
-            aug_mosaic_prob: Probability of applying Mosaic augmentation
-            aug_mixup_prob: Probability of applying Mixup augmentation
+            transforms: 数据变换 (如果为None，将使用默认的增强策略)
+            target_size: 目标图像尺寸 (保留参数以兼容)
             stop_epoch: Training epoch at which to stop heavy augmentation (Crop, ZoomOut)
         """
         super().__init__()
@@ -71,10 +60,7 @@ class DAIRV2XDetection(DetDataset):
         self.target_size = target_size
         self.stop_epoch = stop_epoch
         
-        # Store augmentation probabilities for use in __getitem__ or custom wrapper
-        self.aug_mosaic_prob = aug_mosaic_prob
-        self.aug_mixup_prob = aug_mixup_prob
-        
+
         # DAIR-V2X类别定义（8类：前7类是交通参与者，Trafficcone是道路设施）
         self.class_names = [
             "Car", "Truck", "Van", "Bus", "Pedestrian", 
@@ -96,19 +82,8 @@ class DAIRV2XDetection(DetDataset):
         self.data_info = self._load_data_info()
         self.split_indices = self._load_split_indices()
         
-        # 保存增强参数
-        self.aug_params = {
-            'brightness': aug_brightness,
-            'contrast': aug_contrast,
-            'saturation': aug_saturation,
-            'hue': aug_hue,
-            'flip_prob': aug_flip_prob
-        }
-        
         self.set_epoch(0)
-        
-        self._init_transforms(aug_brightness, aug_contrast, aug_saturation, aug_hue, aug_flip_prob)
-
+        self._init_transforms()
 
 
     def _build_transforms_from_config(self, transform_list):
@@ -150,9 +125,9 @@ class DAIRV2XDetection(DetDataset):
                 
         return T.Compose(t_list)
 
-    def _init_transforms(self, aug_brightness, aug_contrast, aug_saturation, aug_hue, aug_flip_prob):
+    def _init_transforms(self):
         """初始化或更新变换策略"""
-        # 硬编码逻辑：根据当前 epoch 切换增强策略
+        逻辑：根据当前 epoch 切换增强策略
         if self.split == 'train':
             # 判断是否进入最后阶段
             if self.epoch >= self.stop_epoch:
@@ -176,7 +151,7 @@ class DAIRV2XDetection(DetDataset):
                     # 4. bbox 清洗
                     SanitizeBoundingBoxes(),
                     # 5. 随机翻转
-                    RandomHorizontalFlip(p=aug_flip_prob),
+                    RandomHorizontalFlip(p=0.5),
                     # 6. Resize (基础尺寸 640)
                     T.Resize(size=(640, 640), antialias=True),
                     # 7. 格式转换
@@ -199,11 +174,7 @@ class DAIRV2XDetection(DetDataset):
         """更新当前 epoch 并根据需要重新初始化 transforms"""
         super().set_epoch(epoch)
         # 重新初始化以应用分阶段策略
-        self._init_transforms(self.aug_params['brightness'], 
-                             self.aug_params['contrast'], 
-                             self.aug_params['saturation'], 
-                             self.aug_params['hue'], 
-                             self.aug_params['flip_prob'])
+        self._init_transforms()
 
     def _load_data_info(self):
         """加载数据信息"""
@@ -318,14 +289,8 @@ class DAIRV2XDetection(DetDataset):
         image, target = self.load_item(idx)
         
         # 2. Apply Mosaic / Mixup (if enabled and in training)
-        if self.split == 'train' and self.epoch < self.stop_epoch:
-            # Mosaic Augmentation
-            if hasattr(self, 'aug_mosaic_prob') and self.aug_mosaic_prob > 0:
-                import random
-                if random.random() < self.aug_mosaic_prob:
-                    if hasattr(self, 'mosaic_helper'):
-                         image, target, _ = self.mosaic_helper(image, target, self)
-
+        # Note: Mosaic/Mixup are now handled through hardcoded transform pipeline
+        
         # 3. 应用标准变换
         if self.transforms is not None:
             image, target = self.transforms(image, target)
