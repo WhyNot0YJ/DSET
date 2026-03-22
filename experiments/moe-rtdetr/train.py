@@ -599,8 +599,8 @@ class AdaptiveExpertTrainer:
             stop_epoch=71  
         )
 
-        # 多尺度训练配置
-        scales = [480, 512, 544, 576, 608, 640, 640, 640, 672, 704, 736, 768, 800]
+        # 多尺度训练配置 (固定视角下关闭多尺度以保留几何先验)
+        scales = [640]
         collate_fn = BatchImageCollateFuncion(scales=scales, stop_epoch=71)
                     # 必须 clone，否则 boxes[:, 0] = ... 会修改源 tensor
                     boxes = new_t['boxes'].clone()

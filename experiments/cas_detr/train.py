@@ -1245,8 +1245,8 @@ class CaS_DETRTrainer:
         pin_memory = self.config.get('misc', {}).get('pin_memory', True)
         prefetch_factor = self.config.get('misc', {}).get('prefetch_factor', 4)
 
-        # 多尺度训练配置
-        scales = [480, 512, 544, 576, 608, 640, 640, 640, 672, 704, 736, 768, 800]
+        # 多尺度训练配置 (固定视角下关闭多尺度以保留几何先验)
+        scales = [640]
         train_collate_fn = BatchImageCollateFuncion(scales=scales, stop_epoch=71)
         
         return DataLoader(
