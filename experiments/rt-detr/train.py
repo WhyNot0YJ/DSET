@@ -13,6 +13,10 @@ from common.dataset_registry import (
     apply_detr_dataset_profile,
     default_detr_registry_path,
 )
+from common.vram_batch import (
+    compute_vram_batch_adjustment,
+    format_vram_batch_log,
+)
 from common.det_eval_metrics import (
     kitti_difficulty_from_coco_ann,
     coco_ap_at_iou50_all,
@@ -237,32 +241,31 @@ class RTDETRTrainer:
         raise ValueError(f"未知 dataset_class: {name}")
 
     def _apply_vram_batch_size_rule(self):
-        """按显存动态设置: batch_size(来自YAML 8G基准), num_workers(8G=4), prefetch(8G=1)"""
+        """按显存动态设置 batch（逻辑见 common.vram_batch）。"""
         if self.device.type != 'cuda' or not torch.cuda.is_available():
             return
 
-        base_bs_8g = max(1, int(self.config.get('training', {}).get('batch_size', 16)))
+        base_bs = int(self.config.get('training', {}).get('batch_size', 16))
+        orig_nw = int(self.config.get('misc', {}).get('num_workers', 4))
+        orig_pf = int(self.config.get('misc', {}).get('prefetch_factor', 1))
+        device_index = (
+            self.device.index
+            if self.device.index is not None
+            else torch.cuda.current_device()
+        )
 
-        device_index = self.device.index if self.device.index is not None else torch.cuda.current_device()
-        total_vram_gb = torch.cuda.get_device_properties(device_index).total_memory / (1024 ** 3)
-        # 显存 > 28GB (如 RTX 5090 32G): 4倍基准
-        if total_vram_gb > 28:
-            scale = 4
-        elif total_vram_gb > 12:
-            scale = 2
-        else:
-            scale = 1
-            
-        orig_nw = self.config.get('misc', {}).get('num_workers', 16)
-        orig_pf = self.config.get('misc', {}).get('prefetch_factor', 4)
-            
-        new_bs = max(1, base_bs_8g * scale)
-        new_num_workers = max(1, orig_nw * scale)
-        new_prefetch_factor = max(1, orig_pf * scale)
+        r = compute_vram_batch_adjustment(
+            base_bs, orig_nw, orig_pf, device_index=device_index
+        )
+        if r is None:
+            return
 
-        self.config['training']['batch_size'] = new_bs
-        self.config.setdefault('misc', {})['num_workers'] = new_num_workers
-        self.config.setdefault('misc', {})['prefetch_factor'] = new_prefetch_factor
+        self.config['training']['batch_size'] = r.batch_size
+        self.config.setdefault('misc', {})['num_workers'] = r.num_workers
+        self.config.setdefault('misc', {})['prefetch_factor'] = r.prefetch_factor
+
+        if getattr(self, "logger", None):
+            self.logger.info(format_vram_batch_log(r))
     
     def _validate_config_file(self):
         """验证配置文件是否包含所有必需的配置项"""
@@ -830,7 +833,7 @@ class RTDETRTrainer:
         # 重新设置日志（现在可以正确处理恢复训练的情况）
         self.setup_logging()
 
-        # 按显存动态调整batch_size（8G基准，16G/32G按倍数放大）
+        # 按显存动态调整 batch_size（YAML 为基准；16G×3、32G×6）
         self._apply_vram_batch_size_rule()
         
         self.logger.info("=" * 80)

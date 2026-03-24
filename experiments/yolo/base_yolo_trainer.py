@@ -18,6 +18,15 @@ from typing import Optional, Dict, List
 from abc import ABC, abstractmethod
 import shutil
 
+_experiments_root = Path(__file__).resolve().parent.parent
+if str(_experiments_root) not in sys.path:
+    sys.path.insert(0, str(_experiments_root))
+from common.vram_batch import (
+    compute_vram_batch_adjustment,
+    format_vram_batch_log,
+    resolve_cuda_device_index,
+)
+
 from yolo_validator_utils import MetricsLogger, MultiScaleMetricsCalculator
 
 
@@ -307,29 +316,28 @@ class BaseYOLOTrainer(ABC):
         )
     
     def _apply_vram_batch_size_rule(self):
-        """按显存动态缩放 batch_size / num_workers（YAML 中的值为 8G 基准）。"""
+        """按显存动态缩放 batch / workers（与 rt-detr / moe / cas 共用 common.vram_batch）。"""
         device_str = self.misc_config.get('device', 'cuda')
-        if 'cuda' not in device_str or not torch.cuda.is_available():
+        if 'cuda' not in str(device_str) or not torch.cuda.is_available():
             return
 
-        idx = int(device_str.replace('cuda:', '').replace('cuda', '0'))
-        vram_gb = torch.cuda.get_device_properties(idx).total_memory / (1024 ** 3)
-        if vram_gb > 28:
-            scale = 4
-        elif vram_gb > 12:
-            scale = 2
-        else:
-            scale = 1
+        idx = resolve_cuda_device_index(str(device_str))
+        orig_bs = int(self.training_config.get('batch_size', 16))
+        orig_nw = int(self.misc_config.get('num_workers', 2))
+        orig_pf = int(self.misc_config.get('prefetch_factor', 1))
 
-        if scale > 1:
-            orig_bs = self.training_config.get('batch_size', 16)
-            orig_nw = self.misc_config.get('num_workers', 2)
-            self.training_config['batch_size'] = max(1, int(orig_bs * scale))
-            self.misc_config['num_workers'] = max(1, int(orig_nw * scale))
-            self.logger.info(
-                f"VRAM {vram_gb:.0f}G → batch_size {orig_bs}→{self.training_config['batch_size']}, "
-                f"workers {orig_nw}→{self.misc_config['num_workers']}"
-            )
+        r = compute_vram_batch_adjustment(
+            orig_bs, orig_nw, orig_pf, device_index=idx
+        )
+        if r is None:
+            return
+
+        self.training_config['batch_size'] = r.batch_size
+        self.misc_config['num_workers'] = r.num_workers
+        self.misc_config['prefetch_factor'] = r.prefetch_factor
+
+        if self.logger:
+            self.logger.info(format_vram_batch_log(r))
 
     def _build_train_kwargs(self) -> Dict:
         """

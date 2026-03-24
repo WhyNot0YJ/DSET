@@ -15,6 +15,11 @@ from common.dataset_registry import (
     apply_detr_dataset_profile,
     default_detr_registry_path,
 )
+from common.vram_batch import (
+    compute_vram_batch_adjustment,
+    format_vram_batch_log,
+    resolve_cuda_device_index,
+)
 from common.det_eval_metrics import (
     kitti_difficulty_from_coco_ann,
     coco_ap_at_iou50_all,
@@ -395,25 +400,30 @@ class AdaptiveExpertTrainer:
             self._resume_from_checkpoint()
             
     def _apply_vram_batch_size_rule(self):
-        """根据 VRAM 动态调整 batch_size 和相关配置。"""
-        # 获取 CUDA 显存
-        if torch.cuda.is_available():
-            total_vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
-            # 32G显存(5090) 4倍, 16G显存(4080/3090) 2倍
-            if total_vram_gb > 28:
-                scale = 4
-            elif total_vram_gb > 12:
-                scale = 2
-            else:
-                scale = 1
-                
-            orig_bs = self.config['training']['batch_size']
-            orig_nw = self.config.get('misc', {}).get('num_workers', 16)
-            orig_pf = self.config.get('misc', {}).get('prefetch_factor', 4)
-            
-            self.config['training']['batch_size'] = orig_bs * scale
-            self.config['misc']['num_workers'] = orig_nw * scale
-            self.config['misc']['prefetch_factor'] = orig_pf * scale
+        """根据 VRAM 动态调整 batch_size（与 rt-detr / yolo / cas_detr 共用 common.vram_batch）。"""
+        if not torch.cuda.is_available():
+            return
+
+        misc = self.config.setdefault('misc', {})
+        device_str = str(misc.get('device', 'cuda'))
+        idx = resolve_cuda_device_index(device_str)
+
+        orig_bs = int(self.config['training']['batch_size'])
+        orig_nw = int(misc.get('num_workers', 4))
+        orig_pf = int(misc.get('prefetch_factor', 1))
+
+        r = compute_vram_batch_adjustment(
+            orig_bs, orig_nw, orig_pf, device_index=idx
+        )
+        if r is None:
+            return
+
+        self.config['training']['batch_size'] = r.batch_size
+        misc['num_workers'] = r.num_workers
+        misc['prefetch_factor'] = r.prefetch_factor
+
+        if getattr(self, 'logger', None):
+            self.logger.info(format_vram_batch_log(r))
     
     def _validate_config_file(self):
         """验证配置文件是否包含所有必需的配置项"""
