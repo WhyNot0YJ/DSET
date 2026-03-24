@@ -37,6 +37,7 @@ export OMP_NUM_THREADS=1
 #   ./run_batch_experiments.sh --r18 --r34                     # 运行R18和R34实验
 #   ./run_batch_experiments.sh --custom cfg1.yaml cfg2.yaml    # 自定义配置列表
 #   ./run_batch_experiments.sh --keys rt-detr-r18 moe6-r34     # 使用内置键名选择
+#   ./run_batch_experiments.sh --dataset dairv2x,uadetrac       # YOLO配置按两个数据集维度运行
 #   ./run_batch_experiments.sh --select                        # 交互式选择待运行配置
 #   ./run_batch_experiments.sh --rerun-failed [LOG_DIR]        # 自动选择上次失败的实验
 ################################################################################
@@ -54,8 +55,8 @@ NC='\033[0m' # No Color
 
 # 创建日志目录（使用绝对路径）
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BATCH_LOG_DIR="$SCRIPT_DIR/logs/batch_experiments_$(date +%Y%m%d_%H%M%S)"
-mkdir -p "$BATCH_LOG_DIR"
+BATCH_LOG_DIR=""  # 禁用日志目录
+# mkdir -p "$BATCH_LOG_DIR"
 
 # 全局变量
 TOTAL_EXPERIMENTS=0
@@ -63,65 +64,90 @@ SUCCESSFUL_EXPERIMENTS=0
 FAILED_EXPERIMENTS=0
 SKIPPED_EXPERIMENTS=0
 TEST_MODE=false  # 测试模式标志
+YOLO_DATASETS=("dairv2x")
+TOTAL_PLANNED_RUNS=0
 
-# 日志函数
+# 选择可用的 Python 解释器
+PYTHON_BIN=""
+if command -v python >/dev/null 2>&1; then
+    PYTHON_BIN="python"
+elif command -v python3 >/dev/null 2>&1; then
+    PYTHON_BIN="python3"
+else
+    echo -e "${RED}[ERROR]${NC} 未找到可用的 Python 解释器（python/python3）"
+    exit 1
+fi
+
+# 日志函数（仅输出到控制台，不写入文件）
 log_info() {
-    echo -e "${BLUE}[INFO]${NC} $1" | tee -a "$BATCH_LOG_DIR/batch_summary.log"
+    echo -e "${BLUE}[INFO]${NC} $1"
 }
 
 log_success() {
-    echo -e "${GREEN}[SUCCESS]${NC} $1" | tee -a "$BATCH_LOG_DIR/batch_summary.log"
+    echo -e "${GREEN}[SUCCESS]${NC} $1"
 }
 
 log_error() {
-    echo -e "${RED}[ERROR]${NC} $1" | tee -a "$BATCH_LOG_DIR/batch_summary.log"
+    echo -e "${RED}[ERROR]${NC} $1"
 }
 
 log_warning() {
-    echo -e "${YELLOW}[WARNING]${NC} $1" | tee -a "$BATCH_LOG_DIR/batch_summary.log"
+    echo -e "${YELLOW}[WARNING]${NC} $1"
 }
 
 # 定义所有可用的实验配置
 declare -A RT_DETR_CONFIGS=(
-    # 基线实验
-    ["rt-detr-r18"]="rt-detr/configs/rtdetr_r18.yaml"
-    ["rt-detr-r34"]="rt-detr/configs/rtdetr_r34.yaml"
+    ["rt-detr-r18-dairv2x"]="rt-detr/configs/rtdetr_r18.yaml"
+    ["rt-detr-r18-uadetrac"]="rt-detr/configs/rtdetr_r18_uadetrac.yaml"
+    ["rt-detr-r34-dairv2x"]="rt-detr/configs/rtdetr_r34.yaml"
+    ["rt-detr-r34-uadetrac"]="rt-detr/configs/rtdetr_r34_uadetrac.yaml"
 )
 
-# 核心实验配置（2个0.5比例实验）
 declare -a CORE_EXPERIMENTS=(
-    "cas_detr/configs/cas_detr6_r18_ratio0.5.yaml"      # 1. CaS_DETR6-R18-0.5
-    "cas_detr/configs/cas_detr6_r34_ratio0.5.yaml"      # 2. CaS_DETR6-R34-0.5
+    "cas_detr/configs/cas_detr6_r18_ratio0.5.yaml"
+    "cas_detr/configs/cas_detr6_r34_ratio0.5.yaml"
 )
 
 declare -A MOE_RTDETR_CONFIGS=(
-    ["moe6-r18"]="moe-rtdetr/configs/moe6_r18.yaml"
-    ["moe6-r34"]="moe-rtdetr/configs/moe6_r34.yaml"
+    ["moe6-r18-dairv2x"]="moe-rtdetr/configs/moe6_r18.yaml"
+    ["moe6-r18-uadetrac"]="moe-rtdetr/configs/moe6_r18_uadetrac.yaml"
+    ["moe6-r34-dairv2x"]="moe-rtdetr/configs/moe6_r34.yaml"
+    ["moe6-r34-uadetrac"]="moe-rtdetr/configs/moe6_r34_uadetrac.yaml"
 )
 
 declare -A CaS_DETR_CONFIGS=(
-    ["cas_detr6-r18-0.5"]="cas_detr/configs/cas_detr6_r18_ratio0.5.yaml"
-    ["cas_detr6-r34-0.5"]="cas_detr/configs/cas_detr6_r34_ratio0.5.yaml"
+    ["cas_detr6-r18-0.5-dairv2x"]="cas_detr/configs/cas_detr6_r18_ratio0.5.yaml"
+    ["cas_detr6-r18-0.5-uadetrac"]="cas_detr/configs/cas_detr6_r18_ratio0.5_uadetrac.yaml"
+    ["cas_detr6-r34-0.5-dairv2x"]="cas_detr/configs/cas_detr6_r34_ratio0.5.yaml"
+    ["cas_detr6-r34-0.5-uadetrac"]="cas_detr/configs/cas_detr6_r34_ratio0.5_uadetrac.yaml"
 )
 
 declare -A YOLOV8_CONFIGS=(
-    ["yolov8n"]="yolov8/configs/yolov8n_dairv2x.yaml"
-    ["yolov8s"]="yolov8/configs/yolov8s_dairv2x.yaml"
+    ["yolov8n-dairv2x"]="yolo/configs/yolov8n_dairv2x.yaml"
+    ["yolov8n-uadetrac"]="yolo/configs/yolov8n_uadetrac.yaml"
+    ["yolov8s-dairv2x"]="yolo/configs/yolov8s_dairv2x.yaml"
+    ["yolov8s-uadetrac"]="yolo/configs/yolov8s_uadetrac.yaml"
 )
 
 declare -A YOLOV10_CONFIGS=(
-    ["yolov10n"]="yolov10/configs/yolov10n_dairv2x.yaml"
-    ["yolov10s"]="yolov10/configs/yolov10s_dairv2x.yaml"
+    ["yolov10n-dairv2x"]="yolo/configs/yolov10n_dairv2x.yaml"
+    ["yolov10n-uadetrac"]="yolo/configs/yolov10n_uadetrac.yaml"
+    ["yolov10s-dairv2x"]="yolo/configs/yolov10s_dairv2x.yaml"
+    ["yolov10s-uadetrac"]="yolo/configs/yolov10s_uadetrac.yaml"
 )
 
 declare -A YOLOV11_CONFIGS=(
-    ["yolov11n"]="yolov11/configs/yolov11n_dairv2x.yaml"
-    ["yolov11s"]="yolov11/configs/yolov11s_dairv2x.yaml"
+    ["yolov11n-dairv2x"]="yolo/configs/yolov11n_dairv2x.yaml"
+    ["yolov11n-uadetrac"]="yolo/configs/yolov11n_uadetrac.yaml"
+    ["yolov11s-dairv2x"]="yolo/configs/yolov11s_dairv2x.yaml"
+    ["yolov11s-uadetrac"]="yolo/configs/yolov11s_uadetrac.yaml"
 )
 
 declare -A YOLOV12_CONFIGS=(
-    ["yolov12n"]="yolov12/configs/yolov12n_dairv2x.yaml"
-    ["yolov12s"]="yolov12/configs/yolov12s_dairv2x.yaml"
+    ["yolov12n-dairv2x"]="yolo/configs/yolov12n_dairv2x.yaml"
+    ["yolov12n-uadetrac"]="yolo/configs/yolov12n_uadetrac.yaml"
+    ["yolov12s-dairv2x"]="yolo/configs/yolov12s_dairv2x.yaml"
+    ["yolov12s-uadetrac"]="yolo/configs/yolov12s_uadetrac.yaml"
 )
 
 declare -A DEFORMABLE_DETR_CONFIGS=(
@@ -279,28 +305,75 @@ parse_arguments() {
     local has_k09=false
     local filtered_args=()
     
-    for arg in "${args[@]}"; do
+    YOLO_DATASETS=()
+    local idx=0
+    while [ $idx -lt ${#args[@]} ]; do
+        local arg="${args[$idx]}"
         if [ "$arg" == "--test" ]; then
             has_test=true
             TEST_MODE=true
-        elif [ "$arg" == "--r18" ]; then
-            has_r18=true
-        elif [ "$arg" == "--r34" ]; then
-            has_r34=true
-        elif [ "$arg" == "--r50" ]; then
-            has_r50=true
-        elif [ "$arg" == "--k0.3" ]; then
-            has_k03=true
-        elif [ "$arg" == "--k0.5" ]; then
-            has_k05=true
-        elif [ "$arg" == "--k0.7" ]; then
-            has_k07=true
-        elif [ "$arg" == "--k0.9" ]; then
-            has_k09=true
-        else
-            filtered_args+=("$arg")
+            idx=$((idx + 1))
+            continue
         fi
+        if [ "$arg" == "--r18" ]; then
+            has_r18=true
+            idx=$((idx + 1))
+            continue
+        fi
+        if [ "$arg" == "--r34" ]; then
+            has_r34=true
+            idx=$((idx + 1))
+            continue
+        fi
+        if [ "$arg" == "--r50" ]; then
+            has_r50=true
+            idx=$((idx + 1))
+            continue
+        fi
+        if [ "$arg" == "--k0.3" ]; then
+            has_k03=true
+            idx=$((idx + 1))
+            continue
+        fi
+        if [ "$arg" == "--k0.5" ]; then
+            has_k05=true
+            idx=$((idx + 1))
+            continue
+        fi
+        if [ "$arg" == "--k0.7" ]; then
+            has_k07=true
+            idx=$((idx + 1))
+            continue
+        fi
+        if [ "$arg" == "--k0.9" ]; then
+            has_k09=true
+            idx=$((idx + 1))
+            continue
+        fi
+        if [ "$arg" == "--dataset" ]; then
+            local dataset_arg="${args[$((idx + 1))]}"
+            if [ -z "$dataset_arg" ]; then
+                log_error "--dataset 需要提供值（可逗号分隔，如 dairv2x,uadetrac）"
+                exit 1
+            fi
+            IFS=',' read -ra ds_items <<< "$dataset_arg"
+            for ds in "${ds_items[@]}"; do
+                local cleaned="${ds//[[:space:]]/}"
+                if [ -n "$cleaned" ]; then
+                    YOLO_DATASETS+=("$cleaned")
+                fi
+            done
+            idx=$((idx + 2))
+            continue
+        fi
+        filtered_args+=("$arg")
+        idx=$((idx + 1))
     done
+
+    if [ ${#YOLO_DATASETS[@]} -eq 0 ]; then
+        YOLO_DATASETS=("dairv2x")
+    fi
+    log_info "YOLO数据集维度: $(IFS=','; echo "${YOLO_DATASETS[*]}")"
     
     # 如果设置了测试模式，显示提示
     if [ "$has_test" = true ]; then
@@ -651,6 +724,7 @@ parse_arguments() {
         echo "  ./run_batch_experiments.sh --core                          # 只运行8个核心实验（按顺序）"
         echo "  ./run_batch_experiments.sh --custom cfg1.yaml cfg2.yaml    # 指定配置文件路径"
         echo "  ./run_batch_experiments.sh --keys rt-detr-r18 moe6-r34     # 通过键名选择"
+        echo "  ./run_batch_experiments.sh --dataset dairv2x,uadetrac       # YOLO按多个数据集维度运行"
         echo "  ./run_batch_experiments.sh --select                        # 交互式选择"
         echo "  ./run_batch_experiments.sh --rerun-failed [LOG_DIR]        # 重跑失败实验"
         exit 1
@@ -660,16 +734,24 @@ parse_arguments() {
 # 运行单个实验
 run_single_experiment() {
     local config_path=$1
+    local dataset_name="${2:-}"
     local exp_name=$(basename "$config_path" .yaml)
+    local exp_display="$exp_name"
+    if [ -n "$dataset_name" ]; then
+        exp_display="${exp_name}@${dataset_name}"
+    fi
     local exp_dir=$(dirname "$config_path")
     
     TOTAL_EXPERIMENTS=$((TOTAL_EXPERIMENTS + 1))
     
     echo ""
     echo -e "${PURPLE}========================================${NC}"
-    echo -e "${PURPLE}实验 [$TOTAL_EXPERIMENTS/${#CONFIGS_TO_RUN[@]}]: $exp_name${NC}"
+    echo -e "${PURPLE}实验 [$TOTAL_EXPERIMENTS/$TOTAL_PLANNED_RUNS]: $exp_display${NC}"
     echo -e "${PURPLE}========================================${NC}"
     log_info "开始实验: $config_path"
+    if [ -n "$dataset_name" ]; then
+        log_info "数据集: $dataset_name"
+    fi
     
     # 检查配置文件是否存在（Deformable-DETR 使用 Python 脚本）
     if [ ! -f "$config_path" ]; then
@@ -683,18 +765,23 @@ run_single_experiment() {
     fi
     
     # 确定训练脚本路径
-    if [[ "$exp_dir" == *"yolov8"* ]]; then
-        TRAIN_SCRIPT="yolov8/train.py"
-        WORK_DIR="yolov8"
-    elif [[ "$exp_dir" == *"yolov10"* ]]; then
-        TRAIN_SCRIPT="yolov10/train.py"
-        WORK_DIR="yolov10"
-    elif [[ "$exp_dir" == *"yolov11"* ]]; then
-        TRAIN_SCRIPT="yolov11/train.py"
-        WORK_DIR="yolov11"
-    elif [[ "$exp_dir" == *"yolov12"* ]]; then
-        TRAIN_SCRIPT="yolov12/train.py"
-        WORK_DIR="yolov12"
+    local YOLO_VERSION=""
+    if [[ "$exp_name" == yolov8* ]]; then
+        TRAIN_SCRIPT="yolo/train.py"
+        WORK_DIR="yolo"
+        YOLO_VERSION="8"
+    elif [[ "$exp_name" == yolov10* ]]; then
+        TRAIN_SCRIPT="yolo/train.py"
+        WORK_DIR="yolo"
+        YOLO_VERSION="10"
+    elif [[ "$exp_name" == yolov11* ]]; then
+        TRAIN_SCRIPT="yolo/train.py"
+        WORK_DIR="yolo"
+        YOLO_VERSION="11"
+    elif [[ "$exp_name" == yolov12* ]]; then
+        TRAIN_SCRIPT="yolo/train.py"
+        WORK_DIR="yolo"
+        YOLO_VERSION="12"
     elif [[ "$exp_dir" == *"cas_detr"* ]]; then
         TRAIN_SCRIPT="cas_detr/train.py"
         WORK_DIR="cas_detr"
@@ -720,6 +807,8 @@ run_single_experiment() {
     fi
     
     # 运行训练（让训练脚本自己管理日志输出）
+    # 保存原始目录以便正确返回
+    local original_dir=$(pwd)
     cd "$WORK_DIR"
     set +e  # 临时允许错误
     
@@ -727,20 +816,24 @@ run_single_experiment() {
     if [[ "$exp_dir" == *"deformable-detr"* ]]; then
         # 如果是测试模式，传递 --epochs 2 参数
         if [ "$TEST_MODE" = true ]; then
-            python train_deformable_r18.py --epochs 2
+            "$PYTHON_BIN" train_deformable_r18.py --epochs 2
         else
-            python train_deformable_r18.py
+            "$PYTHON_BIN" train_deformable_r18.py
         fi
     # 其他实验使用 YAML 配置文件
+    elif [ -n "$YOLO_VERSION" ] && [ "$TEST_MODE" = true ]; then
+        "$PYTHON_BIN" train.py --version "$YOLO_VERSION" --config "../$config_path" --epochs 2
+    elif [ -n "$YOLO_VERSION" ]; then
+        "$PYTHON_BIN" train.py --version "$YOLO_VERSION" --config "../$config_path"
     elif [ "$TEST_MODE" = true ]; then
-        python train.py --config "../$config_path" --epochs 2
+        "$PYTHON_BIN" train.py --config "../$config_path" --epochs 2
     else
-        python train.py --config "../$config_path"
+        "$PYTHON_BIN" train.py --config "../$config_path"
     fi
     
     local exit_code=$?
     set -e
-    cd ..
+    cd "$original_dir"
     
     # 清理GPU缓存（防止内存泄漏影响后续实验）
     if command -v python3 &> /dev/null; then
@@ -755,13 +848,11 @@ run_single_experiment() {
     
     # 检查训练结果
     if [ $exit_code -eq 0 ]; then
-        log_success "✓ 实验完成: $exp_name (耗时: $duration_formatted)"
+        log_success "✓ 实验完成: $exp_display (耗时: $duration_formatted)"
         SUCCESSFUL_EXPERIMENTS=$((SUCCESSFUL_EXPERIMENTS + 1))
-        echo "$exp_name,SUCCESS,$duration_formatted,$(date '+%Y-%m-%d %H:%M:%S')" >> "$BATCH_LOG_DIR/results.csv"
     else
-        log_error "✗ $exp_name | 失败 (退出码: $exit_code, 耗时: $duration_formatted)"
+        log_error "✗ $exp_display | 失败 (退出码: $exit_code, 耗时: $duration_formatted)"
         FAILED_EXPERIMENTS=$((FAILED_EXPERIMENTS + 1))
-        echo "$exp_name,FAILED,$duration_formatted,$(date '+%Y-%m-%d %H:%M:%S')" >> "$BATCH_LOG_DIR/results.csv"
     fi
     
     return $exit_code
@@ -769,48 +860,7 @@ run_single_experiment() {
 
 # 生成最终报告
 generate_report() {
-    local report_file="$BATCH_LOG_DIR/report.txt"
-    
-    {
-        echo "========================================="
-        echo "批量实验最终报告"
-        echo "========================================="
-        echo ""
-        echo "完成时间: $(date '+%Y-%m-%d %H:%M:%S')"
-        echo "日志目录: $BATCH_LOG_DIR"
-        echo ""
-        echo "实验统计:"
-        echo "  总实验数:   $TOTAL_EXPERIMENTS"
-        echo "  成功:       $SUCCESSFUL_EXPERIMENTS"
-        echo "  失败:       $FAILED_EXPERIMENTS"
-        echo "  跳过:       $SKIPPED_EXPERIMENTS"
-        echo ""
-        
-        if [ $SUCCESSFUL_EXPERIMENTS -gt 0 ]; then
-            echo "✓ 成功的实验:"
-            # 使用awk解析CSV（处理可能包含逗号的字段）
-            awk -F',' '
-            NR>1 && $2=="SUCCESS" {
-                printf "  - %s (耗时: %s)\n", $1, $3
-            }
-            ' "$BATCH_LOG_DIR/results.csv" 2>/dev/null
-            echo ""
-        fi
-        
-        if [ $FAILED_EXPERIMENTS -gt 0 ]; then
-            echo "✗ 失败的实验:"
-            grep "FAILED" "$BATCH_LOG_DIR/results.csv" 2>/dev/null | while IFS=',' read -r name status duration timestamp; do
-                echo "  - $name"
-            done
-            echo ""
-        fi
-        
-        echo ""
-        echo "CSV结果: $BATCH_LOG_DIR/results.csv"
-        echo "========================================="
-    } | tee "$report_file"
-    
-    # 彩色输出到终端
+    # 仅输出到终端，不生成文件
     echo ""
     echo -e "${CYAN}=========================================${NC}"
     echo -e "${CYAN}批量实验完成！${NC}"
@@ -821,14 +871,12 @@ generate_report() {
     echo -e "${BLUE}      - RT-DETR日志: rt-detr/logs/${NC}"
     echo -e "${BLUE}      - MOE-RTDETR日志: moe-rtdetr/logs/${NC}"
     echo -e "${BLUE}      - CaS_DETR日志: cas_detr/logs/${NC}"
-    echo -e "${BLUE}      - YOLOv8日志: yolov8/logs/${NC}"
-    echo -e "${BLUE}      - YOLOv10日志: yolov10/logs/${NC}"
-    echo -e "${BLUE}      - YOLOv11日志: yolov11/logs/${NC}"
-    echo -e "${BLUE}      - YOLOv12日志: yolov12/logs/${NC}"
+    echo -e "${BLUE}      - YOLO统一日志: yolo/logs/${NC}"
     echo -e "${BLUE}      - Deformable-DETR日志: deformable-detr/work_dirs/${NC}"
-    echo ""
-    echo -e "${BLUE}完整报告: $report_file${NC}"
-    echo -e "${BLUE}CSV结果: $BATCH_LOG_DIR/results.csv${NC}"
+}
+
+calculate_total_planned_runs() {
+    TOTAL_PLANNED_RUNS=${#CONFIGS_TO_RUN[@]}
 }
 
 # 主函数
@@ -842,9 +890,10 @@ main() {
     
     # 解析参数
     parse_arguments "$@"
+    calculate_total_planned_runs
     
     # 显示将要运行的实验
-    echo -e "${YELLOW}将运行以下 ${#CONFIGS_TO_RUN[@]} 个实验:${NC}"
+    echo -e "${YELLOW}将运行以下 ${#CONFIGS_TO_RUN[@]} 个配置，实际执行 ${TOTAL_PLANNED_RUNS} 个实验:${NC}"
     local i=1
     for config in "${CONFIGS_TO_RUN[@]}"; do
         echo -e "  ${CYAN}[$i]${NC} $config"
@@ -855,7 +904,7 @@ main() {
     # 如果是测试模式，显示额外提示
     if [ "$TEST_MODE" = true ]; then
         echo -e "${YELLOW}⚠️  测试模式：所有配置将只运行2个epoch进行快速验证${NC}"
-        echo -e "${YELLOW}   预计总耗时: ~30-60分钟（${#CONFIGS_TO_RUN[@]}个实验 × 2 epochs）${NC}"
+        echo -e "${YELLOW}   预计总耗时: ~30-60分钟（${TOTAL_PLANNED_RUNS}个实验 × 2 epochs）${NC}"
         echo -e "${YELLOW}   验证通过后，可使用以下命令运行完整训练：${NC}"
         echo -e "${CYAN}   ./run_batch_experiments.sh                # 运行所有实验（完整epochs）${NC}"
         echo ""
@@ -869,15 +918,14 @@ main() {
         exit 0
     fi
     
-    # 初始化CSV结果文件
-    echo "实验名称,状态,耗时,完成时间" > "$BATCH_LOG_DIR/results.csv"
+    # 禁用CSV结果文件
+    # echo "实验名称,状态,耗时,完成时间" > "$BATCH_LOG_DIR/results.csv"
     
     # 记录全局开始时间
     local global_start_time=$(date +%s)
     
-    # 顺序运行所有实验
     for config in "${CONFIGS_TO_RUN[@]}"; do
-        run_single_experiment "$config" || true  # 失败继续
+        run_single_experiment "$config" || true
     done
     
     # 计算总耗时

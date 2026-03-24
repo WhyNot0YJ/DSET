@@ -1,11 +1,31 @@
 import sys
 import os
 import argparse
+from pathlib import Path
+
+_experiments_root = Path(__file__).resolve().parent.parent
+if str(_experiments_root) not in sys.path:
+    sys.path.insert(0, str(_experiments_root))
+from common.dataset_registry import (
+    load_dataset_registry,
+    resolve_dataset_profile,
+    find_dataset_profile_by_data_yaml,
+    apply_detr_dataset_profile,
+    default_detr_registry_path,
+)
+from common.det_eval_metrics import (
+    kitti_difficulty_from_coco_ann,
+    coco_ap_at_iou50_all,
+    coco_area_ap_at_iou50,
+    write_eval_csv,
+    dataset_display_name,
+    dataset_dir_name,
+    model_display_name,
+)
 import yaml
 import torch
 import numpy as np
 import re
-from pathlib import Path
 import logging
 from typing import Optional, Dict, Union, List
 from pycocotools.cocoeval import COCOeval
@@ -24,6 +44,7 @@ from src.data import DataLoader
 from src.optim.ema import ModelEMA
 from src.optim.warmup import WarmupLR
 from src.data.dataset.dairv2x_detection import DAIRV2XDetection
+from src.data.dataset.coco_folder_detection import CocoFolderDetection
 from src.nn.postprocessor.detr_postprocessor import DetDETRPostProcessor
 from src.nn.postprocessor.box_revert import box_revert, BoxProcessFormat
 import cv2
@@ -189,6 +210,31 @@ class RTDETRTrainer:
             (0, 255, 255),    # Motorcyclist - 青色
             (128, 128, 128),  # Trafficcone - 灰色
         ]
+        self.num_classes = 8
+        self._init_dataset_derived_fields()
+
+    def _init_dataset_derived_fields(self):
+        """从 config['data'] 同步 num_classes / class_names / colors。"""
+        dc = self.config.setdefault("data", {})
+        self.num_classes = int(dc.get("num_classes", self.num_classes))
+        cn = dc.get("class_names")
+        if isinstance(cn, list) and cn:
+            self.class_names = [str(x) for x in cn]
+        while len(self.colors) < len(self.class_names):
+            self.colors.append((128, 128, 128))
+        self.colors = self.colors[: len(self.class_names)]
+        self._dair_truncation_categorical = (
+            dc.get("dataset_class") == "DAIRV2XDetection"
+            or "DAIR-V2X" in str(dc.get("data_root", ""))
+        )
+
+    def _resolve_dataset_class(self):
+        name = self.config.get("data", {}).get("dataset_class", "DAIRV2XDetection")
+        if name == "DAIRV2XDetection":
+            return DAIRV2XDetection
+        if name == "CocoFolderDetection":
+            return CocoFolderDetection
+        raise ValueError(f"未知 dataset_class: {name}")
 
     def _apply_vram_batch_size_rule(self):
         """按显存动态设置: batch_size(来自YAML 8G基准), num_workers(8G=4), prefetch(8G=1)"""
@@ -267,7 +313,8 @@ class RTDETRTrainer:
             backbone_short = backbone.replace('presnet', 'r').replace('pres', 'r') if 'presnet' in backbone or 'pres' in backbone else backbone
             # 生成实验名称（不带时间戳）
             self.experiment_name = f"rtdetr_{backbone_short}"
-            self.log_dir = Path(f"logs/{self.experiment_name}_{timestamp}")
+            ds_dir = dataset_dir_name(self.config)
+            self.log_dir = Path(f"logs/{ds_dir}/{self.experiment_name}_{timestamp}")
             self.log_dir.mkdir(parents=True, exist_ok=True)
         
         # 配置日志处理器
@@ -342,7 +389,7 @@ class RTDETRTrainer:
         # 创建decoder（添加denoising训练）
         from src.zoo.rtdetr.rtdetrv2_decoder import RTDETRTransformerv2
         decoder = RTDETRTransformerv2(
-            num_classes=8,  # 8类：Car, Truck, Van, Bus, Pedestrian, Cyclist, Motorcyclist, Trafficcone
+            num_classes=self.num_classes,
             hidden_dim=hidden_dim,
             num_queries=num_queries,
             num_layers=num_decoder_layers, 
@@ -514,7 +561,7 @@ class RTDETRTrainer:
             losses=['vfl', 'boxes'],
             alpha=0.75,
             gamma=2.0,
-            num_classes=8,  # 8类：Car, Truck, Van, Bus, Pedestrian, Cyclist, Motorcyclist, Trafficcone
+            num_classes=self.num_classes,
             boxes_weight_format=None,
             share_matched_indices=False
         )
@@ -525,27 +572,26 @@ class RTDETRTrainer:
         """创建数据集"""
         from src.data.dataloader import BatchImageCollateFuncion
         
-        # 直接使用DAIRV2XDetection类
         data_root = self.config['data']['data_root']
-        target_size = 640
-        
-        train_dataset = DAIRV2XDetection(
+        ds_cls = self._resolve_dataset_class()
+        augmentation_config = self.config.get('augmentation', {})
+
+        train_dataset = ds_cls(
             data_root=data_root,
             split='train',
-            target_size=target_size,
-            stop_epoch=71  
+            augmentation_config=augmentation_config
         )
         
-        val_dataset = DAIRV2XDetection(
+        val_dataset = ds_cls(
             data_root=data_root,
             split='val',
-            target_size=target_size,
-            stop_epoch=71  
+            augmentation_config=augmentation_config
         )
 
-        # 多尺度训练配置 (固定视角下关闭多尺度以保留几何先验)
-        scales = [480, 512, 544, 576, 608, 640, 640, 640, 672, 704, 736, 768, 800]
-        collate_fn = BatchImageCollateFuncion(scales=scales, stop_epoch=71)
+        # 多尺度训练配置 (从config中读取或使用默认值)
+        scales = self.config.get('augmentation', {}).get('scales', [480, 512, 544, 576, 608, 640, 640, 640, 672, 704, 736, 768, 800])
+        stop_epoch = self.config.get('augmentation', {}).get('stop_epoch', 71)
+        collate_fn = BatchImageCollateFuncion(scales=scales, stop_epoch=stop_epoch)
         
         # num_workers在misc配置中
         num_workers = self.config.get('misc', {}).get('num_workers', 16)
@@ -851,7 +897,7 @@ class RTDETRTrainer:
         
         # 5.5 创建推理后处理器
         self.postprocessor = DetDETRPostProcessor(
-            num_classes=8,  # 8类：Car, Truck, Van, Bus, Pedestrian, Cyclist, Motorcyclist, Trafficcone
+            num_classes=self.num_classes,
             use_focal_loss=True,
             num_top_queries=300,
             box_process_format=BoxProcessFormat.RESIZE
@@ -1068,34 +1114,21 @@ class RTDETRTrainer:
                         self.logger.info(f"Early Stopping在epoch {epoch}触发，停止训练")
                         break
             
-            # 每个epoch都保存latest用于断点续训
-            self._save_latest_checkpoint()
-            
-            # 绘制训练曲线（每个epoch都更新）
-            try:
-                self.visualizer.plot()
-            except Exception as e:
-                self.logger.warning(f"绘制训练曲线失败: {e}")
+            if epoch % 5 == 0 or epoch == self.config['training']['epochs'] - 1:
+                self._save_latest_checkpoint()
+                try:
+                    self.visualizer.plot()
+                except Exception as e:
+                    self.logger.warning(f"绘制训练曲线失败: {e}")
         
-        # 训练完成后，绘制最终的训练曲线并导出CSV
         self.logger.info("✓ 训练完成！")
         try:
             self.visualizer.plot()
             self.visualizer.export_to_csv()
-            self.logger.info(f"✓ 训练曲线已保存到: {self.log_dir}/training_curves.png")
-            self.logger.info(f"✓ 训练历史已导出到: {self.log_dir}/training_history.csv")
-            self.logger.info(f"✓ 所有输出已保存到: {self.log_dir}")
         except Exception as e:
-            self.logger.warning(f"绘制最终训练曲线失败: {e}")
+            self.logger.warning(f"绘制训练曲线失败: {e}")
 
-        # 训练结束后，使用best_model进行一次完整评估并打印全部AP
-        self.logger.info("=" * 60)
-        self.logger.info("使用best_model进行完整评估（含AP_small/AP_medium/AP_large）...")
         self._evaluate_best_model_and_print_all_ap()
-        
-        # 训练结束时使用best_model输出5张推理图像
-        self.logger.info("=" * 60)
-        self.logger.info("使用best_model生成推理结果（5张图像）...")
         try:
             best_model_path = self.log_dir / 'best_model.pth'
             latest_checkpoint_path = self.log_dir / 'latest_checkpoint.pth'
@@ -1112,10 +1145,106 @@ class RTDETRTrainer:
         except Exception as e:
             self.logger.warning(f"训练结束时推理失败（不影响训练结果）: {e}")
 
+    def _build_test_dataloader_optional(self):
+        """若存在 test 数据则构建 DataLoader，否则 None（与 YOLO 训练后 test 评估一致）。"""
+        if not self.config.get("data", {}).get("eval_test_after_training", True):
+            return None
+        from src.data.dataloader import BatchImageCollateFuncion
+
+        data_root = self.config["data"]["data_root"]
+        ds_cls = self._resolve_dataset_class()
+        augmentation_config = self.config.get("augmentation", {})
+        try:
+            test_dataset = ds_cls(
+                data_root=data_root,
+                split="test",
+                augmentation_config=augmentation_config,
+            )
+        except FileNotFoundError:
+            return None
+        if len(test_dataset) == 0:
+            return None
+
+        scales = self.config.get("augmentation", {}).get(
+            "scales", [480, 512, 544, 576, 608, 640, 640, 640, 672, 704, 736, 768, 800]
+        )
+        stop_epoch = self.config.get("augmentation", {}).get("stop_epoch", 71)
+        collate_fn = BatchImageCollateFuncion(scales=scales, stop_epoch=stop_epoch)
+        num_workers = self.config.get("misc", {}).get("num_workers", 16)
+        pin_memory = self.config.get("misc", {}).get("pin_memory", True)
+        prefetch_factor = self.config.get("misc", {}).get("prefetch_factor", 2)
+        return DataLoader(
+            test_dataset,
+            batch_size=self.config["training"]["batch_size"],
+            shuffle=False,
+            num_workers=num_workers,
+            collate_fn=collate_fn,
+            pin_memory=pin_memory,
+            persistent_workers=True if num_workers > 0 else False,
+            prefetch_factor=prefetch_factor if num_workers > 0 else None,
+        )
+
+    def _run_ema_eval_on_dataloader(self, dataloader, split_label: str, best_epoch=None):
+        """使用当前 EMA（已加载 best 权重）在给定 loader 上算 mAP。"""
+        all_predictions = []
+        all_targets = []
+        current_h, current_w = 640, 640
+
+        with torch.no_grad():
+            for batch_idx, (images, targets) in enumerate(dataloader):
+                _, _, current_h, current_w = images.shape
+                images = images.to(self.device, non_blocking=True)
+                targets = [
+                    {k: v.to(self.device, non_blocking=True) if isinstance(v, torch.Tensor) else v for k, v in t.items()}
+                    for t in targets
+                ]
+
+                outputs = self.ema.module(images, targets)
+                has_predictions = ("pred_logits" in outputs and "pred_boxes" in outputs) or (
+                    "class_scores" in outputs and "bboxes" in outputs
+                )
+                if has_predictions:
+                    self._collect_predictions(
+                        outputs, targets, batch_idx, all_predictions, all_targets, current_w, current_h
+                    )
+
+        if len(all_predictions) == 0 or len(all_targets) == 0:
+            self.logger.warning(f"best_model 在 {split_label} 上无有效预测或标注，跳过 AP")
+            return
+
+        metrics = self._compute_map_metrics(
+            all_predictions,
+            all_targets,
+            img_h=current_h,
+            img_w=current_w,
+            print_per_category=True,
+            compute_difficulty=True,
+        )
+
+        m = metrics
+        self.logger.info(
+            f"  best_model [{split_label}]  "
+            f"mAP50={m.get('mAP_0.5',0):.4f}  mAP75={m.get('mAP_0.75',0):.4f}  mAP={m.get('mAP_0.5_0.95',0):.4f}\n"
+            f"    E/M/H@0.5: {m.get('AP_easy',0):.4f}/{m.get('AP_moderate',0):.4f}/{m.get('AP_hard',0):.4f}  |  "
+            f"S/M/L@0.5: {m.get('AP_small_50',0):.4f}/{m.get('AP_medium_50',0):.4f}/{m.get('AP_large_50',0):.4f}  |  "
+            f"S/M/L@0.5:0.95: {m.get('AP_small',0):.4f}/{m.get('AP_medium',0):.4f}/{m.get('AP_large',0):.4f}"
+        )
+        summary_csv = self.log_dir.parent / "eval_metrics.csv"
+        write_eval_csv(
+            summary_csv,
+            model=model_display_name(self.config, self.experiment_name),
+            dataset=dataset_display_name(self.config),
+            eval_split=split_label,
+            metrics=metrics,
+            class_names=self.class_names,
+            append=summary_csv.exists(),
+        )
+        self.logger.info(f"✓ best_model [{split_label}] 评估完成 (epoch={best_epoch})  → {summary_csv}")
+
     def _evaluate_best_model_and_print_all_ap(self):
-        """训练结束后使用 best_model 在验证集上做一次完整评估并打印全部 AP。"""
-        best_model_path = self.log_dir / 'best_model.pth'
-        latest_checkpoint_path = self.log_dir / 'latest_checkpoint.pth'
+        """训练结束后在 val 上评估；若存在 test 划分与标注则再评一次。"""
+        best_model_path = self.log_dir / "best_model.pth"
+        latest_checkpoint_path = self.log_dir / "latest_checkpoint.pth"
         if best_model_path.exists():
             checkpoint_path = best_model_path
         elif latest_checkpoint_path.exists():
@@ -1128,66 +1257,32 @@ class RTDETRTrainer:
         original_ema_state = None
         try:
             checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
-            best_ema_state = checkpoint.get('ema_state_dict', None)
-            best_epoch = checkpoint.get('epoch', None)
+            best_ema_state = checkpoint.get("ema_state_dict", None)
+            best_epoch = checkpoint.get("epoch", None)
 
-            if hasattr(self, 'ema') and self.ema and best_ema_state is not None:
+            if hasattr(self, "ema") and self.ema and best_ema_state is not None:
                 original_ema_state = self.ema.state_dict()
                 self.ema.load_state_dict(best_ema_state)
 
             self.ema.module.eval()
-            all_predictions = []
-            all_targets = []
-            current_h, current_w = 640, 640
+            self._run_ema_eval_on_dataloader(self.val_dataloader, split_label="val", best_epoch=best_epoch)
 
-            with torch.no_grad():
-                for batch_idx, (images, targets) in enumerate(self.val_dataloader):
-                    _, _, current_h, current_w = images.shape
-                    images = images.to(self.device)
-                    targets = [{k: v.to(self.device) if isinstance(v, torch.Tensor) else v
-                               for k, v in t.items()} for t in targets]
+            test_loader = self._build_test_dataloader_optional()
+            if test_loader is not None:
+                self.logger.info("在 test 划分上进行训练结束评估（与 YOLO 一致，仅一次）…")
+                self._run_ema_eval_on_dataloader(test_loader, split_label="test", best_epoch=best_epoch)
+            else:
+                self.logger.info("无可用 test 数据或未配置 test，跳过 test 评估。")
 
-                    outputs = self.ema.module(images, targets)
-                    has_predictions = (
-                        ('pred_logits' in outputs and 'pred_boxes' in outputs) or
-                        ('class_scores' in outputs and 'bboxes' in outputs)
-                    )
-                    if has_predictions:
-                        self._collect_predictions(
-                            outputs, targets, batch_idx,
-                            all_predictions, all_targets,
-                            current_w, current_h
-                        )
-
-            if len(all_predictions) == 0 or len(all_targets) == 0:
-                self.logger.warning("best_model评估无有效预测或标注，跳过打印AP")
-                return
-
-            metrics = self._compute_map_metrics(
-                all_predictions,
-                all_targets,
-                img_h=current_h,
-                img_w=current_w,
-                print_per_category=True,
-                compute_difficulty=True
-            )
-
-            self.logger.info(
-                f"  best_model AP: AP={metrics.get('mAP_0.5_0.95', 0.0):.4f}, "
-                f"AP50={metrics.get('mAP_0.5', 0.0):.4f}, "
-                f"AP_S/M/L={metrics.get('AP_small', 0.0):.4f}/{metrics.get('AP_medium', 0.0):.4f}/{metrics.get('AP_large', 0.0):.4f} | "
-                f"E/M/H={metrics.get('AP_easy', 0.0):.4f}/{metrics.get('AP_moderate', 0.0):.4f}/{metrics.get('AP_hard', 0.0):.4f}"
-            )
-            self.logger.info(f"✓ best_model 评估完成 (epoch={best_epoch})")
         except Exception as e:
             self.logger.warning(f"训练结束后的best_model评估失败: {e}")
         finally:
-            if original_ema_state is not None and hasattr(self, 'ema') and self.ema:
+            if original_ema_state is not None and hasattr(self, "ema") and self.ema:
                 try:
                     self.ema.load_state_dict(original_ema_state)
                 except Exception:
                     pass
-    
+
     def _run_inference_on_best_model(self, best_ema_state=None, best_epoch=None):
         """使用best_model运行推理，输出5张验证图像的推理结果
         
@@ -1263,9 +1358,13 @@ class RTDETRTrainer:
             image_id = single_target['image_id'].item() if 'image_id' in single_target else batch_idx
             
             # 获取原始图像路径
-            data_root = Path(self.config['data']['data_root'])
-            orig_image_path = data_root / "image" / f"{image_id:06d}.jpg"
-            
+            ds = self.val_dataloader.dataset
+            orig_image_path = None
+            if hasattr(ds, "get_image_path"):
+                orig_image_path = ds.get_image_path(int(image_id))
+            if orig_image_path is None or not orig_image_path.exists():
+                data_root = Path(self.config["data"]["data_root"])
+                orig_image_path = data_root / "image" / f"{int(image_id):06d}.jpg"
             if not orig_image_path.exists():
                 return
             
@@ -1345,15 +1444,14 @@ class RTDETRTrainer:
     def _train_epoch(self):
         """训练一个epoch"""
         self.model.train()
-        total_loss = 0.0
-        detection_loss = 0.0
+        total_loss = torch.tensor(0.0, device=self.device)
+        detection_loss = torch.tensor(0.0, device=self.device)
         
         for batch_idx, (images, targets) in enumerate(self.train_dataloader):
-            images = images.to(self.device)
-            targets = [{k: v.to(self.device) if isinstance(v, torch.Tensor) else v 
+            images = images.to(self.device, non_blocking=True)
+            targets = [{k: v.to(self.device, non_blocking=True) if isinstance(v, torch.Tensor) else v 
                        for k, v in t.items()} for t in targets]
             
-            # 前向传播
             self.optimizer.zero_grad()
             
             with torch.amp.autocast('cuda'):
@@ -1373,34 +1471,25 @@ class RTDETRTrainer:
             self.scaler.update()
             self.ema.update(self.model)
             
-            # 统计损失
-            total_loss += loss.item()
-            
-            # 计算检测损失（主要损失项）
-            det_loss_val = 0.0
-            if 'loss_vfl' in loss_dict:
-                det_loss_val += loss_dict['loss_vfl'].item()
-            if 'loss_bbox' in loss_dict:
-                det_loss_val += loss_dict['loss_bbox'].item()
-            if 'loss_giou' in loss_dict:
-                det_loss_val += loss_dict['loss_giou'].item()
-            
-            detection_loss += det_loss_val
+            # detach 后累加，避免每步 GPU→CPU 同步
+            total_loss += loss.detach()
+            det_components = sum(
+                loss_dict[k].detach() for k in ('loss_vfl', 'loss_bbox', 'loss_giou') if k in loss_dict
+            )
+            detection_loss += det_components
             
             if batch_idx % 100 == 0:
-                self.logger.info(f'Epoch {self.last_epoch} | Batch {batch_idx} | '
-                               f'Loss: {loss.item():.2f} (Det: {det_loss_val:.2f})')
+                self.logger.info(
+                    f'Epoch {self.last_epoch} | Batch {batch_idx} | '
+                    f'Loss: {loss.item():.2f} (Det: {det_components.item():.2f})'
+                )
             
             self.global_step += 1
         
-        # 计算平均值
         num_batches = len(self.train_dataloader)
-        avg_loss = total_loss / num_batches
-        avg_detection_loss = detection_loss / num_batches
-        
         return {
-            'total_loss': avg_loss,
-            'detection_loss': avg_detection_loss
+            'total_loss': (total_loss / num_batches).item(),
+            'detection_loss': (detection_loss / num_batches).item(),
         }
     
     def _validate_epoch(self):
@@ -1416,12 +1505,11 @@ class RTDETRTrainer:
         # 验证逻辑
         with torch.no_grad():
             for batch_idx, (images, targets) in enumerate(self.val_dataloader):
-                # 动态获取 Tensor 尺寸
                 B, C, H_tensor, W_tensor = images.shape
                 current_h, current_w = H_tensor, W_tensor
 
-                images = images.to(self.device)
-                targets = [{k: v.to(self.device) if isinstance(v, torch.Tensor) else v 
+                images = images.to(self.device, non_blocking=True)
+                targets = [{k: v.to(self.device, non_blocking=True) if isinstance(v, torch.Tensor) else v 
                            for k, v in t.items()} for t in targets]
                 
                 outputs = self.ema.module(images, targets)
@@ -1464,150 +1552,104 @@ class RTDETRTrainer:
             'mAP_0.5_0.95': mAP_metrics.get('mAP_0.5_0.95', 0.0)
         }
     
+    @staticmethod
+    def _cxcywh_to_xywh_orig(boxes: torch.Tensor, img_w: int, img_h: int,
+                              orig_w: float, orig_h: float) -> np.ndarray:
+        """cxcywh (归一化或像素) → COCO xywh in original image coords. Returns numpy."""
+        scale = min(img_w / orig_w, img_h / orig_h)
+        normalized = boxes.max() <= 1.01
+        if normalized:
+            cx = boxes[:, 0] * img_w
+            cy = boxes[:, 1] * img_h
+            bw = boxes[:, 2] * img_w
+            bh = boxes[:, 3] * img_h
+        else:
+            cx, cy, bw, bh = boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 3]
+        out = torch.stack([
+            ((cx - bw / 2) / scale).clamp(0, orig_w),
+            ((cy - bh / 2) / scale).clamp(0, orig_h),
+            (bw / scale).clamp(1, orig_w),
+            (bh / scale).clamp(1, orig_h),
+        ], dim=1)
+        return out.cpu().numpy()
+
     def _collect_predictions(self, outputs: Dict, targets: List[Dict], batch_idx: int,
                             all_predictions: List, all_targets: List, img_w: int, img_h: int) -> None:
-        """收集预测结果用于mAP计算。保留所有有效预测框，不做top-k限制。"""
-        # 兼容两种输出格式：pred_logits/pred_boxes 或 class_scores/bboxes
+        """向量化收集预测/GT，单次 .cpu().numpy() 替代逐元素 .item()。"""
         if 'pred_logits' in outputs:
-            pred_logits = outputs['pred_logits']  # [B, Q, C]
-            pred_boxes = outputs['pred_boxes']    # [B, Q, 4]
+            pred_logits = outputs['pred_logits']
+            pred_boxes = outputs['pred_boxes']
         elif 'class_scores' in outputs:
-            pred_logits = outputs['class_scores']  # [B, Q, C]
-            pred_boxes = outputs['bboxes']        # [B, Q, 4]
+            pred_logits = outputs['class_scores']
+            pred_boxes = outputs['bboxes']
         else:
-            return  # 没有有效的预测输出
-        
+            return
+
+        bs = self.config['training']['batch_size']
         batch_size = pred_logits.shape[0]
-        
+
         for i in range(batch_size):
-            pred_scores_sigmoid = torch.sigmoid(pred_logits[i])  # [Q, C]
-            max_scores, pred_classes = torch.max(pred_scores_sigmoid, dim=-1)  # [Q]
-            
-            # 过滤无效框（padding框），保留所有有效预测框
-            valid_boxes_mask = ~torch.all(pred_boxes[i] == 1.0, dim=1)
-            valid_indices = torch.where(valid_boxes_mask)[0]
-            if len(valid_indices) > 0:
-                filtered_boxes = pred_boxes[i][valid_indices]
-                filtered_classes = pred_classes[valid_indices]
-                filtered_scores = max_scores[valid_indices]
-                
-                # 转换为COCO格式
-                if filtered_boxes.shape[0] > 0:
-                    # 获取原始图像尺寸，映射回原始比例
-                    orig_h, orig_w = targets[i]['orig_size'].tolist()
-                    
-                    # 计算 Letterbox 缩放比例和偏移量 (保持比例的 Resize + Padding)
-                    # 匹配 torchvision.transforms.v2.Resize(size=(640, 640)) 行为
-                    scale = min(img_w / float(orig_w), img_h / float(orig_h))
-                    nw, nh = int(round(orig_w * scale)), int(round(orig_h * scale))
-                    
-                    # PadToSize 默认是在右下角填充 (padding=[0, 0, w_pad, h_pad])
-                    # 所以偏移量为 0
-                    dw, dh = 0, 0
-                    
-                    boxes_coco = torch.zeros_like(filtered_boxes)
-                    if filtered_boxes.max() <= 1.01:
-                        # 归一化 cxcywh -> 像素坐标 -> 减去 padding -> 缩放回原始尺寸
-                        boxes_coco[:, 0] = (filtered_boxes[:, 0] * img_w - filtered_boxes[:, 2] * img_w / 2 - dw) / scale
-                        boxes_coco[:, 1] = (filtered_boxes[:, 1] * img_h - filtered_boxes[:, 3] * img_h / 2 - dh) / scale
-                        boxes_coco[:, 2] = (filtered_boxes[:, 2] * img_w) / scale
-                        boxes_coco[:, 3] = (filtered_boxes[:, 3] * img_h) / scale
-                    else:
-                        # 像素坐标 cxcywh -> 减去 padding -> 缩放回原始尺寸
-                        boxes_coco[:, 0] = (filtered_boxes[:, 0] - filtered_boxes[:, 2] / 2 - dw) / scale
-                        boxes_coco[:, 1] = (filtered_boxes[:, 1] - filtered_boxes[:, 3] / 2 - dh) / scale
-                        boxes_coco[:, 2] = filtered_boxes[:, 2] / scale
-                        boxes_coco[:, 3] = filtered_boxes[:, 3] / scale
-                    
-                    # Clamp坐标
-                    boxes_coco[:, 0] = torch.clamp(boxes_coco[:, 0], 0, orig_w)
-                    boxes_coco[:, 1] = torch.clamp(boxes_coco[:, 1], 0, orig_h)
-                    boxes_coco[:, 2] = torch.clamp(boxes_coco[:, 2], 1, orig_w)
-                    boxes_coco[:, 3] = torch.clamp(boxes_coco[:, 3], 1, orig_h)
-                    
-                    for j in range(boxes_coco.shape[0]):
-                        all_predictions.append({
-                            'image_id': batch_idx * self.config['training']['batch_size'] + i,
-                            'category_id': int(filtered_classes[j].item()) + 1,
-                            'bbox': boxes_coco[j].cpu().numpy().tolist(),
-                            'score': float(filtered_scores[j].item())
-                        })
-            
-            # 处理真实标签（评估时包含iscrowd字段，COCOeval会自动处理）
-            if i < len(targets) and 'labels' in targets[i] and 'boxes' in targets[i]:
-                true_labels = targets[i]['labels']
-                true_boxes = targets[i]['boxes']
-                
-                if len(true_labels) > 0:
-                    img_size = img_h
-                    max_val = float(true_boxes.max().item()) if true_boxes.numel() > 0 else 0.0
-                    scale = img_size if max_val <= 1.0 + 1e-6 else 1.0
-                    
-                    # 获取原始图像尺寸，映射回原始比例
-                    orig_h, orig_w = targets[i]['orig_size'].tolist()
-                    
-                    # 计算 Letterbox 缩放比例
-                    scale = min(img_w / float(orig_w), img_h / float(orig_h))
-                    dw, dh = 0, 0
-                    
-                    true_boxes_coco = torch.zeros_like(true_boxes)
-                    if max_val <= 1.0 + 1e-6:
-                        # 归一化 cxcywh -> 像素坐标 -> 缩放
-                        true_boxes_coco[:, 0] = (true_boxes[:, 0] * img_w - true_boxes[:, 2] * img_w / 2 - dw) / scale
-                        true_boxes_coco[:, 1] = (true_boxes[:, 1] * img_h - true_boxes[:, 3] * img_h / 2 - dh) / scale
-                        true_boxes_coco[:, 2] = (true_boxes[:, 2] * img_w) / scale
-                        true_boxes_coco[:, 3] = (true_boxes[:, 3] * img_h) / scale
-                    else:
-                        # 像素坐标 cxcywh -> 缩放
-                        true_boxes_coco[:, 0] = (true_boxes[:, 0] - true_boxes[:, 2] / 2 - dw) / scale
-                        true_boxes_coco[:, 1] = (true_boxes[:, 1] - true_boxes[:, 3] / 2 - dh) / scale
-                        true_boxes_coco[:, 2] = true_boxes[:, 2] / scale
-                        true_boxes_coco[:, 3] = true_boxes[:, 3] / scale
-                    
-                    true_boxes_coco[:, 0] = torch.clamp(true_boxes_coco[:, 0], 0, orig_w)
-                    true_boxes_coco[:, 1] = torch.clamp(true_boxes_coco[:, 1], 0, orig_h)
-                    true_boxes_coco[:, 2] = torch.clamp(true_boxes_coco[:, 2], 1, orig_w)
-                    true_boxes_coco[:, 3] = torch.clamp(true_boxes_coco[:, 3], 1, orig_h)
-                    
-                    # 获取iscrowd字段（评估时存在）
-                    has_iscrowd = 'iscrowd' in targets[i]
-                    iscrowd_values = targets[i]['iscrowd'] if has_iscrowd else torch.zeros(len(true_labels), dtype=torch.int64)
-                    has_occluded = 'occluded_state' in targets[i]
-                    has_truncated = 'truncated_state' in targets[i]
-                    occluded_values = targets[i]['occluded_state'] if has_occluded else torch.zeros(len(true_labels), dtype=torch.int64)
-                    truncated_values = targets[i]['truncated_state'] if has_truncated else torch.zeros(len(true_labels), dtype=torch.int64)
-                    
-                    for j in range(len(true_labels)):
-                        ann_dict = {
-                            'image_id': batch_idx * self.config['training']['batch_size'] + i,
-                            'category_id': int(true_labels[j].item()) + 1,
-                            'bbox': true_boxes_coco[j].cpu().numpy().tolist(),
-                            'area': float((true_boxes_coco[j, 2] * true_boxes_coco[j, 3]).item()),
-                            'bbox_height': float(true_boxes_coco[j, 3].item())
-                        }
-                        # 评估时添加iscrowd字段，让COCOeval自动处理
-                        if has_iscrowd:
-                            ann_dict['iscrowd'] = int(iscrowd_values[j].item())
-                        if has_occluded:
-                            ann_dict['occluded_state'] = int(occluded_values[j].item())
-                        if has_truncated:
-                            ann_dict['truncated_state'] = int(truncated_values[j].item())
-                        all_targets.append(ann_dict)
+            image_id = batch_idx * bs + i
+            orig_h, orig_w = targets[i]['orig_size'].tolist()
+
+            # ── predictions ──
+            scores_sig = torch.sigmoid(pred_logits[i])
+            max_scores, pred_cls = scores_sig.max(dim=-1)
+            valid = ~torch.all(pred_boxes[i] == 1.0, dim=1)
+            if valid.any():
+                fb = pred_boxes[i][valid]
+                fc = pred_cls[valid]
+                fs = max_scores[valid]
+                boxes_np = self._cxcywh_to_xywh_orig(fb, img_w, img_h, orig_w, orig_h)
+                cls_np = (fc.cpu().numpy() + 1).tolist()
+                scores_np = fs.cpu().numpy().tolist()
+                all_predictions.extend(
+                    {'image_id': image_id, 'category_id': c, 'bbox': boxes_np[j].tolist(), 'score': s}
+                    for j, (c, s) in enumerate(zip(cls_np, scores_np))
+                )
+
+            # ── ground truth ──
+            if i >= len(targets) or 'labels' not in targets[i] or 'boxes' not in targets[i]:
+                continue
+            true_labels = targets[i]['labels']
+            true_boxes = targets[i]['boxes']
+            if len(true_labels) == 0:
+                continue
+
+            gt_boxes_np = self._cxcywh_to_xywh_orig(true_boxes, img_w, img_h, orig_w, orig_h)
+            gt_cls_np = (true_labels.cpu().numpy() + 1)
+            gt_area = gt_boxes_np[:, 2] * gt_boxes_np[:, 3]
+            gt_h = gt_boxes_np[:, 3]
+
+            has_iscrowd = 'iscrowd' in targets[i]
+            has_occ = 'occluded_state' in targets[i]
+            has_trunc = 'truncated_state' in targets[i]
+            iscrowd_np = targets[i]['iscrowd'].cpu().numpy() if has_iscrowd else None
+            occ_np = targets[i]['occluded_state'].cpu().numpy() if has_occ else None
+            trunc_np = targets[i]['truncated_state'].cpu().numpy() if has_trunc else None
+
+            for j in range(len(gt_cls_np)):
+                ann = {
+                    'image_id': image_id,
+                    'category_id': int(gt_cls_np[j]),
+                    'bbox': gt_boxes_np[j].tolist(),
+                    'area': float(gt_area[j]),
+                    'bbox_height': float(gt_h[j]),
+                }
+                if iscrowd_np is not None:
+                    ann['iscrowd'] = int(iscrowd_np[j])
+                if occ_np is not None:
+                    ann['occluded_state'] = int(occ_np[j])
+                if trunc_np is not None:
+                    ann['truncated_state'] = int(trunc_np[j])
+                all_targets.append(ann)
 
     def _get_kitti_difficulty(self, target: Dict) -> str:
-        """按 KITTI 风格规则映射难度档位（Easy ⊂ Moderate ⊂ Hard）。"""
-        bbox = target.get('bbox', [0, 0, 0, 0])
-        bbox_h = float(target.get('bbox_height', bbox[3] if len(bbox) > 3 else 0.0))
-        occluded = int(target.get('occluded_state', 0))
-        truncated = int(target.get('truncated_state', 0))
-
-        if bbox_h >= 40 and occluded == 0 and truncated == 0:
-            return 'easy'
-        if bbox_h >= 25 and occluded <= 1 and truncated <= 1:
-            return 'moderate'
-        if bbox_h >= 25 and occluded <= 2 and truncated <= 2:
-            return 'hard'
-        return 'ignore'
+        """与 YOLO 侧 ``categorize_by_kitti_difficulty`` + DAIR 截断映射一致。"""
+        return kitti_difficulty_from_coco_ann(
+            target,
+            dair_categorical_trunc=self._dair_truncation_categorical,
+        )
 
     def _run_coco_eval(self, predictions: List[Dict], targets: List[Dict], categories: List[Dict],
                        img_h: int, img_w: int, print_summary: bool = False):
@@ -1664,9 +1706,6 @@ class RTDETRTrainer:
         if print_summary:
             coco_eval.summarize()
         else:
-            # 即使不打印，也要调用以生成 stats 属性
-            from io import StringIO
-            import sys
             old_stdout = sys.stdout
             sys.stdout = StringIO()
             try:
@@ -1687,21 +1726,19 @@ class RTDETRTrainer:
         for target in targets:
             level = self._get_kitti_difficulty(target)
             
-            # Easy targets: M, H, and Ignore are ignored (iscrowd=1)
+            # 独立模式：每档只评该档 GT，其余难度作 iscrowd=1（不计 FP）
             t_easy = copy.deepcopy(target)
             if level != 'easy':
                 t_easy['iscrowd'] = 1
             easy_targets.append(t_easy)
-            
-            # Moderate targets: H and Ignore are ignored
+
             t_mod = copy.deepcopy(target)
-            if level not in ['easy', 'moderate']:
+            if level != 'moderate':
                 t_mod['iscrowd'] = 1
             moderate_targets.append(t_mod)
-            
-            # Hard targets: Ignore is ignored
+
             t_hard = copy.deepcopy(target)
-            if level == 'ignore':
+            if level != 'hard':
                 t_hard['iscrowd'] = 1
             hard_targets.append(t_hard)
 
@@ -1709,55 +1746,13 @@ class RTDETRTrainer:
         moderate_eval = self._run_coco_eval(predictions, moderate_targets, categories, img_h, img_w, print_summary=False)
         hard_eval = self._run_coco_eval(predictions, hard_targets, categories, img_h, img_w, print_summary=False)
 
+        # AP@IoU=0.50（stats[1]），与 YOLO 训练后 KITTI 难度 mAP@0.5 对齐；勿用 stats[0]（0.5:0.95）
         return {
-            'AP_easy': float(easy_eval.stats[0]) if easy_eval is not None and hasattr(easy_eval, 'stats') and len(easy_eval.stats) > 0 else 0.0,
-            'AP_moderate': float(moderate_eval.stats[0]) if moderate_eval is not None and hasattr(moderate_eval, 'stats') and len(moderate_eval.stats) > 0 else 0.0,
-            'AP_hard': float(hard_eval.stats[0]) if hard_eval is not None and hasattr(hard_eval, 'stats') and len(hard_eval.stats) > 0 else 0.0,
+            "AP_easy": coco_ap_at_iou50_all(easy_eval),
+            "AP_moderate": coco_ap_at_iou50_all(moderate_eval),
+            "AP_hard": coco_ap_at_iou50_all(hard_eval),
         }
     
-    def _print_best_model_per_category_map(self):
-        """使用best_model时打印详细的每类mAP（8类），重新计算以输出COCO详细评估表格
-        注意：只有在epoch >= 30时才会触发best_model（基于mAP），此时才会计算每类的mAP
-        """
-        try:
-            # 检查是否有保存的预测结果（只有从第30个epoch开始才会有）
-            if hasattr(self, '_last_val_predictions') and hasattr(self, '_last_val_targets'):
-                if len(self._last_val_predictions) == 0 or len(self._last_val_targets) == 0:
-                    self.logger.warning("预测结果为空，跳过每类mAP计算")
-                    return
-                # 重新计算mAP，print_per_category=True会输出COCO详细评估表格
-                mAP_metrics = self._compute_map_metrics(self._last_val_predictions, self._last_val_targets, print_per_category=True)
-                per_category_map = mAP_metrics.get('per_category_map', {})
-            else:
-                # 如果没有保存的结果，则重新计算（兼容性处理）
-                self.logger.warning("未找到保存的验证结果，重新计算每个类别mAP...")
-                self.ema.module.eval()
-                all_predictions = []
-                all_targets = []
-                
-                with torch.no_grad():
-                    for batch_idx, (images, targets) in enumerate(self.val_dataloader):
-                        # 动态获取 Tensor 尺寸
-                        B, C, H_tensor, W_tensor = images.shape
-                        images = images.to(self.device)
-                        targets = [{k: v.to(self.device) if isinstance(v, torch.Tensor) else v 
-                                   for k, v in t.items()} for t in targets]
-                        
-                        outputs = self.ema.module(images, targets)
-                        
-                        # 兼容两种输出格式：pred_logits/pred_boxes 或 class_scores/bboxes
-                        has_predictions = (
-                            ('pred_logits' in outputs and 'pred_boxes' in outputs) or
-                            ('class_scores' in outputs and 'bboxes' in outputs)
-                        )
-                        if has_predictions:
-                            self._collect_predictions(outputs, targets, batch_idx, all_predictions, all_targets, W_tensor, H_tensor)
-                
-                mAP_metrics = self._compute_map_metrics(all_predictions, all_targets, print_per_category=True)
-                per_category_map = mAP_metrics.get('per_category_map', {})
-        except Exception as e:
-            self.logger.warning(f"打印best_model每类mAP失败: {e}")
-
     def _extract_per_category_ap_from_eval(self, coco_eval, categories: List[Dict]) -> Dict[str, float]:
         """从一次 COCOeval 结果中提取各类别 AP@0.5:0.95，避免重复评估。"""
         per_category_map = {cat['name']: 0.0 for cat in categories}
@@ -1807,6 +1802,9 @@ class RTDETRTrainer:
                     'AP_small': 0.0,
                     'AP_medium': 0.0,
                     'AP_large': 0.0,
+                    'AP_small_50': 0.0,
+                    'AP_medium_50': 0.0,
+                    'AP_large_50': 0.0,
                     'AP_easy': 0.0,
                     'AP_moderate': 0.0,
                     'AP_hard': 0.0
@@ -1839,6 +1837,9 @@ class RTDETRTrainer:
                     'AP_small': 0.0,
                     'AP_medium': 0.0,
                     'AP_large': 0.0,
+                    'AP_small_50': 0.0,
+                    'AP_medium_50': 0.0,
+                    'AP_large_50': 0.0,
                     'AP_easy': 0.0,
                     'AP_moderate': 0.0,
                     'AP_hard': 0.0
@@ -1847,20 +1848,6 @@ class RTDETRTrainer:
             # 每类 AP 从同一次 COCOeval 的 precision 张量提取，避免重复评估
             per_category_map = self._extract_per_category_ap_from_eval(coco_eval, categories) if print_per_category else {}
             
-            # [精简日志] 移除由于 compute_difficulty 导致的重复打印（已被底部的 best_model AP 覆盖）
-            # 以及整理类别 AP 的显示格式
-            if print_per_category:
-                self.logger.info("  每个类别的 mAP@0.5:0.95:")
-                category_order = ['Car', 'Truck', 'Van', 'Bus', 'Pedestrian', 
-                                'Cyclist', 'Motorcyclist', 'Trafficcone']
-                cat_lines = []
-                for i, cat_name in enumerate(category_order):
-                    map_val = per_category_map.get(cat_name, 0.0)
-                    cat_lines.append(f"{cat_name}: {map_val:.4f}")
-                # 分两行显示，减少日志长度
-                self.logger.info(f"    {' | '.join(cat_lines[:4])}")
-                self.logger.info(f"    {' | '.join(cat_lines[4:])}")
-
             difficulty_metrics = {
                 'AP_easy': 0.0,
                 'AP_moderate': 0.0,
@@ -1869,6 +1856,7 @@ class RTDETRTrainer:
             if compute_difficulty:
                 difficulty_metrics = self._compute_difficulty_aps(predictions, targets, categories, img_h, img_w)
             
+            s50, m50, l50 = coco_area_ap_at_iou50(coco_eval)
             result = {
                 'mAP_0.5': coco_eval.stats[1] if len(coco_eval.stats) > 1 else 0.0,
                 'mAP_0.75': coco_eval.stats[2] if len(coco_eval.stats) > 2 else 0.0,
@@ -1876,6 +1864,9 @@ class RTDETRTrainer:
                 'AP_small': coco_eval.stats[3] if len(coco_eval.stats) > 3 else 0.0,
                 'AP_medium': coco_eval.stats[4] if len(coco_eval.stats) > 4 else 0.0,
                 'AP_large': coco_eval.stats[5] if len(coco_eval.stats) > 5 else 0.0,
+                'AP_small_50': s50,
+                'AP_medium_50': m50,
+                'AP_large_50': l50,
                 'AP_easy': difficulty_metrics['AP_easy'],
                 'AP_moderate': difficulty_metrics['AP_moderate'],
                 'AP_hard': difficulty_metrics['AP_hard'],
@@ -1897,6 +1888,9 @@ class RTDETRTrainer:
                 'AP_small': 0.0,
                 'AP_medium': 0.0,
                 'AP_large': 0.0,
+                'AP_small_50': 0.0,
+                'AP_medium_50': 0.0,
+                'AP_large_50': 0.0,
                 'AP_easy': 0.0,
                 'AP_moderate': 0.0,
                 'AP_hard': 0.0
@@ -1931,6 +1925,18 @@ def main():
                        help='随机种子，用于确保实验可重复性（默认：42）')
     parser.add_argument('--deterministic', action='store_true',
                        help='使用确定性算法（会降低速度但保证完全可重复）')
+    parser.add_argument(
+        '--dataset',
+        type=str,
+        default=None,
+        help='数据集键名或别名（与 yolo/configs/datasets.yaml 中一致，可设置 coco_data_root / detr_dataset_class）',
+    )
+    parser.add_argument(
+        '--dataset_registry',
+        type=str,
+        default=str(default_detr_registry_path()),
+        help='数据集注册表 YAML 路径（默认与 YOLO 共用）',
+    )
     
     args = parser.parse_args()
     
@@ -1973,8 +1979,6 @@ def main():
             config['training']['new_lr'] = args.new_lr
         if args.warmup_epochs != 3:
             config['training']['warmup_epochs'] = args.warmup_epochs
-        if args.data_root != 'datasets/DAIR-V2X':
-            config['data']['data_root'] = args.data_root
         if args.pretrained_weights:
             config['model']['pretrained_weights'] = args.pretrained_weights
     else:
@@ -2043,6 +2047,20 @@ def main():
             'num_workers': 16  # 数据加载器worker数量
         }
     }
+
+    registry_path = Path(args.dataset_registry)
+    if not registry_path.is_absolute():
+        registry_path = Path(__file__).resolve().parent / registry_path
+    datasets_map = load_dataset_registry(registry_path)
+    if args.dataset:
+        profile = resolve_dataset_profile(datasets_map, args.dataset)
+        config = apply_detr_dataset_profile(config, profile)
+        print(f"🗂️  DETR 数据集: {args.dataset} -> data_root={config.get('data', {}).get('data_root')}")
+    elif args.config and args.config.endswith('.yaml') and args.data_root != 'datasets/DAIR-V2X':
+        config.setdefault('data', {})['data_root'] = args.data_root
+    elif not (args.config and args.config.endswith('.yaml')):
+        if args.data_root != 'datasets/DAIR-V2X':
+            config.setdefault('data', {})['data_root'] = args.data_root
     
     # 创建训练器
     # 如果使用配置文件，只传递显式传递的参数（不等于默认值的），其他传递None让配置文件的值生效

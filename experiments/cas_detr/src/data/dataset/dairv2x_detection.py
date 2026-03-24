@@ -36,13 +36,35 @@ def _normalize_state(value) -> int:
         return 2
     return state
 
+
+def _parse_state(value) -> int:
+    """解析原始状态值（不做范围裁剪），无效值回退为0。"""
+    try:
+        state = int(float(value))
+    except (TypeError, ValueError):
+        return 0
+    return state
+
 @register()
 class DAIRV2XDetection(DetDataset):
     """DAIR-V2X数据集检测器 - 支持COCO格式评估"""
     
+    # 默认的增强配置
+    DEFAULT_AUGMENTATION_CONFIG = {
+        'target_size': 640,
+        'stop_epoch': 71,
+        'normalize_mean': [0.485, 0.456, 0.406],
+        'normalize_std': [0.229, 0.224, 0.225],
+        'photometric_distort_p': 0.5,
+        'zoom_out_enabled': True,
+        'iou_crop_p': 0.8,
+        'horizontal_flip_p': 0.5,
+    }
+    
     def __init__(self, data_root: str, split: str = "train", transforms=None, 
                  target_size: int = 640,
-                 stop_epoch: int = 71):
+                 stop_epoch: int = 71,
+                 augmentation_config: Dict = None):
         """
         初始化DAIR-V2X数据集
         
@@ -52,13 +74,26 @@ class DAIRV2XDetection(DetDataset):
             transforms: 数据变换 (如果为None，将使用默认的增强策略)
             target_size: 目标图像尺寸 (保留参数以兼容)
             stop_epoch: Training epoch at which to stop heavy augmentation (Crop, ZoomOut)
+            augmentation_config: 增强配置字典，覆盖默认配置
         """
         super().__init__()
         
         self.data_root = Path(data_root)
         self.split = split
-        self.target_size = target_size
-        self.stop_epoch = stop_epoch
+        
+        # 合并增强配置
+        self.aug_config = self.DEFAULT_AUGMENTATION_CONFIG.copy()
+        if augmentation_config is not None:
+            self.aug_config.update(augmentation_config)
+        
+        # 向后兼容：如果传入target_size和stop_epoch，覆盖config中的值
+        if target_size != 640:
+            self.aug_config['target_size'] = target_size
+        if stop_epoch != 71:
+            self.aug_config['stop_epoch'] = stop_epoch
+        
+        self.target_size = self.aug_config['target_size']
+        self.stop_epoch = self.aug_config['stop_epoch']
         
 
         # DAIR-V2X类别定义（8类：前7类是交通参与者，Trafficcone是道路设施）
@@ -78,6 +113,10 @@ class DAIRV2XDetection(DetDataset):
             "PedestrianIgnore", "CarIgnore", "OtherIgnore", 
             "Unknown_movable", "Unknown_unmovable"
         ]
+
+        self.image_idx_to_coco_id = {}
+        self.annotations_by_coco_image_id = {}
+        self._load_instances_annotations()
         
         self.data_info = self._load_data_info()
         self.split_indices = self._load_split_indices()
@@ -85,48 +124,75 @@ class DAIRV2XDetection(DetDataset):
         self.set_epoch(0)
         self._init_transforms()
 
+    def _resolve_instances_json_path(self, split_name: str) -> Path:
+        primary = self.data_root / "annotations" / f"instances_{split_name}.json"
+        if primary.exists():
+            return primary
+        if split_name == "test":
+            alt = self.data_root.parent / "DAIR-V2X_YOLO" / "instances_test.json"
+            if alt.exists():
+                return alt
+        raise FileNotFoundError(f"instances标注文件不存在: {primary}")
+
     def _init_transforms(self):
         """初始化或更新变换策略"""
+        target_size = self.aug_config['target_size']
+        normalize_mean = self.aug_config['normalize_mean']
+        normalize_std = self.aug_config['normalize_std']
+        photometric_distort_p = self.aug_config['photometric_distort_p']
+        zoom_out_enabled = self.aug_config['zoom_out_enabled']
+        iou_crop_p = self.aug_config['iou_crop_p']
+        horizontal_flip_p = self.aug_config['horizontal_flip_p']
+        
         # 逻辑: 根据当前 epoch 切换增强策略
         if self.split == 'train':
             # 判断是否进入最后阶段
             if self.epoch >= self.stop_epoch:
                 # 阶段 2: 仅保留基础 Resize 和 Normalize
                 self.transforms = T.Compose([
-                    T.Resize(size=(640, 640), antialias=True),
+                    T.Resize(size=(target_size, target_size), antialias=True),
                     ConvertPILImage(),
                     T.ToDtype(torch.float32, scale=True),
-                    Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+                    Normalize(mean=normalize_mean, std=normalize_std),
                     ConvertBoxes(fmt='cxcywh', normalize=True)
                 ])
             else:
                 # 阶段 1: 官方标准顺序增强
-                self.transforms = T.Compose([
+                transforms_list = [
                     # 1. 颜色增强
-                    RandomPhotometricDistort(p=0.5),
-                    # 2. 空间扩展
-                    RandomZoomOut(fill=0),
-                    # 3. IoU 约束裁剪
-                    RandomIoUCrop(p=0.2),
+                    RandomPhotometricDistort(p=photometric_distort_p),
+                ]
+                
+                # 2. 空间扩展 (可配置)
+                if zoom_out_enabled:
+                    transforms_list.append(RandomZoomOut(fill=0))
+                
+                # 3. IoU 约束裁剪
+                transforms_list.extend([
+                    RandomIoUCrop(p=iou_crop_p),
                     # 4. bbox 清洗
                     SanitizeBoundingBoxes(),
                     # 5. 随机翻转
-                    RandomHorizontalFlip(p=0.5),
-                    # 6. Resize (基础尺寸 640)
-                    T.Resize(size=(640, 640), antialias=True),
-                    # 7. 格式转换
+                    RandomHorizontalFlip(p=horizontal_flip_p),
+                ])
+                
+                # 6-10. Resize 和格式转换
+                transforms_list.extend([
+                    T.Resize(size=(target_size, target_size), antialias=True),
                     ConvertPILImage(),
                     T.ToDtype(torch.float32, scale=True),
-                    Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+                    Normalize(mean=normalize_mean, std=normalize_std),
                     ConvertBoxes(fmt='cxcywh', normalize=True)
                 ])
+                
+                self.transforms = T.Compose(transforms_list)
         else:
             # 验证/推理配置
             self.transforms = T.Compose([
-                T.Resize(size=(640, 640), antialias=True),
+                T.Resize(size=(target_size, target_size), antialias=True),
                 ConvertPILImage(),
                 T.ToDtype(torch.float32, scale=True),
-                Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+                Normalize(mean=normalize_mean, std=normalize_std),
                 ConvertBoxes(fmt='cxcywh', normalize=True)
             ])
 
@@ -146,7 +212,7 @@ class DAIRV2XDetection(DetDataset):
             raise FileNotFoundError(f"数据信息文件不存在: {data_info_path}")
     
     def _load_split_indices(self):
-        """加载训练/验证分割"""
+        """加载训练/验证/测试分割（与 metadata/split_data.json 一致）。"""
         split_path = self.data_root / "metadata" / "split_data.json"
         if split_path.exists():
             with open(split_path, 'r', encoding='utf-8') as f:
@@ -159,8 +225,9 @@ class DAIRV2XDetection(DetDataset):
                     if image_path.exists():
                         valid_indices.append(idx_int)
                 return valid_indices
-        else:
-            return self._create_random_split()
+        if self.split == "test":
+            return []
+        return self._create_random_split()
     
     def _create_random_split(self):
         """创建随机分割（按路口分层随机分割）"""
@@ -191,6 +258,36 @@ class DAIRV2XDetection(DetDataset):
             return train_indices
         else:
             return val_indices
+
+    def _load_instances_annotations(self):
+        """加载COCO instances标注并建立图像索引。"""
+        if self.split == "train":
+            split_name = "train"
+        elif self.split == "test":
+            split_name = "test"
+        else:
+            split_name = "val"
+        ann_path = self._resolve_instances_json_path(split_name)
+
+        with open(ann_path, 'r', encoding='utf-8') as f:
+            coco_data = json.load(f)
+
+        self.image_idx_to_coco_id = {}
+        for image_item in coco_data.get('images', []):
+            file_name = image_item.get('file_name', '')
+            stem = Path(file_name).stem
+            try:
+                image_idx = int(stem)
+            except (TypeError, ValueError):
+                continue
+            self.image_idx_to_coco_id[image_idx] = int(image_item['id'])
+
+        self.annotations_by_coco_image_id = {}
+        for ann in coco_data.get('annotations', []):
+            image_id = int(ann.get('image_id', -1))
+            if image_id < 0:
+                continue
+            self.annotations_by_coco_image_id.setdefault(image_id, []).append(ann)
     
     def __len__(self):
         return len(self.split_indices)
@@ -208,8 +305,8 @@ class DAIRV2XDetection(DetDataset):
         w, h = image.size
         
         # 加载标注
-        annotation_path = self.data_root / "annotations" / "camera" / f"{actual_idx:06d}.json"
-        annotations = self._load_annotations(annotation_path)
+        coco_image_id = self.image_idx_to_coco_id.get(actual_idx)
+        annotations = self._load_annotations(coco_image_id)
         
         # 准备Target
         if len(annotations) > 0:
@@ -234,7 +331,7 @@ class DAIRV2XDetection(DetDataset):
             'boxes': boxes,
             'labels': labels,
             'area': areas,
-            'image_id': torch.tensor([actual_idx]),
+            'image_id': torch.tensor([actual_idx if coco_image_id is None else coco_image_id]),
             'iscrowd': iscrowd,
             'occluded_state': occluded_states,
             'truncated_state': truncated_states,
@@ -261,68 +358,55 @@ class DAIRV2XDetection(DetDataset):
         
         return image, target
     
-    def _load_annotations(self, annotation_path: Path) -> List[Dict]:
-        """加载标注文件，Ignore框标记为iscrowd=1"""
-        if not annotation_path.exists():
+    def _load_annotations(self, coco_image_id: Optional[int]) -> List[Dict]:
+        """从COCO instances加载标注，Ignore框标记为iscrowd=1。"""
+        if coco_image_id is None:
             return []
-        
-        with open(annotation_path, 'r', encoding='utf-8') as f:
-            annotations = json.load(f)
-        
+
+        annotations = self.annotations_by_coco_image_id.get(int(coco_image_id), [])
         processed_annotations = []
         for ann in annotations:
-            class_name = ann["type"]
-            
-            # 获取2D边界框
-            bbox_2d = ann["2d_box"]
-            x1 = float(bbox_2d["xmin"])
-            y1 = float(bbox_2d["ymin"])
-            x2 = float(bbox_2d["xmax"])
-            y2 = float(bbox_2d["ymax"])
+            category_id = int(ann.get('category_id', 0))
+            class_id = category_id - 1
+            if class_id < 0 or class_id >= len(self.class_names):
+                continue
+
+            # COCO bbox: [x, y, w, h]
+            bbox_xywh = ann.get('bbox', [0, 0, 0, 0])
+            if len(bbox_xywh) != 4:
+                continue
+            x1 = float(bbox_xywh[0])
+            y1 = float(bbox_xywh[1])
+            width = float(bbox_xywh[2])
+            height = float(bbox_xywh[3])
+            x2 = x1 + width
+            y2 = y1 + height
             
             if x2 <= x1 or y2 <= y1:
                 continue
             
             # XYXY format
             bbox = [x1, y1, x2, y2]
-            width = x2 - x1
-            height = y2 - y1
-            area = width * height
-            occluded_state = _normalize_state(ann.get("occluded_state", ann.get("occulated_state", 0)))
-            truncated_state = _normalize_state(ann.get("truncated_state", ann.get("turncated_state", 0)))
-            
-            if class_name in self.ignore_classes:
-                # 训练时：如果split是train，可以过滤掉ignore框
-                # 但为了保持代码一致性，这里保留并标记iscrowd=1
-                # SanitizeBoundingBoxes 可能不会过滤 iscrowd=1
-                processed_annotations.append({
-                    'class_id': 0,
-                    'bbox': bbox,
-                    'area': area,
-                    'iscrowd': 1,
-                    'occluded_state': occluded_state,
-                    'truncated_state': truncated_state
-                })
-            elif class_name in self.class_merge_map:
-                class_id = self.class_merge_map[class_name]
-                processed_annotations.append({
-                    'class_id': class_id,
-                    'bbox': bbox,
-                    'area': area,
-                    'iscrowd': 0,
-                    'occluded_state': occluded_state,
-                    'truncated_state': truncated_state
-                })
-            elif class_name in self.class_to_id:
-                class_id = self.class_to_id[class_name]
-                processed_annotations.append({
-                    'class_id': class_id,
-                    'bbox': bbox,
-                    'area': area,
-                    'iscrowd': 0,
-                    'occluded_state': occluded_state,
-                    'truncated_state': truncated_state
-                })
+            area = float(ann.get('area', width * height))
+            raw_occluded_state = _parse_state(ann.get("occluded_state", ann.get("occulated_state", 0)))
+            raw_truncated_state = _parse_state(ann.get("truncated_state", ann.get("turncated_state", 0)))
+            occluded_state = _normalize_state(raw_occluded_state)
+            truncated_state = _normalize_state(raw_truncated_state)
+
+            is_beyond_hard = (
+                raw_occluded_state > 2 or raw_occluded_state < 0 or
+                raw_truncated_state > 2 or raw_truncated_state < 0
+            )
+
+            is_ignore = bool(ann.get('iscrowd', 0)) or is_beyond_hard
+            processed_annotations.append({
+                'class_id': class_id,
+                'bbox': bbox,
+                'area': area,
+                'iscrowd': 1 if is_ignore else 0,
+                'occluded_state': occluded_state,
+                'truncated_state': truncated_state
+            })
         
         # 如果是训练集，且为了避免ignore框干扰训练（如DETR matching），可以过滤掉iscrowd=1的框
         # 但Transform可能会crop掉它们。
@@ -332,6 +416,13 @@ class DAIRV2XDetection(DetDataset):
             processed_annotations = [ann for ann in processed_annotations if ann['iscrowd'] == 0]
             
         return processed_annotations
+
+    def get_image_path(self, coco_image_id: int) -> Optional[Path]:
+        """供训练结束可视化：由 COCO image_id 解析原始图像路径。"""
+        for idx, cid in self.image_idx_to_coco_id.items():
+            if int(cid) == int(coco_image_id):
+                return self.data_root / "image" / f"{int(idx):06d}.jpg"
+        return None
     
     def get_categories(self):
         """获取类别信息 - COCO格式"""

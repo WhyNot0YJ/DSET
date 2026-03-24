@@ -1,0 +1,18 @@
+model:
+  model_name: "yolo11n.pt"
+  pretrained_weights: "pretrained/yolo11n.pt"
+
+training:
+  epochs: 100
+  batch_size: 32
+  imgsz: 640
+
+data:
+  data_yaml: "datasets/UA-DETRAC_YOLO/data.yaml"
+
+checkpoint:
+  log_dir: "logs"
+
+misc:
+  device: "cuda"
+  num_workers: 2

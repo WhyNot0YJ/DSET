@@ -36,6 +36,7 @@ echo "[INFO] 创建并进入容器：$NAME"
 exec docker run --gpus all -it --name "$NAME" \
   --shm-size="$SHM_SIZE" \
   -v "$HOST_ROOT:/root/autodl-tmp" \
+  -v "$HOST_ROOT:$HOME/proj" \
   -w "$CONTAINER_WORKDIR" \
   -p "$PORT_JUPYTER:8888" -p "$PORT_TENSORBOARD:6006" \
   "$IMAGE"
