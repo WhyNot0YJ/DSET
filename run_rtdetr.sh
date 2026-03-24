@@ -1,42 +1,50 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-IMAGE="rtdetr:latest"           # 你用 docker build -t rtdetr:latest . 构建的镜像
-NAME="rtdetr_dev"               # 容器名
-WORKDIR="$HOME/proj/CaS_DETR"   # 主机项目目录
-HOST_ROOT="$HOME/proj"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+IMAGE="rtdetr:latest"
+NAME="rtdetr_dev"
+# 主机项目目录：默认同脚本所在仓库根；可用 RTDETR_WORKDIR 覆盖
+WORKDIR="${RTDETR_WORKDIR:-$SCRIPT_DIR}"
+DOCKER_BUILD_DIR="$SCRIPT_DIR/containers/rtdetr"
+# 把「主机上 CaS_DETR 的父目录」挂到容器内 /root/autodl-tmp
+HOST_ROOT="$(cd "$WORKDIR/.." && pwd)"
 CONTAINER_WORKDIR="/root/autodl-tmp/CaS_DETR"
-PORT_JUPYTER=8899               # 避免和 yolov8 冲突，给个不同端口
+PORT_JUPYTER=8899
 PORT_TENSORBOARD=6007
 SHM_SIZE="4g"
 
-# 解决 32G 环境下 Dataloader 多进程与 OpenMP 线程池冲突导致的 libgomp 报错
 export OMP_NUM_THREADS=1
+
+# 无真实终端时去掉 -t，否则报错：the input device is not a TTY
+if [[ -t 0 && -t 1 ]]; then
+  DOCKER_TTY=(-it)
+else
+  DOCKER_TTY=(-i)
+  echo "[INFO] 当前无 TTY（例如 IDE 后台运行），将不分配伪终端；进入 shell 请在本机终端执行："
+  echo "  docker exec -it -w $CONTAINER_WORKDIR $NAME bash"
+fi
 
 mkdir -p "$WORKDIR"
 
-# 镜像存在性检查
 if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
   echo "[ERROR] 镜像 $IMAGE 不存在。先构建："
-  echo "  cd \$HOME/containers/rtdetr && docker build -t $IMAGE ."
+  echo "  docker build -t $IMAGE \"$DOCKER_BUILD_DIR\""
   exit 1
 fi
 
-# 若容器已存在：启动/进入
 if docker ps -a --format '{{.Names}}' | grep -wq "$NAME"; then
   if ! docker ps --format '{{.Names}}' | grep -wq "$NAME"; then
     echo "[INFO] 启动容器 $NAME ..."
     docker start "$NAME" >/dev/null
   fi
-  exec docker exec -it -w "$CONTAINER_WORKDIR" "$NAME" bash
+  exec docker exec "${DOCKER_TTY[@]}" -w "$CONTAINER_WORKDIR" "$NAME" bash
 fi
 
-# 首次创建并进入
 echo "[INFO] 创建并进入容器：$NAME"
-exec docker run --gpus all -it --name "$NAME" \
+exec docker run --gpus all "${DOCKER_TTY[@]}" --name "$NAME" \
   --shm-size="$SHM_SIZE" \
   -v "$HOST_ROOT:/root/autodl-tmp" \
-  -v "$HOST_ROOT:$HOME/proj" \
   -w "$CONTAINER_WORKDIR" \
   -p "$PORT_JUPYTER:8888" -p "$PORT_TENSORBOARD:6006" \
   "$IMAGE"
