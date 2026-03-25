@@ -22,6 +22,7 @@ RUN pip install --no-cache-dir \
     pycocotools \
     PyYAML \
     tensorboard \
+    pandas \
     scipy \
     numpy \
     onnx \

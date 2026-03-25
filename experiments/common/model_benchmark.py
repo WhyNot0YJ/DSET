@@ -19,7 +19,7 @@ import time
 import logging
 from copy import deepcopy
 from dataclasses import dataclass, field
-from typing import Callable, List, Optional, Tuple, Union
+from typing import Callable, List, Mapping, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -347,6 +347,43 @@ def benchmark_to_dict(r: BenchmarkResult) -> dict:
         "FPS": round(r.fps, 1),
         "Latency_ms": round(r.latency_ms, 2),
     }
+
+
+# 写入 eval 汇总 / metrics 的列：benchmark_to_dict 的子集，顺序固定（与 CSV 表头一致）
+BENCHMARK_EVAL_METRIC_KEYS: Tuple[str, ...] = ("GFLOPs", "Params_M", "FPS", "Latency_ms")
+
+
+def merge_benchmark_dict_into_metrics(metrics: dict, bench: Optional[dict]) -> None:
+    """将 :func:`benchmark_to_dict` 中上述键以 float 并入 ``metrics``（原地）。"""
+    if not bench:
+        return
+    for k in BENCHMARK_EVAL_METRIC_KEYS:
+        if k not in bench:
+            continue
+        v = bench[k]
+        metrics[k] = float(v) if isinstance(v, (int, float)) else float(str(v))
+
+
+def format_benchmark_eval_line(metrics: Mapping[str, object]) -> Optional[str]:
+    """训练/评估末尾单行摘要；键不齐则返回 ``None``。"""
+    if not all(k in metrics for k in BENCHMARK_EVAL_METRIC_KEYS):
+        return None
+    m = metrics
+    return (
+        f"📊 Benchmark  GFLOPs={m['GFLOPs']:.2f}  "
+        f"Params={m['Params_M']:.2f}M  "
+        f"FPS={m['FPS']:.1f}  "
+        f"Latency={m['Latency_ms']:.2f}ms"
+    )
+
+
+def format_eval_csv_cell(key: str, value: object) -> str:
+    """eval_metrics CSV：benchmark 列为 2 位小数，其余 float 为 6 位。"""
+    if value is None:
+        return ""
+    if isinstance(value, float):
+        return f"{value:.2f}" if key in BENCHMARK_EVAL_METRIC_KEYS else f"{value:.6f}"
+    return str(value)
 
 
 def log_benchmark(

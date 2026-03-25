@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from pathlib import Path
 from datetime import datetime
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Any
 from abc import ABC, abstractmethod
 import shutil
 
@@ -27,8 +27,12 @@ from common.vram_batch import (
     resolve_cuda_device_index,
 )
 from common.model_benchmark import (
+    BENCHMARK_EVAL_METRIC_KEYS,
     benchmark_to_dict,
+    format_benchmark_eval_line,
+    format_eval_csv_cell,
     log_benchmark,
+    merge_benchmark_dict_into_metrics,
 )
 
 from yolo_validator_utils import MetricsLogger, MultiScaleMetricsCalculator
@@ -561,6 +565,9 @@ class BaseYOLOTrainer(ABC):
             else max(len(self.class_names), 1)
         )
 
+        if bench_dict is None and eval_model is not None:
+            bench_dict = self._run_model_benchmark(eval_model)
+
         # ── 4. Collect GT and raw predictions ────────────────────────────
         # gt_info[cls] = [(img_idx, xyxy, diff_or_None, scale_or_None, h_px)]
         gt_info: Dict[int, list] = {c: [] for c in range(nc)}
@@ -641,7 +648,7 @@ class BaseYOLOTrainer(ABC):
             'hard':     {'hard'},
         }
         SCALE_LEVELS = ('small', 'medium', 'large')
-        metrics: Dict[str, float] = {}
+        metrics: Dict[str, Any] = {}
 
         _MIN_H = MultiScaleMetricsCalculator.MIN_HEIGHT
         for diff_key, include in DIFF_INCLUDE.items():
@@ -702,6 +709,7 @@ class BaseYOLOTrainer(ABC):
         metrics['mAP_50_all'] = float(np.mean(per_cls_50))
         metrics['mAP_5095_all'] = float(np.mean(per_cls_5095))
         metrics['eval_split'] = eval_split
+        merge_benchmark_dict_into_metrics(metrics, bench_dict)
 
         # ── 6. Report ─────────────────────────────────────────────────────
         self.logger.info(
@@ -717,13 +725,8 @@ class BaseYOLOTrainer(ABC):
         cls_5095_str = ' | '.join(f'{class_names[i]}={per_cls_5095[i]:.4f}' for i in range(nc))
         self.logger.info(f"📋 Per-class AP@0.5:  {cls_50_str}")
         self.logger.info(f"📋 Per-class AP@0.5:0.95:  {cls_5095_str}")
-        if bench_dict:
-            self.logger.info(
-                f"📊 Benchmark  GFLOPs={bench_dict['GFLOPs']:.2f}  "
-                f"Params={bench_dict['Params_M']:.2f}M  "
-                f"FPS={bench_dict['FPS']:.1f}  "
-                f"Latency={bench_dict['Latency_ms']:.2f}ms"
-            )
+        if (bm_line := format_benchmark_eval_line(metrics)):
+            self.logger.info(bm_line)
 
         model_name = self.model_config.get('model_name', f'yolov{self.VERSION}n')
         if model_name.endswith('.pt'):
@@ -741,20 +744,19 @@ class BaseYOLOTrainer(ABC):
             'mAP_easy', 'mAP_moderate', 'mAP_hard',
             'mAP_small', 'mAP_medium', 'mAP_large',
             'mAP_small_5095', 'mAP_medium_5095', 'mAP_large_5095',
-            'GFLOPs', 'Params_M', 'FPS', 'Latency_ms',
+            *BENCHMARK_EVAL_METRIC_KEYS,
         ]
         for name in class_names:
             fieldnames.append(f'AP50_{name}')
             fieldnames.append(f'AP5095_{name}')
 
-        row = {k: (f'{metrics[k]:.6f}' if isinstance(metrics.get(k), float) else metrics.get(k, ''))
-               for k in fieldnames}
+        row = {}
+        for k in fieldnames:
+            if k in ('model', 'dataset'):
+                continue
+            row[k] = format_eval_csv_cell(k, metrics[k]) if k in metrics else ''
         row['model'] = model_name
         row['dataset'] = dataset_name
-        if bench_dict:
-            for bk in ('GFLOPs', 'Params_M', 'FPS', 'Latency_ms'):
-                bv = bench_dict.get(bk, '')
-                row[bk] = f'{float(bv):.2f}' if isinstance(bv, (int, float)) else str(bv)
 
         # 写到数据集目录下的汇总 CSV（append），同时在实验目录下也保留一份
         summary_csv = self.log_dir.parent / 'eval_metrics.csv'

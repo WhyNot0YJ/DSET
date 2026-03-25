@@ -19,6 +19,7 @@ if str(_experiments_root) not in sys.path:
     sys.path.insert(0, str(_experiments_root))
 
 from common.dataset_registry import load_dataset_registry, find_dataset_profile_by_data_yaml
+from common.model_benchmark import format_benchmark_eval_line
 
 
 def _resolve_class_names(config: dict, registry_path: Path) -> list:
@@ -125,6 +126,8 @@ def main():
             f"  KITTI E/M/H: {metrics.get('mAP_easy',0):.4f} / "
             f"{metrics.get('mAP_moderate',0):.4f} / {metrics.get('mAP_hard',0):.4f}"
         )
+        if (bm := format_benchmark_eval_line(metrics)):
+            logger.info(f"  {bm}")
     else:
         logger.warning("未获得评估结果")
 
