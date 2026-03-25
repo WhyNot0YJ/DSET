@@ -291,34 +291,11 @@ class BaseYOLOTrainer(ABC):
             return model_name
     
     def _resolve_data_yaml(self) -> str:
-        """
-        解析数据YAML路径
-        
-        Returns:
-            解析后的数据YAML路径
-        """
+        """解析数据 YAML 路径（与 DETR 共用 ``common.detr_data_root.resolve_autodl_fs_path``）。"""
+        from common.detr_data_root import resolve_autodl_fs_path
+
         data_yaml = self.data_config.get('data_yaml')
-        data_yaml_path = Path(data_yaml)
-        
-        if data_yaml_path.exists():
-            return str(data_yaml_path)
-        
-        # 尝试多个路径（含 autodl-fs 持久盘上的 datasets）
-        project_root = Path(__file__).resolve().parent.parent.parent
-        alt_paths = [
-            project_root / data_yaml,
-            project_root.parent / data_yaml,
-            Path("/root/autodl-fs") / data_yaml,
-        ]
-        
-        for alt_path in alt_paths:
-            if alt_path.exists():
-                return str(alt_path)
-        
-        raise FileNotFoundError(
-            f"数据配置文件不存在: {data_yaml}\n"
-            f"尝试过的路径: {[str(p) for p in alt_paths]}"
-        )
+        return resolve_autodl_fs_path(data_yaml)
     
     def _apply_vram_batch_size_rule(self):
         """按显存动态缩放 batch / workers（与 rt-detr / moe / cas 共用 common.vram_batch）。"""

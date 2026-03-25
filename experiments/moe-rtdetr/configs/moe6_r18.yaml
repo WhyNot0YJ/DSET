@@ -1,5 +1,5 @@
 # MoE RT-DETR 配置（DAIR-V2X）
-# augmentation 与 rt-detr/configs/rtdetr_r18_finetune.yaml 对齐（含 480–800 多尺度）
+# augmentation 与 rt-detr/configs/rtdetr_r18.yaml 对齐（含 480–800 多尺度）
 model:
   num_experts: 6
   top_k: 3

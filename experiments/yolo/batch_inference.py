@@ -89,21 +89,9 @@ def path_exists_safe(path: Path) -> bool:
 
 
 def resolve_existing_path(path_value: str) -> Path:
-    candidate = Path(path_value)
-    if path_exists_safe(candidate):
-        return candidate
+    from common.detr_data_root import resolve_autodl_fs_path
 
-    project_root = Path(__file__).resolve().parent.parent.parent
-    alt_paths = [
-        project_root / path_value,
-        project_root.parent / path_value,
-        Path("/root/autodl-fs") / path_value,
-    ]
-    for alt_path in alt_paths:
-        if path_exists_safe(alt_path):
-            return alt_path
-
-    raise FileNotFoundError(f"路径不存在: {path_value}，尝试过: {[str(p) for p in alt_paths]}")
+    return Path(resolve_autodl_fs_path(path_value))
 
 
 def resolve_output_path(path_value: str) -> Path:
@@ -121,21 +109,9 @@ def resolve_output_path(path_value: str) -> Path:
 
 
 def resolve_data_yaml_path(path_value: str) -> Path:
-    candidate = Path(path_value)
-    if candidate.exists():
-        return candidate
+    from common.detr_data_root import resolve_autodl_fs_path
 
-    project_root = Path(__file__).resolve().parent.parent.parent
-    alt_paths = [
-        project_root / path_value,
-        project_root.parent / path_value,
-        Path("/root/autodl-fs") / path_value,
-    ]
-    for alt_path in alt_paths:
-        if alt_path.exists():
-            return alt_path
-
-    raise FileNotFoundError(f"数据集YAML不存在: {path_value}，尝试过: {[str(p) for p in alt_paths]}")
+    return Path(resolve_autodl_fs_path(path_value))
 
 
 def derive_default_paths_from_data_yaml(data_yaml_path: Path, dataset_key: str) -> Tuple[Path, Path]:

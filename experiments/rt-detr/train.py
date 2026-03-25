@@ -28,6 +28,7 @@ from common.detr_eval_utils import (
     log_detr_eval_summary,
     write_detr_eval_csv,
 )
+from common.detr_data_root import resolve_detr_data_root
 import yaml
 import torch
 import numpy as np
@@ -577,7 +578,11 @@ class RTDETRTrainer:
         """创建数据集"""
         from src.data.dataloader import BatchImageCollateFuncion
         
-        data_root = self.config['data']['data_root']
+        raw_root = self.config['data']['data_root']
+        data_root = resolve_detr_data_root(raw_root)
+        if data_root != raw_root:
+            self.logger.info(f"✓ 数据集根目录: {raw_root} → {data_root}")
+        self.config['data']['data_root'] = data_root
         ds_cls = self._resolve_dataset_class()
         augmentation_config = self.config.get('augmentation', {})
 

@@ -31,6 +31,7 @@ from common.detr_eval_utils import (
     log_detr_eval_summary,
     write_detr_eval_csv,
 )
+from common.detr_data_root import resolve_detr_data_root
 
 import yaml
 import torch
@@ -658,6 +659,12 @@ class AdaptiveExpertTrainer:
         """创建数据加载器。"""
         from src.data.dataloader import BatchImageCollateFuncion
         
+        raw_root = self.config['data']['data_root']
+        resolved_root = resolve_detr_data_root(raw_root)
+        if resolved_root != raw_root:
+            self.logger.info(f"✓ 数据集根目录: {raw_root} → {resolved_root}")
+        self.config['data']['data_root'] = resolved_root
+
         # 修改：移除不必要的max()，使用配置值
         batch_size = self.config['training']['batch_size']
         target_size = self.model.image_size

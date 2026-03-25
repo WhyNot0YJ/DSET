@@ -9,6 +9,7 @@ WORKDIR="${RTDETR_WORKDIR:-$SCRIPT_DIR}"
 DOCKER_BUILD_DIR="$SCRIPT_DIR/containers/rtdetr"
 # 把「主机上 CaS_DETR 的父目录」挂到容器内 /root/autodl-tmp
 HOST_ROOT="$(cd "$WORKDIR/.." && pwd)"
+AUTODL_FS_HOST="${AUTODL_FS_HOST:-/root/autodl-fs}"
 CONTAINER_WORKDIR="/root/autodl-tmp/CaS_DETR"
 PORT_JUPYTER=8899
 PORT_TENSORBOARD=6007
@@ -42,9 +43,19 @@ if docker ps -a --format '{{.Names}}' | grep -wq "$NAME"; then
 fi
 
 echo "[INFO] 创建并进入容器：$NAME"
+DOCKER_VOLUMES=(-v "$HOST_ROOT:/root/autodl-tmp")
+if [[ -n "$AUTODL_FS_HOST" ]]; then
+  if [[ ! -d "$AUTODL_FS_HOST" ]]; then
+    echo "[WARN] 主机目录不存在: $AUTODL_FS_HOST（将仍尝试挂载；Docker 可能创建空目录）"
+    echo "       AutoDL 上请先挂载数据盘，或确认数据在 /root/autodl-fs 下。"
+  fi
+  DOCKER_VOLUMES+=(-v "$AUTODL_FS_HOST:/root/autodl-fs")
+  echo "[INFO] 挂载数据盘: $AUTODL_FS_HOST -> /root/autodl-fs"
+fi
+
 exec docker run --gpus all "${DOCKER_TTY[@]}" --name "$NAME" \
   --shm-size="$SHM_SIZE" \
-  -v "$HOST_ROOT:/root/autodl-tmp" \
+  "${DOCKER_VOLUMES[@]}" \
   -w "$CONTAINER_WORKDIR" \
   -p "$PORT_JUPYTER:8888" -p "$PORT_TENSORBOARD:6006" \
   "$IMAGE"

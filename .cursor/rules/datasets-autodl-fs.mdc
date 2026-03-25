@@ -1,0 +1,22 @@
+---
+description: 数据集路径约定（AutoDL autodl-fs）；禁止多路径回退逻辑
+alwaysApply: true
+---
+
+# 数据集与路径
+
+## 约定
+
+- **唯一数据根（本仓库配置）**：`/root/autodl-fs/datasets/`
+  - 例如：`DAIR-V2X`、`DAIR-V2X_YOLO`、`UA-DETRAC_COCO`、`UA-DETRAC_YOLO` 均放在其下。
+- **`data_root` / `data_yaml` / `datasets.yaml` 中的 `coco_data_root`**：优先使用上述根下的**绝对路径**。
+- **统一实现**：`experiments/common/detr_data_root.py` 的 `resolve_autodl_fs_path` / `resolve_detr_data_root`；YOLO（`base_yolo_trainer._resolve_data_yaml`、`batch_inference`）与 RT-DETR / MoE-RT-DETR / CaS_DETR 训练在创建 DataLoader 前均使用同一套规则。
+
+## 不要做的事
+
+- **不要**增加「`autodl-tmp` ↔ `autodl-fs` 互换」类回退；相对路径的**第一候选**是 autodl-fs（见上），缺数据仍应明确报错。
+- **不要**为「盘没挂上」在业务代码里静默换路径；可选在文档或本 rule 中说明挂载与拷贝。
+
+## 出现问题时
+
+- `FileNotFoundError`（如 `instances_train.json` 不存在）：检查实例是否已挂载数据盘、`/root/autodl-fs/datasets/...` 是否已同步完整数据集；必要时在控制台绑定 autodl-fs 或重新上传/拷贝数据。
