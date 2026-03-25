@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""独立评估脚本：对已有实验目录的 best.pt 按 KITTI/Scale 标准重新评估。
+"""独立评估：对已有实验目录的 best.pt 做 KITTI 与多尺度评估。
 
-与训练结束后的 _evaluate_kitti_scale_after_training 调用路径完全一致。
+复用 ``BaseYOLOTrainer._evaluate_kitti_scale_after_training``。
 """
 
 import argparse
@@ -23,7 +23,7 @@ from common.model_benchmark import format_benchmark_eval_line
 
 
 def _resolve_class_names(config: dict, registry_path: Path) -> list:
-    """从 dataset registry 解析类名，与 train.py 一致。"""
+    """从 dataset registry 解析类名；registry 与 train.py 相同。"""
     data_yaml = config.get("data", {}).get("data_yaml", "")
     try:
         datasets = load_dataset_registry(registry_path)
@@ -47,7 +47,7 @@ def _resolve_version(config: dict) -> str:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="YOLO best.pt 重新评估 (KITTI/Scale)")
+    parser = argparse.ArgumentParser(description="YOLO best.pt 重新评估，KITTI 与多尺度")
     parser.add_argument("--log_dir", type=str, required=True)
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--dataset_registry", type=str, default="configs/datasets.yaml")
@@ -113,15 +113,18 @@ def main():
     logger.info(f"实验目录: {log_dir}")
     logger.info(f"best.pt:  {log_dir / 'weights' / 'best.pt'}")
     logger.info(f"推理设备: {trainer.misc_config.get('device', 'cpu')}")
-    logger.info(f"YOLO版本: v{version}  |  类别({len(class_names)}): {', '.join(class_names) or '从模型读取'}")
+    logger.info(
+        f"YOLO版本: v{version}  |  共 {len(class_names)} 类: "
+        f"{', '.join(class_names) or '从模型读取'}"
+    )
 
     metrics = trainer._evaluate_kitti_scale_after_training(model=None)
 
     if metrics:
         logger.info("=" * 60)
         logger.info("评估完成")
-        logger.info(f"  mAP@0.5 (all):      {metrics.get('mAP_50_all', 0):.4f}")
-        logger.info(f"  mAP@0.5:0.95 (all): {metrics.get('mAP_5095_all', 0):.4f}")
+        logger.info(f"  mAP@0.5 全类:      {metrics.get('mAP_50_all', 0):.4f}")
+        logger.info(f"  mAP@0.5:0.95 全类: {metrics.get('mAP_5095_all', 0):.4f}")
         logger.info(
             f"  KITTI E/M/H: {metrics.get('mAP_easy',0):.4f} / "
             f"{metrics.get('mAP_moderate',0):.4f} / {metrics.get('mAP_hard',0):.4f}"

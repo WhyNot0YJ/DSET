@@ -151,7 +151,7 @@ class MetricsAggregator:
         return scale_map
     
     def get_difficulty_map(self, iou_threshold: float = 0.5) -> Dict[str, float]:
-        """计算各难度等级的mAP (KITTI标准)"""
+        """计算各难度等级的 mAP，按 KITTI 难度分档。"""
         difficulty_map = {}
         for difficulty in ['easy', 'moderate', 'hard']:
             metrics = self.difficulty_metrics[difficulty]
@@ -229,8 +229,8 @@ class MetricsLogger:
             self.logger.info(f"   {metric_name}: {value:.4f}")
     
     def log_difficulty_metrics(self, epoch: int, difficulty_metrics: Dict[str, float]):
-        """记录难度等级指标(KITTI标准)"""
-        self.logger.info(f"\n🎯 Epoch {epoch} - Difficulty-wise mAP (KITTI):")
+        """记录难度等级指标，按 KITTI 难度分档。"""
+        self.logger.info(f"\n🎯 Epoch {epoch} - Difficulty-wise mAP · KITTI:")
         for metric_name, value in sorted(difficulty_metrics.items()):
             self.logger.info(f"   {metric_name}: {value:.4f}")
     
@@ -285,7 +285,7 @@ class MetricsPlotter:
         axes[0].legend(loc='best')
         axes[0].grid(True, alpha=0.3)
         
-        # 按难度的mAP (KITTI)
+        # 按难度的 mAP，KITTI 分档
         difficulties = ['easy', 'moderate', 'hard']
         difficulty_cols = [c for c in df.columns if any(d in c.lower() for d in difficulties)]
         
