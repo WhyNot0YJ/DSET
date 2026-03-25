@@ -1,0 +1,67 @@
+# RT-DETR 微调（UA-DETRAC）
+# augmentation 与 rtdetr_r34_finetune.yaml 完全一致，仅 data 不同
+model:
+  backbone: presnet34
+  encoder:
+    in_channels:
+    - 128
+    - 256
+    - 512
+    expansion: 0.5
+  pretrained_weights: pretrained/rtdetrv2_r34vd_120e_coco_ema.pth
+  num_decoder_layers: 4
+  hidden_dim: 256
+  num_queries: 300
+training:
+  epochs: 100
+  batch_size: 4
+  warmup_epochs: 3
+  pretrained_lr: 1e-5
+  new_lr: 1e-4
+  eta_min: 1e-6
+  weight_decay: 0.0001
+  ema_decay: 0.9999
+  clip_max_norm: 10.0
+  scheduler: cosine
+  early_stopping_patience: 20
+  early_stopping_metric: mAP_0.5_0.95
+  seed: 42
+  deterministic: false
+data:
+  data_root: /root/autodl-tmp/datasets/UA-DETRAC_COCO
+  dataset_class: CocoFolderDetection
+  num_classes: 4
+  class_names:
+  - car
+  - van
+  - bus
+  - others
+augmentation:
+  target_size: 640
+  stop_epoch: 45
+  scales:
+  - 576
+  - 608
+  - 640
+  - 672
+  - 704
+  normalize_mean:
+  - 0.485
+  - 0.456
+  - 0.406
+  normalize_std:
+  - 0.229
+  - 0.224
+  - 0.225
+  photometric_distort_p: 0.3
+  zoom_out_enabled: false
+  iou_crop_p: 0
+  horizontal_flip_p: 0.5
+checkpoint:
+  resume_mode: auto
+  log_dir: logs
+misc:
+  device: cuda
+  num_workers: 4
+  pin_memory: true
+  prefetch_factor: 1

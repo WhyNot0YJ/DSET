@@ -100,10 +100,16 @@ def kitti_difficulty_from_coco_ann(
 
 
 def coco_ap_at_iou50_all(coco_eval) -> float:
-    """主 AP@IoU=0.50（COCOeval.stats[1]）。"""
+    """
+    主 AP@IoU=0.50（COCOeval.stats[1]）。
+
+    COCOeval 约定：当评估集中无正样本 GT 时，stats[1] 返回 -1。
+    此处统一 clamp 为 0.0，与 YOLO 侧 ``_compute_ap_for_class`` 在
+    ``n_pos == 0`` 时返回 0.0 的行为保持一致，避免 CSV 中出现 -1。
+    """
     if coco_eval is None or not hasattr(coco_eval, "stats") or len(coco_eval.stats) < 2:
         return 0.0
-    return float(coco_eval.stats[1])
+    return max(0.0, float(coco_eval.stats[1]))
 
 
 def coco_area_ap_at_iou50(coco_eval) -> Tuple[float, float, float]:
@@ -148,6 +154,14 @@ EVAL_CSV_FIELDS: List[str] = [
     "AP_large_5095",
 ]
 
+BENCHMARK_CSV_FIELDS: List[str] = [
+    "Params_M",
+    "Active_Params_M",
+    "GFLOPs",
+    "FPS",
+    "Latency_ms",
+]
+
 
 def write_eval_csv(
     path: Path,
@@ -158,12 +172,16 @@ def write_eval_csv(
     *,
     class_names: Optional[List[str]] = None,
     append: bool = False,
+    benchmark: Optional[Dict[str, float]] = None,
 ) -> None:
     """
     将一行评估指标写入 CSV。
 
-    ``class_names`` 非空时，额外写入 ``AP50_<cls>`` 和 ``AP5095_<cls>`` 列。
-    DETR 侧的 per-category AP 以 ``mAP_<cls>`` 键存储在 ``metrics`` 中（0.5:0.95）。
+    ``class_names`` 非空时，额外写入 ``AP50_<cls>``（每类 AP@0.5）与 ``AP5095_<cls>``（每类 AP@0.5:0.95）列；
+    对应键名必须为 ``AP50_<cls>``、``AP5095_<cls>``（不再使用 ``mAP_<cls>`` 表示每类指标）。
+
+    ``benchmark`` 非空时写入 GFLOPs / Params_M / FPS / Latency_ms 列
+    （由 ``common.model_benchmark.benchmark_to_dict`` 生成）。
     """
     key_map = {
         "mAP_50": "mAP_0.5",
@@ -184,6 +202,7 @@ def write_eval_csv(
         for name in class_names:
             fieldnames.append(f"AP50_{name}")
             fieldnames.append(f"AP5095_{name}")
+    fieldnames.extend(BENCHMARK_CSV_FIELDS)
 
     row: Dict[str, str] = {
         "model": model,
@@ -196,13 +215,19 @@ def write_eval_csv(
 
     if class_names:
         for name in class_names:
-            v50 = metrics.get(f"AP50_{name}", metrics.get(f"mAP_{name}", 0.0))
-            v5095 = metrics.get(f"AP5095_{name}", metrics.get(f"mAP_{name}", 0.0))
+            v50 = metrics.get(f"AP50_{name}", 0.0)
+            v5095 = metrics.get(f"AP5095_{name}", 0.0)
             row[f"AP50_{name}"] = f"{float(v50):.6f}" if isinstance(v50, (int, float)) else str(v50)
             row[f"AP5095_{name}"] = f"{float(v5095):.6f}" if isinstance(v5095, (int, float)) else str(v5095)
 
+    if benchmark:
+        for bk in BENCHMARK_CSV_FIELDS:
+            bv = benchmark.get(bk, "")
+            row[bk] = f"{float(bv):.2f}" if isinstance(bv, (int, float)) else str(bv)
+
     mode = "a" if append else "w"
     write_header = not append or not path.exists() or path.stat().st_size == 0
+
     with path.open(mode, newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=fieldnames, extrasaction="ignore")
         if write_header:

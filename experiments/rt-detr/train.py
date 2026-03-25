@@ -21,17 +21,19 @@ from common.det_eval_metrics import (
     kitti_difficulty_from_coco_ann,
     coco_ap_at_iou50_all,
     coco_area_ap_at_iou50,
-    write_eval_csv,
-    dataset_display_name,
     dataset_dir_name,
-    model_display_name,
+)
+from common.detr_eval_utils import (
+    evaluate_best_model_after_training,
+    log_detr_eval_summary,
+    write_detr_eval_csv,
 )
 import yaml
 import torch
 import numpy as np
 import re
 import logging
-from typing import Optional, Dict, Union, List
+from typing import Optional, Dict, Union, List, Tuple
 from pycocotools.cocoeval import COCOeval
 from pycocotools.coco import COCO
 
@@ -594,7 +596,9 @@ class RTDETRTrainer:
         # 多尺度训练配置 (从config中读取或使用默认值)
         scales = self.config.get('augmentation', {}).get('scales', [480, 512, 544, 576, 608, 640, 640, 640, 672, 704, 736, 768, 800])
         stop_epoch = self.config.get('augmentation', {}).get('stop_epoch', 71)
-        collate_fn = BatchImageCollateFuncion(scales=scales, stop_epoch=stop_epoch)
+        train_collate_fn = BatchImageCollateFuncion(scales=scales, stop_epoch=stop_epoch)
+        # Keep validation deterministic at the dataset's fixed resize target (640 by config).
+        val_collate_fn = BatchImageCollateFuncion(scales=None, stop_epoch=stop_epoch)
         
         # num_workers在misc配置中
         num_workers = self.config.get('misc', {}).get('num_workers', 16)
@@ -606,7 +610,7 @@ class RTDETRTrainer:
             batch_size=self.config['training']['batch_size'],
             shuffle=True,
             num_workers=num_workers,
-            collate_fn=collate_fn,
+            collate_fn=train_collate_fn,
             pin_memory=pin_memory,
             persistent_workers=True if num_workers > 0 else False,
             prefetch_factor=prefetch_factor if num_workers > 0 else None
@@ -616,7 +620,7 @@ class RTDETRTrainer:
             batch_size=self.config['training']['batch_size'],
             shuffle=False,
             num_workers=num_workers,
-            collate_fn=collate_fn,
+            collate_fn=val_collate_fn,
             pin_memory=pin_memory,
             persistent_workers=True if num_workers > 0 else False,
             prefetch_factor=prefetch_factor if num_workers > 0 else None
@@ -1092,30 +1096,23 @@ class RTDETRTrainer:
                 # 保存最佳模型（基于mAP）
                 self._save_best_checkpoint(epoch)
             
-            # Early Stopping检查（前30个epoch不检查mAP相关的指标）
             if self.early_stopping and should_validate:
-                # 获取要监控的指标值
                 metric_name = self.early_stopping.metric_name
-                # 如果监控的是mAP相关指标且epoch < 30，跳过Early Stopping检查
-                is_map_metric = any(x in metric_name for x in ['mAP', 'AP'])
-                if is_map_metric and epoch < 30:
-                    # 前30个epoch不进行mAP评估，跳过Early Stopping检查
-                    pass
+
+                if 'mAP_0.5_0.95' in metric_name or 'mAP_0.5:0.95' in metric_name:
+                    metric_value = val_metrics.get('mAP_0.5_0.95', 0.0)
+                elif 'mAP_0.5' in metric_name:
+                    metric_value = val_metrics.get('mAP_0.5', 0.0)
+                elif 'mAP_0.75' in metric_name:
+                    metric_value = val_metrics.get('mAP_0.75', 0.0)
+                elif 'loss' in metric_name.lower():
+                    metric_value = val_metrics.get('total_loss', float('inf'))
                 else:
-                    if 'mAP_0.5_0.95' in metric_name or 'mAP_0.5:0.95' in metric_name:
-                        metric_value = val_metrics.get('mAP_0.5_0.95', 0.0)
-                    elif 'mAP_0.5' in metric_name:
-                        metric_value = val_metrics.get('mAP_0.5', 0.0)
-                    elif 'mAP_0.75' in metric_name:
-                        metric_value = val_metrics.get('mAP_0.75', 0.0)
-                    elif 'loss' in metric_name.lower():
-                        metric_value = val_metrics.get('total_loss', float('inf'))
-                    else:
-                        metric_value = val_metrics.get('mAP_0.5_0.95', 0.0)  # 默认
-                    
-                    if self.early_stopping(metric_value, epoch):
-                        self.logger.info(f"Early Stopping在epoch {epoch}触发，停止训练")
-                        break
+                    metric_value = val_metrics.get('mAP_0.5_0.95', 0.0)
+
+                if self.early_stopping(metric_value, epoch):
+                    self.logger.info(f"Early Stopping在epoch {epoch}触发，停止训练")
+                    break
             
             if epoch % 5 == 0 or epoch == self.config['training']['epochs'] - 1:
                 self._save_latest_checkpoint()
@@ -1172,7 +1169,8 @@ class RTDETRTrainer:
             "scales", [480, 512, 544, 576, 608, 640, 640, 640, 672, 704, 736, 768, 800]
         )
         stop_epoch = self.config.get("augmentation", {}).get("stop_epoch", 71)
-        collate_fn = BatchImageCollateFuncion(scales=scales, stop_epoch=stop_epoch)
+        # Keep test-time evaluation deterministic at the dataset's fixed resize target.
+        collate_fn = BatchImageCollateFuncion(scales=None, stop_epoch=stop_epoch)
         num_workers = self.config.get("misc", {}).get("num_workers", 16)
         pin_memory = self.config.get("misc", {}).get("pin_memory", True)
         prefetch_factor = self.config.get("misc", {}).get("prefetch_factor", 2)
@@ -1187,7 +1185,8 @@ class RTDETRTrainer:
             prefetch_factor=prefetch_factor if num_workers > 0 else None,
         )
 
-    def _run_ema_eval_on_dataloader(self, dataloader, split_label: str, best_epoch=None):
+    def _run_ema_eval_on_dataloader(self, dataloader, split_label: str,
+                                     best_epoch=None, bench_dict=None):
         """使用当前 EMA（已加载 best 权重）在给定 loader 上算 mAP。"""
         all_predictions = []
         all_targets = []
@@ -1224,67 +1223,26 @@ class RTDETRTrainer:
             compute_difficulty=True,
         )
 
-        m = metrics
-        self.logger.info(
-            f"  best_model [{split_label}]  "
-            f"mAP50={m.get('mAP_0.5',0):.4f}  mAP75={m.get('mAP_0.75',0):.4f}  mAP={m.get('mAP_0.5_0.95',0):.4f}\n"
-            f"    E/M/H@0.5: {m.get('AP_easy',0):.4f}/{m.get('AP_moderate',0):.4f}/{m.get('AP_hard',0):.4f}  |  "
-            f"S/M/L@0.5: {m.get('AP_small_50',0):.4f}/{m.get('AP_medium_50',0):.4f}/{m.get('AP_large_50',0):.4f}  |  "
-            f"S/M/L@0.5:0.95: {m.get('AP_small',0):.4f}/{m.get('AP_medium',0):.4f}/{m.get('AP_large',0):.4f}"
+        log_detr_eval_summary(self.logger, split_label, metrics, bench_dict)
+        csv_path = write_detr_eval_csv(
+            self.log_dir, self.config, self.experiment_name,
+            split_label, metrics, self.class_names, bench_dict,
         )
-        summary_csv = self.log_dir.parent / "eval_metrics.csv"
-        write_eval_csv(
-            summary_csv,
-            model=model_display_name(self.config, self.experiment_name),
-            dataset=dataset_display_name(self.config),
-            eval_split=split_label,
-            metrics=metrics,
-            class_names=self.class_names,
-            append=summary_csv.exists(),
-        )
-        self.logger.info(f"✓ best_model [{split_label}] 评估完成 (epoch={best_epoch})  → {summary_csv}")
+        self.logger.info(f"✓ best_model [{split_label}] 评估完成 (epoch={best_epoch})  → {csv_path}")
 
     def _evaluate_best_model_and_print_all_ap(self):
         """训练结束后在 val 上评估；若存在 test 划分与标注则再评一次。"""
-        best_model_path = self.log_dir / "best_model.pth"
-        latest_checkpoint_path = self.log_dir / "latest_checkpoint.pth"
-        if best_model_path.exists():
-            checkpoint_path = best_model_path
-        elif latest_checkpoint_path.exists():
-            checkpoint_path = latest_checkpoint_path
-            self.logger.warning("未找到best_model.pth，改用latest_checkpoint.pth进行训练结束评估")
-        else:
-            self.logger.warning("未找到best_model.pth和latest_checkpoint.pth，跳过训练结束评估")
-            return
-
-        original_ema_state = None
-        try:
-            checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
-            best_ema_state = checkpoint.get("ema_state_dict", None)
-            best_epoch = checkpoint.get("epoch", None)
-
-            if hasattr(self, "ema") and self.ema and best_ema_state is not None:
-                original_ema_state = self.ema.state_dict()
-                self.ema.load_state_dict(best_ema_state)
-
-            self.ema.module.eval()
-            self._run_ema_eval_on_dataloader(self.val_dataloader, split_label="val", best_epoch=best_epoch)
-
-            test_loader = self._build_test_dataloader_optional()
-            if test_loader is not None:
-                self.logger.info("在 test 划分上进行训练结束评估（与 YOLO 一致，仅一次）…")
-                self._run_ema_eval_on_dataloader(test_loader, split_label="test", best_epoch=best_epoch)
-            else:
-                self.logger.info("无可用 test 数据或未配置 test，跳过 test 评估。")
-
-        except Exception as e:
-            self.logger.warning(f"训练结束后的best_model评估失败: {e}")
-        finally:
-            if original_ema_state is not None and hasattr(self, "ema") and self.ema:
-                try:
-                    self.ema.load_state_dict(original_ema_state)
-                except Exception:
-                    pass
+        evaluate_best_model_after_training(
+            log_dir=self.log_dir,
+            device=self.device,
+            config=self.config,
+            experiment_name=self.experiment_name,
+            logger=self.logger,
+            ema=self.ema,
+            val_loader=self.val_dataloader,
+            build_test_loader_fn=self._build_test_dataloader_optional,
+            run_eval_fn=self._run_ema_eval_on_dataloader,
+        )
 
     def _run_inference_on_best_model(self, best_ema_state=None, best_epoch=None):
         """使用best_model运行推理，输出5张验证图像的推理结果
@@ -1642,9 +1600,9 @@ class RTDETRTrainer:
                 if iscrowd_np is not None:
                     ann['iscrowd'] = int(iscrowd_np[j])
                 if occ_np is not None:
-                    ann['occluded_state'] = int(occ_np[j])
+                    ann['occluded_state'] = float(occ_np[j])
                 if trunc_np is not None:
-                    ann['truncated_state'] = int(trunc_np[j])
+                    ann['truncated_state'] = float(trunc_np[j])
                 all_targets.append(ann)
 
     def _get_kitti_difficulty(self, target: Dict) -> str:
@@ -1756,32 +1714,40 @@ class RTDETRTrainer:
             "AP_hard": coco_ap_at_iou50_all(hard_eval),
         }
     
-    def _extract_per_category_ap_from_eval(self, coco_eval, categories: List[Dict]) -> Dict[str, float]:
-        """从一次 COCOeval 结果中提取各类别 AP@0.5:0.95，避免重复评估。"""
-        per_category_map = {cat['name']: 0.0 for cat in categories}
-        if coco_eval is None or not hasattr(coco_eval, 'eval') or 'precision' not in coco_eval.eval:
-            return per_category_map
+    def _extract_per_category_ap_from_eval(
+        self, coco_eval, categories: List[Dict]
+    ) -> Tuple[Dict[str, float], Dict[str, float]]:
+        """从一次 COCOeval 的 precision[T,R,K,A,M] 提取各类别 AP@50 与 AP@0.5:0.95（T=0 为 IoU=0.5）。"""
+        per_cat_50 = {cat["name"]: 0.0 for cat in categories}
+        per_cat_5095 = {cat["name"]: 0.0 for cat in categories}
+        if coco_eval is None or not hasattr(coco_eval, "eval") or "precision" not in coco_eval.eval:
+            return per_cat_50, per_cat_5095
 
         try:
-            precision = coco_eval.eval['precision']
+            precision = coco_eval.eval["precision"]
             area_index = 0
             max_det_index = len(coco_eval.params.maxDets) - 1
             cat_id_to_index = {cat_id: idx for idx, cat_id in enumerate(coco_eval.params.catIds)}
 
             for cat in categories:
-                cat_id = cat['id']
-                cat_name = cat['name']
+                cat_id = cat["id"]
+                cat_name = cat["name"]
                 if cat_id not in cat_id_to_index:
                     continue
 
                 cat_index = cat_id_to_index[cat_id]
-                precision_cat = precision[:, :, cat_index, area_index, max_det_index]
-                valid = precision_cat[precision_cat > -1]
-                per_category_map[cat_name] = float(np.mean(valid)) if valid.size > 0 else 0.0
+                # AP@0.5: 仅 IoU 第 0 档（0.50），对 recall 维取均值
+                p50 = precision[0, :, cat_index, area_index, max_det_index]
+                v50 = p50[p50 > -1]
+                per_cat_50[cat_name] = float(np.mean(v50)) if v50.size > 0 else 0.0
+                # AP@0.5:0.95: 对所有 IoU 档与 recall 维取均值（与 COCO 各类 AP 一致）
+                p5095 = precision[:, :, cat_index, area_index, max_det_index]
+                v5095 = p5095[p5095 > -1]
+                per_cat_5095[cat_name] = float(np.mean(v5095)) if v5095.size > 0 else 0.0
         except Exception as e:
             self.logger.debug(f"从COCOeval提取每类AP失败: {e}")
 
-        return per_category_map
+        return per_cat_50, per_cat_5095
     
     def _compute_map_metrics(self, predictions: List[Dict], targets: List[Dict], 
                              img_h: int = 640, img_w: int = 640,
@@ -1848,8 +1814,13 @@ class RTDETRTrainer:
                     'AP_hard': 0.0
                 }
             
-            # 每类 AP 从同一次 COCOeval 的 precision 张量提取，避免重复评估
-            per_category_map = self._extract_per_category_ap_from_eval(coco_eval, categories) if print_per_category else {}
+            # 每类 AP@50 / AP@0.5:0.95 从同一次 COCOeval 的 precision 张量提取
+            per_cat_50: Dict[str, float] = {}
+            per_cat_5095: Dict[str, float] = {}
+            if print_per_category:
+                per_cat_50, per_cat_5095 = self._extract_per_category_ap_from_eval(
+                    coco_eval, categories
+                )
             
             difficulty_metrics = {
                 'AP_easy': 0.0,
@@ -1873,12 +1844,11 @@ class RTDETRTrainer:
                 'AP_easy': difficulty_metrics['AP_easy'],
                 'AP_moderate': difficulty_metrics['AP_moderate'],
                 'AP_hard': difficulty_metrics['AP_hard'],
-                'per_category_map': per_category_map  # 保存每个类别的mAP
             }
             
-            # 添加每个类别的指标
-            for cat_name in per_category_map.keys():
-                result[f'mAP_{cat_name}'] = per_category_map[cat_name]
+            for cat_name in per_cat_5095.keys():
+                result[f"AP50_{cat_name}"] = per_cat_50.get(cat_name, 0.0)
+                result[f"AP5095_{cat_name}"] = per_cat_5095[cat_name]
             
             return result
             

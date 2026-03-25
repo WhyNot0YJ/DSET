@@ -1,2 +1,5 @@
 __pycache__/
 .ipynb_checkpoints/
+
+# Cursor local rules (do not commit; Cursor still reads them in the editor)
+.cursor/

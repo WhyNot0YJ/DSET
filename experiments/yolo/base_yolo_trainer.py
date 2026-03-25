@@ -26,6 +26,10 @@ from common.vram_batch import (
     format_vram_batch_log,
     resolve_cuda_device_index,
 )
+from common.model_benchmark import (
+    benchmark_to_dict,
+    log_benchmark,
+)
 
 from yolo_validator_utils import MetricsLogger, MultiScaleMetricsCalculator
 
@@ -472,7 +476,7 @@ class BaseYOLOTrainer(ABC):
     # Post-training KITTI / multi-scale evaluation
     # ------------------------------------------------------------------
 
-    def _evaluate_kitti_scale_after_training(self, model) -> dict:
+    def _evaluate_kitti_scale_after_training(self, model, bench_dict=None) -> dict:
         """
         Run KITTI difficulty (easy / moderate / hard) and COCO multi-scale
         (small / medium / large) mAP@IoU=0.50 **once after training**.
@@ -734,6 +738,13 @@ class BaseYOLOTrainer(ABC):
         cls_5095_str = ' | '.join(f'{class_names[i]}={per_cls_5095[i]:.4f}' for i in range(nc))
         self.logger.info(f"📋 Per-class AP@0.5:  {cls_50_str}")
         self.logger.info(f"📋 Per-class AP@0.5:0.95:  {cls_5095_str}")
+        if bench_dict:
+            self.logger.info(
+                f"📊 Benchmark  GFLOPs={bench_dict['GFLOPs']:.2f}  "
+                f"Params={bench_dict['Params_M']:.2f}M  "
+                f"FPS={bench_dict['FPS']:.1f}  "
+                f"Latency={bench_dict['Latency_ms']:.2f}ms"
+            )
 
         model_name = self.model_config.get('model_name', f'yolov{self.VERSION}n')
         if model_name.endswith('.pt'):
@@ -751,6 +762,7 @@ class BaseYOLOTrainer(ABC):
             'mAP_easy', 'mAP_moderate', 'mAP_hard',
             'mAP_small', 'mAP_medium', 'mAP_large',
             'mAP_small_5095', 'mAP_medium_5095', 'mAP_large_5095',
+            'GFLOPs', 'Params_M', 'FPS', 'Latency_ms',
         ]
         for name in class_names:
             fieldnames.append(f'AP50_{name}')
@@ -760,6 +772,10 @@ class BaseYOLOTrainer(ABC):
                for k in fieldnames}
         row['model'] = model_name
         row['dataset'] = dataset_name
+        if bench_dict:
+            for bk in ('GFLOPs', 'Params_M', 'FPS', 'Latency_ms'):
+                bv = bench_dict.get(bk, '')
+                row[bk] = f'{float(bv):.2f}' if isinstance(bv, (int, float)) else str(bv)
 
         # 写到数据集目录下的汇总 CSV（append），同时在实验目录下也保留一份
         summary_csv = self.log_dir.parent / 'eval_metrics.csv'
@@ -774,6 +790,25 @@ class BaseYOLOTrainer(ABC):
 
         return metrics
 
+    def _run_model_benchmark(self, model):
+        """运行 GFLOPs / FPS benchmark 并记录日志（仅一次）。"""
+        from yolo_benchmark import benchmark_yolo
+        bench_dict = None
+        try:
+            model_name = self.model_config.get('model_name', f'yolov{self.VERSION}n')
+            if model_name.endswith('.pt'):
+                model_name = model_name[:-3]
+            bench_result = benchmark_yolo(
+                model, imgsz=self.training_config.get('imgsz', 640),
+                device=self.misc_config.get('device', 'cuda'),
+                model_name=model_name,
+            )
+            log_benchmark(self.logger.info, bench_result, header=model_name)
+            bench_dict = benchmark_to_dict(bench_result)
+        except Exception as exc:
+            self.logger.warning(f"Model benchmark 失败（不影响评估结果）: {exc}")
+        return bench_dict
+
     def _post_training_processing(self, model=None):
         """训练后处理"""
         self.logger.info("=" * 80)
@@ -787,9 +822,11 @@ class BaseYOLOTrainer(ABC):
         if best_model_path.exists():
             self.logger.info(f"✓ 最佳模型: {best_model_path}")
 
+        bench_dict = None
         if model is not None:
+            bench_dict = self._run_model_benchmark(model)
             try:
-                self._evaluate_kitti_scale_after_training(model)
+                self._evaluate_kitti_scale_after_training(model, bench_dict=bench_dict)
             except Exception as exc:
                 self.logger.warning(f"KITTI/scale 评估出错（训练结果不受影响）: {exc}")
 

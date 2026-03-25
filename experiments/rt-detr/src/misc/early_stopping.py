@@ -67,19 +67,9 @@ class EarlyStopping:
         self.should_stop = False
     
     def __call__(self, current_value: float, epoch: int) -> bool:
-        """检查是否应该停止训练。
-        
-        Args:
-            current_value: 当前epoch的指标值
-            epoch: 当前epoch编号
-            
-        Returns:
-            bool: 是否应该停止训练
-        """
         is_improvement = self._is_improvement(current_value)
         
         if is_improvement:
-            # 有改善
             self.best_value = current_value
             self.best_epoch = epoch
             self.counter = 0
@@ -89,7 +79,6 @@ class EarlyStopping:
                     f"(最佳epoch: {epoch})"
                 )
         else:
-            # 没有改善
             self.counter += 1
             if self.logger and self.counter > 0:
                 self.logger.info(
@@ -97,7 +86,6 @@ class EarlyStopping:
                     f"最佳值: {self.best_value:.4f} (epoch {self.best_epoch})"
                 )
             
-            # 检查是否达到patience
             if self.counter >= self.patience:
                 self.should_stop = True
                 if self.logger:

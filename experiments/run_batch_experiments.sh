@@ -16,7 +16,8 @@ export OMP_NUM_THREADS=1
 # 使用方法：
 #   ./run_batch_experiments.sh                                 # 运行所有实验（完整epochs）
 #   ./run_batch_experiments.sh --test                          # 测试模式：运行所有配置，每个只跑2个epoch
-#   ./run_batch_experiments.sh --rt-detr                       # 只运行RT-DETR实验
+#   ./run_batch_experiments.sh --rt-detr                       # 只运行RT-DETR实验（含基线4个 + finetune 4个）
+#   ./run_batch_experiments.sh --rt-detr-finetune              # 只运行 RT-DETR finetune 配置（4个）
 #   ./run_batch_experiments.sh --moe-rtdetr                    # 只运行MOE-RTDETR实验
 #   ./run_batch_experiments.sh --cas_detr                          # 只运行CaS_DETR实验
 #   ./run_batch_experiments.sh --yolov8                        # 只运行YOLOv8实验
@@ -101,6 +102,18 @@ declare -A RT_DETR_CONFIGS=(
     ["rt-detr-r18-uadetrac"]="rt-detr/configs/rtdetr_r18_uadetrac.yaml"
     ["rt-detr-r34-dairv2x"]="rt-detr/configs/rtdetr_r34.yaml"
     ["rt-detr-r34-uadetrac"]="rt-detr/configs/rtdetr_r34_uadetrac.yaml"
+    ["rt-detr-r18-dairv2x-finetune"]="rt-detr/configs/rtdetr_r18_finetune.yaml"
+    ["rt-detr-r18-uadetrac-finetune"]="rt-detr/configs/rtdetr_r18_uadetrac_finetune.yaml"
+    ["rt-detr-r34-dairv2x-finetune"]="rt-detr/configs/rtdetr_r34_finetune.yaml"
+    ["rt-detr-r34-uadetrac-finetune"]="rt-detr/configs/rtdetr_r34_uadetrac_finetune.yaml"
+)
+
+# 仅 finetune 四配置（与 RT_DETR_CONFIGS 中 finetune 条目一致，供 --rt-detr-finetune 使用）
+declare -A RT_DETR_FINETUNE_ONLY_CONFIGS=(
+    ["rt-detr-r18-dairv2x-finetune"]="rt-detr/configs/rtdetr_r18_finetune.yaml"
+    ["rt-detr-r18-uadetrac-finetune"]="rt-detr/configs/rtdetr_r18_uadetrac_finetune.yaml"
+    ["rt-detr-r34-dairv2x-finetune"]="rt-detr/configs/rtdetr_r34_finetune.yaml"
+    ["rt-detr-r34-uadetrac-finetune"]="rt-detr/configs/rtdetr_r34_uadetrac_finetune.yaml"
 )
 
 declare -a CORE_EXPERIMENTS=(
@@ -455,6 +468,7 @@ parse_arguments() {
     
     # 收集所有指定的实验类型（支持多个参数叠加）
     local has_rt_detr=false
+    local has_rt_detr_finetune=false
     local has_moe_rtdetr=false
     local has_cas_detr=false
     local has_yolov8=false
@@ -467,6 +481,9 @@ parse_arguments() {
         case "$arg" in
             --rt-detr)
                 has_rt_detr=true
+                ;;
+            --rt-detr-finetune)
+                has_rt_detr_finetune=true
                 ;;
             --moe-rtdetr)
                 has_moe_rtdetr=true
@@ -493,10 +510,11 @@ parse_arguments() {
     done
     
     # 如果指定了实验类型，只运行指定的类型（支持多个）
-    if [ "$has_rt_detr" = true ] || [ "$has_moe_rtdetr" = true ] || [ "$has_cas_detr" = true ] || [ "$has_yolov8" = true ] || [ "$has_yolov10" = true ] || [ "$has_yolov11" = true ] || [ "$has_yolov12" = true ] || [ "$has_deformable_detr" = true ]; then
+    if [ "$has_rt_detr" = true ] || [ "$has_rt_detr_finetune" = true ] || [ "$has_moe_rtdetr" = true ] || [ "$has_cas_detr" = true ] || [ "$has_yolov8" = true ] || [ "$has_yolov10" = true ] || [ "$has_yolov11" = true ] || [ "$has_yolov12" = true ] || [ "$has_deformable_detr" = true ]; then
         # 显示将要运行的类型
         local selected_types=()
         [ "$has_rt_detr" = true ] && selected_types+=("RT-DETR")
+        [ "$has_rt_detr_finetune" = true ] && selected_types+=("RT-DETR-finetune")
         [ "$has_moe_rtdetr" = true ] && selected_types+=("MOE-RTDETR")
         [ "$has_cas_detr" = true ] && selected_types+=("CaS_DETR")
         [ "$has_yolov8" = true ] && selected_types+=("YOLOv8")
@@ -515,6 +533,13 @@ parse_arguments() {
         if [ "$has_rt_detr" = true ]; then
             for key in $(printf '%s\n' "${!RT_DETR_CONFIGS[@]}" | sort); do
                 local p="${RT_DETR_CONFIGS[$key]}"
+                if filter_config "$p"; then
+                    CONFIGS_TO_RUN+=("$p")
+                fi
+            done
+        elif [ "$has_rt_detr_finetune" = true ]; then
+            for key in $(printf '%s\n' "${!RT_DETR_FINETUNE_ONLY_CONFIGS[@]}" | sort); do
+                local p="${RT_DETR_FINETUNE_ONLY_CONFIGS[$key]}"
                 if filter_config "$p"; then
                     CONFIGS_TO_RUN+=("$p")
                 fi
@@ -696,7 +721,8 @@ parse_arguments() {
         echo "使用方法："
         echo "  ./run_batch_experiments.sh                                 # 运行所有实验（完整epochs）"
         echo "  ./run_batch_experiments.sh --test                          # 测试模式：所有配置各跑2个epoch"
-        echo "  ./run_batch_experiments.sh --rt-detr                       # 只运行RT-DETR"
+        echo "  ./run_batch_experiments.sh --rt-detr                       # 只运行RT-DETR（基线+finetune 共8个）"
+        echo "  ./run_batch_experiments.sh --rt-detr-finetune              # 只运行 RT-DETR finetune（4个）"
         echo "  ./run_batch_experiments.sh --moe-rtdetr                    # 只运行MOE-RTDETR"
         echo "  ./run_batch_experiments.sh --cas_detr                          # 只运行CaS_DETR"
         echo "  ./run_batch_experiments.sh --yolov8                        # 只运行YOLOv8"

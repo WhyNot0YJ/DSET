@@ -172,15 +172,20 @@ class CocoFolderDetection(DetDataset):
             labels = torch.tensor([ann["class_id"] for ann in annotations], dtype=torch.int64)
             areas = torch.tensor([ann["area"] for ann in annotations], dtype=torch.float32)
             iscrowd = torch.tensor([ann.get("iscrowd", 0) for ann in annotations], dtype=torch.int64)
-            occluded_states = torch.zeros((len(annotations),), dtype=torch.int64)
-            truncated_states = torch.zeros((len(annotations),), dtype=torch.int64)
+            # float32：UA-DETRAC 为连续比例，DAIR-V2X 为整数类别，均可精确表示
+            occluded_states = torch.tensor(
+                [ann.get("occluded_state", 0.0) for ann in annotations], dtype=torch.float32
+            )
+            truncated_states = torch.tensor(
+                [ann.get("truncated_state", 0.0) for ann in annotations], dtype=torch.float32
+            )
         else:
             boxes = torch.zeros((0, 4), dtype=torch.float32)
             labels = torch.zeros((0,), dtype=torch.int64)
             areas = torch.zeros((0,), dtype=torch.float32)
             iscrowd = torch.zeros((0,), dtype=torch.int64)
-            occluded_states = torch.zeros((0,), dtype=torch.int64)
-            truncated_states = torch.zeros((0,), dtype=torch.int64)
+            occluded_states = torch.zeros((0,), dtype=torch.float32)
+            truncated_states = torch.zeros((0,), dtype=torch.float32)
 
         boxes = BoundingBoxes(boxes, format="xyxy", canvas_size=(h, w))
         target = {
@@ -221,12 +226,38 @@ class CocoFolderDetection(DetDataset):
                 continue
             area = float(ann.get("area", w * h))
             iscrowd = 1 if int(ann.get("iscrowd", 0)) else 0
+
+            # ── occlusion ──
+            # DAIR-V2X: "occluded_state"  (离散类别 0/1/2)
+            # UA-DETRAC: "occlusion_status" (离散 0/1)
+            # 统一存为 float；下游 _normalize_occlusion_level 自动识别：
+            #   值 >= 1.0 → 按类别等级处理，值 < 1.0 → 按比例区间处理
+            if "occluded_state" in ann:
+                occ_val = float(ann["occluded_state"])
+            elif "occlusion_status" in ann:
+                occ_val = float(ann["occlusion_status"])
+            else:
+                occ_val = 0.0
+
+            # ── truncation ──
+            # DAIR-V2X: "truncated_state"  (离散类别 0/1/2; dair_categorical=True 路径)
+            # UA-DETRAC: "truncation_ratio" (连续比例 0.0~1.0; dair_categorical=False 路径)
+            # 下游 normalize_truncation 根据 _dair_truncation_categorical 标志选择规则
+            if "truncated_state" in ann:
+                trunc_val = float(ann["truncated_state"])
+            elif "truncation_ratio" in ann:
+                trunc_val = float(ann["truncation_ratio"])
+            else:
+                trunc_val = 0.0
+
             out.append(
                 {
                     "class_id": class_id,
                     "bbox": [x1, y1, x2, y2],
                     "area": area,
                     "iscrowd": iscrowd,
+                    "occluded_state": occ_val,
+                    "truncated_state": trunc_val,
                 }
             )
         if self.split == "train":
