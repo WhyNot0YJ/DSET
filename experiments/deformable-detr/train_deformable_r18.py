@@ -132,7 +132,6 @@ def main():
     else:
         possible_paths = [
             '/root/autodl-fs/datasets/DAIR-V2X/',
-            '/home/yujie/proj/task-selective-det/data/DAIR-V2X/',
             os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data/DAIR-V2X/'),
         ]
         data_root = None

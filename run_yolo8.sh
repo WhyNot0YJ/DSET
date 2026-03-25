@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IMAGE="yolov8:latest"
 NAME="yolov8_dev"
-WORKDIR="$HOME/proj/task-selective-det"
+# 默认同本仓库根目录；可用 YOLOV8_WORKDIR 覆盖
+WORKDIR="${YOLOV8_WORKDIR:-$SCRIPT_DIR}"
 PORT_JUPYTER=8888
 PORT_TENSORBOARD=6006
 SHM_SIZE="4g"
