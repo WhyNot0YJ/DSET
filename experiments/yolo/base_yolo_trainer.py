@@ -584,7 +584,7 @@ class BaseYOLOTrainer(ABC):
         )
 
         # ── 4. Collect GT and raw predictions ────────────────────────────
-        # gt_info[cls] = [(img_idx, (px1,py1,px2,py2), diff_or_None, scale_or_None)]
+        # gt_info[cls] = [(img_idx, xyxy, diff_or_None, scale_or_None, h_px)]
         gt_info: Dict[int, list] = {c: [] for c in range(nc)}
         preds_by_cls: Dict[int, list] = {c: [] for c in range(nc)}
 
@@ -640,7 +640,7 @@ class BaseYOLOTrainer(ABC):
                         h_px, occ, tr
                     )
                     scale = MultiScaleMetricsCalculator.categorize_by_scale(area_px)
-                    gt_info[cls].append((img_idx, (px1, py1, px2, py2), diff, scale))
+                    gt_info[cls].append((img_idx, (px1, py1, px2, py2), diff, scale, h_px))
 
                 if result.boxes is not None:
                     for box, conf, cls_t in zip(
@@ -665,12 +665,13 @@ class BaseYOLOTrainer(ABC):
         SCALE_LEVELS = ('small', 'medium', 'large')
         metrics: Dict[str, float] = {}
 
+        _MIN_H = MultiScaleMetricsCalculator.MIN_HEIGHT
         for diff_key, include in DIFF_INCLUDE.items():
             aps = []
             for cls in range(nc):
                 pos: Dict[int, list] = {}
                 ign: Dict[int, list] = {}
-                for img_idx, xyxy, d, _s in gt_info[cls]:
+                for img_idx, xyxy, d, _s, _h in gt_info[cls]:
                     if d in include:
                         pos.setdefault(img_idx, []).append(xyxy)
                     else:
@@ -685,8 +686,8 @@ class BaseYOLOTrainer(ABC):
             for cls in range(nc):
                 pos: Dict[int, list] = {}
                 ign: Dict[int, list] = {}
-                for img_idx, xyxy, d, s in gt_info[cls]:
-                    if s == scale and d is not None:
+                for img_idx, xyxy, _d, s, h in gt_info[cls]:
+                    if s == scale and h >= _MIN_H:
                         pos.setdefault(img_idx, []).append(xyxy)
                     else:
                         ign.setdefault(img_idx, []).append(xyxy)
@@ -701,15 +702,15 @@ class BaseYOLOTrainer(ABC):
             metrics[f'mAP_{scale}'] = float(np.mean(aps50))
             metrics[f'mAP_{scale}_5095'] = float(np.mean(aps5095))
 
-        # ── 5b. Per-class AP（全部 GT，不区分难度/面积）─────────────────────
+        # ── 5b. Per-class AP（全部 GT，只按 height≥MIN_HEIGHT 过滤）────────
         class_names = self.class_names if self.class_names else [f'cls_{i}' for i in range(nc)]
         per_cls_50: List[float] = []
         per_cls_5095: List[float] = []
         for cls in range(nc):
             pos_all: Dict[int, list] = {}
             ign_all: Dict[int, list] = {}
-            for img_idx, xyxy, d, _s in gt_info[cls]:
-                if d is not None:
+            for img_idx, xyxy, _d, _s, h in gt_info[cls]:
+                if h >= _MIN_H:
                     pos_all.setdefault(img_idx, []).append(xyxy)
                 else:
                     ign_all.setdefault(img_idx, []).append(xyxy)
