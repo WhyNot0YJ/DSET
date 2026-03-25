@@ -8,7 +8,7 @@ training:
   imgsz: 640
 
 data:
-  data_yaml: "datasets/UA-DETRAC_YOLO/data.yaml"
+  data_yaml: "/root/autodl-fs/datasets/UA-DETRAC_YOLO/data.yaml"
 
 checkpoint:
   log_dir: "logs"

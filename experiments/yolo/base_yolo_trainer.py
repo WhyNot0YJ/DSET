@@ -303,11 +303,12 @@ class BaseYOLOTrainer(ABC):
         if data_yaml_path.exists():
             return str(data_yaml_path)
         
-        # 尝试多个路径
+        # 尝试多个路径（含 autodl-fs 持久盘上的 datasets）
         project_root = Path(__file__).resolve().parent.parent.parent
         alt_paths = [
             project_root / data_yaml,
-            project_root.parent / data_yaml
+            project_root.parent / data_yaml,
+            Path("/root/autodl-fs") / data_yaml,
         ]
         
         for alt_path in alt_paths:

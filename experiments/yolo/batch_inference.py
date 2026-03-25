@@ -97,6 +97,7 @@ def resolve_existing_path(path_value: str) -> Path:
     alt_paths = [
         project_root / path_value,
         project_root.parent / path_value,
+        Path("/root/autodl-fs") / path_value,
     ]
     for alt_path in alt_paths:
         if path_exists_safe(alt_path):
@@ -128,6 +129,7 @@ def resolve_data_yaml_path(path_value: str) -> Path:
     alt_paths = [
         project_root / path_value,
         project_root.parent / path_value,
+        Path("/root/autodl-fs") / path_value,
     ]
     for alt_path in alt_paths:
         if alt_path.exists():

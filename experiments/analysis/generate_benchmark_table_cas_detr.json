@@ -13,15 +13,5 @@
     "type":"cas_detr",
     "config": "/root/autodl-tmp/CaS_DETR/experiments/cas_detr/logs/S5only/cas_detr6_r18_20251229_195505/config.yaml",
     "checkpoint": "/root/autodl-tmp/CaS_DETR/experiments/cas_detr/logs/S5only/cas_detr6_r18_20251229_195505/best_model_fixed.pth"
-  },
-  "cas_detr6-r34-0.3": {
-    "type":"cas_detr",
-    "config": "/root/autodl-tmp/CaS_DETR/experiments/cas_detr/logs/cas_detr6_r34_20260127_054333/config.yaml",
-    "checkpoint": "/root/autodl-tmp/CaS_DETR/experiments/cas_detr/logs/cas_detr6_r34_20260127_054333/best_model.pth"
-  },
-  "cas_detr6-r34-0.3-S5": {
-    "type":"cas_detr",
-    "config": "/root/autodl-tmp/CaS_DETR/experiments/cas_detr/logs/S5only/cas_detr6_r34/config.yaml",
-    "checkpoint": "/root/autodl-tmp/CaS_DETR/experiments/cas_detr/logs/S5only/cas_detr6_r34/best_model_fixed.pth"
   }
 }

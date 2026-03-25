@@ -27,7 +27,7 @@ training:
   seed: 42
   deterministic: false
 data:
-  data_root: /root/autodl-tmp/datasets/DAIR-V2X
+  data_root: /root/autodl-fs/datasets/DAIR-V2X
 augmentation:
   target_size: 640
   stop_epoch: 71

@@ -757,8 +757,13 @@ class RTDETRTrainer:
                 'scheduler_state_dict': self.scheduler.state_dict(),
                 'config': self.config,
                 'best_loss': self.best_loss,
+                'best_loss_epoch': getattr(self, 'best_loss_epoch', -1),
                 'best_map': self.best_map,
-                'best_metric': getattr(self, 'best_metric', 0.0),
+                'best_map_epoch': getattr(self, 'best_map_epoch', -1),
+                'best_mAP_50': getattr(self, 'best_mAP_50', 0.0),
+                'best_mAP_50_epoch': getattr(self, 'best_mAP_50_epoch', -1),
+                'best_mAP_075': getattr(self, 'best_mAP_075', 0.0),
+                'best_mAP_075_epoch': getattr(self, 'best_mAP_075_epoch', -1),
                 'global_step': self.global_step
             }
             
@@ -801,7 +806,13 @@ class RTDETRTrainer:
                 'scheduler_state_dict': self.scheduler.state_dict(),
                 'config': self.config,
                 'best_loss': self.best_loss,
+                'best_loss_epoch': getattr(self, 'best_loss_epoch', -1),
                 'best_map': self.best_map,
+                'best_map_epoch': getattr(self, 'best_map_epoch', epoch),
+                'best_mAP_50': getattr(self, 'best_mAP_50', 0.0),
+                'best_mAP_50_epoch': getattr(self, 'best_mAP_50_epoch', -1),
+                'best_mAP_075': getattr(self, 'best_mAP_075', 0.0),
+                'best_mAP_075_epoch': getattr(self, 'best_mAP_075_epoch', -1),
                 'global_step': self.global_step
             }
             
@@ -918,7 +929,13 @@ class RTDETRTrainer:
         # 6. 设置训练属性
         self.last_epoch = -1
         self.best_loss = float('inf')
+        self.best_loss_epoch = -1
         self.best_map = 0.0  # 记录最佳mAP
+        self.best_map_epoch = -1
+        self.best_mAP_50 = 0.0
+        self.best_mAP_50_epoch = -1
+        self.best_mAP_075 = 0.0
+        self.best_mAP_075_epoch = -1
         self.global_step = 0  # 全局步数（与moe-rtdetr/cas_detr保持一致）
         
         # 6.5 初始化Early Stopping
@@ -959,7 +976,13 @@ class RTDETRTrainer:
             # 恢复epoch计数和最佳指标
             self.last_epoch = checkpoint.get('epoch', -1)
             self.best_loss = checkpoint.get('best_loss', float('inf'))
+            self.best_loss_epoch = checkpoint.get('best_loss_epoch', -1)
             self.best_map = checkpoint.get('best_map', 0.0)
+            self.best_map_epoch = checkpoint.get('best_map_epoch', -1)
+            self.best_mAP_50 = checkpoint.get('best_mAP_50', 0.0)
+            self.best_mAP_50_epoch = checkpoint.get('best_mAP_50_epoch', -1)
+            self.best_mAP_075 = checkpoint.get('best_mAP_075', 0.0)
+            self.best_mAP_075_epoch = checkpoint.get('best_mAP_075_epoch', -1)
             self.global_step = checkpoint.get('global_step', 0)
             self.logger.info(f'✓ 从epoch {self.last_epoch + 1}恢复训练')
             
@@ -1004,14 +1027,34 @@ class RTDETRTrainer:
         
         self.logger.info(f"⏱️  Early Stopping: 启用 (patience={patience}, metric={metric_name}, mode={mode})")
         
-        return EarlyStopping(
-            patience=patience,
-            mode=mode,
-            min_delta=0.0001,
-            metric_name=metric_name,
-            logger=self.logger
-        )
-    
+        return EarlyStopping(patience=patience, metric_name=metric_name, logger=self.logger)
+
+    def _early_stopping_metric_improved(self, val_metrics: Dict[str, float]) -> bool:
+        """与 is_best_* 同一套比较规则，在更新 best_* 之前调用。"""
+        name = self.config['training'].get('early_stopping_metric', 'mAP_0.5_0.95')
+        if 'loss' in name.lower():
+            return val_metrics.get('total_loss', float('inf')) < self.best_loss
+        if 'mAP_0.75' in name:
+            return val_metrics.get('mAP_0.75', 0.0) > self.best_mAP_075
+        if 'mAP_0.5_0.95' in name or 'mAP_0.5:0.95' in name:
+            return val_metrics.get('mAP_0.5_0.95', 0.0) > self.best_map
+        if 'mAP_0.5' in name:
+            return val_metrics.get('mAP_0.5', 0.0) > self.best_mAP_50
+        return val_metrics.get('mAP_0.5_0.95', 0.0) > self.best_map
+
+    def _early_stopping_best_snapshot(self) -> Tuple[float, int]:
+        """更新 best_* 之后，用于早停日志的「当前监控指标最佳值 / epoch」。"""
+        name = self.config['training'].get('early_stopping_metric', 'mAP_0.5_0.95')
+        if 'loss' in name.lower():
+            return self.best_loss, self.best_loss_epoch
+        if 'mAP_0.75' in name:
+            return self.best_mAP_075, self.best_mAP_075_epoch
+        if 'mAP_0.5_0.95' in name or 'mAP_0.5:0.95' in name:
+            return self.best_map, self.best_map_epoch
+        if 'mAP_0.5' in name:
+            return self.best_mAP_50, self.best_mAP_50_epoch
+        return self.best_map, self.best_map_epoch
+
     def _custom_training_loop(self):
         """自定义训练循环"""
         epochs = self.config['training']['epochs']
@@ -1082,37 +1125,41 @@ class RTDETRTrainer:
                 ap_hard=0.0
             )
             
-            # 保存检查点 - 同时考虑loss和mAP
-            is_best_loss = val_metrics.get('total_loss', float('inf')) < self.best_loss
-            is_best_map = val_metrics.get('mAP_0.5_0.95', 0.0) > self.best_map
-            
-            if is_best_loss:
-                self.best_loss = val_metrics.get('total_loss', float('inf'))
-                self.logger.info(f"  🎉 新的最佳验证损失: {self.best_loss:.2f}")
-            
-            if is_best_map:
-                self.best_map = val_metrics.get('mAP_0.5_0.95', 0.0)
-                self.logger.info(f"  🎉 新的最佳mAP: {self.best_map:.4f}")
-                # 保存最佳模型（基于mAP）
-                self._save_best_checkpoint(epoch)
-            
-            if self.early_stopping and should_validate:
-                metric_name = self.early_stopping.metric_name
+            # 验证时才更新 best_*；早停只计数，「是否改善」与上面比较规则一致
+            if should_validate:
+                es_improved = self._early_stopping_metric_improved(val_metrics)
+                vl = val_metrics.get('total_loss', float('inf'))
+                v5095 = val_metrics.get('mAP_0.5_0.95', 0.0)
+                v50 = val_metrics.get('mAP_0.5', 0.0)
+                v75 = val_metrics.get('mAP_0.75', 0.0)
+                is_best_loss = vl < self.best_loss
+                is_best_map = v5095 > self.best_map
+                is_best_map50 = v50 > self.best_mAP_50
+                is_best_map75 = v75 > self.best_mAP_075
 
-                if 'mAP_0.5_0.95' in metric_name or 'mAP_0.5:0.95' in metric_name:
-                    metric_value = val_metrics.get('mAP_0.5_0.95', 0.0)
-                elif 'mAP_0.5' in metric_name:
-                    metric_value = val_metrics.get('mAP_0.5', 0.0)
-                elif 'mAP_0.75' in metric_name:
-                    metric_value = val_metrics.get('mAP_0.75', 0.0)
-                elif 'loss' in metric_name.lower():
-                    metric_value = val_metrics.get('total_loss', float('inf'))
-                else:
-                    metric_value = val_metrics.get('mAP_0.5_0.95', 0.0)
+                if is_best_loss:
+                    self.best_loss = vl
+                    self.best_loss_epoch = epoch
+                    self.logger.info(f"  🎉 新的最佳验证损失: {self.best_loss:.2f}")
 
-                if self.early_stopping(metric_value, epoch):
-                    self.logger.info(f"Early Stopping在epoch {epoch}触发，停止训练")
-                    break
+                if is_best_map:
+                    self.best_map = v5095
+                    self.best_map_epoch = epoch
+                    self.logger.info(f"  🎉 新的最佳mAP: {self.best_map:.4f}")
+                    self._save_best_checkpoint(epoch)
+
+                if is_best_map50:
+                    self.best_mAP_50 = v50
+                    self.best_mAP_50_epoch = epoch
+                if is_best_map75:
+                    self.best_mAP_075 = v75
+                    self.best_mAP_075_epoch = epoch
+
+                if self.early_stopping:
+                    bv, be = self._early_stopping_best_snapshot()
+                    if self.early_stopping.step(es_improved, best_value=bv, best_epoch=be):
+                        self.logger.info(f"Early Stopping在epoch {epoch}触发，停止训练")
+                        break
             
             if epoch % 5 == 0 or epoch == self.config['training']['epochs'] - 1:
                 self._save_latest_checkpoint()
@@ -1879,7 +1926,7 @@ def main():
                                'cspresnet_s', 'cspresnet_m', 'cspresnet_l', 'cspresnet_x',
                                'cspdarknet', 'mresnet'],
                        help='Backbone类型')
-    parser.add_argument('--data_root', type=str, default='datasets/DAIR-V2X', 
+    parser.add_argument('--data_root', type=str, default='/root/autodl-fs/datasets/DAIR-V2X', 
                        help='DAIR-V2X数据集路径')
                        
     parser.add_argument('--epochs', type=int, default=100, help='训练轮数')
@@ -2029,17 +2076,17 @@ def main():
         profile = resolve_dataset_profile(datasets_map, args.dataset)
         config = apply_detr_dataset_profile(config, profile)
         print(f"🗂️  DETR 数据集: {args.dataset} -> data_root={config.get('data', {}).get('data_root')}")
-    elif args.config and args.config.endswith('.yaml') and args.data_root != 'datasets/DAIR-V2X':
+    elif args.config and args.config.endswith('.yaml') and args.data_root != '/root/autodl-fs/datasets/DAIR-V2X':
         config.setdefault('data', {})['data_root'] = args.data_root
     elif not (args.config and args.config.endswith('.yaml')):
-        if args.data_root != 'datasets/DAIR-V2X':
+        if args.data_root != '/root/autodl-fs/datasets/DAIR-V2X':
             config.setdefault('data', {})['data_root'] = args.data_root
     
     # 创建训练器
     # 如果使用配置文件，只传递显式传递的参数（不等于默认值的），其他传递None让配置文件的值生效
     if args.config and args.config.endswith('.yaml'):
         # 使用配置文件：只传递显式传递的参数，默认值参数传递None
-        data_root_arg = None if args.data_root == 'datasets/DAIR-V2X' else args.data_root
+        data_root_arg = None if args.data_root == '/root/autodl-fs/datasets/DAIR-V2X' else args.data_root
         epochs_arg = None if args.epochs == 100 else args.epochs
         batch_size_arg = None if args.batch_size == 16 else args.batch_size
         warmup_epochs_arg = None if args.warmup_epochs == 3 else args.warmup_epochs

@@ -8,7 +8,7 @@ custom_hooks:
   patience: 20
   rule: greater
   type: EarlyStoppingHook
-data_root: /root/autodl-tmp/datasets/DAIR-V2X/
+data_root: /root/autodl-fs/datasets/DAIR-V2X/
 dataset_type: CocoDataset
 default_hooks:
   checkpoint:
@@ -193,7 +193,7 @@ test_dataloader:
     backend_args: null
     data_prefix:
       img: ''
-    data_root: /root/autodl-tmp/datasets/DAIR-V2X/
+    data_root: /root/autodl-fs/datasets/DAIR-V2X/
     metainfo:
       classes: !!python/tuple
       - Car
@@ -230,7 +230,7 @@ test_dataloader:
     shuffle: false
     type: DefaultSampler
 test_evaluator:
-  ann_file: /root/autodl-tmp/datasets/DAIR-V2X/annotations/instances_val.json
+  ann_file: /root/autodl-fs/datasets/DAIR-V2X/annotations/instances_val.json
   backend_args: null
   format_only: false
   metric: bbox
@@ -276,7 +276,7 @@ train_dataloader:
     backend_args: null
     data_prefix:
       img: ''
-    data_root: /root/autodl-tmp/datasets/DAIR-V2X/
+    data_root: /root/autodl-fs/datasets/DAIR-V2X/
     filter_cfg:
       filter_empty_gt: false
       min_size: 32
@@ -452,7 +452,7 @@ val_dataloader:
     backend_args: null
     data_prefix:
       img: ''
-    data_root: /root/autodl-tmp/datasets/DAIR-V2X/
+    data_root: /root/autodl-fs/datasets/DAIR-V2X/
     metainfo:
       classes: !!python/tuple
       - Car
@@ -489,7 +489,7 @@ val_dataloader:
     shuffle: false
     type: DefaultSampler
 val_evaluator:
-  ann_file: /root/autodl-tmp/datasets/DAIR-V2X/annotations/instances_val.json
+  ann_file: /root/autodl-fs/datasets/DAIR-V2X/annotations/instances_val.json
   backend_args: null
   format_only: false
   metric: bbox

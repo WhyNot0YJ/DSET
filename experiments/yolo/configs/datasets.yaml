@@ -6,8 +6,8 @@ datasets:
     aliases:
       - dair-v2x
       - DAIR-V2X_YOLO
-    data_yaml: "datasets/DAIR-V2X_YOLO/dairv2x.yaml"
-    coco_data_root: "datasets/DAIR-V2X"
+    data_yaml: "/root/autodl-fs/datasets/DAIR-V2X_YOLO/dairv2x.yaml"
+    coco_data_root: "/root/autodl-fs/datasets/DAIR-V2X"
     detr_dataset_class: "DAIRV2XDetection"
     num_classes: 8
     class_names:
@@ -25,8 +25,8 @@ datasets:
       - ua-detrac
       - UADETRAC_YOLO
       - UA-DETRAC_YOLO
-    data_yaml: "datasets/UA-DETRAC_YOLO/data.yaml"
-    coco_data_root: "datasets/UA-DETRAC_COCO"
+    data_yaml: "/root/autodl-fs/datasets/UA-DETRAC_YOLO/data.yaml"
+    coco_data_root: "/root/autodl-fs/datasets/UA-DETRAC_COCO"
     detr_dataset_class: "CocoFolderDetection"
     num_classes: 4
     class_names:

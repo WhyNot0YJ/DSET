@@ -16,10 +16,10 @@ export OMP_NUM_THREADS=1
 # 使用方法：
 #   ./run_batch_experiments.sh                                 # 运行所有实验（完整epochs）
 #   ./run_batch_experiments.sh --test                          # 测试模式：运行所有配置，每个只跑2个epoch
-#   ./run_batch_experiments.sh --rt-detr                       # 只运行RT-DETR实验（含基线4个 + finetune 4个）
-#   ./run_batch_experiments.sh --rt-detr-finetune              # 只运行 RT-DETR finetune 配置（4个）
-#   ./run_batch_experiments.sh --moe-rtdetr                    # 只运行MOE-RTDETR实验
-#   ./run_batch_experiments.sh --cas_detr                          # 只运行CaS_DETR实验
+#   ./run_batch_experiments.sh --rt-detr                       # 只运行RT-DETR实验（含基线2个 + finetune 2个）
+#   ./run_batch_experiments.sh --rt-detr-finetune              # 只运行 RT-DETR finetune 配置（2个）
+#   ./run_batch_experiments.sh --moe-rtdetr                    # 只运行MOE-RTDETR实验（2个配置）
+#   ./run_batch_experiments.sh --cas_detr                      # 只运行CaS_DETR实验（2个配置）
 #   ./run_batch_experiments.sh --yolov8                        # 只运行YOLOv8实验
 #   ./run_batch_experiments.sh --yolov10                       # 只运行YOLOv10实验
 #   ./run_batch_experiments.sh --yolov11                       # 只运行YOLOv11实验
@@ -34,10 +34,8 @@ export OMP_NUM_THREADS=1
 #   ./run_batch_experiments.sh --test --yolov12                # 测试模式只运行YOLOv12
 #   ./run_batch_experiments.sh --test --deformable-detr        # 测试模式只运行Deformable-DETR
 #   ./run_batch_experiments.sh --r18                           # 只运行ResNet-18实验
-#   ./run_batch_experiments.sh --r34                           # 只运行ResNet-34实验
-#   ./run_batch_experiments.sh --r18 --r34                     # 运行R18和R34实验
 #   ./run_batch_experiments.sh --custom cfg1.yaml cfg2.yaml    # 自定义配置列表
-#   ./run_batch_experiments.sh --keys rt-detr-r18 moe6-r34     # 使用内置键名选择
+#   ./run_batch_experiments.sh --keys rt-detr-r18 moe6-r18     # 使用内置键名选择
 #   ./run_batch_experiments.sh --dataset dairv2x,uadetrac       # YOLO配置按两个数据集维度运行
 #   ./run_batch_experiments.sh --select                        # 交互式选择待运行配置
 #   ./run_batch_experiments.sh --rerun-failed [LOG_DIR]        # 自动选择上次失败的实验
@@ -100,39 +98,28 @@ log_warning() {
 declare -A RT_DETR_CONFIGS=(
     ["rt-detr-r18-dairv2x"]="rt-detr/configs/rtdetr_r18.yaml"
     ["rt-detr-r18-uadetrac"]="rt-detr/configs/rtdetr_r18_uadetrac.yaml"
-    ["rt-detr-r34-dairv2x"]="rt-detr/configs/rtdetr_r34.yaml"
-    ["rt-detr-r34-uadetrac"]="rt-detr/configs/rtdetr_r34_uadetrac.yaml"
     ["rt-detr-r18-dairv2x-finetune"]="rt-detr/configs/rtdetr_r18_finetune.yaml"
     ["rt-detr-r18-uadetrac-finetune"]="rt-detr/configs/rtdetr_r18_uadetrac_finetune.yaml"
-    ["rt-detr-r34-dairv2x-finetune"]="rt-detr/configs/rtdetr_r34_finetune.yaml"
-    ["rt-detr-r34-uadetrac-finetune"]="rt-detr/configs/rtdetr_r34_uadetrac_finetune.yaml"
 )
 
-# 仅 finetune 四配置（与 RT_DETR_CONFIGS 中 finetune 条目一致，供 --rt-detr-finetune 使用）
+# 仅 finetune 配置（与 RT_DETR_CONFIGS 中 finetune 条目一致，供 --rt-detr-finetune 使用）
 declare -A RT_DETR_FINETUNE_ONLY_CONFIGS=(
     ["rt-detr-r18-dairv2x-finetune"]="rt-detr/configs/rtdetr_r18_finetune.yaml"
     ["rt-detr-r18-uadetrac-finetune"]="rt-detr/configs/rtdetr_r18_uadetrac_finetune.yaml"
-    ["rt-detr-r34-dairv2x-finetune"]="rt-detr/configs/rtdetr_r34_finetune.yaml"
-    ["rt-detr-r34-uadetrac-finetune"]="rt-detr/configs/rtdetr_r34_uadetrac_finetune.yaml"
 )
 
 declare -a CORE_EXPERIMENTS=(
     "cas_detr/configs/cas_detr6_r18_ratio0.5.yaml"
-    "cas_detr/configs/cas_detr6_r34_ratio0.5.yaml"
 )
 
 declare -A MOE_RTDETR_CONFIGS=(
     ["moe6-r18-dairv2x"]="moe-rtdetr/configs/moe6_r18.yaml"
     ["moe6-r18-uadetrac"]="moe-rtdetr/configs/moe6_r18_uadetrac.yaml"
-    ["moe6-r34-dairv2x"]="moe-rtdetr/configs/moe6_r34.yaml"
-    ["moe6-r34-uadetrac"]="moe-rtdetr/configs/moe6_r34_uadetrac.yaml"
 )
 
 declare -A CaS_DETR_CONFIGS=(
     ["cas_detr6-r18-0.5-dairv2x"]="cas_detr/configs/cas_detr6_r18_ratio0.5.yaml"
     ["cas_detr6-r18-0.5-uadetrac"]="cas_detr/configs/cas_detr6_r18_ratio0.5_uadetrac.yaml"
-    ["cas_detr6-r34-0.5-dairv2x"]="cas_detr/configs/cas_detr6_r34_ratio0.5.yaml"
-    ["cas_detr6-r34-0.5-uadetrac"]="cas_detr/configs/cas_detr6_r34_ratio0.5_uadetrac.yaml"
 )
 
 declare -A YOLOV8_CONFIGS=(
@@ -310,8 +297,6 @@ parse_arguments() {
     local args=("$@")
     local has_test=false
     local has_r18=false
-    local has_r34=false
-    local has_r50=false
     local has_k03=false
     local has_k05=false
     local has_k07=false
@@ -330,16 +315,6 @@ parse_arguments() {
         fi
         if [ "$arg" == "--r18" ]; then
             has_r18=true
-            idx=$((idx + 1))
-            continue
-        fi
-        if [ "$arg" == "--r34" ]; then
-            has_r34=true
-            idx=$((idx + 1))
-            continue
-        fi
-        if [ "$arg" == "--r50" ]; then
-            has_r50=true
             idx=$((idx + 1))
             continue
         fi
@@ -395,11 +370,9 @@ parse_arguments() {
     
     # 如果指定了backbone过滤，应用过滤逻辑
     local backbone_filter=""
-    if [ "$has_r18" = true ] || [ "$has_r34" = true ] || [ "$has_r50" = true ]; then
+    if [ "$has_r18" = true ]; then
         local selected_backbones=()
         [ "$has_r18" = true ] && selected_backbones+=("R18")
-        [ "$has_r34" = true ] && selected_backbones+=("R34")
-        [ "$has_r50" = true ] && selected_backbones+=("R50")
         backbone_filter=$(IFS='+'; echo "${selected_backbones[*]}")
         log_info "Backbone过滤: $backbone_filter"
     fi
@@ -425,12 +398,6 @@ parse_arguments() {
         if [ -n "$backbone_filter" ]; then
             local match_backbone=false
             if [ "$has_r18" = true ] && ([[ "$config_path" == *"r18"* ]] || [[ "$config_path" == *"presnet18"* ]]); then
-                match_backbone=true
-            fi
-            if [ "$has_r34" = true ] && ([[ "$config_path" == *"r34"* ]] || [[ "$config_path" == *"presnet34"* ]]); then
-                match_backbone=true
-            fi
-            if [ "$has_r50" = true ] && ([[ "$config_path" == *"r50"* ]] || [[ "$config_path" == *"presnet50"* ]]); then
                 match_backbone=true
             fi
             if [ "$match_backbone" = false ]; then return 1; fi
@@ -461,7 +428,7 @@ parse_arguments() {
     for arg in "$@"; do
         if [ "$arg" == "--core" ]; then
             CONFIGS_TO_RUN=("${CORE_EXPERIMENTS[@]}")
-            log_info "运行8个核心实验（按顺序）"
+            log_info "运行核心实验配置（CaS_DETR R18 DAIR）"
             return 0
         fi
     done
@@ -721,10 +688,10 @@ parse_arguments() {
         echo "使用方法："
         echo "  ./run_batch_experiments.sh                                 # 运行所有实验（完整epochs）"
         echo "  ./run_batch_experiments.sh --test                          # 测试模式：所有配置各跑2个epoch"
-        echo "  ./run_batch_experiments.sh --rt-detr                       # 只运行RT-DETR（基线+finetune 共8个）"
-        echo "  ./run_batch_experiments.sh --rt-detr-finetune              # 只运行 RT-DETR finetune（4个）"
-        echo "  ./run_batch_experiments.sh --moe-rtdetr                    # 只运行MOE-RTDETR"
-        echo "  ./run_batch_experiments.sh --cas_detr                          # 只运行CaS_DETR"
+        echo "  ./run_batch_experiments.sh --rt-detr                       # 只运行RT-DETR（基线+finetune 共4个）"
+        echo "  ./run_batch_experiments.sh --rt-detr-finetune              # 只运行 RT-DETR finetune（2个）"
+        echo "  ./run_batch_experiments.sh --moe-rtdetr                    # 只运行MOE-RTDETR（2个）"
+        echo "  ./run_batch_experiments.sh --cas_detr                      # 只运行CaS_DETR（2个）"
         echo "  ./run_batch_experiments.sh --yolov8                        # 只运行YOLOv8"
         echo "  ./run_batch_experiments.sh --yolov10                       # 只运行YOLOv10"
         echo "  ./run_batch_experiments.sh --yolov11                       # 只运行YOLOv11"
@@ -741,15 +708,14 @@ parse_arguments() {
         echo "  ./run_batch_experiments.sh --rt-detr --moe-rtdetr --cas_detr   # 运行多个实验类型（可叠加）"
         echo "  ./run_batch_experiments.sh --test --rt-detr --cas_detr          # 测试模式运行多个类型"
         echo "  ./run_batch_experiments.sh --r18                           # 只运行R18"
-        echo "  ./run_batch_experiments.sh --r34                           # 只运行R34"
-        echo "  ./run_batch_experiments.sh --r18 --r34                     # 运行R18+R34"
+        echo "  ./run_batch_experiments.sh --r18                           # 只运行R18"
         echo "  ./run_batch_experiments.sh --k0.3                          # 只运行 Keep Ratio 0.3 (Fast)"
         echo "  ./run_batch_experiments.sh --k0.5                          # 只运行 Keep Ratio 0.5 (Best/Default)"
         echo "  ./run_batch_experiments.sh --k0.7                          # 只运行 Keep Ratio 0.7"
         echo "  ./run_batch_experiments.sh --k0.9                          # 只运行 Keep Ratio 0.9 (Slow)"
-        echo "  ./run_batch_experiments.sh --core                          # 只运行8个核心实验（按顺序）"
+        echo "  ./run_batch_experiments.sh --core                          # 只运行核心实验（CaS_DETR R18 DAIR）"
         echo "  ./run_batch_experiments.sh --custom cfg1.yaml cfg2.yaml    # 指定配置文件路径"
-        echo "  ./run_batch_experiments.sh --keys rt-detr-r18 moe6-r34     # 通过键名选择"
+        echo "  ./run_batch_experiments.sh --keys rt-detr-r18 moe6-r18     # 通过键名选择"
         echo "  ./run_batch_experiments.sh --dataset dairv2x,uadetrac       # YOLO按多个数据集维度运行"
         echo "  ./run_batch_experiments.sh --select                        # 交互式选择"
         echo "  ./run_batch_experiments.sh --rerun-failed [LOG_DIR]        # 重跑失败实验"

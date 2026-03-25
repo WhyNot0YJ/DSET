@@ -8,7 +8,7 @@ custom_hooks = [
         rule='greater',
         type='EarlyStoppingHook'),
 ]
-data_root = '/root/autodl-tmp/datasets/DAIR-V2X/'
+data_root = '/root/autodl-fs/datasets/DAIR-V2X/'
 dataset_type = 'CocoDataset'
 default_hooks = dict(
     checkpoint=dict(
@@ -146,7 +146,7 @@ test_dataloader = dict(
         ann_file='annotations/instances_val.json',
         backend_args=None,
         data_prefix=dict(img=''),
-        data_root='/root/autodl-tmp/datasets/DAIR-V2X/',
+        data_root='/root/autodl-fs/datasets/DAIR-V2X/',
         metainfo=dict(
             classes=(
                 'Car',
@@ -183,7 +183,7 @@ test_dataloader = dict(
     sampler=dict(shuffle=False, type='DefaultSampler'))
 test_evaluator = dict(
     ann_file=
-    '/root/autodl-tmp/datasets/DAIR-V2X/annotations/instances_val.json',
+    '/root/autodl-fs/datasets/DAIR-V2X/annotations/instances_val.json',
     backend_args=None,
     format_only=False,
     metric='bbox',
@@ -226,7 +226,7 @@ train_dataloader = dict(
         ann_file='annotations/instances_train.json',
         backend_args=None,
         data_prefix=dict(img=''),
-        data_root='/root/autodl-tmp/datasets/DAIR-V2X/',
+        data_root='/root/autodl-fs/datasets/DAIR-V2X/',
         filter_cfg=dict(filter_empty_gt=False, min_size=32),
         metainfo=dict(
             classes=(
@@ -444,7 +444,7 @@ val_dataloader = dict(
         ann_file='annotations/instances_val.json',
         backend_args=None,
         data_prefix=dict(img=''),
-        data_root='/root/autodl-tmp/datasets/DAIR-V2X/',
+        data_root='/root/autodl-fs/datasets/DAIR-V2X/',
         metainfo=dict(
             classes=(
                 'Car',
@@ -481,7 +481,7 @@ val_dataloader = dict(
     sampler=dict(shuffle=False, type='DefaultSampler'))
 val_evaluator = dict(
     ann_file=
-    '/root/autodl-tmp/datasets/DAIR-V2X/annotations/instances_val.json',
+    '/root/autodl-fs/datasets/DAIR-V2X/annotations/instances_val.json',
     backend_args=None,
     format_only=False,
     metric='bbox',

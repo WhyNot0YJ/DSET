@@ -55,7 +55,7 @@ YAML configs live in `experiments/cas_detr/configs/`. Key tunable parameters:
 - `cas_detr.token_keep_ratio`: {0.3, 0.5, 0.7, 0.9} — pruning aggressiveness
 - `model.num_experts` / `encoder_moe_top_k` — MoE width and routing
 - `training.early_stopping_patience`: 20 epochs default
-- `data.data_root`: points to DAIR-V2X dataset (default `/root/autodl-tmp/datasets/DAIR-V2X`)
+- `data.data_root`: points to DAIR-V2X dataset (default `/root/autodl-fs/datasets/DAIR-V2X`)
 
 Naming convention: `cas_detr{num_experts}_r{18|34}_ratio{keep_ratio}.yaml`
 

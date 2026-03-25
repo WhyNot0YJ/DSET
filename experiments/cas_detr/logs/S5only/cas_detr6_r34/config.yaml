@@ -2,7 +2,7 @@ checkpoint:
   log_dir: logs
   resume_mode: auto
 data:
-  data_root: /root/autodl-tmp/datasets/DAIR-V2X
+  data_root: /root/autodl-fs/datasets/DAIR-V2X
 data_augmentation:
   brightness: 0.15
   contrast: 0.15

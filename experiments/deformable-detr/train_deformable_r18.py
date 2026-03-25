@@ -90,7 +90,7 @@ def main():
     parser.add_argument('--epochs', type=int, default=None,
                         help='Override max_epochs (for test mode, use --epochs 2)')
     parser.add_argument('--data_root', type=str, default=None,
-                        help='Override data root path (default: /root/autodl-tmp/datasets/DAIR-V2X/)')
+                        help='Override data root path (default: /root/autodl-fs/datasets/DAIR-V2X/)')
     parser.add_argument('--work_dir', type=str, default=None,
                         help='Override work directory')
     parser.add_argument('--resume', type=str, default=None,
@@ -131,7 +131,7 @@ def main():
         data_root = args.data_root
     else:
         possible_paths = [
-            '/root/autodl-tmp/datasets/DAIR-V2X/',
+            '/root/autodl-fs/datasets/DAIR-V2X/',
             '/home/yujie/proj/task-selective-det/data/DAIR-V2X/',
             os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data/DAIR-V2X/'),
         ]
@@ -141,7 +141,7 @@ def main():
                 data_root = path
                 break
         if data_root is None:
-            data_root = '/root/autodl-tmp/datasets/DAIR-V2X/'
+            data_root = '/root/autodl-fs/datasets/DAIR-V2X/'
             print(f"⚠ Warning: Using default data root: {data_root}")
             print(f"   If data is elsewhere, use --data_root to specify")
     

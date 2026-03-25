@@ -35,7 +35,7 @@ def main():
     os.makedirs(cfg.work_dir, exist_ok=True)
 
     # ------------------ 修改为 DAIR-V2X 的配置 ------------------
-    data_root = '/root/autodl-tmp/datasets/DAIR-V2X/'
+    data_root = '/root/autodl-fs/datasets/DAIR-V2X/'
     classes = ('Car', 'Truck', 'Van', 'Bus', 'Pedestrian', 'Cyclist', 'Motorcyclist', 'Trafficcone')
     num_classes = len(classes)
 
