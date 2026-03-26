@@ -75,6 +75,10 @@ from src.data.dataset.dairv2x_detection import DAIRV2XDetection
 from src.data.dataset.coco_folder_detection import CocoFolderDetection
 from src.nn.postprocessor.detr_postprocessor import DetDETRPostProcessor
 from src.nn.postprocessor.box_revert import BoxProcessFormat
+from src.data.transforms.letterbox_geom import (
+    build_letterbox_meta_for_postprocess,
+    align_feature_map_to_original_np,
+)
 import cv2
 import torchvision.transforms as T
 
@@ -82,6 +86,9 @@ try:
     from batch_inference import postprocess_outputs, draw_boxes, inference_from_preprocessed_image
     USE_BATCH_INFERENCE_LOGIC = True
 except ImportError:
+    postprocess_outputs = None  # type: ignore
+    draw_boxes = None  # type: ignore
+    inference_from_preprocessed_image = None  # type: ignore
     USE_BATCH_INFERENCE_LOGIC = False
 
 
@@ -164,6 +171,19 @@ class CaS_DETRRTDETR(nn.Module):
     3. MoE Decoder: MoELayer in FFN
     4. Unified Output: Directly outputs detection results
     """
+
+    @staticmethod
+    def infer_variant_name(enable_cas_predictor: bool, enable_decoder_moe: bool) -> str:
+        if enable_cas_predictor and enable_decoder_moe:
+            return 'cas_detr'
+        if (not enable_cas_predictor) and enable_decoder_moe:
+            return 'moe_rtdetr'
+        if (not enable_cas_predictor) and (not enable_decoder_moe):
+            return 'rtdetr'
+        raise ValueError(
+            "Unsupported ablation combination: enable_cas_predictor=True requires "
+            "enable_decoder_moe=True."
+        )
     
     def __init__(self, hidden_dim: int = 256,
                  decoder_hidden_dim: Optional[int] = None,
@@ -173,6 +193,8 @@ class CaS_DETRRTDETR(nn.Module):
                  num_encoder_layers: int = 1,
                  use_encoder_idx: list = None,
                  token_keep_ratio: Union[float, Dict[int, float]] = None,
+                 enable_cas_predictor: bool = True,
+                 enable_decoder_moe: bool = True,
                  # MoE weight config
                  decoder_moe_balance_weight: float = None,
                  moe_balance_warmup_epochs: int = 0,
@@ -230,11 +252,15 @@ class CaS_DETRRTDETR(nn.Module):
         self.num_encoder_layers = num_encoder_layers
         self.use_encoder_idx = use_encoder_idx
         
-        # CaS_DETR双稀疏配置（ 必然启用，无需存储）
+        self.enable_cas_predictor = enable_cas_predictor
+        self.enable_decoder_moe = enable_decoder_moe
+        self.variant_name = self.infer_variant_name(enable_cas_predictor, enable_decoder_moe)
+
+        # CaS_DETR双稀疏配置
         self.token_keep_ratio = token_keep_ratio
         
         # CASS configuration
-        self.use_cass = use_cass
+        self.use_cass = use_cass and self.enable_cas_predictor
         self.cass_loss_weight = cass_loss_weight
         self.cass_expansion_ratio = cass_expansion_ratio
         self.cass_min_size = cass_min_size
@@ -257,15 +283,12 @@ class CaS_DETRRTDETR(nn.Module):
         # 设置专家数量
         self.num_experts = num_experts
         
-        # Current epoch for control (Token Pruning is always enabled from epoch 0)
+        # Current epoch for control
         self.current_epoch = 0
         
         # ========== Shared Components ==========
         self.backbone = self._build_backbone()
         self.encoder = self._build_encoder()
-        
-        # ========== Fine-grained MoE Decoder ==========
-        # Use passed decoder layers argument
         
         self.decoder = RTDETRTransformerv2(
             num_classes=num_classes,
@@ -279,14 +302,16 @@ class CaS_DETRRTDETR(nn.Module):
             feat_channels=[self.decoder_hidden_dim, self.decoder_hidden_dim, self.decoder_hidden_dim],
             feat_strides=[8, 16, 32],
             num_levels=3,
-            # Fine-grained MoE config
-            use_moe=True,
+            use_moe=self.enable_decoder_moe,
             num_experts=self.num_experts,
             moe_top_k=top_k,
             moe_noise_std=self.moe_noise_std
         )
-        
-        print(f"✓ MoE Decoder config: {num_decoder_layers} layers, {self.num_experts} experts, top_k={top_k}")
+
+        if self.enable_decoder_moe:
+            print(f"✓ MoE Decoder config: {num_decoder_layers} layers, {self.num_experts} experts, top_k={top_k}")
+        else:
+            print(f"✓ Standard Decoder config: {num_decoder_layers} layers")
         
         # RT-DETR Loss
         self.detr_criterion = self._build_detr_criterion()
@@ -307,7 +332,7 @@ class CaS_DETRRTDETR(nn.Module):
         return create_backbone(self.backbone_type)
     
     def _build_encoder(self) -> nn.Module:
-        """Build encoder - Supports CaS_DETR dual-sparse mechanism."""
+        """Build encoder with optional token pruning."""
         return HybridEncoder(
             in_channels=self.encoder_in_channels,
             feat_strides=[8, 16, 32],
@@ -318,14 +343,12 @@ class CaS_DETRRTDETR(nn.Module):
             nhead=8,
             dropout=0.0,
             act='silu',
-            # CaS_DETR dual-sparse params
             token_keep_ratio=self.token_keep_ratio,
-            # CASS parameters
+            enable_cas_predictor=self.enable_cas_predictor,
             use_cass=self.use_cass,
             cass_expansion_ratio=self.cass_expansion_ratio,
             cass_min_size=self.cass_min_size,
             cass_decay_type='gaussian',
-            # CASS Loss parameters
             cass_loss_type=self.cass_loss_type,
             cass_focal_alpha=self.cass_focal_alpha,
             cass_focal_beta=self.cass_focal_beta,
@@ -398,11 +421,7 @@ class CaS_DETRRTDETR(nn.Module):
         # 共享特征提取
         backbone_features = self.backbone(images)
         
-        # CaS_DETR Encoder（双稀疏：Token Pruning）
-        # ⚠️  和 Token Pruning 必然启用（CaS_DETR核心特性）
         encoder_features, encoder_info = self.encoder(backbone_features, return_encoder_info=True)
-        
-        # MoE Decoder前向（内部自动处理路由和专家融合）
         decoder_output = self.decoder(encoder_features, targets)
         
         # 构建输出字典
@@ -419,9 +438,7 @@ class CaS_DETRRTDETR(nn.Module):
             detection_loss = sum(v for v in detection_loss_dict.values() 
                                if isinstance(v, torch.Tensor))
             
-            # ========== CaS_DETR双稀疏损失 ==========
-            # 1. Decoder MoE负载均衡损失（仅训练时）
-            if self.training:
+            if self.training and self.enable_decoder_moe:
                 decoder_moe_loss = decoder_output.get('moe_load_balance_loss', 
                                                      torch.tensor(0.0, device=images.device))
             else:
@@ -431,8 +448,7 @@ class CaS_DETRRTDETR(nn.Module):
             # 在 warmup 期间，MOE 平衡损失权重设为 0，让专家自然分化
             in_moe_balance_warmup = self.current_epoch < self.moe_balance_warmup_epochs
             
-            # Decoder MoE权重
-            if in_moe_balance_warmup:
+            if (not self.enable_decoder_moe) or in_moe_balance_warmup:
                 decoder_moe_weight = 0.0
             elif hasattr(self, 'decoder_moe_balance_weight'):
                 decoder_moe_weight = self.decoder_moe_balance_weight
@@ -441,7 +457,7 @@ class CaS_DETRRTDETR(nn.Module):
             
             # 2. CASS (Context-Aware Soft Supervision) Loss
             # Provides explicit supervision for token importance predictor using GT bboxes
-            if self.use_cass and self.training and encoder_info and targets is not None:
+            if self.enable_cas_predictor and self.use_cass and self.training and encoder_info and targets is not None:
                 importance_scores_list = encoder_info.get('importance_scores_list', [])
                 feat_shapes_list = encoder_info.get('feat_shapes_list', [])
                 
@@ -602,8 +618,18 @@ class CaS_DETRTrainer:
         self.warmup_scheduler = self._create_warmup_scheduler()
         self.ema = self._create_ema()
         self.scaler = self._create_scaler()
-        
-        self.visualizer = TrainingVisualizer(log_dir=self.log_dir, model_type='cas_detr', experiment_name=self.experiment_name)
+
+        if self.model.enable_cas_predictor and self.model.enable_decoder_moe:
+            visualizer_type = 'cas_detr'
+        elif self.model.enable_decoder_moe:
+            visualizer_type = 'moe'
+        else:
+            visualizer_type = 'standard'
+        self.visualizer = TrainingVisualizer(
+            log_dir=self.log_dir,
+            model_type=visualizer_type,
+            experiment_name=self.experiment_name,
+        )
         self.early_stopping = self._create_early_stopping()
         
         # 初始化推理相关组件
@@ -642,7 +668,7 @@ class CaS_DETRTrainer:
     def _validate_config_file(self):
         """验证配置文件是否包含所有必需的配置项"""
         required_keys = {
-            'model': ['num_experts', 'backbone', 'hidden_dim', 'num_queries', 'num_decoder_layers', 'top_k'],
+            'model': ['backbone', 'hidden_dim', 'num_queries', 'num_decoder_layers'],
             'training': ['epochs', 'batch_size', 'pretrained_lr', 'new_lr', 'warmup_epochs'],
             'data': ['data_root'],
             'misc': ['device', 'num_workers']
@@ -661,6 +687,23 @@ class CaS_DETRTrainer:
             error_msg = f"配置文件 {self.config_file_path} 缺少必需的配置项:\n"
             error_msg += "\n".join(f"  - {key}" for key in missing_keys)
             raise ValueError(error_msg)
+
+        enable_cas_predictor, enable_decoder_moe = self._resolve_ablation_switches()
+        if enable_decoder_moe:
+            for key in ['num_experts', 'top_k']:
+                if key not in self.config['model']:
+                    raise ValueError(f"配置文件 {self.config_file_path} 缺少必需的配置项: model.{key}")
+
+    def _resolve_ablation_switches(self) -> Tuple[bool, bool]:
+        ablation_config = self.config.get('model', {}).get('ablation', {})
+        enable_cas_predictor = bool(ablation_config.get('enable_cas_predictor', True))
+        enable_decoder_moe = bool(ablation_config.get('enable_decoder_moe', True))
+        CaS_DETRRTDETR.infer_variant_name(enable_cas_predictor, enable_decoder_moe)
+        return enable_cas_predictor, enable_decoder_moe
+
+    def _resolve_variant_name(self) -> str:
+        enable_cas_predictor, enable_decoder_moe = self._resolve_ablation_switches()
+        return CaS_DETRRTDETR.infer_variant_name(enable_cas_predictor, enable_decoder_moe)
 
     def _init_dataset_derived_fields(self) -> None:
         dc = self.config.setdefault("data", {})
@@ -699,15 +742,16 @@ class CaS_DETRTrainer:
                 self.experiment_name = dir_name
         else:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            # 从配置中获取backbone类型，加入到目录名中
             backbone_type = self.config.get('model', {}).get('backbone', 'unknown')
-            # 移除presnet前缀，只保留数字部分（如presnet18 -> r18, presnet34 -> r34）
             backbone_short = backbone_type.replace('presnet', 'r').replace('pres', 'r') if 'presnet' in backbone_type or 'pres' in backbone_type else backbone_type
-            # 从配置文件读取decoder专家数量
             num_decoder_experts = self.config.get('model', {}).get('num_experts', 6)
-            cas_detr_config = self.config.get('model', {}).get('cas_detr', {})
-            # 生成实验名称（不带时间戳）
-            self.experiment_name = f"cas_detr{num_decoder_experts}_{backbone_short}"
+            variant_name = self._resolve_variant_name()
+            if variant_name == 'cas_detr':
+                self.experiment_name = f"cas_detr{num_decoder_experts}_{backbone_short}"
+            elif variant_name == 'moe_rtdetr':
+                self.experiment_name = f"moe_rtdetr{num_decoder_experts}_{backbone_short}"
+            else:
+                self.experiment_name = f"rtdetr_{backbone_short}"
             ds_dir = dataset_dir_name(self.config)
             self.log_dir = Path(f"logs/{ds_dir}/{self.experiment_name}_{timestamp}")
             self.log_dir.mkdir(parents=True, exist_ok=True)
@@ -734,12 +778,14 @@ class CaS_DETRTrainer:
                 yaml.dump(self.config, f, default_flow_style=False)
     
     def _create_model(self) -> CaS_DETRRTDETR:
-        """创建CaS_DETR模型（支持双稀疏）。"""
+        """创建统一的 RTDETR / MOE RTDETR / CaS_DETR 模型。"""
         # 从配置文件读取encoder配置
         encoder_config = self.config['model']['encoder']
         encoder_in_channels = encoder_config['in_channels']
         encoder_expansion = encoder_config['expansion']
         use_encoder_idx = encoder_config.get('use_encoder_idx', [1, 2])
+
+        enable_cas_predictor, enable_decoder_moe = self._resolve_ablation_switches()
         
         # 从配置文件读取专家数量
         num_experts = self.config['model'].get('num_experts', 6)
@@ -747,10 +793,8 @@ class CaS_DETRTrainer:
         # 从配置文件读取 MoE noise_std
         moe_noise_std = self.config['model'].get('moe_noise_std', 0.1)
         
-        # CaS_DETR双稀疏配置
         cas_detr_config = self.config['model'].get('cas_detr', {})
-        # ⚠️ 注意： 和 Token Pruning 必然启用（CaS_DETR核心特性），无需配置
-        token_keep_ratio = cas_detr_config.get('token_keep_ratio', 0.7)
+        token_keep_ratio = cas_detr_config.get('token_keep_ratio', 1.0 if not enable_cas_predictor else 0.7)
         
         # CASS (Context-Aware Soft Supervision) 配置
         use_cass = cas_detr_config.get('use_cass', False)
@@ -775,7 +819,7 @@ class CaS_DETRTrainer:
             hidden_dim=self.config['model']['hidden_dim'],
             decoder_hidden_dim=decoder_hidden_dim,
             num_queries=self.config['model']['num_queries'],
-            top_k=self.config['model']['top_k'],
+            top_k=self.config['model'].get('top_k', 1),
             backbone_type=self.config['model']['backbone'],
             num_decoder_layers=self.config['model']['num_decoder_layers'],
             encoder_in_channels=encoder_in_channels,
@@ -783,21 +827,18 @@ class CaS_DETRTrainer:
             num_experts=num_experts,
             num_encoder_layers=num_encoder_layers,
             use_encoder_idx=use_encoder_idx,
-            # CaS_DETR双稀疏参数（ 必然启用，无需传递）
             token_keep_ratio=token_keep_ratio,
-            # MoE权重配置
+            enable_cas_predictor=enable_cas_predictor,
+            enable_decoder_moe=enable_decoder_moe,
             decoder_moe_balance_weight=decoder_moe_balance_weight,
             moe_balance_warmup_epochs=moe_balance_warmup_epochs,
-            # CASS配置
             use_cass=use_cass,
             cass_loss_weight=cass_loss_weight,
             cass_expansion_ratio=cass_expansion_ratio,
             cass_min_size=cass_min_size,
-            # CASS Loss配置
             cass_loss_type=cass_loss_type,
             cass_focal_alpha=cass_focal_alpha,
             cass_focal_beta=cass_focal_beta,
-            # MoE noise_std 配置
             moe_noise_std=moe_noise_std,
             num_classes=self.num_classes,
         )
@@ -818,20 +859,20 @@ class CaS_DETRTrainer:
         # 获取实际的num_encoder_layers用于日志输出
         num_encoder_layers = self.config.get('model', {}).get('encoder', {}).get('num_encoder_layers', 1)
         
-        self.logger.info(f"✓ 创建CaS_DETR RT-DETR模型")
-        self.logger.info(f"  Decoder专家数量: {model.num_experts}")
+        self.logger.info(f"✓ 创建统一消融模型: {model.variant_name}")
+        if model.enable_decoder_moe:
+            self.logger.info(f"  Decoder专家数量: {model.num_experts}")
         self.logger.info(f"  Backbone: {model.backbone_type}")
         self.logger.info(f"  Encoder: in_channels={encoder_in_channels}, expansion={encoder_expansion}, num_layers={num_encoder_layers}")
-        self.logger.info(f"  设计: 层间共享")
-        self.logger.info(f"  双稀疏配置（CaS_DETR核心特性，必然启用）:")
-        self.logger.info(f"    - Token Pruning: 启用（与  兼容）")
-        self.logger.info(f"      → keep_ratio={token_keep_ratio}")
-        self.logger.info(f"  损失权重配置:")
-        self.logger.info(f"    - CASS Supervision: {use_cass} (loss_type={cass_loss_type}, weight={cass_loss_weight}, expansion={cass_expansion_ratio}, min_size={cass_min_size})")
-        if use_cass:
+        self.logger.info("  设计: 统一入口，模块按配置启停")
+        self.logger.info(f"  开关: CasPredictor={model.enable_cas_predictor}, DecoderMOE={model.enable_decoder_moe}")
+        self.logger.info(f"  Token Pruning keep_ratio: {token_keep_ratio}")
+        self.logger.info("  损失权重配置:")
+        self.logger.info(f"    - CASS Supervision: {model.use_cass} (loss_type={cass_loss_type}, weight={cass_loss_weight}, expansion={cass_expansion_ratio}, min_size={cass_min_size})")
+        if model.use_cass:
             self.logger.info(f"      → CASS Loss params: alpha={cass_focal_alpha}, beta={cass_focal_beta}")
         self.logger.info(f"    - Decoder MoE: {decoder_moe_balance_weight if decoder_moe_balance_weight else 'auto'}")
-        if moe_balance_warmup_epochs > 0:
+        if model.enable_decoder_moe and moe_balance_warmup_epochs > 0:
             self.logger.info(f"    - MOE Balance Warmup: {moe_balance_warmup_epochs} epochs (延迟平衡策略：前{moe_balance_warmup_epochs}个epoch不应用MOE平衡损失)")
         
         return model
@@ -967,9 +1008,11 @@ class CaS_DETRTrainer:
             
             # 第二步：将Decoder FFN权重复制到MoE专家
             decoder_num_experts = model.num_experts
-            if decoder_ffn_weights_to_clone:
+            if model.enable_decoder_moe and decoder_ffn_weights_to_clone:
                 self.logger.info(f"  - 找到 {len(decoder_ffn_weights_to_clone)} 个Decoder层的FFN权重，准备克隆到MoE")
             for layer_idx, ffn_params in decoder_ffn_weights_to_clone.items():
+                if not model.enable_decoder_moe:
+                    break
                 # 检查是否有完整的FFN参数
                 if 'linear1.weight' in ffn_params and 'linear1.bias' in ffn_params and \
                    'linear2.weight' in ffn_params and 'linear2.bias' in ffn_params:
@@ -1475,7 +1518,7 @@ class CaS_DETRTrainer:
                 return
             
             # 使用batch_inference.py中的函数进行推理（完全复用逻辑）
-            if USE_BATCH_INFERENCE_LOGIC:
+            if USE_BATCH_INFERENCE_LOGIC and inference_from_preprocessed_image is not None:
                 result_image = inference_from_preprocessed_image(
                     single_image,
                     self.ema.module,
@@ -1486,7 +1529,8 @@ class CaS_DETRTrainer:
                     device=str(self.device),
                     class_names=self.class_names,
                     colors=self.colors,
-                    verbose=False  # 训练时不打印调试信息
+                    verbose=False,  # 训练时不打印调试信息
+                    target_dict=single_target,
                 )
                 
                 if result_image is None:
@@ -1500,43 +1544,37 @@ class CaS_DETRTrainer:
                 output_filename = f"{image_name}_{suffix}.jpg"
                 output_path = self.inference_output_dir / output_filename
                 cv2.imwrite(str(output_path), result_image)
-            else:
-                # 备用逻辑（如果无法导入batch_inference，使用简化版本）
+            elif postprocess_outputs is not None and draw_boxes is not None:
+                # 备用：与 batch_inference.postprocess_outputs + letterbox meta 一致
                 with torch.no_grad():
                     outputs = self.ema.module(single_image)
-                
-                # 根据 box_revert 文档，orig_sizes 应该是 (w, h)
-                _, _, h, w = single_image.shape
-                eval_sizes = torch.tensor([[w, h]], device=self.device)
-                
-                results = self.postprocessor(outputs, orig_sizes=eval_sizes)
-                
-                if len(results) > 0:
-                    result = results[0]
-                    labels = result['labels'].cpu().numpy()
-                    boxes = result['boxes'].cpu().numpy()
-                    scores = result['scores'].cpu().numpy()
-                    
-                    mask = scores >= 0.3
-                    labels = labels[mask]
-                    boxes = boxes[mask]
-                    scores = scores[mask]
-                    
-                    if len(labels) > 0:
-                        orig_image = cv2.imread(str(orig_image_path))
-                        if orig_image is not None:
-                            result_image = draw_boxes(
-                                orig_image.copy(), labels, boxes, scores,
-                                class_names=self.class_names,
-                                colors=self.colors
-                            )
-                            image_name = orig_image_path.stem
-                            if suffix is None:
-                                suffix = f"epoch_{self.current_epoch}"
-                            output_filename = f"{image_name}_{suffix}.jpg"
-                            output_path = self.inference_output_dir / output_filename
-                            cv2.imwrite(str(output_path), result_image)
-            
+                _, _, ih, iw = single_image.shape
+                meta = build_letterbox_meta_for_postprocess(single_target, ih, iw)
+                labels, boxes, scores = postprocess_outputs(
+                    outputs,
+                    self.postprocessor,
+                    meta,
+                    conf_threshold=0.3,
+                    target_size=640,
+                    device=str(self.device),
+                    verbose=False,
+                )
+                orig_image = cv2.imread(str(orig_image_path))
+                if orig_image is not None and len(labels) > 0:
+                    result_image = draw_boxes(
+                        orig_image.copy(), labels, boxes, scores,
+                        class_names=self.class_names,
+                        colors=self.colors,
+                    )
+                    image_name = orig_image_path.stem
+                    if suffix is None:
+                        suffix = f"epoch_{self.current_epoch}"
+                    output_filename = f"{image_name}_{suffix}.jpg"
+                    output_path = self.inference_output_dir / output_filename
+                    cv2.imwrite(str(output_path), result_image)
+            else:
+                pass
+
             # 恢复训练模式
             self.ema.module.train()
             
@@ -1748,19 +1786,48 @@ class CaS_DETRTrainer:
                     if orig_img is None: continue
 
                     orig_h, orig_w = orig_img.shape[:2]
+                    t_i = targets[i]
+                    lb_pad = t_i.get("letterbox_pad")
+                    lb_scale = t_i.get("letterbox_scale")
+                    if lb_pad is not None and lb_scale is not None:
+                        pl = float(lb_pad[0].item())
+                        pt = float(lb_pad[1].item())
+                        sc = float(lb_scale.reshape(-1)[0].item())
+                        ohs, ows = t_i["orig_size"].tolist()
+                        nh = max(1, int(round(float(ohs) * sc)))
+                        nw = max(1, int(round(float(ows) * sc)))
+                    else:
+                        pl = pt = 0.0
+                        nh, nw = H_tensor, W_tensor
 
-                    valid_h_feat = max(1, min(h_feat, int(round(orig_h * (h_feat / H_tensor)))))
-                    valid_w_feat = max(1, min(w_feat, int(round(orig_w * (w_feat / W_tensor)))))
-                    
                     s_2d = scores_prob[i, 0].cpu().numpy()
-                    s_valid = s_2d[:valid_h_feat, :valid_w_feat]
-                    
-                    s_norm = (s_valid - s_valid.min()) / (s_valid.max() - s_valid.min() + 1e-8)
-                    heatmap = cv2.applyColorMap((s_norm * 255).astype(np.uint8), cv2.COLORMAP_JET)
-                    heatmap = cv2.resize(heatmap, (orig_w, orig_h), interpolation=cv2.INTER_NEAREST)
-                    
+                    s_aligned = align_feature_map_to_original_np(
+                        s_2d,
+                        h_feat,
+                        w_feat,
+                        H_tensor,
+                        W_tensor,
+                        orig_h,
+                        orig_w,
+                        pl,
+                        pt,
+                        nh,
+                        nw,
+                        normalize_before_resize=True,
+                        interp_tensor=cv2.INTER_LINEAR,
+                        interp_orig=cv2.INTER_NEAREST,
+                    )
+                    s_norm = (s_aligned - s_aligned.min()) / (
+                        s_aligned.max() - s_aligned.min() + 1e-8
+                    )
+                    heatmap = cv2.applyColorMap(
+                        (s_norm * 255).astype(np.uint8), cv2.COLORMAP_JET
+                    )
                     overlay = cv2.addWeighted(orig_img, 0.4, heatmap, 0.6, 0)
-                    cv2.imwrite(str(viz_dir / f"sample_{img_id}_{level_name}_heatmap.jpg"), overlay)
+                    cv2.imwrite(
+                        str(viz_dir / f"sample_{img_id}_{level_name}_heatmap.jpg"),
+                        overlay,
+                    )
                 
             self.logger.info(f"📸 Epoch {epoch}: 已保存 {len(heatmaps_2d_list)} 个尺度({', '.join(level_names)})的重要性热力图至 {viz_dir}")
         except Exception as e:
@@ -1883,7 +1950,7 @@ class CaS_DETRTrainer:
                     token_pruning_ratios.append(avg_ratio)
                 
             # 处理Decoder MoE统计（即产即清）
-            if self.model.decoder.use_moe:
+            if self.model.enable_decoder_moe:
                 for layer in self.model.decoder.decoder.layers:
                     if hasattr(layer, 'decoder_moe_layer'):
                         dec_logits = layer.decoder_moe_layer.router_logits_cache
@@ -1931,15 +1998,17 @@ class CaS_DETRTrainer:
         if total_dec_tokens > 0:
             for count in decoder_expert_usage_count:
                 expert_usage_rate.append(count / total_dec_tokens)
-        else:
+        elif self.model.enable_decoder_moe:
             expert_usage_rate = [1.0 / num_decoder_experts] * num_decoder_experts
+        else:
+            expert_usage_rate = []
         
         # 计算平均Token Pruning比例
         avg_token_pruning_ratio = sum(token_pruning_ratios) / len(token_pruning_ratios) if token_pruning_ratios else 0.0
         
         # [内存优化] 统计完专家使用率后，手动清空 router_logits_cache（即产即清）
         # 确保这只是针对统计日志的清理，不影响 detr_criterion 的计算
-        if self.model.decoder.use_moe:
+        if self.model.enable_decoder_moe:
             for layer in self.model.decoder.decoder.layers:
                 if hasattr(layer, 'decoder_moe_layer'):
                     if hasattr(layer.decoder_moe_layer, 'router_logits_cache'):
@@ -2040,7 +2109,7 @@ class CaS_DETRTrainer:
         # 打印验证时的剪枝状态（每次验证都打印，用于监控）
         if avg_val_pruning_ratio > 0.0:
             self.logger.info(f"  ✓ 验证时Token Pruning生效: {avg_val_pruning_ratio:.2%} tokens被剪枝")
-        else:
+        elif self.model.enable_cas_predictor:
             # pruning_ratio=0.0 可能是因为 keep_ratio >= 1.0 或配置问题
             self.logger.warning(f"  ⚠ 验证时Token Pruning未生效 (pruning_ratio=0.0)! 请检查keep_ratio配置或EMA模型epoch设置")
         
@@ -2061,11 +2130,23 @@ class CaS_DETRTrainer:
         }
     
     @staticmethod
-    def _cxcywh_to_xywh_orig(boxes: torch.Tensor, img_w: int, img_h: int,
-                              orig_w: float, orig_h: float) -> np.ndarray:
-        """cxcywh (归一化或像素) → COCO xywh in original image coords. Returns numpy."""
-        scale = min(img_w / orig_w, img_h / orig_h)
-        normalized = boxes.max() <= 1.01
+    def _cxcywh_to_xywh_orig(
+        boxes: torch.Tensor,
+        img_w: int,
+        img_h: int,
+        orig_w: float,
+        orig_h: float,
+        letterbox_pad: Optional[torch.Tensor] = None,
+        letterbox_scale: Optional[torch.Tensor] = None,
+    ) -> np.ndarray:
+        """cxcywh（相对网络输入张量归一化）→ COCO xywh（原图像素）。支持 letterbox 与旧版非等比 Resize。"""
+        if boxes.numel() == 0:
+            return np.zeros((0, 4), dtype=np.float64)
+
+        device = boxes.device
+        ow = float(orig_w)
+        oh = float(orig_h)
+        normalized = bool((boxes.max() <= 1.01).item())
         if normalized:
             cx = boxes[:, 0] * img_w
             cy = boxes[:, 1] * img_h
@@ -2073,13 +2154,30 @@ class CaS_DETRTrainer:
             bh = boxes[:, 3] * img_h
         else:
             cx, cy, bw, bh = boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 3]
-        out = torch.stack([
-            ((cx - bw / 2) / scale).clamp(0, orig_w),
-            ((cy - bh / 2) / scale).clamp(0, orig_h),
-            (bw / scale).clamp(1, orig_w),
-            (bh / scale).clamp(1, orig_h),
-        ], dim=1)
-        return out.cpu().numpy()
+
+        if letterbox_pad is not None and letterbox_scale is not None:
+            pad = letterbox_pad.to(device=device, dtype=cx.dtype)
+            scale = letterbox_scale.to(device=device, dtype=cx.dtype).reshape(-1)[0]
+            pad_left, pad_top = pad[0], pad[1]
+            x1 = ((cx - bw / 2) - pad_left) / scale
+            y1 = ((cy - bh / 2) - pad_top) / scale
+            x2 = ((cx + bw / 2) - pad_left) / scale
+            y2 = ((cy + bh / 2) - pad_top) / scale
+            x1 = x1.clamp(0, ow)
+            y1 = y1.clamp(0, oh)
+            x2 = x2.clamp(0, ow)
+            y2 = y2.clamp(0, oh)
+            w = (x2 - x1).clamp(min=1.0)
+            h = (y2 - y1).clamp(min=1.0)
+            return torch.stack([x1, y1, w, h], dim=1).cpu().numpy()
+
+        sx = img_w / ow
+        sy = img_h / oh
+        x1 = ((cx - bw / 2) / sx).clamp(0, ow)
+        y1 = ((cy - bh / 2) / sy).clamp(0, oh)
+        w = (bw / sx).clamp(min=1.0, max=ow)
+        h = (bh / sy).clamp(min=1.0, max=oh)
+        return torch.stack([x1, y1, w, h], dim=1).cpu().numpy()
 
     def _collect_predictions(self, outputs: Dict, targets: List[Dict], batch_idx: int,
                             all_predictions: List, all_targets: List, img_w: int, img_h: int) -> None:
@@ -2099,6 +2197,8 @@ class CaS_DETRTrainer:
         for i in range(batch_size):
             image_id = batch_idx * bs + i
             orig_h, orig_w = targets[i]['orig_size'].tolist()
+            lb_pad = targets[i].get('letterbox_pad')
+            lb_scale = targets[i].get('letterbox_scale')
 
             scores_sig = torch.sigmoid(pred_logits[i])
             max_scores, pred_cls = scores_sig.max(dim=-1)
@@ -2107,7 +2207,9 @@ class CaS_DETRTrainer:
                 fb = pred_boxes[i][valid]
                 fc = pred_cls[valid]
                 fs = max_scores[valid]
-                boxes_np = self._cxcywh_to_xywh_orig(fb, img_w, img_h, orig_w, orig_h)
+                boxes_np = self._cxcywh_to_xywh_orig(
+                    fb, img_w, img_h, orig_w, orig_h, lb_pad, lb_scale
+                )
                 cls_np = (fc.cpu().numpy() + 1).tolist()
                 scores_np = fs.cpu().numpy().tolist()
                 all_predictions.extend(
@@ -2122,7 +2224,9 @@ class CaS_DETRTrainer:
             if len(true_labels) == 0:
                 continue
 
-            gt_boxes_np = self._cxcywh_to_xywh_orig(true_boxes, img_w, img_h, orig_w, orig_h)
+            gt_boxes_np = self._cxcywh_to_xywh_orig(
+                true_boxes, img_w, img_h, orig_w, orig_h, lb_pad, lb_scale
+            )
             gt_cls_np = (true_labels.cpu().numpy() + 1)
             gt_area = gt_boxes_np[:, 2] * gt_boxes_np[:, 3]
             gt_h = gt_boxes_np[:, 3]
@@ -2650,13 +2754,14 @@ class CaS_DETRTrainer:
             should_show_details = True
             if should_show_details:
                 self.logger.info(f"  检测损失: {train_metrics['detection_loss']:.2f}")
-                self.logger.info(f"  Decoder MoE损失: {train_metrics.get('decoder_moe_loss', 0.0):.4f}")
+                if self.model.enable_decoder_moe:
+                    self.logger.info(f"  Decoder MoE损失: {train_metrics.get('decoder_moe_loss', 0.0):.4f}")
                 if self.model.use_cass:
                     self.logger.info(f"  CASS Loss: {train_metrics.get('cass_loss', 0.0):.4f}")
-                self.logger.info(f"  MoE总损失: {train_metrics['moe_load_balance_loss']:.4f}")
-                # 显示专家使用率（每个epoch显示一次）
-                usage_str = [f"{rate*100:.2f}%" for rate in train_metrics['expert_usage_rate']]
-                self.logger.info(f"  Decoder专家使用率: [{', '.join(usage_str)}]")
+                if self.model.enable_decoder_moe:
+                    self.logger.info(f"  MoE总损失: {train_metrics['moe_load_balance_loss']:.4f}")
+                    usage_str = [f"{rate*100:.2f}%" for rate in train_metrics['expert_usage_rate']]
+                    self.logger.info(f"  Decoder专家使用率: [{', '.join(usage_str)}]")
             
             # 记录训练指标到可视化器
             current_lr = self.optimizer.param_groups[0]['lr']

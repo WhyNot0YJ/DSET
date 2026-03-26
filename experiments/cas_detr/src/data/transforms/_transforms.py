@@ -13,12 +13,14 @@ import torchvision.transforms.v2.functional as F
 import PIL
 import PIL.Image
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from .._misc import convert_to_tv_tensor, _boxes_keys
 from .._misc import Image, Video, Mask, BoundingBoxes
 from .._misc import SanitizeBoundingBoxes
 from ...core import register
+
+from .letterbox_geom import compute_letterbox_layout
 
 
 RandomPhotometricDistort = register()(T.RandomPhotometricDistort)
@@ -187,3 +189,58 @@ class RandomResize(T.Transform):
         import random
         target_size = random.choice(self.scales)
         return T.Resize(target_size, max_size=self.max_size, antialias=self.antialias)(inputs)
+
+
+@register()
+class LetterboxResize(torch.nn.Module):
+    """等比缩放后居中 pad 到固定方形画布（letterbox），避免 16:9 等比例被拉成正方形产生畸变。
+
+    在 target 中写入 ``letterbox_scale``、``letterbox_pad``（左上 padding，单位像素），供验证 / 推理阶段
+    将预测框映射回原图分辨率。
+    """
+
+    def __init__(self, size: int, fill: Union[int, float] = 0, antialias: bool = True) -> None:
+        super().__init__()
+        self.size = int(size)
+        self.fill = int(fill)
+        self.antialias = antialias
+
+    def forward(self, *inputs: Any) -> Any:
+        image, target = inputs
+        tw = th = self.size
+        w, h = image.size
+
+        L = compute_letterbox_layout(w, h, self.size)
+        scale = L['scale']
+        new_w, new_h = int(L['new_w']), int(L['new_h'])
+        pad_left = int(L['pad_left'])
+        pad_right = int(L['pad_right'])
+        pad_top = int(L['pad_top'])
+        pad_bottom = int(L['pad_bottom'])
+
+        image = F.resize(image, [new_h, new_w], antialias=self.antialias)
+
+        if 'boxes' in target and isinstance(target['boxes'], BoundingBoxes):
+            boxes_t = target['boxes'].clone()
+            if boxes_t.numel() > 0:
+                boxes_t = boxes_t * scale
+            target['boxes'] = convert_to_tv_tensor(
+                boxes_t, key='boxes', box_format='XYXY', canvas_size=(new_h, new_w)
+            )
+
+        image = F.pad(image, [pad_left, pad_top, pad_right, pad_bottom], fill=self.fill, padding_mode='constant')
+
+        if 'boxes' in target and isinstance(target['boxes'], BoundingBoxes):
+            boxes_t = target['boxes'].clone()
+            if boxes_t.numel() > 0:
+                off = boxes_t.new_tensor([pad_left, pad_top, pad_left, pad_top])
+                boxes_t = boxes_t + off
+            target['boxes'] = convert_to_tv_tensor(
+                boxes_t, key='boxes', box_format='XYXY', canvas_size=(th, tw)
+            )
+
+        target['letterbox_scale'] = torch.tensor(scale, dtype=torch.float32)
+        target['letterbox_pad'] = torch.tensor(
+            [float(pad_left), float(pad_top)], dtype=torch.float32
+        )
+        return image, target

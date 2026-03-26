@@ -1,7 +1,0 @@
-{
-  "rt-detr-r18": {
-    "type":"rtdetr",
-    "config": "/root/autodl-tmp/CaS_DETR/experiments/rt-detr/configs/rtdetr_r18.yaml",
-    "checkpoint": "/root/autodl-tmp/CaS_DETR/experiments/rt-detr/logs/rtdetr_r18_20260112_225710/best_model.pth"
-  }
-}

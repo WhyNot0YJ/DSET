@@ -22,6 +22,7 @@ from ..transforms import (
     RandomZoomOut,
     RandomIoUCrop,
     ConvertPILImage,
+    LetterboxResize,
 )
 
 __all__ = ["CocoFolderDetection"]
@@ -40,6 +41,7 @@ class CocoFolderDetection(DetDataset):
         "zoom_out_enabled": True,
         "iou_crop_p": 0.8,
         "horizontal_flip_p": 0.5,
+        "letterbox_fill": 114,
     }
 
     def __init__(
@@ -103,12 +105,14 @@ class CocoFolderDetection(DetDataset):
         zoom_out_enabled = self.aug_config["zoom_out_enabled"]
         iou_crop_p = self.aug_config["iou_crop_p"]
         horizontal_flip_p = self.aug_config["horizontal_flip_p"]
+        letterbox_fill = int(self.aug_config.get("letterbox_fill", 114))
+        letterbox = LetterboxResize(size=target_size, fill=letterbox_fill, antialias=True)
 
         if self.split == "train":
             if self.epoch >= self.stop_epoch:
                 self.transforms = T.Compose(
                     [
-                        T.Resize(size=(target_size, target_size), antialias=True),
+                        letterbox,
                         ConvertPILImage(),
                         T.ToDtype(torch.float32, scale=True),
                         Normalize(mean=normalize_mean, std=normalize_std),
@@ -128,7 +132,7 @@ class CocoFolderDetection(DetDataset):
                 )
                 transforms_list.extend(
                     [
-                        T.Resize(size=(target_size, target_size), antialias=True),
+                        letterbox,
                         ConvertPILImage(),
                         T.ToDtype(torch.float32, scale=True),
                         Normalize(mean=normalize_mean, std=normalize_std),
@@ -139,7 +143,7 @@ class CocoFolderDetection(DetDataset):
         else:
             self.transforms = T.Compose(
                 [
-                    T.Resize(size=(target_size, target_size), antialias=True),
+                    letterbox,
                     ConvertPILImage(),
                     T.ToDtype(torch.float32, scale=True),
                     Normalize(mean=normalize_mean, std=normalize_std),

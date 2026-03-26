@@ -6,8 +6,17 @@ import os
 from pathlib import Path
 from collections import defaultdict
 
+
+def find_latest_history(base_dir: Path, pattern: str):
+    matches = sorted(base_dir.glob(pattern))
+    if not matches:
+        return None
+    return matches[-1]
+
 def read_training_history(csv_path):
     """读取训练历史CSV文件，返回最佳结果"""
+    if csv_path is None:
+        return None
     if not os.path.exists(csv_path):
         return None
     
@@ -44,6 +53,8 @@ def read_training_history(csv_path):
 
 def read_yolo_history(csv_path):
     """读取YOLO训练历史（格式不同）"""
+    if csv_path is None:
+        return None
     if not os.path.exists(csv_path):
         return None
     
@@ -80,14 +91,11 @@ def read_yolo_history(csv_path):
 
 def main():
     base_dir = Path(__file__).parent
-    
+
     experiments = {
-        'CaS_DETR-R34': ('cas_detr/logs/cas_detr8_r34_20251125_114205/training_history.csv', read_training_history),
-        'CaS_DETR-R18': ('cas_detr/logs/cas_detr8_r18_20251126_155540/training_history.csv', read_training_history),
-        'MOE-RTDETR-R34': ('moe-rtdetr/logs/moe6_rtdetr_r34_20251121_142648/training_history.csv', read_training_history),
-        'MOE-RTDETR-R18': ('moe-rtdetr/logs/moe6_rtdetr_r18_20251121_110441/training_history.csv', read_training_history),
-        'RT-DETR-R34': ('rt-detr/logs/rtdetr_r34_20251126_045005/training_history.csv', read_training_history),
-        'RT-DETR-R18': ('rt-detr/logs/rtdetr_r18_20251125_233935/training_history.csv', read_training_history),
+        'CaS_DETR-R18': (find_latest_history(base_dir, 'cas_detr/logs/**/cas_detr*_r18_*/training_history.csv'), read_training_history),
+        'MOE-RTDETR-R18': (find_latest_history(base_dir, 'cas_detr/logs/**/moe_rtdetr*_r18_*/training_history.csv'), read_training_history),
+        'RT-DETR-R18': (find_latest_history(base_dir, 'cas_detr/logs/**/rtdetr_r18_*/training_history.csv'), read_training_history),
         'YOLOv8-L': ('yolov8/logs/yolo_v8l_20251127_155744/training_history.csv', read_yolo_history),
         'YOLOv8-M': ('yolov8/logs/yolo_v8m_20251127_170938/training_history.csv', read_yolo_history),
         'YOLOv8-S': ('yolov8/logs/yolo_v8s_20251127_181059/training_history.csv', read_yolo_history),
@@ -95,7 +103,7 @@ def main():
     
     results = {}
     for name, (path, reader_func) in experiments.items():
-        full_path = base_dir / path
+        full_path = path if isinstance(path, Path) else (base_dir / path)
         result = reader_func(full_path)
         if result:
             results[name] = result
@@ -165,7 +173,7 @@ def generate_report(results):
 ### 3.1 CaS_DETR模型性能
 
 CaS_DETR (Dual-Sparse Expert Transformer) 是本研究的核心创新，采用双稀疏设计：
-- **Encoder层**: Encoder MoE + Token Pruning
+- **Encoder层**: Token Pruning + Importance Predictor
 - **Decoder层**: Expert MoE
 - **稀疏性**: 通过专家路由和token剪枝实现计算效率提升
 

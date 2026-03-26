@@ -2,6 +2,11 @@
 """RT-DETR 批量推理脚本 - 处理整个图像目录"""
 
 import sys
+from pathlib import Path
+_cas_detr_root = Path(__file__).resolve().parent
+if str(_cas_detr_root) not in sys.path:
+    sys.path.insert(0, str(_cas_detr_root))
+
 import argparse
 import yaml
 import torch
@@ -9,8 +14,14 @@ import torchvision.transforms as T
 from PIL import Image
 import cv2
 import numpy as np
+import torch.nn.functional as F_nn
 import json
-from pathlib import Path
+
+from src.data.transforms.letterbox_geom import (
+    compute_letterbox_layout,
+    build_letterbox_meta_for_postprocess,
+)
+
 
 try:
     from tqdm import tqdm
@@ -134,39 +145,37 @@ def load_model(config_path: str, checkpoint_path: str, device: str = "cuda"):
     return model, postprocessor
 
 
-def inference_from_preprocessed_image(img_tensor, model, postprocessor, orig_image_path, 
-                                      conf_threshold=0.3, target_size=640, device='cuda', 
-                                      class_names=None, colors=None, verbose=False):
+def inference_from_preprocessed_image(img_tensor, model, postprocessor, orig_image_path,
+                                      conf_threshold=0.3, target_size=640, device='cuda',
+                                      class_names=None, colors=None, verbose=False,
+                                      target_dict=None):
     """
-    供 Trainer 调用的推理接口
-    img_tensor: [1, 3, H, W] 已经归一化并 padding 好的 tensor (来自 validation loader)
+    供 Trainer 调用的推理接口。
+    img_tensor: [1, 3, H, W] 已 letterbox 归一化（与验证 DataLoader 一致）。
+    target_dict: 可选，来自 collate 的 target，用于精确 letterbox meta（推荐）。
     """
-    # 1. 计算 Meta 信息 (我们需要反推 scale 和 padding)
-    # Trainer 里的图片通常已经是 pad 到了 32 的倍数，且 resize 过了。
-    # 这里我们假设 img_tensor 已经是模型输入所需的格式。
-    
-    # 读取原图用于画图
     orig_image = cv2.imread(str(orig_image_path))
     if orig_image is None:
         return None
-    
+
     orig_h, orig_w = orig_image.shape[:2]
-    input_h, input_w = img_tensor.shape[-2:]
-    
-    # 近拟反推 scale
-    # 验证集使用 T.Resize(size=(640, 640))，这会强制将图片拉伸到 640x640，不保持比例
-    # 因此 scale_h 和 scale_w 是不同的
-    scale_h = 640.0 / float(orig_h)
-    scale_w = 640.0 / float(orig_w)
-        
-    # 构建简化的 meta
-    meta = {
-        'orig_size': torch.tensor([[orig_h, orig_w]]),
-        'padded_h': input_h,
-        'padded_w': input_w,
-        'scale_h': scale_h,
-        'scale_w': scale_w
-    }
+    input_h, input_w = int(img_tensor.shape[-2]), int(img_tensor.shape[-1])
+
+    if target_dict is not None:
+        meta = build_letterbox_meta_for_postprocess(target_dict, input_h, input_w)
+    else:
+        L = compute_letterbox_layout(orig_w, orig_h, max(input_h, input_w))
+        meta = {
+            'orig_size': torch.tensor([[orig_h, orig_w]]),
+            'scale': L['scale'],
+            'pad_left': float(L['pad_left']),
+            'pad_top': float(L['pad_top']),
+            'new_w': int(L['new_w']),
+            'new_h': int(L['new_h']),
+            'padded_h': input_h,
+            'padded_w': input_w,
+            'letterbox_uniform': True,
+        }
     
     # 推理
     with torch.no_grad():
@@ -196,65 +205,47 @@ def inference_from_preprocessed_image(img_tensor, model, postprocessor, orig_ima
     return result_image
 
 
-def preprocess_image(image_path: str, target_size: int = 640):
+def preprocess_image(image_path: str, target_size: int = 640, letterbox_fill: int = 0):
     """
-    预处理图像 - PIL 版本 (保证与训练数据流一致)
-    逻辑：PIL读取(RGB) -> Resize(Rect) -> Normalize -> Top-Left Pad
+    预处理图像：与训练 ``LetterboxResize`` 一致 — 等比缩放、居中 pad、ImageNet 归一化。
     """
-    # 1. 使用 PIL 读取 (原生 RGB)
     try:
         image_pil = Image.open(str(image_path)).convert("RGB")
     except Exception as e:
         raise ValueError(f"无法读取图像: {image_path}, 错误: {e}")
-    
-    orig_w, orig_h = image_pil.size  # PIL 是 (W, H)
-    
-    # 2. 智能缩放计算 (Rectangular Resize)
-    im_size_max = max(orig_h, orig_w)
-    scale = target_size / float(im_size_max)
-    
-    new_w = int(round(orig_w * scale))
-    new_h = int(round(orig_h * scale))
-    
-    # 3. 执行缩放 (使用 Bilinear，与训练一致)
-    # image_pil.resize 接受 (W, H)
-    resized_pil = image_pil.resize((new_w, new_h), resample=Image.BILINEAR)
-    
-    # 4. 转 Tensor 并归一化
-    # T.functional.to_tensor() 会自动除以 255 并转为 [C, H, W]
-    image_tensor = T.functional.to_tensor(resized_pil) 
-    
-    # 标准化 (ImageNet Mean/Std)
+
+    orig_w, orig_h = image_pil.size
+    L = compute_letterbox_layout(orig_w, orig_h, target_size)
+
+    resized_pil = image_pil.resize((L["new_w"], L["new_h"]), resample=Image.BILINEAR)
+    image_tensor = T.functional.to_tensor(resized_pil)
+
     mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
     std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
-    image_tensor = (image_tensor - mean) / std
-    
-    # 5. 左上角对齐填充 (Top-Left Padding to Fixed target_size)
-    padded_h = target_size
-    padded_w = target_size
-    
-    # 创建画布 (填充 0)
-    padded_image = torch.zeros(3, padded_h, padded_w, dtype=torch.float32)
-    padded_image[:, :new_h, :new_w] = image_tensor
-    
-    # 添加 Batch 维度
-    img_input = padded_image.unsqueeze(0) # [1, 3, H, W]
-    
-    # 6. 准备用于画图的 BGR 图片 (OpenCV 格式)
-    # PIL (RGB) -> Numpy (RGB) -> cv2 (BGR)
+    fill_v = float(letterbox_fill) / 255.0
+    padded = F_nn.pad(
+        image_tensor,
+        (L["pad_left"], L["pad_right"], L["pad_top"], L["pad_bottom"]),
+        mode="constant",
+        value=fill_v,
+    )
+    image_tensor = (padded - mean) / std
+
+    img_input = image_tensor.unsqueeze(0)
+
     image_bgr_vis = cv2.cvtColor(np.array(image_pil), cv2.COLOR_RGB2BGR)
-    
-    # 构建 Meta 信息
+
     meta = {
-        'orig_size': torch.tensor([[orig_h, orig_w]]),
-        'scale': scale,
-        'padded_h': padded_h,
-        'padded_w': padded_w,
-        'scale_h': scale,
-        'scale_w': scale,
-        'pad_h': 0, 'pad_w': 0
+        "orig_size": torch.tensor([[orig_h, orig_w]]),
+        "scale": L["scale"],
+        "pad_left": float(L["pad_left"]),
+        "pad_top": float(L["pad_top"]),
+        "new_w": int(L["new_w"]),
+        "new_h": int(L["new_h"]),
+        "padded_h": int(L["padded_h"]),
+        "padded_w": int(L["padded_w"]),
+        "letterbox_uniform": True,
     }
-    
     return img_input, image_bgr_vis, meta
 
 
@@ -281,13 +272,20 @@ def postprocess_outputs(outputs, postprocessor, meta, conf_threshold=0.3, target
     boxes = result['boxes'].cpu().numpy() # [x1, y1, x2, y2]
     scores = result['scores'].cpu().numpy()
     
-    # 3. 映射回原图
-    # [FIX] 如果存在不同的 scale_h/scale_w，分别缩放
-    if 'scale_h' in meta and 'scale_w' in meta:
+    # 3. 映射回原图（letterbox：先减居中 pad，再除以统一 scale）
+    if meta.get('letterbox_uniform', True):
+        pad_left = float(meta.get('pad_left', 0.0))
+        pad_top = float(meta.get('pad_top', 0.0))
+        scale = float(meta.get('scale', 1.0))
+        boxes[:, [0, 2]] -= pad_left
+        boxes[:, [1, 3]] -= pad_top
+        boxes[:, [0, 2]] /= scale
+        boxes[:, [1, 3]] /= scale
+    elif 'scale_h' in meta and 'scale_w' in meta:
         boxes[:, [0, 2]] /= meta['scale_w']
         boxes[:, [1, 3]] /= meta['scale_h']
     else:
-        scale = meta.get('scale', 1.0)
+        scale = float(meta.get('scale', 1.0))
         boxes /= scale
     
     # 4. 裁剪边界 (防止超出原图)

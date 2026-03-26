@@ -38,6 +38,8 @@ try:
 except ImportError:
     from experiments.cas_detr.batch_inference import load_model, preprocess_image
 
+from src.data.transforms.letterbox_geom import align_feature_map_to_original_np
+
 
 class PruningHook:
     """
@@ -187,38 +189,22 @@ def run_visualization(model, image_path, device='cuda', output_dir=None, target_
         feature_mask = np.ones((h_s4, w_s4), dtype=np.float32)
 
     # Align Map to Image: Use train.py's physical alignment strategy
-    def align_map_to_image(map_2d, h_feat, w_feat, H_tensor, W_tensor, orig_h, orig_w, scale, normalize_before_resize=False):
-        """
-        Align feature map to original image using physical space calibration.
-        """
-        new_h = orig_h * scale
-        new_w = orig_w * scale
-        valid_h_feat = int(round(new_h * (h_feat / H_tensor)))
-        valid_w_feat = int(round(new_w * (w_feat / W_tensor)))
-        valid_h_feat = max(1, min(h_feat, valid_h_feat))
-        valid_w_feat = max(1, min(w_feat, valid_w_feat))
-        
-        # Step 2: Crop padding at feature map level
-        map_valid = map_2d[:valid_h_feat, :valid_w_feat]
-        
-        # Step 3: (Optional) Normalize on cropped valid region (matching train.py exactly)
-        # train.py does: s_norm = (s_valid - s_valid.min()) / (s_valid.max() - s_valid.min() + 1e-8)
-        if normalize_before_resize:
-            map_min = map_valid.min()
-            map_max = map_valid.max()
-            if map_max - map_min > 1e-8:
-                map_valid = (map_valid - map_min) / (map_max - map_min + 1e-8)
-            else:
-                # All values are the same, set to 0
-                map_valid = np.zeros_like(map_valid)
-        
-        # Step 4: Single resize from feature map to original image
-        # Use INTER_CUBIC for smooth upsampling
-        map_final = cv2.resize(map_valid, (orig_w, orig_h), interpolation=cv2.INTER_CUBIC)
-        
-        return map_final
-
-    feature_mask_final = align_map_to_image(feature_mask, h_feat, w_feat, padded_h, padded_w, orig_h, orig_w, meta['scale'])
+    feature_mask_final = align_feature_map_to_original_np(
+        feature_mask,
+        h_feat,
+        w_feat,
+        padded_h,
+        padded_w,
+        orig_h,
+        orig_w,
+        meta.get("pad_left"),
+        meta.get("pad_top"),
+        meta.get("new_h"),
+        meta.get("new_w"),
+        normalize_before_resize=False,
+        interp_tensor=cv2.INTER_NEAREST,
+        interp_orig=cv2.INTER_NEAREST,
+    )
 
     # (B) Get Importance Scores — reshape S4 portion to 2D
     importance_scores_2d = None
@@ -355,7 +341,7 @@ def run_visualization(model, image_path, device='cuda', output_dir=None, target_
         ).numpy()
 
         # Align to original image (crop padding + resize)
-        s_final = align_map_to_image(
+        s_final = align_feature_map_to_original_np(
             s_2d,
             h_feat,
             w_feat,
@@ -363,6 +349,10 @@ def run_visualization(model, image_path, device='cuda', output_dir=None, target_
             padded_w,
             orig_h,
             orig_w,
+            meta.get("pad_left"),
+            meta.get("pad_top"),
+            meta.get("new_h"),
+            meta.get("new_w"),
             normalize_before_resize=True,
         )
 

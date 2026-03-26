@@ -9,6 +9,7 @@ from ._transforms import (
     RandomIoUCrop,
     RandomHorizontalFlip,
     RandomResize,
+    LetterboxResize,
     Resize,
     PadToSize,
     SanitizeBoundingBoxes,
@@ -16,6 +17,11 @@ from ._transforms import (
     Normalize,
     ConvertBoxes,
     ConvertPILImage,
+)
+from .letterbox_geom import (
+    compute_letterbox_layout,
+    build_letterbox_meta_for_postprocess,
+    align_feature_map_to_original_np,
 )
 from .container import Compose
 from .mosaic import Mosaic

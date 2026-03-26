@@ -4,6 +4,7 @@ Visualize Ground Truth Annotations
 Useful for checking dataset annotations for errors or misalignment.
 """
 
+import sys
 import cv2
 import numpy as np
 import json
@@ -11,6 +12,11 @@ import argparse
 from pathlib import Path
 import matplotlib.pyplot as plt
 from typing import List, Dict
+
+_ROOT = Path(__file__).resolve().parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+from src.data.transforms.letterbox_geom import compute_letterbox_layout
 
 # DAIR-V2X Classes
 CLASS_NAMES = [
@@ -148,8 +154,50 @@ def draw_gt_boxes(image: np.ndarray, annotations: List[Dict],
     return image
 
 
-def visualize_single_image(data_root: Path, image_idx: int, 
-                           output_path: Path = None, show: bool = True):
+def build_letterbox_preview_bgr(
+    image_bgr: np.ndarray,
+    annotations: List[Dict],
+    target_size: int = 640,
+    fill: int = 0,
+) -> np.ndarray:
+    """Resize + center-pad like training; draw GT boxes in letterbox pixel space."""
+    orig_h, orig_w = image_bgr.shape[:2]
+    L = compute_letterbox_layout(orig_w, orig_h, target_size)
+    resized = cv2.resize(
+        image_bgr,
+        (int(L["new_w"]), int(L["new_h"])),
+        interpolation=cv2.INTER_LINEAR,
+    )
+    ch, cw = int(L["padded_h"]), int(L["padded_w"])
+    canvas = np.full((ch, cw, 3), int(fill), dtype=np.uint8)
+    pl, pt = int(L["pad_left"]), int(L["pad_top"])
+    nh, nw = int(L["new_h"]), int(L["new_w"])
+    canvas[pt : pt + nh, pl : pl + nw] = resized
+    sc = float(L["scale"])
+    ann_lb = []
+    for ann in annotations:
+        x1, y1, x2, y2 = ann["bbox"]
+        ann_lb.append({
+            **ann,
+            "bbox": [
+                x1 * sc + pl,
+                y1 * sc + pt,
+                x2 * sc + pl,
+                y2 * sc + pt,
+            ],
+        })
+    return draw_gt_boxes(canvas, ann_lb)
+
+
+def visualize_single_image(
+    data_root: Path,
+    image_idx: int,
+    output_path: Path = None,
+    show: bool = True,
+    letterbox_preview: bool = False,
+    letterbox_target_size: int = 640,
+    letterbox_fill: int = 0,
+):
     """Visualize single image Ground Truth.
     
     Args:
@@ -216,6 +264,13 @@ def visualize_single_image(data_root: Path, image_idx: int,
     if output_path:
         cv2.imwrite(str(output_path), image_with_boxes)
         print(f"\n✓ Saved to: {output_path}")
+        if letterbox_preview and annotations:
+            lb_path = output_path.parent / f"{output_path.stem}_letterbox{output_path.suffix}"
+            lb_img = build_letterbox_preview_bgr(
+                image, annotations, letterbox_target_size, letterbox_fill
+            )
+            cv2.imwrite(str(lb_path), lb_img)
+            print(f"✓ Letterbox preview saved to: {lb_path}")
     
     if show:
         # RGB for matplotlib
@@ -258,7 +313,16 @@ def main():
                        help="Output path (Single) or directory (Multi)")
     parser.add_argument("--no_show", action="store_true",
                        help="Do not show image")
-    
+    parser.add_argument(
+        "--letterbox_preview",
+        action="store_true",
+        help="Also save training-style letterbox canvas with mapped GT boxes (needs --output)",
+    )
+    parser.add_argument("--letterbox_target_size", type=int, default=640,
+                       help="Square size for letterbox preview (default 640)")
+    parser.add_argument("--letterbox_fill", type=int, default=0,
+                       help="Pad fill 0-255 (default 0 black)")
+
     args = parser.parse_args()
     
     data_root = Path(args.data_root)
@@ -270,10 +334,13 @@ def main():
         # Single Mode
         output_path = Path(args.output) if args.output else None
         visualize_single_image(
-            data_root, 
-            args.image_idx, 
-            output_path, 
-            show=not args.no_show
+            data_root,
+            args.image_idx,
+            output_path,
+            show=not args.no_show,
+            letterbox_preview=args.letterbox_preview,
+            letterbox_target_size=args.letterbox_target_size,
+            letterbox_fill=args.letterbox_fill,
         )
     else:
         # Multi Mode

@@ -96,8 +96,8 @@ log_warning() {
 
 # 定义所有可用的实验配置
 declare -A RT_DETR_CONFIGS=(
-    ["rt-detr-r18-dairv2x"]="rt-detr/configs/rtdetr_r18.yaml"
-    ["rt-detr-r18-uadetrac"]="rt-detr/configs/rtdetr_r18_uadetrac.yaml"
+    ["rt-detr-r18-dairv2x"]="cas_detr/configs/rtdetr_r18_enc1.yaml"
+    ["rt-detr-r18-uadetrac"]="cas_detr/configs/rtdetr_r18_uadetrac_enc1.yaml"
 )
 
 declare -a CORE_EXPERIMENTS=(
@@ -105,8 +105,8 @@ declare -a CORE_EXPERIMENTS=(
 )
 
 declare -A MOE_RTDETR_CONFIGS=(
-    ["moe6-r18-dairv2x"]="moe-rtdetr/configs/moe6_r18.yaml"
-    ["moe6-r18-uadetrac"]="moe-rtdetr/configs/moe6_r18_uadetrac.yaml"
+    ["moe6-r18-dairv2x"]="cas_detr/configs/moe_rtdetr6_r18_enc1.yaml"
+    ["moe6-r18-uadetrac"]="cas_detr/configs/moe_rtdetr6_r18_uadetrac_enc1.yaml"
 )
 
 declare -A CaS_DETR_CONFIGS=(
@@ -763,12 +763,9 @@ run_single_experiment() {
         # Deformable-DETR 使用 Python 脚本而不是 YAML 配置
         TRAIN_SCRIPT="deformable-detr/train_deformable_r18.py"
         WORK_DIR="deformable-detr"
-    elif [[ "$exp_dir" == *"rt-detr"* ]] && [[ "$exp_dir" != *"moe"* ]]; then
-        TRAIN_SCRIPT="rt-detr/train.py"
-        WORK_DIR="rt-detr"
     else
-        TRAIN_SCRIPT="moe-rtdetr/train.py"
-        WORK_DIR="moe-rtdetr"
+        TRAIN_SCRIPT="cas_detr/train.py"
+        WORK_DIR="cas_detr"
     fi
     
     # 记录开始时间
@@ -842,9 +839,7 @@ generate_report() {
     echo -e "${GREEN}成功: $SUCCESSFUL_EXPERIMENTS${NC} | ${RED}失败: $FAILED_EXPERIMENTS${NC} | ${YELLOW}跳过: $SKIPPED_EXPERIMENTS${NC}"
     echo ""
     echo -e "${BLUE}提示: 实验结果（包括mAP等指标）已保存在各训练脚本生成的日志目录中${NC}"
-    echo -e "${BLUE}      - RT-DETR日志: rt-detr/logs/${NC}"
-    echo -e "${BLUE}      - MOE-RTDETR日志: moe-rtdetr/logs/${NC}"
-    echo -e "${BLUE}      - CaS_DETR日志: cas_detr/logs/${NC}"
+    echo -e "${BLUE}      - 统一 DETR 消融日志: cas_detr/logs/${NC}"
     echo -e "${BLUE}      - YOLO统一日志: yolo/logs/${NC}"
     echo -e "${BLUE}      - Deformable-DETR日志: deformable-detr/work_dirs/${NC}"
 }

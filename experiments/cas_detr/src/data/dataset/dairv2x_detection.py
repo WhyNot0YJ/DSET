@@ -16,9 +16,9 @@ from ._dataset import DetDataset
 from .._misc import convert_to_tv_tensor, BoundingBoxes
 from ...core import register
 from ..transforms import (
-    RandomPhotometricDistort, RandomHorizontalFlip, 
-    ConvertBoxes, Normalize, SanitizeBoundingBoxes, PadToSize,
-    RandomZoomOut, RandomIoUCrop, ConvertPILImage
+    RandomPhotometricDistort, RandomHorizontalFlip,
+    ConvertBoxes, Normalize, SanitizeBoundingBoxes,
+    RandomZoomOut, RandomIoUCrop, ConvertPILImage, LetterboxResize,
 )
 
 __all__ = ['DAIRV2XDetection']
@@ -59,6 +59,8 @@ class DAIRV2XDetection(DetDataset):
         'zoom_out_enabled': True,
         'iou_crop_p': 0.8,
         'horizontal_flip_p': 0.5,
+        # 1920×1080 等宽屏：始终 letterbox（与 CocoFolder 一致）
+        'letterbox_fill': 0,
     }
     
     def __init__(self, data_root: str, split: str = "train", transforms=None, 
@@ -143,6 +145,10 @@ class DAIRV2XDetection(DetDataset):
         zoom_out_enabled = self.aug_config['zoom_out_enabled']
         iou_crop_p = self.aug_config['iou_crop_p']
         horizontal_flip_p = self.aug_config['horizontal_flip_p']
+        letterbox_fill = int(self.aug_config.get('letterbox_fill', 0))
+
+        def _geom_to_square():
+            return LetterboxResize(size=target_size, fill=letterbox_fill, antialias=True)
         
         # 逻辑: 根据当前 epoch 切换增强策略
         if self.split == 'train':
@@ -150,7 +156,7 @@ class DAIRV2XDetection(DetDataset):
             if self.epoch >= self.stop_epoch:
                 # 阶段 2: 仅保留基础 Resize 和 Normalize
                 self.transforms = T.Compose([
-                    T.Resize(size=(target_size, target_size), antialias=True),
+                    _geom_to_square(),
                     ConvertPILImage(),
                     T.ToDtype(torch.float32, scale=True),
                     Normalize(mean=normalize_mean, std=normalize_std),
@@ -178,7 +184,7 @@ class DAIRV2XDetection(DetDataset):
                 
                 # 6-10. Resize 和格式转换
                 transforms_list.extend([
-                    T.Resize(size=(target_size, target_size), antialias=True),
+                    _geom_to_square(),
                     ConvertPILImage(),
                     T.ToDtype(torch.float32, scale=True),
                     Normalize(mean=normalize_mean, std=normalize_std),
@@ -189,7 +195,7 @@ class DAIRV2XDetection(DetDataset):
         else:
             # 验证/推理配置
             self.transforms = T.Compose([
-                T.Resize(size=(target_size, target_size), antialias=True),
+                _geom_to_square(),
                 ConvertPILImage(),
                 T.ToDtype(torch.float32, scale=True),
                 Normalize(mean=normalize_mean, std=normalize_std),

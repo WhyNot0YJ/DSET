@@ -200,6 +200,7 @@ class HybridEncoder(nn.Module):
                  version='v2',
                  # CaS_DETR 双稀疏参数
                  token_keep_ratio=0.7,
+                 enable_cas_predictor=True,
                  # CASS (Context-Aware Soft Supervision) 参数
                  use_cass=False,
                  cass_expansion_ratio=0.3,
@@ -213,6 +214,7 @@ class HybridEncoder(nn.Module):
         """
         Args:
             token_keep_ratio: Patch retention ratio (0.5-0.7)
+            enable_cas_predictor: Whether to enable token pruning and importance predictor
             use_cass: Whether to use Context-Aware Soft Supervision
             cass_expansion_ratio: Context band expansion ratio (0.2-0.8)
             cass_min_size: Minimum box size on feature map (protects small objects)
@@ -233,9 +235,10 @@ class HybridEncoder(nn.Module):
         
         # CaS_DETR dual-sparse parameters - 保存参数以便后续使用
         self.token_keep_ratio = token_keep_ratio
+        self.enable_cas_predictor = enable_cas_predictor
         
         # CASS parameters - 保存参数以便后续使用
-        self.use_cass = use_cass
+        self.use_cass = use_cass and enable_cas_predictor
         self.cass_expansion_ratio = cass_expansion_ratio
         self.cass_min_size = cass_min_size
         self.cass_decay_type = cass_decay_type
@@ -244,8 +247,8 @@ class HybridEncoder(nn.Module):
         self.cass_focal_alpha = cass_focal_alpha
         self.cass_focal_beta = cass_focal_beta
         
-        self.use_token_pruning = True
-        self.use_token_level_pruning = True
+        self.use_token_pruning = enable_cas_predictor
+        self.use_token_level_pruning = enable_cas_predictor
         
         self.input_proj = nn.ModuleList()
         for in_channel in in_channels:
@@ -270,22 +273,25 @@ class HybridEncoder(nn.Module):
         else:
             global_keep_ratio = token_keep_ratio
 
-        self.shared_token_pruner = TokenLevelPruner(
-            input_dim=hidden_dim,
-            keep_ratio=global_keep_ratio,
-            adaptive=True,
-            min_tokens=self._calculate_min_tokens_for_layer(),
-            prune_in_eval=True,
-            # CASS parameters
-            use_cass=use_cass,
-            cass_expansion_ratio=cass_expansion_ratio,
-            cass_min_size=cass_min_size,
-            cass_decay_type=cass_decay_type,
-            # CASS Loss parameters
-            cass_loss_type=cass_loss_type,
-            cass_focal_alpha=cass_focal_alpha,
-            cass_focal_beta=cass_focal_beta
-        )
+        if self.enable_cas_predictor:
+            self.shared_token_pruner = TokenLevelPruner(
+                input_dim=hidden_dim,
+                keep_ratio=global_keep_ratio,
+                adaptive=True,
+                min_tokens=self._calculate_min_tokens_for_layer(),
+                prune_in_eval=True,
+                # CASS parameters
+                use_cass=self.use_cass,
+                cass_expansion_ratio=cass_expansion_ratio,
+                cass_min_size=cass_min_size,
+                cass_decay_type=cass_decay_type,
+                # CASS Loss parameters
+                cass_loss_type=cass_loss_type,
+                cass_focal_alpha=cass_focal_alpha,
+                cass_focal_beta=cass_focal_beta
+            )
+        else:
+            self.shared_token_pruner = None
         
         encoder_layer = TransformerEncoderLayer(
             hidden_dim, 
@@ -449,26 +455,31 @@ class HybridEncoder(nn.Module):
             src_flatten_total = torch.cat(src_flatten_list, dim=1)
             pos_embed_total = torch.cat(pos_embed_list, dim=1)
 
-            # Global pruning across all levels
-            src_pruned, kept_indices, prune_info = self.shared_token_pruner(
-                src_flatten_total,
-                spatial_shape=None,
-                return_indices=True
-            )
-            encoder_info['token_pruning_ratios'].append(prune_info.get('pruning_ratio', 0.0))
+            if self.shared_token_pruner is not None:
+                # Global pruning across all levels
+                src_pruned, kept_indices, prune_info = self.shared_token_pruner(
+                    src_flatten_total,
+                    spatial_shape=None,
+                    return_indices=True
+                )
+                encoder_info['token_pruning_ratios'].append(prune_info.get('pruning_ratio', 0.0))
 
-            if 'token_importance_scores' in prune_info and prune_info['token_importance_scores'] is not None:
-                global_scores = prune_info['token_importance_scores']
-                encoder_info['importance_scores_list'].append(global_scores)
-                encoder_info['feat_shapes_list'].append(spatial_shapes)
+                if 'token_importance_scores' in prune_info and prune_info['token_importance_scores'] is not None:
+                    global_scores = prune_info['token_importance_scores']
+                    encoder_info['importance_scores_list'].append(global_scores)
+                    encoder_info['feat_shapes_list'].append(spatial_shapes)
 
-                # Prepare per-level heatmaps for debugging visualization
-                if level_sizes:
-                    scores_per_level = torch.split(global_scores, level_sizes, dim=1)
-                    heatmaps = []
-                    for scores, (h, w) in zip(scores_per_level, spatial_shapes):
-                        heatmaps.append(scores.view(scores.shape[0], 1, h, w))
-                    encoder_info['layer_wise_heatmaps'] = heatmaps
+                    # Prepare per-level heatmaps for debugging visualization
+                    if level_sizes:
+                        scores_per_level = torch.split(global_scores, level_sizes, dim=1)
+                        heatmaps = []
+                        for scores, (h, w) in zip(scores_per_level, spatial_shapes):
+                            heatmaps.append(scores.view(scores.shape[0], 1, h, w))
+                        encoder_info['layer_wise_heatmaps'] = heatmaps
+            else:
+                src_pruned = src_flatten_total
+                kept_indices = None
+                encoder_info['token_pruning_ratios'].append(0.0)
 
             if level_sizes:
                 level_sizes_tensor = torch.as_tensor(

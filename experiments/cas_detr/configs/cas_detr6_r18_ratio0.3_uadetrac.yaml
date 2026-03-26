@@ -5,6 +5,9 @@ model:
   top_k: 3
   moe_noise_std: 0.1
   backbone: presnet18
+  ablation:
+    enable_cas_predictor: true
+    enable_decoder_moe: true
   encoder:
     use_encoder_idx:
     - 1
