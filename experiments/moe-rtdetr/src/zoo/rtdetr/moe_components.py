@@ -55,16 +55,14 @@ class MoELayer(nn.Module):
         """
         Memory-Efficient Token-Grouping MoE - Scales with Token Count, not Weight-Token Product.
         Optimized to prevent OOM on large batches.
-        
-        Args:
-            x: [B, N, C] Token features
-        Returns:
-            output: [B, N, C]
+
+        Same layout as CaS_DETR: list caches for shared-layer safety; balance loss in decoder via
+        compute_moe_balance_loss(router_logits_cache).
         """
         B, N, C = x.shape
         E = self.num_experts
         K = self.top_k
-        
+
         # 1. Router Logic
         router_logits = self.router(x)  # [B, N, E]
         if self.training and self.noise_std > 0:
@@ -72,53 +70,52 @@ class MoELayer(nn.Module):
             router_logits = router_logits + noise
         router_probs = F.softmax(router_logits, dim=-1)  # [B, N, E]
         expert_weights, expert_indices = torch.topk(router_probs, K, dim=-1)  # [B, N, K]
-        
-        # Renormalize expert weights
+
         expert_weights = expert_weights / (expert_weights.sum(dim=-1, keepdim=True) + 1e-9)
-        
-        # Shared-layer safe caching
+
         self.router_logits_cache.append(router_logits.view(-1, E))
         self.expert_indices_cache.append(expert_indices.view(-1, K))
 
         x_flat = x.view(-1, C)
         out_flat = torch.zeros_like(x_flat)
-        
-        # Flatten expert mapping for efficient indexing
+
         flat_expert_indices = expert_indices.view(-1, K)
         flat_expert_weights = expert_weights.view(-1, K)
-        
-        # 2. Key Fix: Loop over experts and process assigned tokens as a group
-        # This keeps memory usage dependent only on active tokens, not the full weight expansion.
+
         for i in range(E):
-            # Find tokens assigned to current expert i
             token_indices, slot_indices = torch.where(flat_expert_indices == i)
             if token_indices.numel() == 0:
                 continue
-                
-            # Extract only the tokens that need this expert
+
             temp_x = x_flat[token_indices]
-            
-            # Compute: single expert pass
+
             h = F.linear(temp_x, self.expert_w1[i], self.expert_b1[i])
             h = self.activation(h)
             h = self.dropout(h)
             temp_out = F.linear(h, self.expert_w2[i], self.expert_b2[i])
-            
-            # Apply routing weights and accumulate back to output
+
             weights = flat_expert_weights[token_indices, slot_indices].unsqueeze(-1)
             out_flat.index_add_(0, token_indices, temp_out * weights)
-            
+
         return out_flat.view(B, N, C)
 
+
 # =========================================================================
-# 负载均衡损失函数
+# 统一的 MoE 负载均衡损失函数（与 CaS_DETR 对齐）
 # =========================================================================
 
-def compute_expert_balance_loss(router_logits_list: List[torch.Tensor],
-                                num_experts: int,
-                                expert_indices_list: List[torch.Tensor] = None,
-                                top_k: int = 2) -> torch.Tensor:
-    """Switch-style MoE balance loss aligned with CaS_DETR statistics."""
+def compute_moe_balance_loss(router_logits_list: List[torch.Tensor],
+                             num_experts: int,
+                             expert_indices_list: List[torch.Tensor] = None,
+                             top_k: int = 2) -> torch.Tensor:
+    """
+    Switch Transformer 风格的 MoE 负载均衡损失。
+
+    使用公式: Loss = E × Σ(f_i × P_i)
+    其中:
+        f_i: 实际路由到专家 i 的 token 比例 (通过 bincount 统计)，或退化为 expert_probs
+        P_i: 专家 i 的平均 router 概率
+    """
     if not router_logits_list:
         return torch.tensor(0.0, device='cuda' if torch.cuda.is_available() else 'cpu')
 

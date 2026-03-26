@@ -15,7 +15,7 @@ from typing import List
 from .denoising import get_contrastive_denoising_training_group
 from .utils import deformable_attention_core_func_v2, get_activation, inverse_sigmoid
 from .utils import bias_init_with_prob
-from .moe_components import MoELayer, compute_expert_balance_loss
+from .moe_components import MoELayer, compute_moe_balance_loss
 
 from ...core import register
 
@@ -587,6 +587,12 @@ class RTDETRTransformerv2(nn.Module):
 
 
     def forward(self, feats, targets=None):
+        # [修复] 共享层模式下，每个 Batch 开始前清空 MoE 记录
+        if self.use_moe:
+            for layer in self.decoder.layers:
+                if hasattr(layer, 'decoder_moe_layer') and hasattr(layer.decoder_moe_layer, 'reset_cache'):
+                    layer.decoder_moe_layer.reset_cache()
+
         # input projection and embedding
         memory, spatial_shapes = self._get_encoder_input(feats)
         
@@ -649,23 +655,19 @@ class RTDETRTransformerv2(nn.Module):
                 for a, b in zip(outputs_class, outputs_coord)]
     
     def get_moe_load_balance_loss(self):
-        """获取专家负载均衡损失。
-        
-        收集所有Decoder层的路由器logits和专家索引并计算负载均衡损失。
+        """Get MoE load balance loss.
+
+        Collect router logits from all decoder layers and compute loss (same as CaS_DETR).
         """
         if not self.use_moe:
             return torch.tensor(0.0)
-        
+
         router_logits_list = []
-        expert_indices_list = []
         for layer in self.decoder.layers:
-            if hasattr(layer, 'use_moe') and layer.use_moe:
-                if hasattr(layer, 'decoder_moe_layer'):
-                    ael = layer.decoder_moe_layer
-                    if hasattr(ael, 'router_logits_cache') and ael.router_logits_cache:
-                        router_logits_list.extend(ael.router_logits_cache)
-                        if hasattr(ael, 'expert_indices_cache') and ael.expert_indices_cache:
-                            expert_indices_list.extend(ael.expert_indices_cache)
-        
+            if hasattr(layer, 'decoder_moe_layer'):
+                ael = layer.decoder_moe_layer
+                if ael.router_logits_cache:
+                    router_logits_list.extend(ael.router_logits_cache)
+
         top_k = self.moe_top_k if hasattr(self, 'moe_top_k') else 2
-        return compute_expert_balance_loss(router_logits_list, self.num_experts, expert_indices_list, top_k=top_k)
+        return compute_moe_balance_loss(router_logits_list, self.num_experts, top_k=top_k)
