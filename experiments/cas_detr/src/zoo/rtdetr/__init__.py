@@ -10,7 +10,7 @@ from .rtdetr_postprocessor import RTDETRPostProcessor
 from .rtdetrv2_decoder import RTDETRTransformerv2
 from .rtdetrv2_criterion import RTDETRCriterionv2
 
-# MoE Components (Token-level MoE for Decoder and Encoder)
+# MoE Components（Decoder FFN；Encoder 为标准 Transformer，无 MoE）
 from .moe_components import MoELayer, compute_moe_balance_loss
 
 # Token Pruning Components (CaS_DETR)
