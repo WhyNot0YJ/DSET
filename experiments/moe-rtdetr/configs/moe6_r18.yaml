@@ -30,6 +30,15 @@ training:
   seed: 42
   deterministic: false
   moe_balance_weight: 0.05
+  eval_schedule:
+    - until_epoch: 50
+      every: 10
+    - until_epoch: 70
+      every: 5
+    - until_epoch: 90
+      every: 2
+    - until_epoch: null
+      always: true
 data:
   data_root: /root/autodl-fs/datasets/DAIR-V2X
 augmentation:

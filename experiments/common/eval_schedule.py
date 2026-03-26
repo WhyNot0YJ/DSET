@@ -1,0 +1,77 @@
+"""可配置的验证 / 评估频率（按 epoch 0-based，与 train 循环一致）。"""
+
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional
+
+# 与原 RT-DETR / CaS-DETR 硬编码策略一致：
+# - epoch < 50：每 10 轮验证一次（(epoch+1) % 10 == 0）
+# - 50–70：每 5 轮
+# - 70–90：每 2 轮
+# - 90 以后：每轮验证
+DEFAULT_RTDETR_EVAL_SCHEDULE: List[Dict[str, Any]] = [
+    {"until_epoch": 50, "every": 10},
+    {"until_epoch": 70, "every": 5},
+    {"until_epoch": 90, "every": 2},
+    {"until_epoch": None, "always": True},
+]
+
+
+def should_run_validation(
+    epoch: int,
+    schedule: Optional[List[Dict[str, Any]]] = None,
+) -> bool:
+    """是否在完成 ``epoch``（0-based）这一轮训练后运行验证。
+
+    **YAML 阶段列表** ``training.eval_schedule``：按顺序匹配第一个满足
+    ``until_epoch is None 或 epoch < until_epoch`` 的阶段。
+
+    阶段字段：
+
+    - ``until_epoch`` (int | null): 本阶段仅对 ``epoch < until_epoch`` 生效；
+      ``null`` 表示一直到训练结束。
+    - ``every`` (int): ``(epoch + 1) % every == 0`` 时验证（与历史脚本一致）。
+    - ``always`` (bool): 若为 True，本阶段每个 epoch 都验证（可代替 ``every: 1``）。
+    - ``enabled`` (bool): 若为 False，本阶段内**永不**验证；缺省为 True。
+
+    ``schedule`` 为 ``None`` 或空列表时，使用 ``DEFAULT_RTDETR_EVAL_SCHEDULE``。
+    """
+    phases = schedule if schedule else DEFAULT_RTDETR_EVAL_SCHEDULE
+    if not phases:
+        phases = DEFAULT_RTDETR_EVAL_SCHEDULE
+
+    for phase in phases:
+        until = phase.get("until_epoch")
+        if until is not None and epoch >= int(until):
+            continue
+
+        if phase.get("enabled") is False:
+            return False
+
+        if phase.get("always"):
+            return True
+
+        every = int(phase.get("every", 1))
+        if every <= 0:
+            return False
+        return (epoch + 1) % every == 0
+
+    # 未匹配任何阶段（配置错误）；保守起见与旧逻辑末尾一致：每轮验证
+    return True
+
+
+def describe_eval_schedule(schedule: Optional[List[Dict[str, Any]]]) -> str:
+    """便于日志打印的简短描述。"""
+    if not schedule:
+        return "default (50/70/90 + always)"
+    parts = []
+    for ph in schedule:
+        until = ph.get("until_epoch")
+        ub = f"epoch<{until}" if until is not None else "rest"
+        if ph.get("enabled") is False:
+            parts.append(f"{ub}: off")
+        elif ph.get("always"):
+            parts.append(f"{ub}: every epoch")
+        else:
+            parts.append(f"{ub}: every {ph.get('every', 1)} epochs")
+    return "; ".join(parts)

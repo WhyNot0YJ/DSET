@@ -1,5 +1,5 @@
 # RT-DETR（UA-DETRAC）
-# augmentation 与 rtdetr_r18.yaml 完全一致，仅 data 不同
+# augmentation 与 rtdetr_r18.yaml 完全一致（含 stop_epoch: 21），仅 data 不同
 model:
   backbone: presnet18
   encoder:
@@ -27,6 +27,12 @@ training:
   early_stopping_metric: mAP_0.5_0.95
   seed: 42
   deterministic: false
+  # epoch<20：沿用稀疏验证；epoch≥20 起每 2 轮验证 ((epoch+1)%2==0)。前 20 轮完全不评可改为 enabled:false
+  eval_schedule:
+    - until_epoch: 20
+      every: 10
+    - until_epoch: null
+      every: 2
 data:
   data_root: /root/autodl-fs/datasets/UA-DETRAC_COCO
   dataset_class: CocoFolderDetection
@@ -38,7 +44,7 @@ data:
   - others
 augmentation:
   target_size: 640
-  stop_epoch: 45
+  stop_epoch: 21
   scales:
   - 480
   - 512

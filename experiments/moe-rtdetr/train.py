@@ -32,6 +32,10 @@ from common.detr_eval_utils import (
     write_detr_eval_csv,
 )
 from common.detr_data_root import resolve_detr_data_root
+from common.eval_schedule import (
+    should_run_validation,
+    describe_eval_schedule,
+)
 
 import yaml
 import torch
@@ -1850,7 +1854,9 @@ class AdaptiveExpertTrainer:
         epochs = self.config['training']['epochs']
         self.logger.info(f"开始训练 {epochs} epochs")
         self.logger.info(f"✓ 梯度裁剪: max_norm={self.clip_max_norm}")
-        
+        eval_sched = self.config.get("training", {}).get("eval_schedule")
+        self.logger.info(f"✓ 验证策略: {describe_eval_schedule(eval_sched)}")
+
         for epoch in range(self.current_epoch, epochs):
             self.current_epoch = epoch
             
@@ -1865,24 +1871,8 @@ class AdaptiveExpertTrainer:
             # 训练一个epoch
             train_metrics = self.train_epoch()
             
-            # 验证策略：
-            # - 前50 epoch：每10轮验证一次
-            # - 50-70 epoch：每5轮验证一次
-            # - 70-90 epoch：每2轮验证一次
-            # - 90 epoch以后：每轮验证
-            should_validate = False
-            if epoch < 50:
-                if (epoch + 1) % 10 == 0:
-                    should_validate = True
-            elif epoch < 70:
-                if (epoch + 1) % 5 == 0:
-                    should_validate = True
-            elif epoch < 90:
-                if (epoch + 1) % 2 == 0:
-                    should_validate = True
-            else:
-                should_validate = True
-            
+            should_validate = should_run_validation(epoch, eval_sched)
+
             if should_validate:
                 val_metrics = self.validate()
             else:

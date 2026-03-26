@@ -47,6 +47,11 @@ training:
   deterministic: false
   decoder_moe_balance_weight: 0.01
   moe_balance_warmup_epochs: 0
+  eval_schedule:
+    - until_epoch: 20
+      every: 10
+    - until_epoch: null
+      every: 2
 data:
   data_root: /root/autodl-fs/datasets/UA-DETRAC_COCO
   dataset_class: CocoFolderDetection
