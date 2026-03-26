@@ -1699,18 +1699,21 @@ class AdaptiveExpertTrainer:
 
         return per_cat_50, per_cat_5095
     
-    def _compute_map_metrics(self, predictions: List[Dict], targets: List[Dict], 
+    def _compute_map_metrics(self, predictions: List[Dict], targets: List[Dict],
+                             image_id_to_size: Dict[int, Tuple[int, int]] = None,
                              img_h: int = 640, img_w: int = 640,
                              print_per_category: bool = False,
                              compute_difficulty: bool = False) -> Dict[str, float]:
-        """计算mAP指标。
-        
+        """计算mAP指标（与 CaS_DETR `train.py` 中 `_compute_map_metrics` 签名一致）。
+
         Args:
             predictions: 预测结果列表
             targets: 真实标签列表
-            img_h: 图像高度 (Tensor Shape)
-            img_w: 图像宽度 (Tensor Shape)
-            print_per_category: 是否打印每个类别的详细mAP（默认False，只在best_model时打印）
+            image_id_to_size: 图像 ID → (W, H)，与 validate / `_collect_predictions` 的 image_id 一致
+            img_h: 默认图像高度（当某 image_id 无对应条目时使用）
+            img_w: 默认图像宽度
+            print_per_category: 是否打印每个类别的详细 mAP
+            compute_difficulty: 是否计算 easy/moderate/hard AP
         """
         try:
             if len(predictions) == 0:
@@ -1756,13 +1759,17 @@ class AdaptiveExpertTrainer:
                 }
             }
             
-            # 添加图像信息
+            # 动态设置每张图像的尺寸（与 CaS_DETR 一致）
             image_ids = set(target['image_id'] for target in targets)
             for img_id in image_ids:
+                if image_id_to_size and img_id in image_id_to_size:
+                    w, h = image_id_to_size[img_id]
+                else:
+                    w, h = img_w, img_h
                 coco_gt['images'].append({
-                    'id': img_id, 
-                    'width': img_w,
-                    'height': img_h
+                    'id': img_id,
+                    'width': w,
+                    'height': h
                 })
             
             # 添加标注

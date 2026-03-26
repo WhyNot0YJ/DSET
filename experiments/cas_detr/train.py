@@ -1749,9 +1749,8 @@ class CaS_DETRTrainer:
 
                     orig_h, orig_w = orig_img.shape[:2]
 
-                    # 物理空间校准
-                    valid_h_feat = int(round(orig_h * (h_feat / H_tensor)))
-                    valid_w_feat = int(round(orig_w * (w_feat / W_tensor)))
+                    valid_h_feat = max(1, min(h_feat, int(round(orig_h * (h_feat / H_tensor)))))
+                    valid_w_feat = max(1, min(w_feat, int(round(orig_w * (w_feat / W_tensor)))))
                     
                     s_2d = scores_prob[i, 0].cpu().numpy()
                     s_valid = s_2d[:valid_h_feat, :valid_w_feat]
@@ -1764,8 +1763,6 @@ class CaS_DETRTrainer:
                     cv2.imwrite(str(viz_dir / f"sample_{img_id}_{level_name}_heatmap.jpg"), overlay)
                 
             self.logger.info(f"📸 Epoch {epoch}: 已保存 {len(heatmaps_2d_list)} 个尺度({', '.join(level_names)})的重要性热力图至 {viz_dir}")
-        except Exception as e:
-            self.logger.error(f"可视化模块运行崩溃: {e}", exc_info=True)
         except Exception as e:
             self.logger.error(f"可视化模块运行崩溃: {e}", exc_info=True)
     
