@@ -225,7 +225,7 @@ class LetterboxResize(torch.nn.Module):
             if boxes_t.numel() > 0:
                 boxes_t = boxes_t * scale
             target['boxes'] = convert_to_tv_tensor(
-                boxes_t, key='boxes', box_format='XYXY', canvas_size=(new_h, new_w)
+                boxes_t, key='boxes', box_format='XYXY', spatial_size=(new_h, new_w)
             )
 
         image = F.pad(image, [pad_left, pad_top, pad_right, pad_bottom], fill=self.fill, padding_mode='constant')
@@ -236,7 +236,7 @@ class LetterboxResize(torch.nn.Module):
                 off = boxes_t.new_tensor([pad_left, pad_top, pad_left, pad_top])
                 boxes_t = boxes_t + off
             target['boxes'] = convert_to_tv_tensor(
-                boxes_t, key='boxes', box_format='XYXY', canvas_size=(th, tw)
+                boxes_t, key='boxes', box_format='XYXY', spatial_size=(th, tw)
             )
 
         target['letterbox_scale'] = torch.tensor(scale, dtype=torch.float32)
