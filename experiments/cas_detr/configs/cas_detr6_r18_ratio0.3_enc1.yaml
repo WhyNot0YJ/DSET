@@ -18,9 +18,9 @@ model:
   num_decoder_layers: 3
   hidden_dim: 256
   decoder_hidden_dim: 256
-  num_queries: 300
+  num_queries: 100
   cas_detr:
-    token_keep_ratio: 0.5
+    token_keep_ratio: 0.3
     use_cass: true
     cass_loss_weight: 0.05
     cass_expansion_ratio: 0.8

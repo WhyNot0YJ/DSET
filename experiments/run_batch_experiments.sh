@@ -101,7 +101,7 @@ declare -A RT_DETR_CONFIGS=(
 )
 
 declare -a CORE_EXPERIMENTS=(
-    "cas_detr/configs/cas_detr6_r18_ratio0.5.yaml"
+    "cas_detr/configs/cas_detr6_r18_ratio0.3.yaml"
 )
 
 declare -A MOE_RTDETR_CONFIGS=(
@@ -110,10 +110,10 @@ declare -A MOE_RTDETR_CONFIGS=(
 )
 
 declare -A CaS_DETR_CONFIGS=(
-    ["cas_detr6-r18-0.5-dairv2x"]="cas_detr/configs/cas_detr6_r18_ratio0.5.yaml"
-    ["cas_detr6-r18-0.5-dairv2x-enc1"]="cas_detr/configs/cas_detr6_r18_ratio0.5_enc1.yaml"
-    ["cas_detr6-r18-0.5-uadetrac"]="cas_detr/configs/cas_detr6_r18_ratio0.5_uadetrac.yaml"
-    ["cas_detr6-r18-0.5-uadetrac-enc1"]="cas_detr/configs/cas_detr6_r18_ratio0.5_uadetrac_enc1.yaml"
+    ["cas_detr6-r18-0.3-dairv2x"]="cas_detr/configs/cas_detr6_r18_ratio0.3.yaml"
+    ["cas_detr6-r18-0.3-dairv2x-enc1"]="cas_detr/configs/cas_detr6_r18_ratio0.3_enc1.yaml"
+    ["cas_detr6-r18-0.3-uadetrac"]="cas_detr/configs/cas_detr6_r18_ratio0.3_uadetrac.yaml"
+    ["cas_detr6-r18-0.3-uadetrac-enc1"]="cas_detr/configs/cas_detr6_r18_ratio0.3_uadetrac_enc1.yaml"
 )
 
 declare -A YOLOV8_CONFIGS=(
@@ -403,7 +403,7 @@ parse_arguments() {
             if [ "$has_k03" = true ] && [[ "$config_path" == *"ratio0.3"* ]]; then
                 match_ratio=true
             fi
-            if [ "$has_k05" = true ] && [[ "$config_path" == *"ratio0.5"* ]]; then
+            if [ "$has_k05" = true ] && [[ "$config_path" == *"ratio0.3"* ]]; then
                 match_ratio=true
             fi
             if [ "$has_k07" = true ] && [[ "$config_path" == *"ratio0.7"* ]]; then

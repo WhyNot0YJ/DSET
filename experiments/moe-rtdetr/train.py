@@ -1865,6 +1865,8 @@ class AdaptiveExpertTrainer:
                 self.train_loader.set_epoch(epoch)
             elif hasattr(self.train_loader.sampler, 'set_epoch'):
                 self.train_loader.sampler.set_epoch(epoch)
+            if hasattr(self.train_loader, 'dataset') and hasattr(self.train_loader.dataset, 'set_epoch'):
+                self.train_loader.dataset.set_epoch(epoch)
             if hasattr(self.train_loader.collate_fn, 'set_epoch'):
                 self.train_loader.collate_fn.set_epoch(epoch)
             

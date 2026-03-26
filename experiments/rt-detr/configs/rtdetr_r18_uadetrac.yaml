@@ -11,10 +11,10 @@ model:
   pretrained_weights: pretrained/rtdetrv2_r18vd_120e_coco_rerun_48.1.pth
   num_decoder_layers: 3
   hidden_dim: 256
-  num_queries: 300
+  num_queries: 100
 training:
-  epochs: 100
-  batch_size: 8
+  epochs: 50
+  batch_size: 16
   warmup_epochs: 3
   pretrained_lr: 1e-5
   new_lr: 1e-4

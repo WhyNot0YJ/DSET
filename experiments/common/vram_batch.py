@@ -1,8 +1,7 @@
-"""显存档位自适应 batch / num_workers / prefetch（各实验 train 共用）。
+"""显存档位自适应 num_workers / prefetch（各实验 train 共用）。
 
-规则：YAML 中 batch 为基准；
-- 总显存 ≥ 15 GiB（约 16G 及以上档）：batch × 3
-- 更小（约 8G / 12G 档）：× 1
+规则：YAML 中 batch 为最终实际 batch，不再随显存档位自动放大；
+- 所有显存档位：保持配置中的 batch_size 不变
 
 num_workers / prefetch 会随更高显存档位最多再 ×2，并封顶（8 / 4），降低 EMFILE 风险。
 """
@@ -49,14 +48,11 @@ def compute_vram_batch_adjustment(
     idx = device_index if device_index is not None else torch.cuda.current_device()
     total_vram_gb = torch.cuda.get_device_properties(idx).total_memory / (1024**3)
 
-    if total_vram_gb >= 15:
-        batch_scale = 3
-    else:
-        batch_scale = 1
+    batch_scale = 1
 
     base_bs = max(1, int(base_batch_size))
-    new_bs = max(1, base_bs * batch_scale)
-    nw_mult = 2 if batch_scale > 1 else 1
+    new_bs = base_bs
+    nw_mult = 2 if total_vram_gb >= 15 else 1
     new_nw = max(1, min(int(num_workers) * nw_mult, 8))
     new_pf = max(1, min(int(prefetch_factor) * nw_mult, 4))
 
@@ -72,6 +68,6 @@ def compute_vram_batch_adjustment(
 
 def format_vram_batch_log(r: VramBatchAdjustResult) -> str:
     return (
-        f"📊 显存自适应: GPU 总显存≈{r.total_vram_gb:.1f} GiB → batch 基准 {r.base_batch_size} × {r.batch_scale} = {r.batch_size}, "
+        f"📊 显存自适应: GPU 总显存≈{r.total_vram_gb:.1f} GiB → batch 固定为配置值 {r.batch_size}, "
         f"num_workers={r.num_workers}, prefetch_factor={r.prefetch_factor}"
     )
