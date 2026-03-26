@@ -111,7 +111,9 @@ declare -A MOE_RTDETR_CONFIGS=(
 
 declare -A CaS_DETR_CONFIGS=(
     ["cas_detr6-r18-0.5-dairv2x"]="cas_detr/configs/cas_detr6_r18_ratio0.5.yaml"
+    ["cas_detr6-r18-0.5-dairv2x-enc1"]="cas_detr/configs/cas_detr6_r18_ratio0.5_enc1.yaml"
     ["cas_detr6-r18-0.5-uadetrac"]="cas_detr/configs/cas_detr6_r18_ratio0.5_uadetrac.yaml"
+    ["cas_detr6-r18-0.5-uadetrac-enc1"]="cas_detr/configs/cas_detr6_r18_ratio0.5_uadetrac_enc1.yaml"
 )
 
 declare -A YOLOV8_CONFIGS=(
