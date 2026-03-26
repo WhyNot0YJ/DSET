@@ -27,7 +27,6 @@ training:
   early_stopping_metric: mAP_0.5_0.95
   seed: 42
   deterministic: false
-  # 与历史硬编码一致：前 50 / 50–70 / 70–90 / 90+ 分段验证
   eval_schedule:
     - until_epoch: 50
       every: 10
