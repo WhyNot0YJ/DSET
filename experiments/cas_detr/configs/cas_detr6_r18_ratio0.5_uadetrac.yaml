@@ -1,5 +1,5 @@
 # CaS-DETR 配置（UA-DETRAC）
-# augmentation 与 rt-detr/configs/rtdetr_r18_uadetrac.yaml 对齐（含 576–704 多尺度）
+# augmentation 与 rt-detr/configs/rtdetr_r18_uadetrac.yaml 对齐（含 stop_epoch: 21 与 576–704 多尺度）
 model:
   num_experts: 6
   top_k: 3
@@ -64,7 +64,7 @@ data:
   - others
 augmentation:
   target_size: 640
-  stop_epoch: 45
+  stop_epoch: 21
   scales:
   - 576
   - 608
