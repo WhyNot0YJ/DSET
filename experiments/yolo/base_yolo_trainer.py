@@ -302,7 +302,7 @@ class BaseYOLOTrainer(ABC):
         return resolve_autodl_fs_path(data_yaml)
     
     def _apply_vram_batch_size_rule(self):
-        """按显存动态缩放 batch / workers（与 rt-detr / moe / cas 共用 common.vram_batch）。"""
+        """使用配置中的 batch / workers；CUDA 下记录显存信息（与 cas_detr 共用 common.vram_batch）。"""
         device_str = self.misc_config.get('device', 'cuda')
         if 'cuda' not in str(device_str) or not torch.cuda.is_available():
             return

@@ -469,8 +469,8 @@ class HybridEncoder(nn.Module):
                     encoder_info['importance_scores_list'].append(global_scores)
                     encoder_info['feat_shapes_list'].append(spatial_shapes)
 
-                    # Prepare per-level heatmaps for debugging visualization
-                    if level_sizes:
+                    # 验证/可视化用 heatmap；训练阶段不构建，减少多余 view 与 dict 占用
+                    if level_sizes and not self.training:
                         scores_per_level = torch.split(global_scores, level_sizes, dim=1)
                         heatmaps = []
                         for scores, (h, w) in zip(scores_per_level, spatial_shapes):

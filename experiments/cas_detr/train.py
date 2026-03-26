@@ -640,7 +640,7 @@ class CaS_DETRTrainer:
             self._resume_from_checkpoint()
             
     def _apply_vram_batch_size_rule(self):
-        """根据 VRAM 动态调整数据加载参数，保持配置文件中的 batch_size 不变。"""
+        """使用配置中的 batch / DataLoader 参数；CUDA 下记录 GPU 总显存（见 common.vram_batch）。"""
         if not torch.cuda.is_available():
             return
 

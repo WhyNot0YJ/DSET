@@ -1,9 +1,7 @@
-"""显存档位自适应 num_workers / prefetch（各实验 train 共用）。
+"""训练启动时的设备与 DataLoader 参数（各实验 train 共用）。
 
-规则：YAML 中 batch 为最终实际 batch，不再随显存档位自动放大；
-- 所有显存档位：保持配置中的 batch_size 不变
-
-num_workers / prefetch 会随更高显存档位最多再 ×2，并封顶（8 / 4），降低 EMFILE 风险。
+- **batch_size / num_workers / prefetch_factor**：均使用配置中的值，不做按显存分档下调；
+  启动时若 CUDA 可用，会记录 GPU 总显存与上述参数，便于对照日志排查 OOM。
 """
 
 from __future__ import annotations
@@ -41,17 +39,17 @@ def compute_vram_batch_adjustment(
     *,
     device_index: Optional[int] = None,
 ) -> Optional[VramBatchAdjustResult]:
-    """CUDA 可用时返回调整后的参数；非 CUDA 返回 None。"""
+    """CUDA 可用时返回配置参数并附带当前 GPU 总显存；非 CUDA 返回 None。"""
     if not torch.cuda.is_available():
         return None
 
     idx = device_index if device_index is not None else torch.cuda.current_device()
     total_vram_gb = torch.cuda.get_device_properties(idx).total_memory / (1024**3)
 
-    batch_scale = 1
-
     base_bs = max(1, int(base_batch_size))
     new_bs = base_bs
+    batch_scale = 1
+
     new_nw = max(1, int(num_workers))
     new_pf = max(1, int(prefetch_factor))
 
@@ -67,6 +65,6 @@ def compute_vram_batch_adjustment(
 
 def format_vram_batch_log(r: VramBatchAdjustResult) -> str:
     return (
-        f"📊 显存自适应: GPU 总显存≈{r.total_vram_gb:.1f} GiB → batch 固定为配置值 {r.batch_size}, "
+        f"📊 设备信息: GPU 总显存≈{r.total_vram_gb:.1f} GiB → batch_size={r.batch_size}（配置值）, "
         f"num_workers={r.num_workers}, prefetch_factor={r.prefetch_factor}"
     )
