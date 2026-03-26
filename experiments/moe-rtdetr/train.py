@@ -574,25 +574,19 @@ class AdaptiveExpertTrainer:
         return model
     
     def _load_pretrained_weights(self, model: AdaptiveExpertRTDETR, pretrained_path: str) -> None:
-        """从本地文件加载预训练权重
-        
-        Args:
-            pretrained_path: 本地权重文件路径（如 'pretrained/rtdetrv2_r50vd_6x_coco_ema.pth'）
-        """
+        """从本地文件加载预训练权重（与 CaS_DETR 对齐：逐参数匹配 + decoder FFN 克隆到 MoE 专家）。"""
         try:
             pretrained_file = Path(pretrained_path)
             if not pretrained_file.exists():
                 self.logger.warning(f"预训练权重文件不存在: {pretrained_path}")
                 self.logger.info("将从随机初始化开始训练")
                 return
-            
+
             self.logger.info(f"从本地文件加载预训练权重: {pretrained_path}")
             checkpoint = torch.load(pretrained_file, map_location='cpu', weights_only=False)
-            
-            # 处理不同的checkpoint格式
+
             if isinstance(checkpoint, dict):
                 if 'ema' in checkpoint and 'module' in checkpoint['ema']:
-                    # EMA格式: {'ema': {'module': {...}}}
                     state_dict = checkpoint['ema']['module']
                     self.logger.info("✓ 检测到EMA checkpoint格式")
                 elif 'model' in checkpoint:
@@ -603,58 +597,162 @@ class AdaptiveExpertTrainer:
                     state_dict = checkpoint
             else:
                 state_dict = checkpoint
-            
-            # 过滤掉类别相关参数（形状不匹配）
+
             filtered_state_dict = {}
             skipped_class_params = 0
-            
             for k, v in state_dict.items():
-                # 跳过类别相关的参数（这些参数的形状会不匹配）
-                if any(keyword in k for keyword in ['class_embed', 'score_head', 'denoising_class_embed']):
+                if any(kw in k for kw in ['class_embed', 'score_head', 'denoising_class_embed']):
                     skipped_class_params += 1
                     continue
                 filtered_state_dict[k] = v
-            
-            # 加载过滤后的参数
-            missing_keys, unexpected_keys = model.load_state_dict(filtered_state_dict, strict=False)
-            
-            # 统计加载结果
-            # 注意：missing_keys 可能包含预训练模型中不存在的参数（如不同专家数量的模型）
-            # 只统计预训练模型中实际存在的 missing_keys
-            actual_missing_keys = [k for k in missing_keys if k in filtered_state_dict]
-            total_params = len(filtered_state_dict)
-            loaded_params = total_params - len(actual_missing_keys)
-            
-            self.logger.info(f"✓ 成功加载预训练权重: {loaded_params}/{total_params} 个参数")
-            
-            # 报告跳过的类别参数
-            if skipped_class_params > 0:
-                self.logger.info(f"  - 跳过类别相关参数: {skipped_class_params} 个（COCO 80类 → DAIR-V2X 8类）")
-            
-            # 统计各部分的参数（只统计预训练模型中实际存在的参数）
-            backbone_loaded = sum(1 for k in filtered_state_dict.keys() if k not in actual_missing_keys and 'backbone' in k)
-            encoder_loaded = sum(1 for k in filtered_state_dict.keys() if k not in actual_missing_keys and 'encoder' in k)
-            decoder_loaded = sum(1 for k in filtered_state_dict.keys() if k not in actual_missing_keys and 'decoder' in k)
-            
-            self.logger.info(f"  - Backbone: {backbone_loaded} 个参数")
-            self.logger.info(f"  - Encoder: {encoder_loaded} 个参数")
-            self.logger.info(f"  - Decoder: {decoder_loaded} 个参数")
-            
-            if len(actual_missing_keys) > 0:
-                self.logger.info(f"  - 预训练模型缺少参数: {len(actual_missing_keys)} 个（当前模型新增）")
-                if len(actual_missing_keys) <= 5:
-                    self.logger.info(f"    示例: {list(actual_missing_keys)}")
-                else:
-                    self.logger.info(f"    示例: {list(actual_missing_keys)[:3]} ...")
-            
-            # 如果 missing_keys 中有预训练模型中不存在的参数，说明是模型结构差异
-            model_only_missing = [k for k in missing_keys if k not in filtered_state_dict]
-            if len(model_only_missing) > 0:
-                self.logger.debug(f"  - 模型结构差异导致的 missing_keys: {len(model_only_missing)} 个（预训练模型中不存在，不影响加载统计）")
-            
-            if len(unexpected_keys) > 0:
-                self.logger.info(f"  - 模型新增参数: {len(unexpected_keys)} 个（将随机初始化）")
-                
+
+            model_state_dict = model.state_dict()
+            load_count = 0
+            mismatch_count = 0
+            expert_clone_count = 0
+
+            final_state_dict = {}
+            decoder_ffn_weights_to_clone = {}
+            successfully_cloned_ffn_keys = set()
+
+            for k, v in filtered_state_dict.items():
+                decoder_ffn_match = None
+                if ('decoder.layers.' in k or 'decoder.decoder.layers.' in k) and ('linear1' in k or 'linear2' in k):
+                    match1 = re.search(r'decoder\.decoder\.layers\.(\d+)\.(linear\d)\.(weight|bias)', k)
+                    if match1:
+                        decoder_ffn_match = match1
+                    else:
+                        match2 = re.search(r'decoder\.layers\.(\d+)\.(linear\d)\.(weight|bias)', k)
+                        if match2:
+                            decoder_ffn_match = match2
+
+                if decoder_ffn_match:
+                    layer_idx = int(decoder_ffn_match.group(1))
+                    linear_name = decoder_ffn_match.group(2)
+                    param_type = decoder_ffn_match.group(3)
+                    if layer_idx not in decoder_ffn_weights_to_clone:
+                        decoder_ffn_weights_to_clone[layer_idx] = {}
+                    decoder_ffn_weights_to_clone[layer_idx][f'{linear_name}.{param_type}'] = v
+                    continue
+
+                encoder_ffn_match = None
+                if ('encoder.layers.' in k or 'encoder.encoder' in k) and ('linear1' in k or 'linear2' in k):
+                    match1 = re.search(r'encoder\.encoder\.\d+\.layers\.(\d+)\.(linear\d)\.(weight|bias)', k)
+                    if match1:
+                        encoder_ffn_match = match1
+                    else:
+                        match2 = re.search(r'encoder\.encoder\.layers\.(\d+)\.(linear\d)\.(weight|bias)', k)
+                        if match2:
+                            encoder_ffn_match = match2
+                        else:
+                            match3 = re.search(r'encoder\.layers\.(\d+)\.(linear\d)\.(weight|bias)', k)
+                            if match3:
+                                encoder_ffn_match = match3
+
+                if encoder_ffn_match:
+                    layer_idx = int(encoder_ffn_match.group(1))
+                    linear_name = encoder_ffn_match.group(2)
+                    param_type = encoder_ffn_match.group(3)
+                    canonical = f'encoder.encoder.layers.{layer_idx}.{linear_name}.{param_type}'
+                    if canonical in model_state_dict and v.shape == model_state_dict[canonical].shape:
+                        final_state_dict[canonical] = v
+                        load_count += 1
+                    else:
+                        mismatch_count += 1
+                    continue
+
+                if k in model_state_dict:
+                    if v.shape == model_state_dict[k].shape:
+                        final_state_dict[k] = v
+                        load_count += 1
+                    else:
+                        mismatch_count += 1
+
+            decoder_num_experts = model.num_experts
+            if decoder_ffn_weights_to_clone:
+                self.logger.info(f"  - 找到 {len(decoder_ffn_weights_to_clone)} 个Decoder层的FFN权重，准备克隆到MoE")
+            for layer_idx, ffn_params in decoder_ffn_weights_to_clone.items():
+                if all(f'{ln}.{pt}' in ffn_params for ln in ('linear1', 'linear2') for pt in ('weight', 'bias')):
+                    linear1_weight = ffn_params['linear1.weight']
+                    linear1_bias = ffn_params['linear1.bias']
+                    linear2_weight = ffn_params['linear2.weight']
+                    linear2_bias = ffn_params['linear2.bias']
+
+                    expert_w1_key = f'decoder.decoder.layers.{layer_idx}.decoder_moe_layer.expert_w1'
+                    expert_b1_key = f'decoder.decoder.layers.{layer_idx}.decoder_moe_layer.expert_b1'
+                    expert_w2_key = f'decoder.decoder.layers.{layer_idx}.decoder_moe_layer.expert_w2'
+                    expert_b2_key = f'decoder.decoder.layers.{layer_idx}.decoder_moe_layer.expert_b2'
+
+                    if expert_w1_key not in model_state_dict:
+                        expert_w1_key = f'decoder.layers.{layer_idx}.decoder_moe_layer.expert_w1'
+                        expert_b1_key = f'decoder.layers.{layer_idx}.decoder_moe_layer.expert_b1'
+                        expert_w2_key = f'decoder.layers.{layer_idx}.decoder_moe_layer.expert_w2'
+                        expert_b2_key = f'decoder.layers.{layer_idx}.decoder_moe_layer.expert_b2'
+
+                    if expert_w1_key in model_state_dict:
+                        model_w1 = model_state_dict[expert_w1_key]
+                        if (model_w1.shape[1:] == linear1_weight.shape and
+                            model_state_dict[expert_b1_key].shape[1:] == linear1_bias.shape and
+                            model_state_dict[expert_w2_key].shape[1:] == linear2_weight.shape and
+                            model_state_dict[expert_b2_key].shape[1:] == linear2_bias.shape):
+
+                            for fmt_prefix in ('decoder.decoder.layers.', 'decoder.layers.'):
+                                for ln in ('linear1', 'linear2'):
+                                    for pt in ('weight', 'bias'):
+                                        successfully_cloned_ffn_keys.add(f'{fmt_prefix}{layer_idx}.{ln}.{pt}')
+
+                            if not hasattr(self, '_expert_clone_params'):
+                                self._expert_clone_params = []
+
+                            for expert_idx in range(decoder_num_experts):
+                                self._expert_clone_params.append({
+                                    'layer_idx': layer_idx,
+                                    'expert_idx': expert_idx,
+                                    'w1': linear1_weight.clone() + torch.randn_like(linear1_weight) * 0.01,
+                                    'b1': linear1_bias.clone() + torch.randn_like(linear1_bias) * 0.01,
+                                    'w2': linear2_weight.clone() + torch.randn_like(linear2_weight) * 0.01,
+                                    'b2': linear2_bias.clone() + torch.randn_like(linear2_bias) * 0.01,
+                                })
+                                expert_clone_count += 4
+
+            missing_keys, unexpected_keys = model.load_state_dict(final_state_dict, strict=False)
+            actual_missing_keys = [k for k in missing_keys if k not in successfully_cloned_ffn_keys]
+            cloned_ffn_count = len(missing_keys) - len(actual_missing_keys)
+
+            if hasattr(self, '_expert_clone_params') and self._expert_clone_params:
+                decoder_clone_count = 0
+                for clone_info in self._expert_clone_params:
+                    layer_idx = clone_info['layer_idx']
+                    expert_idx = clone_info['expert_idx']
+                    decoder_layer = model.decoder.decoder.layers[layer_idx]
+                    if hasattr(decoder_layer, 'decoder_moe_layer'):
+                        moe_layer = decoder_layer.decoder_moe_layer
+                        with torch.no_grad():
+                            moe_layer.expert_w1.data[expert_idx] = clone_info['w1']
+                            moe_layer.expert_b1.data[expert_idx] = clone_info['b1']
+                            moe_layer.expert_w2.data[expert_idx] = clone_info['w2']
+                            moe_layer.expert_b2.data[expert_idx] = clone_info['b2']
+                        decoder_clone_count += 4
+                delattr(self, '_expert_clone_params')
+                if decoder_clone_count > 0:
+                    self.logger.info(f"  - Decoder专家克隆: {decoder_clone_count} 个参数 ({decoder_num_experts} 个专家)")
+                load_count += decoder_clone_count
+
+            self.logger.info(f"✓ 成功加载权重参数: {load_count} 个")
+            if expert_clone_count > 0:
+                self.logger.info(f"  - 专家克隆总计: {expert_clone_count} 个参数")
+            if mismatch_count > 0:
+                self.logger.info(f"  - 维度不匹配跳过: {mismatch_count} 个参数")
+
+            backbone_loaded = sum(1 for k in final_state_dict.keys() if 'backbone' in k)
+            encoder_loaded = sum(1 for k in final_state_dict.keys() if 'encoder' in k)
+            decoder_loaded = sum(1 for k in final_state_dict.keys() if 'decoder' in k)
+            self.logger.info(f"  - Backbone 加载: {backbone_loaded} 个参数")
+            self.logger.info(f"  - Encoder 加载: {encoder_loaded} 个参数")
+            self.logger.info(f"  - Decoder 加载: {decoder_loaded} 个参数")
+            if cloned_ffn_count > 0:
+                self.logger.info(f"  - FFN权重通过专家克隆加载: {cloned_ffn_count} 个参数")
+
         except Exception as e:
             self.logger.error(f"✗ 加载预训练权重失败: {e}")
             self.logger.info("将从随机初始化开始训练")
@@ -1074,7 +1172,9 @@ class AdaptiveExpertTrainer:
                                      best_epoch=None, bench_dict=None):
         all_predictions = []
         all_targets = []
+        image_id_to_size = {}
         current_h, current_w = 640, 640
+        bs = self.config['training']['batch_size']
 
         with torch.no_grad():
             for batch_idx, (images, targets) in enumerate(dataloader):
@@ -1084,6 +1184,9 @@ class AdaptiveExpertTrainer:
                     {k: v.to(self.device, non_blocking=True) if isinstance(v, torch.Tensor) else v for k, v in t.items()}
                     for t in targets
                 ]
+                for i, _target in enumerate(targets):
+                    image_id = batch_idx * bs + i
+                    image_id_to_size[image_id] = (current_w, current_h)
 
                 outputs = self.ema.module(images, targets)
                 has_predictions = ("pred_logits" in outputs and "pred_boxes" in outputs) or (
@@ -1101,6 +1204,7 @@ class AdaptiveExpertTrainer:
         metrics = self._compute_map_metrics(
             all_predictions,
             all_targets,
+            image_id_to_size=image_id_to_size,
             img_h=current_h,
             img_w=current_w,
             print_per_category=True,
@@ -1208,8 +1312,9 @@ class AdaptiveExpertTrainer:
                 self.ema.load_state_dict(checkpoint['ema_state_dict'])
             if 'scaler_state_dict' in checkpoint:
                 self.scaler.load_state_dict(checkpoint['scaler_state_dict'])
-            if 'visualizer_state' in checkpoint:
-                self.visualizer.load_state_dict(checkpoint['visualizer_state'])
+            vs = checkpoint.get('visualizer_state_dict') or checkpoint.get('visualizer_state')
+            if vs:
+                self.visualizer.load_state_dict(vs)
             if 'early_stopping_state' in checkpoint and self.early_stopping:
                 self.early_stopping.load_state_dict(checkpoint['early_stopping_state'])
             
@@ -1226,9 +1331,10 @@ class AdaptiveExpertTrainer:
         detection_loss = torch.tensor(0.0, device=self.device)
         moe_lb_loss = torch.tensor(0.0, device=self.device)
         
-        # 统计细粒度MoE的专家使用率（跨所有Decoder层聚合）
-        expert_usage_count = [0] * self.model.num_experts
-        total_tokens = 0
+        # 统计细粒度MoE的专家使用率（与 CaS_DETR 对齐，支持列表缓存）
+        num_decoder_experts = self.model.num_experts
+        decoder_expert_usage_total = torch.zeros(num_decoder_experts, device=self.device)
+        total_dec_tokens = 0
         
         for batch_idx, (images, targets) in enumerate(self.train_loader):
             
@@ -1237,7 +1343,7 @@ class AdaptiveExpertTrainer:
                        for k, v in t.items()} for t in targets]
             
             # 前向传播
-            self.optimizer.zero_grad()
+            self.optimizer.zero_grad(set_to_none=True)
             
             with torch.amp.autocast('cuda'):
                 outputs = self.model(images, targets)
@@ -1262,27 +1368,25 @@ class AdaptiveExpertTrainer:
                 if 'moe_load_balance_loss' in outputs:
                     moe_lb_loss += outputs['moe_load_balance_loss'].detach()
             
-            # 收集细粒度MoE的专家使用统计（使用torch.bincount向量化）
+            # 收集细粒度MoE的专家使用统计（与 CaS_DETR 对齐）
             if self.model.decoder.use_moe:
                 for layer in self.model.decoder.decoder.layers:
-                    if hasattr(layer, 'decoder_moe_layer') and layer.decoder_moe_layer.router_logits_cache is not None:
-                        router_logits = layer.decoder_moe_layer.router_logits_cache  # [N, num_experts]
-                        # 计算每个token选择的top-k专家
-                        _, top_indices = torch.topk(router_logits, self.model.decoder.moe_top_k, dim=-1)  # [N, K]
-                        
-                        # 使用 torch.bincount 在 GPU 上直接统计（向量化）
-                        flat_indices = top_indices.flatten()
-                        counts = torch.bincount(flat_indices, minlength=self.model.num_experts)
-                        
-                        # 只把最终的几个数字搬回CPU
-                        current_counts = counts.cpu().tolist()
-                        
-                        # 累加
-                        for i in range(self.model.num_experts):
-                            if i < len(current_counts):
-                                expert_usage_count[i] += current_counts[i]
-                        
-                        total_tokens += router_logits.shape[0] * self.model.decoder.moe_top_k
+                    if hasattr(layer, 'decoder_moe_layer'):
+                        dec_logits = layer.decoder_moe_layer.router_logits_cache
+                        if dec_logits:
+                            if isinstance(dec_logits, list) and len(dec_logits) > 0:
+                                dec_logits_detached = [logits.detach() if isinstance(logits, torch.Tensor) else logits for logits in dec_logits]
+                                dec_logits_tensor = torch.cat(dec_logits_detached, dim=0)
+                                del dec_logits_detached
+                            elif isinstance(dec_logits, torch.Tensor) and dec_logits.numel() > 0:
+                                dec_logits_tensor = dec_logits.detach()
+                            else:
+                                continue
+
+                            _, dec_indices = torch.topk(dec_logits_tensor, self.model.decoder.moe_top_k, dim=-1)
+                            decoder_expert_usage_total.add_(torch.bincount(dec_indices.flatten(), minlength=num_decoder_experts))
+                            total_dec_tokens += dec_indices.numel()
+                            del dec_logits_tensor, dec_indices
             
             if batch_idx % 100 == 0:
                 det_loss_val = outputs.get('detection_loss', torch.tensor(0.0)).item() if isinstance(outputs, dict) else 0.0
@@ -1299,42 +1403,53 @@ class AdaptiveExpertTrainer:
         avg_moe_lb_loss = moe_lb_loss.item() / num_batches
         
         # 计算专家使用率
+        decoder_expert_usage_count = decoder_expert_usage_total.cpu().tolist()
         expert_usage_rate = []
-        if total_tokens > 0:
-            for count in expert_usage_count:
-                expert_usage_rate.append(count / total_tokens)
+        if total_dec_tokens > 0:
+            for count in decoder_expert_usage_count:
+                expert_usage_rate.append(count / total_dec_tokens)
         else:
-            expert_usage_rate = [1.0 / self.model.num_experts] * self.model.num_experts
+            expert_usage_rate = [1.0 / num_decoder_experts] * num_decoder_experts
+
+        # 统计完成后清空 cache，和 CaS_DETR 保持一致
+        if self.model.decoder.use_moe:
+            for layer in self.model.decoder.decoder.layers:
+                if hasattr(layer, 'decoder_moe_layer'):
+                    if hasattr(layer.decoder_moe_layer, 'router_logits_cache'):
+                        layer.decoder_moe_layer.router_logits_cache = []
+                    if hasattr(layer.decoder_moe_layer, 'expert_indices_cache'):
+                        layer.decoder_moe_layer.expert_indices_cache = []
         
         return {
             'total_loss': avg_loss,
             'detection_loss': avg_detection_loss,
             'moe_load_balance_loss': avg_moe_lb_loss,
-            'expert_usage': expert_usage_count,
+            'expert_usage': decoder_expert_usage_count,
             'expert_usage_rate': expert_usage_rate
         }
     
     def validate(self) -> Dict[str, float]:
-        """验证模型并计算mAP。"""
+        """验证模型并计算mAP（per-image 尺寸，与 CaS_DETR 对齐）。"""
         self.ema.module.eval()
         total_loss = 0.0
         all_predictions = []
         all_targets = []
+        image_id_to_size = {}
         
-        # 初始化默认尺寸 (防止 val_loader 为空)
         current_h, current_w = 640, 640
-        
-        # 前30个epoch只计算loss，不进行cocoEval评估
+        bs = self.config['training']['batch_size']
         
         with torch.no_grad():
             for batch_idx, (images, targets) in enumerate(self.val_loader):
-                # 动态获取 Tensor 尺寸
                 B, C, H_tensor, W_tensor = images.shape
                 current_h, current_w = H_tensor, W_tensor
 
                 images = images.to(self.device, non_blocking=True)
                 targets = [{k: v.to(self.device, non_blocking=True) if isinstance(v, torch.Tensor) else v 
                            for k, v in t.items()} for t in targets]
+                for i, _target in enumerate(targets):
+                    image_id = batch_idx * bs + i
+                    image_id_to_size[image_id] = (W_tensor, H_tensor)
                 
                 outputs = self.ema.module(images, targets)
                 
@@ -1342,18 +1457,16 @@ class AdaptiveExpertTrainer:
                     if 'total_loss' in outputs:
                         total_loss += outputs['total_loss'].item()
                     
-                    # 收集预测结果（只在需要计算mAP时收集，前30个epoch跳过）
                     if 'class_scores' in outputs and 'bboxes' in outputs:
                         self._collect_predictions(outputs, targets, batch_idx, all_predictions, all_targets, W_tensor, H_tensor)
         
-        # 保存预测结果用于后续打印每个类别mAP（避免重复计算）
         self._last_val_predictions = all_predictions
         self._last_val_targets = all_targets
         
         avg_loss = total_loss / len(self.val_loader)
         
-        # 计算mAP（不计算每个类别的mAP，只在best_model时计算）
-        mAP_metrics = self._compute_map_metrics(all_predictions, all_targets, 
+        mAP_metrics = self._compute_map_metrics(all_predictions, all_targets,
+                                              image_id_to_size=image_id_to_size,
                                               img_h=current_h, img_w=current_w,
                                               print_per_category=False)
         
@@ -1805,7 +1918,7 @@ class AdaptiveExpertTrainer:
             'best_mAP_075': getattr(self, 'best_mAP_075', 0.0),
             'best_mAP_075_epoch': getattr(self, 'best_mAP_075_epoch', -1),
             'global_step': self.global_step,
-            'visualizer_state': self.visualizer.state_dict()
+            'visualizer_state_dict': self.visualizer.state_dict()
         }
         
         if self.early_stopping:
@@ -1840,7 +1953,7 @@ class AdaptiveExpertTrainer:
             'best_mAP_075': getattr(self, 'best_mAP_075', 0.0),
             'best_mAP_075_epoch': getattr(self, 'best_mAP_075_epoch', -1),
             'global_step': self.global_step,
-            'visualizer_state': self.visualizer.state_dict()
+            'visualizer_state_dict': self.visualizer.state_dict()
         }
         
         if self.early_stopping:
@@ -1901,7 +2014,7 @@ class AdaptiveExpertTrainer:
             should_show_details = True
             if should_show_details:
                 self.logger.info(f"  检测损失: {train_metrics['detection_loss']:.2f}")
-                self.logger.info(f"  MoE负载均衡损失: {train_metrics['moe_load_balance_loss']:.4f}")
+                self.logger.info(f"  Decoder MoE损失: {train_metrics['moe_load_balance_loss']:.4f}")
                 # 显示专家使用率
                 usage_str = [f"{rate*100:.2f}%" for rate in train_metrics['expert_usage_rate']]
                 self.logger.info(f"  专家使用率: [{', '.join(usage_str)}]")

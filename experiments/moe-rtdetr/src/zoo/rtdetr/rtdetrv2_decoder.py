@@ -662,12 +662,10 @@ class RTDETRTransformerv2(nn.Module):
             if hasattr(layer, 'use_moe') and layer.use_moe:
                 if hasattr(layer, 'decoder_moe_layer'):
                     ael = layer.decoder_moe_layer
-                    if hasattr(ael, 'router_logits_cache') and ael.router_logits_cache is not None:
-                        router_logits_list.append(ael.router_logits_cache)
-                        # 收集expert_indices（如果可用）
-                        if hasattr(ael, 'expert_indices_cache') and ael.expert_indices_cache is not None:
-                            expert_indices_list.append(ael.expert_indices_cache)
-                        else:
-                            expert_indices_list.append(None)
+                    if hasattr(ael, 'router_logits_cache') and ael.router_logits_cache:
+                        router_logits_list.extend(ael.router_logits_cache)
+                        if hasattr(ael, 'expert_indices_cache') and ael.expert_indices_cache:
+                            expert_indices_list.extend(ael.expert_indices_cache)
         
-        return compute_expert_balance_loss(router_logits_list, self.num_experts, expert_indices_list)
+        top_k = self.moe_top_k if hasattr(self, 'moe_top_k') else 2
+        return compute_expert_balance_loss(router_logits_list, self.num_experts, expert_indices_list, top_k=top_k)
