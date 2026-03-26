@@ -614,7 +614,7 @@ class CaS_DETRTrainer:
             self._resume_from_checkpoint()
             
     def _apply_vram_batch_size_rule(self):
-        """根据 VRAM 动态调整 batch_size（与 rt-detr / yolo / moe-rtdetr 共用 common.vram_batch）。"""
+        """根据 VRAM 动态调整数据加载参数，保持配置文件中的 batch_size 不变。"""
         if not torch.cuda.is_available():
             return
 
@@ -1110,7 +1110,7 @@ class CaS_DETRTrainer:
     
     def _create_data_loaders(self) -> Tuple[DataLoader, DataLoader]:
         """创建初始数据加载器。"""
-        # 使用配置文件中的 batch_size（已经过 vram_batch_size_rule 调整）
+        # 使用配置文件中的 batch_size（显存自适应不会再改写训练 batch）
         current_batch_size = self.config['training']['batch_size']
         
         self.logger.info(f"📦 初始化训练: epoch={self.current_epoch}, 当前使用 batch_size={current_batch_size}")
@@ -1137,7 +1137,7 @@ class CaS_DETRTrainer:
         
         val_loader = DataLoader(
             val_dataset, 
-            batch_size=current_batch_size, # 验证集同步使用调整后的 BS
+            batch_size=current_batch_size, # 验证集同步使用配置中的 BS
             shuffle=False,
             num_workers=num_workers,
             collate_fn=val_collate_fn,

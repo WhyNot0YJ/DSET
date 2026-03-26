@@ -1,11 +1,10 @@
 """显存档位自适应 batch / num_workers / prefetch（各实验 train 共用）。
 
 规则：YAML 中 batch 为基准；
-- 总显存 ≥ 28 GiB（约 32G 档）：batch × 6
-- 总显存 ≥ 15 GiB 且 < 28（约 16G 档）：batch × 3
-- 更小（含 12G）：× 1
+- 总显存 ≥ 15 GiB（约 16G 及以上档）：batch × 3
+- 更小（约 8G / 12G 档）：× 1
 
-num_workers / prefetch 仅在 batch 放大时最多再 ×2，并封顶（8 / 4），降低 EMFILE 风险。
+num_workers / prefetch 会随更高显存档位最多再 ×2，并封顶（8 / 4），降低 EMFILE 风险。
 """
 
 from __future__ import annotations
@@ -50,9 +49,7 @@ def compute_vram_batch_adjustment(
     idx = device_index if device_index is not None else torch.cuda.current_device()
     total_vram_gb = torch.cuda.get_device_properties(idx).total_memory / (1024**3)
 
-    if total_vram_gb >= 28:
-        batch_scale = 6
-    elif total_vram_gb >= 15:
+    if total_vram_gb >= 15:
         batch_scale = 3
     else:
         batch_scale = 1
