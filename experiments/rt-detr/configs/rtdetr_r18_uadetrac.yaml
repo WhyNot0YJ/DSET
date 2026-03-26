@@ -27,11 +27,12 @@ training:
   early_stopping_metric: mAP_0.5_0.95
   seed: 42
   deterministic: false
-  # epoch<20：沿用稀疏验证；epoch≥20 起每 2 轮验证 ((epoch+1)%2==0)。前 20 轮完全不评可改为 enabled:false
+  # epoch<20：每 10 轮评一次（epoch 9,19）；epoch≥20：每 2 轮（20,22,24,…），见 experiments/common/eval_schedule.py（since_epoch）
   eval_schedule:
     - until_epoch: 20
       every: 10
     - until_epoch: null
+      since_epoch: 20
       every: 2
 data:
   data_root: /root/autodl-fs/datasets/UA-DETRAC_COCO
@@ -46,9 +47,6 @@ augmentation:
   target_size: 640
   stop_epoch: 21
   scales:
-  - 480
-  - 512
-  - 544
   - 576
   - 608
   - 640
@@ -56,9 +54,6 @@ augmentation:
   - 640
   - 672
   - 704
-  - 736
-  - 768
-  - 800
   normalize_mean:
   - 0.485
   - 0.456

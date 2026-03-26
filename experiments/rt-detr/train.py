@@ -603,7 +603,7 @@ class RTDETRTrainer:
         )
 
         # 多尺度训练配置 (从config中读取或使用默认值)
-        scales = self.config.get('augmentation', {}).get('scales', [480, 512, 544, 576, 608, 640, 640, 640, 672, 704, 736, 768, 800])
+        scales = self.config.get('augmentation', {}).get('scales', [576, 608, 640, 640, 640, 672, 704])
         stop_epoch = self.config.get('augmentation', {}).get('stop_epoch', 71)
         train_collate_fn = BatchImageCollateFuncion(scales=scales, stop_epoch=stop_epoch)
         # Keep validation deterministic at the dataset's fixed resize target (640 by config).
@@ -1208,7 +1208,7 @@ class RTDETRTrainer:
             return None
 
         scales = self.config.get("augmentation", {}).get(
-            "scales", [480, 512, 544, 576, 608, 640, 640, 640, 672, 704, 736, 768, 800]
+            "scales", [576, 608, 640, 640, 640, 672, 704]
         )
         stop_epoch = self.config.get("augmentation", {}).get("stop_epoch", 71)
         # Keep test-time evaluation deterministic at the dataset's fixed resize target.
