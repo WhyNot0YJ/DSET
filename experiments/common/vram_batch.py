@@ -52,9 +52,8 @@ def compute_vram_batch_adjustment(
 
     base_bs = max(1, int(base_batch_size))
     new_bs = base_bs
-    nw_mult = 2 if total_vram_gb >= 15 else 1
-    new_nw = max(1, min(int(num_workers) * nw_mult, 8))
-    new_pf = max(1, min(int(prefetch_factor) * nw_mult, 4))
+    new_nw = max(1, int(num_workers))
+    new_pf = max(1, int(prefetch_factor))
 
     return VramBatchAdjustResult(
         batch_size=new_bs,

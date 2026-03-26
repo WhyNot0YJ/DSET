@@ -71,6 +71,6 @@ checkpoint:
   log_dir: logs
 misc:
   device: cuda
-  num_workers: 4
+  num_workers: 16
   pin_memory: true
-  prefetch_factor: 1
+  prefetch_factor: 4

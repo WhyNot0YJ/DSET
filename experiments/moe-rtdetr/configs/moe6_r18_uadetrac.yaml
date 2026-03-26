@@ -16,7 +16,7 @@ model:
   num_queries: 100
 training:
   epochs: 50
-  batch_size: 8
+  batch_size: 16
   warmup_epochs: 3
   pretrained_lr: 1e-5
   new_lr: 1e-4
@@ -74,6 +74,6 @@ checkpoint:
   log_dir: logs
 misc:
   device: cuda
-  num_workers: 4
+  num_workers: 16
   pin_memory: true
-  prefetch_factor: 1
+  prefetch_factor: 4
