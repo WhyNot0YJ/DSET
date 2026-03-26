@@ -1799,8 +1799,10 @@ class CaS_DETRTrainer:
                 self.ema.load_state_dict(checkpoint['ema_state_dict'])
             if 'scaler_state_dict' in checkpoint:
                 self.scaler.load_state_dict(checkpoint['scaler_state_dict'])
-            if 'visualizer_state' in checkpoint:
-                self.visualizer.load_state_dict(checkpoint['visualizer_state'])
+            # 与 experiments/rt-detr/train.py 一致：键名为 visualizer_state_dict；兼容旧版 visualizer_state
+            vs = checkpoint.get('visualizer_state_dict') or checkpoint.get('visualizer_state')
+            if vs is not None and getattr(self, 'visualizer', None):
+                self.visualizer.load_state_dict(vs)
             if 'early_stopping_state' in checkpoint and self.early_stopping:
                 self.early_stopping.load_state_dict(checkpoint['early_stopping_state'])
             
@@ -2528,8 +2530,9 @@ class CaS_DETRTrainer:
             'best_mAP_075': getattr(self, 'best_mAP_075', 0.0),
             'best_mAP_075_epoch': getattr(self, 'best_mAP_075_epoch', -1),
             'global_step': self.global_step,
-            'visualizer_state': self.visualizer.state_dict()
         }
+        if hasattr(self, 'visualizer') and self.visualizer:
+            checkpoint['visualizer_state_dict'] = self.visualizer.state_dict()
         
         if self.early_stopping:
             checkpoint['early_stopping_state'] = self.early_stopping.state_dict()
@@ -2569,8 +2572,9 @@ class CaS_DETRTrainer:
             'best_mAP_075': getattr(self, 'best_mAP_075', 0.0),
             'best_mAP_075_epoch': getattr(self, 'best_mAP_075_epoch', -1),
             'global_step': self.global_step,
-            'visualizer_state': self.visualizer.state_dict()
         }
+        if hasattr(self, 'visualizer') and self.visualizer:
+            checkpoint['visualizer_state_dict'] = self.visualizer.state_dict()
         
         if self.early_stopping:
             checkpoint['early_stopping_state'] = self.early_stopping.state_dict()
@@ -2659,6 +2663,7 @@ class CaS_DETRTrainer:
             
             # 记录训练指标到可视化器
             current_lr = self.optimizer.param_groups[0]['lr']
+            # 可视化器只记主曲线标量；MoE/CASS/专家占比等已在上方日志与最终 test 中体现
             self.visualizer.record(
                 epoch=epoch,
                 train_loss=train_metrics.get('total_loss', 0.0),
@@ -2667,12 +2672,6 @@ class CaS_DETRTrainer:
                 mAP_0_75=val_metrics.get('mAP_0.75', 0.0),
                 mAP_0_5_0_95=val_metrics.get('mAP_0.5_0.95', 0.0),
                 learning_rate=current_lr,
-                # CaS_DETR特有的可视化参数
-                detection_loss=train_metrics.get('detection_loss', 0.0),
-                decoder_moe_loss=train_metrics.get('decoder_moe_loss', 0.0),
-                token_pruning_ratio=train_metrics.get('token_pruning_ratio', 0.0),
-                # 传递encoder和decoder专家使用率
-                decoder_expert_usage=train_metrics.get('expert_usage_rate', [])
             )
             
             # 保存检查点 - 仅在实际验证时更新 best_*；早停只计数
