@@ -3,7 +3,7 @@ model:
   pretrained_weights: "pretrained/yolov10n.pt"
 
 training:
-  epochs: 100
+  epochs: 50
   batch_size: 32
   imgsz: 640
 

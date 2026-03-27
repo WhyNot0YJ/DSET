@@ -3,7 +3,7 @@ model:
   pretrained_weights: "pretrained/yolo12s.pt"
 
 training:
-  epochs: 100
+  epochs: 50
   batch_size: 16
   imgsz: 640
 
