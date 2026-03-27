@@ -46,6 +46,37 @@ except ImportError:
 from src.data.transforms.letterbox_geom import align_feature_map_to_original_np
 
 
+def extract_encoder_info(outputs):
+    """从 forward 结果取出 encoder_info（与 train.py / HybridEncoder 挂载方式一致）。"""
+    if isinstance(outputs, dict):
+        ei = outputs.get("encoder_info")
+        return ei if ei is not None else {}
+    if isinstance(outputs, tuple) and len(outputs) >= 2 and isinstance(outputs[1], dict):
+        return outputs[1]
+    if isinstance(outputs, (list, tuple)) and len(outputs) > 0:
+        t0 = outputs[0]
+        if hasattr(t0, "encoder_info"):
+            ei = getattr(t0, "encoder_info", None)
+            if ei is not None:
+                return ei
+    return {}
+
+
+def _spatial_hw_first(spatial_shapes):
+    """encoder_info['spatial_shapes'] 首层 (h, w)，兼容 tuple / list / tensor。"""
+    if not spatial_shapes:
+        return None, None
+    sh0 = spatial_shapes[0]
+    if isinstance(sh0, torch.Tensor):
+        sh0 = sh0.detach().cpu().flatten().tolist()
+        if len(sh0) >= 2:
+            return int(sh0[0]), int(sh0[1])
+        return None, None
+    if isinstance(sh0, (list, tuple)) and len(sh0) >= 2:
+        return int(sh0[0]), int(sh0[1])
+    return None, None
+
+
 class PruningHook:
     """
     Hook to capture the pruning mask AND importance scores from the model's encoder.
@@ -185,54 +216,44 @@ def run_visualization(
     if hook_handle:
         hook_handle.remove()
 
-    # 3. Process Scores & Heatmaps — 使用 encoder_info 中正确的 layer_wise_heatmaps
+    # 3. Process Scores & Heatmaps — 与 train.py 使用同一数据源
     #
     # 优先使用 HybridEncoder 提供的 layer_wise_heatmaps（已按正确空间顺序生成）
-    # 回退到旧的 hook scores 逻辑做兼容
+    # 与 train.py 中 _save_token_visualization 一致；单图默认取空间分辨率最大的那一层
     importance_scores_2d = None
     h_feat = w_feat = None
-    level_name = "S4"
 
-    # Priority 1: 使用 encoder_info['layer_wise_heatmaps']（推荐，正确）
-    encoder_info = {}
-    if isinstance(outputs, tuple) and len(outputs) >= 2:
-        encoder_info = outputs[1] if isinstance(outputs[1], dict) else {}
-    elif isinstance(outputs, dict) and 'encoder_info' in outputs:
-        encoder_info = outputs['encoder_info']
+    encoder_info = extract_encoder_info(outputs)
 
     heatmaps = encoder_info.get('layer_wise_heatmaps', [])
     if heatmaps:
-        # 取第一个 heatmap（通常是最高分辨率或第一个 use_encoder_idx）
-        heatmap_tensor = heatmaps[0]                    # [B, 1, H, W]
+        heatmap_tensor = max(
+            heatmaps, key=lambda t: int(t.shape[-2]) * int(t.shape[-1])
+        )  # [B, 1, H, W]
         importance_scores_2d = heatmap_tensor[0, 0].detach().cpu().numpy()  # [H, W]
         h_feat, w_feat = heatmap_tensor.shape[2], heatmap_tensor.shape[3]
-        print(f"  ✓ 使用 layer_wise_heatmaps，shape=({h_feat}, {w_feat})")
+        print(f"  ✓ 使用 layer_wise_heatmaps（最大分辨率层），shape=({h_feat}, {w_feat})")
     else:
-        # Priority 2: 旧的 hook 逻辑（兼容）
+        # 兼容旧逻辑：尝试从 pruning hook 获取
         print("  ⚠ 未找到 layer_wise_heatmaps，回退到 pruning_hook.scores")
-        def _extract_scores(raw_scores):
-            if isinstance(raw_scores, torch.Tensor):
-                s = raw_scores.detach().cpu().numpy()
-            else:
-                s = np.asarray(raw_scores)
-            if s.ndim >= 2:
-                s = s[0]  # batch 0
-            return s
-
         if pruning_hook.scores is not None:
-            scores = _extract_scores(pruning_hook.scores)
-            # 尝试从 encoder_info 获取真实 shape，否则用保守估算
+            scores = pruning_hook.scores
+            if isinstance(scores, torch.Tensor):
+                scores = scores.detach().cpu().numpy()
+            if scores.ndim >= 2:
+                scores = scores[0]
+
             spatial_shapes = encoder_info.get('spatial_shapes', [])
             if spatial_shapes and len(spatial_shapes) > 0:
                 h_feat, w_feat = spatial_shapes[0]
                 if len(scores) >= h_feat * w_feat:
-                    importance_scores_2d = scores[:h_feat*w_feat].reshape(h_feat, w_feat)
+                    importance_scores_2d = scores[:h_feat * w_feat].reshape(h_feat, w_feat)
             else:
-                # 最后 fallback：假设 stride=16
+                # 最后 fallback
                 h_feat = padded_h // 16
                 w_feat = padded_w // 16
                 if len(scores) >= h_feat * w_feat:
-                    importance_scores_2d = scores[:h_feat*w_feat].reshape(h_feat, w_feat)
+                    importance_scores_2d = scores[:h_feat * w_feat].reshape(h_feat, w_feat)
 
     if importance_scores_2d is None:
         print("⚠ 无法获取 importance scores，使用全1热力图")
@@ -281,6 +302,47 @@ def run_visualization(
         C_ORANGE = (15, 55, 140)   # dark burnt-orange / rust (暗沉橙)
         C_BLUE   = (220,  80,  20)
         C_RED    = (30,   30, 220)
+
+        # ── Binary mask：kept_indices 为拼接序列上的全局下标；teaser 仅画第一层 [0, H0*W0)
+        spatial_shapes_ei = encoder_info.get('spatial_shapes', [])
+        h0, w0 = _spatial_hw_first(spatial_shapes_ei)
+        if h0 is None or w0 is None:
+            if h_feat is not None and w_feat is not None:
+                h0, w0 = h_feat, w_feat
+            else:
+                h0, w0 = padded_h // 16, padded_w // 16
+        L0 = int(h0) * int(w0)
+
+        if pruning_hook.kept_indices is not None:
+            ki = pruning_hook.kept_indices
+            if isinstance(ki, torch.Tensor):
+                ki = ki.detach().cpu().numpy()
+            if ki.ndim >= 2:
+                ki = ki[0]
+            ki = np.asarray(ki[(ki >= 0) & (ki < L0)], dtype=np.int64)
+            mask_flat = np.zeros(L0, dtype=np.float32)
+            if ki.size > 0:
+                mask_flat[ki] = 1.0
+            feature_mask = mask_flat.reshape(h0, w0)
+        else:
+            feature_mask = np.ones((h0, w0), dtype=np.float32)
+
+        feature_mask_final = align_feature_map_to_original_np(
+            feature_mask,
+            h0,
+            w0,
+            padded_h,
+            padded_w,
+            orig_h,
+            orig_w,
+            meta.get("pad_left"),
+            meta.get("pad_top"),
+            meta.get("new_h"),
+            meta.get("new_w"),
+            normalize_before_resize=False,
+            interp_tensor=cv2.INTER_NEAREST,
+            interp_orig=cv2.INTER_NEAREST,
+        )
 
         # ── Build the two image panels ───────────────────────────────────────
         # (a) Dense: dark muted tint — conveys O(N²) computational burden

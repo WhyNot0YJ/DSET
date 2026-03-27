@@ -529,10 +529,10 @@ class CaS_DETRRTDETR(nn.Module):
             
             output['decoder_moe_weight'] = decoder_moe_weight
             output['cass_weight'] = cass_weight
-            
-            # 添加encoder info到输出（用于监控）
-            if encoder_info:
-                output['encoder_info'] = encoder_info
+        
+        # encoder_info：训练/验证有 targets 时已用于 CASS；推理与可视化脚本无 targets 时也需要
+        if encoder_info:
+            output['encoder_info'] = encoder_info
         
         return output
 
@@ -585,6 +585,10 @@ class CaS_DETRTrainer:
         
         # 梯度裁剪参数（从配置读取）
         self.clip_max_norm = self.config.get('training', {}).get('clip_max_norm', 10.0)
+        # Token 热力图：仅在训练开始的前 N 个 epoch 各保存一次（epoch 从 0 计，即 epoch=0..N-1）
+        self.token_visualization_first_epochs = int(
+            self.config.get('training', {}).get('token_visualization_first_epochs', 5)
+        )
 
         self.num_classes = int(self.config.get("data", {}).get("num_classes", 8))
         self.class_names = [
@@ -1785,7 +1789,8 @@ class CaS_DETRTrainer:
                     
                     if orig_img is None: continue
 
-                    orig_h, orig_w = orig_img.shape[:2]
+                    # 与 letterbox 变换一致：缩放后内容区 nh×nw 应对齐到磁盘读入的原始分辨率
+                    orig_h, orig_w = int(orig_img.shape[0]), int(orig_img.shape[1])
                     t_i = targets[i]
                     lb_pad = t_i.get("letterbox_pad")
                     lb_scale = t_i.get("letterbox_scale")
@@ -1793,10 +1798,10 @@ class CaS_DETRTrainer:
                         pl = float(lb_pad[0].item())
                         pt = float(lb_pad[1].item())
                         sc = float(lb_scale.reshape(-1)[0].item())
-                        ohs, ows = t_i["orig_size"].tolist()
-                        nh = max(1, int(round(float(ohs) * sc)))
-                        nw = max(1, int(round(float(ows) * sc)))
+                        nh = max(1, int(round(float(orig_h) * sc)))
+                        nw = max(1, int(round(float(orig_w) * sc)))
                     else:
+                        # stretch / resize 等非 letterbox：整幅 tensor 为有效内容
                         pl = pt = 0.0
                         nh, nw = H_tensor, W_tensor
 
@@ -2692,6 +2697,11 @@ class CaS_DETRTrainer:
         epochs = self.config['training']['epochs']
         self.logger.info(f"开始训练 {epochs} epochs")
         self.logger.info(f"✓ 梯度裁剪: max_norm={self.clip_max_norm}")
+        tok_first = getattr(self, 'token_visualization_first_epochs', 5)
+        if tok_first > 0:
+            self.logger.info(
+                f"✓ Token 热力图: 前 {tok_first} 个 epoch 各保存一次（epoch=0..{tok_first - 1} 结束时）"
+            )
         eval_sched = self.config.get("training", {}).get("eval_schedule")
         self.logger.info(f"✓ 验证策略: {describe_eval_schedule(eval_sched)}")
 
@@ -2828,12 +2838,13 @@ class CaS_DETRTrainer:
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
             
-            # 每11个epoch保存Token重要性热力图（第11、21、31...次）
-            if (epoch + 1) % 10 == 0:
+            # Token 重要性热力图（layer_wise_heatmaps + letterbox 对齐）；仅前 N 个 epoch，见 token_visualization_first_epochs
+            tok_first = getattr(self, 'token_visualization_first_epochs', 5)
+            if tok_first > 0 and epoch < tok_first:
                 try:
                     self._save_token_visualization(epoch)
                 except Exception as e:
-                    self.logger.debug(f"Token可视化失败（不影响训练）: {e}")
+                    self.logger.warning(f"Token 可视化失败（不影响训练）: {e}", exc_info=True)
         
         self.logger.info("✓ 训练完成！")
         try:
