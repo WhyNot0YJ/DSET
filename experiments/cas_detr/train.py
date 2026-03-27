@@ -592,6 +592,8 @@ class CaS_DETRTrainer:
         self.token_visualization_first_epochs = int(
             self.config.get('training', {}).get('token_visualization_first_epochs', 5)
         )
+        self.seed = int(self.config.get('training', {}).get('seed', 42))
+        self.deterministic = bool(self.config.get('training', {}).get('deterministic', False))
 
         self.num_classes = int(self.config.get("data", {}).get("num_classes", 8))
         self.class_names = [
@@ -671,6 +673,12 @@ class CaS_DETRTrainer:
 
         if getattr(self, 'logger', None):
             self.logger.info(format_vram_batch_log(r))
+
+    def _make_dataloader_generator(self, offset: int = 0) -> torch.Generator:
+        """为每类 DataLoader 创建稳定的随机数生成器。"""
+        generator = torch.Generator()
+        generator.manual_seed(self.seed + offset)
+        return generator
     
     def _validate_config_file(self):
         """验证配置文件是否包含所有必需的配置项"""
@@ -856,12 +864,15 @@ class CaS_DETRTrainer:
         
         # 启用GPU优化设置
         if torch.cuda.is_available():
-            # 启用cudnn benchmark以加速卷积操作（输入尺寸固定时）
-            torch.backends.cudnn.benchmark = True
             # 启用TensorFloat-32（RTX 5090支持，可加速某些操作）
             torch.backends.cuda.matmul.allow_tf32 = True
             torch.backends.cudnn.allow_tf32 = True
-            self.logger.info("✓ 已启用GPU优化: cudnn.benchmark=True, TF32=True")
+            if self.deterministic:
+                torch.backends.cudnn.benchmark = False
+                self.logger.info("✓ 已启用GPU优化: cudnn.benchmark=False (deterministic), TF32=True")
+            else:
+                torch.backends.cudnn.benchmark = True
+                self.logger.info("✓ 已启用GPU优化: cudnn.benchmark=True, TF32=True")
         
         # 获取实际的num_encoder_layers用于日志输出
         num_encoder_layers = self.config.get('model', {}).get('encoder', {}).get('num_encoder_layers', 1)
@@ -1193,7 +1204,9 @@ class CaS_DETRTrainer:
             collate_fn=val_collate_fn,
             pin_memory=pin_memory,
             persistent_workers=True if num_workers > 0 else False,
-            prefetch_factor=prefetch_factor if num_workers > 0 else None
+            prefetch_factor=prefetch_factor if num_workers > 0 else None,
+            worker_init_fn=seed_worker if num_workers > 0 else None,
+            generator=self._make_dataloader_generator(offset=1),
         )
         
         return train_loader, val_loader
@@ -1235,7 +1248,9 @@ class CaS_DETRTrainer:
             collate_fn=train_collate_fn,
             pin_memory=pin_memory,
             persistent_workers=True if num_workers > 0 else False,
-            prefetch_factor=prefetch_factor if num_workers > 0 else None
+            prefetch_factor=prefetch_factor if num_workers > 0 else None,
+            worker_init_fn=seed_worker if num_workers > 0 else None,
+            generator=self._make_dataloader_generator(offset=0),
         )
     
     def _collate_fn(self, batch: List[Tuple]) -> Tuple[torch.Tensor, List[Dict]]:
@@ -1625,6 +1640,8 @@ class CaS_DETRTrainer:
             pin_memory=pin_memory,
             persistent_workers=True if num_workers > 0 else False,
             prefetch_factor=prefetch_factor if num_workers > 0 else None,
+            worker_init_fn=seed_worker if num_workers > 0 else None,
+            generator=self._make_dataloader_generator(offset=2),
         )
 
     def _run_ema_eval_on_dataloader(self, dataloader, split_label: str,
@@ -2935,7 +2952,7 @@ def main() -> None:
     
     args = parser.parse_args()
     
-    # 设置随机种子（必须在所有操作之前）
+    # 先初始化运行环境；随机种子在解析最终配置后再设置
     print("\n" + "="*60)
     print("🔧 初始化训练环境")
     print("="*60)
@@ -2946,8 +2963,6 @@ def main() -> None:
         torch.cuda.empty_cache()
         print("✓ 已启用显存碎片整理策略: expandable_segments=True")
 
-    set_seed(args.seed, deterministic=args.deterministic)
-    
     # 加载配置
     config_file_path = None
     if args.config and args.config.endswith('.yaml'):
@@ -2987,6 +3002,12 @@ def main() -> None:
             if 'checkpoint' not in config:
                 config['checkpoint'] = {}
             config['checkpoint']['resume_from_checkpoint'] = args.resume_from_checkpoint
+        if args.seed != 42:
+            config['training']['seed'] = args.seed
+        config['training'].setdefault('seed', 42)
+        if args.deterministic:
+            config['training']['deterministic'] = True
+        config['training'].setdefault('deterministic', False)
     else:
         # 创建默认配置
         config = {
@@ -3013,6 +3034,8 @@ def main() -> None:
                 'batch_size': args.batch_size,
                 'pretrained_lr': args.pretrained_lr,
                 'new_lr': args.new_lr,
+                'seed': args.seed,
+                'deterministic': args.deterministic,
                 'use_mosaic': False,  # 禁用Mosaic，不适合路测探头场景（会破坏空间关系）
                 'warmup_epochs': 3,
                 'ema_decay': 0.9999
@@ -3052,6 +3075,10 @@ def main() -> None:
     elif not (args.config and str(args.config).endswith('.yaml')):
         if args.data_root != '/root/autodl-fs/datasets/DAIR-V2X':
             config.setdefault('data', {})['data_root'] = args.data_root
+
+    effective_seed = int(config.get('training', {}).get('seed', args.seed))
+    effective_deterministic = bool(config.get('training', {}).get('deterministic', args.deterministic))
+    set_seed(effective_seed, deterministic=effective_deterministic)
     
     # 创建训练器
     trainer = CaS_DETRTrainer(config, config_file_path=config_file_path)
