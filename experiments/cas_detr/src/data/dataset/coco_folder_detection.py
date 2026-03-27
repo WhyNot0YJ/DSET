@@ -34,7 +34,7 @@ class CocoFolderDetection(DetDataset):
 
     DEFAULT_AUGMENTATION_CONFIG = {
         "target_size": 640,
-        "stop_epoch": 71,
+        "stop_epoch": 21,
         "normalize_mean": [0.485, 0.456, 0.406],
         "normalize_std": [0.229, 0.224, 0.225],
         "photometric_distort_p": 0.5,
@@ -50,7 +50,7 @@ class CocoFolderDetection(DetDataset):
         split: str = "train",
         transforms=None,
         target_size: int = 640,
-        stop_epoch: int = 71,
+        stop_epoch: int = 21,
         augmentation_config: Dict = None,
     ):
         super().__init__()
@@ -63,7 +63,7 @@ class CocoFolderDetection(DetDataset):
             self.aug_config.update(augmentation_config)
         if target_size != 640:
             self.aug_config["target_size"] = target_size
-        if stop_epoch != 71:
+        if stop_epoch != 21:
             self.aug_config["stop_epoch"] = stop_epoch
 
         self.target_size = self.aug_config["target_size"]
@@ -158,7 +158,11 @@ class CocoFolderDetection(DetDataset):
         return len(self._images)
 
     def get_image_path(self, coco_image_id: int) -> Optional[Path]:
-        return self._coco_id_to_path.get(int(coco_image_id))
+        p = self._coco_id_to_path.get(int(coco_image_id))
+        if p is None:
+            return None
+        p = Path(p)
+        return p if p.exists() else None
 
     def load_item(self, idx):
         if idx >= len(self._images):

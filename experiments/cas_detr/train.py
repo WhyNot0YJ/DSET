@@ -187,7 +187,7 @@ class CaS_DETRRTDETR(nn.Module):
     
     def __init__(self, hidden_dim: int = 256,
                  decoder_hidden_dim: Optional[int] = None,
-                 num_queries: int = 300, top_k: int = 2, backbone_type: str = "presnet34",
+                 num_queries: int = 100, top_k: int = 2, backbone_type: str = "presnet34",
                  num_decoder_layers: int = 3, encoder_in_channels: list = None, 
                  encoder_expansion: float = 1.0, num_experts: int = 6,
                  num_encoder_layers: int = 1,
@@ -1179,7 +1179,7 @@ class CaS_DETRTrainer:
         prefetch_factor = self.config.get('misc', {}).get('prefetch_factor', 4)
         
         from src.data.dataloader import BatchImageCollateFuncion
-        stop_epoch = self.config.get('augmentation', {}).get('stop_epoch', 71)
+        stop_epoch = self.config.get('augmentation', {}).get('stop_epoch', 21)
         val_collate_fn = BatchImageCollateFuncion(scales=None, stop_epoch=stop_epoch)
         
         val_loader = DataLoader(
@@ -1221,7 +1221,7 @@ class CaS_DETRTrainer:
 
         # 多尺度训练配置 (从config中读取或使用默认值)
         scales = self.config.get('augmentation', {}).get('scales', [576, 608, 640, 640, 640, 672, 704])
-        stop_epoch = self.config.get('augmentation', {}).get('stop_epoch', 71)
+        stop_epoch = self.config.get('augmentation', {}).get('stop_epoch', 21)
         train_collate_fn = BatchImageCollateFuncion(scales=scales, stop_epoch=stop_epoch)
         
         return DataLoader(
@@ -1611,7 +1611,7 @@ class CaS_DETRTrainer:
         num_workers = self.config.get("misc", {}).get("num_workers", 16)
         pin_memory = self.config.get("misc", {}).get("pin_memory", True)
         prefetch_factor = self.config.get("misc", {}).get("prefetch_factor", 4)
-        stop_epoch = self.config.get("augmentation", {}).get("stop_epoch", 71)
+        stop_epoch = self.config.get("augmentation", {}).get("stop_epoch", 21)
         val_collate_fn = BatchImageCollateFuncion(scales=None, stop_epoch=stop_epoch)
         return DataLoader(
             test_dataset,
@@ -1738,6 +1738,23 @@ class CaS_DETRTrainer:
                 except:
                     pass
     
+    @staticmethod
+    def _unwrap_dataloader_dataset(dataloader) -> object:
+        """解开 Subset / Chain 等包装，拿到底层 DetDataset。"""
+        ds = dataloader.dataset
+        while hasattr(ds, "dataset"):
+            ds = ds.dataset
+        return ds
+
+    def _resolve_viz_original_image_path(self, image_id: int) -> Optional[Path]:
+        """统一经数据集 ``get_image_path(image_id)`` 解析原图（无第二套硬编码路径）。"""
+        ds = self._unwrap_dataloader_dataset(self.val_loader)
+        p = ds.get_image_path(int(image_id))
+        if p is None:
+            return None
+        p = Path(p)
+        return p if p.exists() else None
+
     def _save_token_visualization(self, epoch: int) -> None:
         """保存 Token 重要性热力图（适配全局多尺度剪枝）。"""
         try:
@@ -1766,6 +1783,7 @@ class CaS_DETRTrainer:
             use_encoder_idx = self.model.encoder.use_encoder_idx if hasattr(self.model.encoder, 'use_encoder_idx') else [1, 2]
             level_names = [f"S{idx+3}" for idx in use_encoder_idx]  # S3=0, S4=1, S5=2
             
+            saved_count = 0
             # 遍历所有 level，为每个 level 生成热力图
             for level_idx, (heatmap_tensor, level_name) in enumerate(zip(heatmaps_2d_list, level_names)):
                 # heatmaps_2d_list 里的形状是 [B, 1, H_i, W_i]
@@ -1774,20 +1792,16 @@ class CaS_DETRTrainer:
                 
                 for i in range(min(3, len(targets))):
                     img_id = targets[i]['image_id'].item()
-                    data_root = Path(self.config['data']['data_root'])
-                    
-                    # 尝试命名匹配
-                    possible_paths = [
-                        data_root / "image" / f"{img_id:06d}.jpg",
-                        data_root / "image" / f"{img_id}.jpg"
-                    ]
-                    orig_img = None
-                    for p in possible_paths:
-                        if p.exists():
-                            orig_img = cv2.imread(str(p))
-                            break
-                    
-                    if orig_img is None: continue
+                    img_path = self._resolve_viz_original_image_path(int(img_id))
+                    if img_path is None:
+                        self.logger.warning(
+                            f"📸 Token 可视化: 找不到 image_id={img_id} 的原图（COCO 应用 data_root/<split>/file_name，见数据集 get_image_path）"
+                        )
+                        continue
+                    orig_img = cv2.imread(str(img_path))
+                    if orig_img is None:
+                        self.logger.warning(f"📸 Token 可视化: 无法读取图像 {img_path}")
+                        continue
 
                     # 与 letterbox 变换一致：缩放后内容区 nh×nw 应对齐到磁盘读入的原始分辨率
                     orig_h, orig_w = int(orig_img.shape[0]), int(orig_img.shape[1])
@@ -1829,12 +1843,20 @@ class CaS_DETRTrainer:
                         (s_norm * 255).astype(np.uint8), cv2.COLORMAP_JET
                     )
                     overlay = cv2.addWeighted(orig_img, 0.4, heatmap, 0.6, 0)
-                    cv2.imwrite(
-                        str(viz_dir / f"sample_{img_id}_{level_name}_heatmap.jpg"),
-                        overlay,
-                    )
+                    out_path = viz_dir / f"sample_{img_id}_{level_name}_heatmap.jpg"
+                    if cv2.imwrite(str(out_path), overlay):
+                        saved_count += 1
+                    else:
+                        self.logger.warning(f"📸 Token 可视化: cv2.imwrite 失败 {out_path}")
                 
-            self.logger.info(f"📸 Epoch {epoch}: 已保存 {len(heatmaps_2d_list)} 个尺度({', '.join(level_names)})的重要性热力图至 {viz_dir}")
+            if saved_count == 0:
+                self.logger.warning(
+                    f"📸 Epoch {epoch}: 未写出任何热力图（原图路径或读写失败）。目录: {viz_dir}"
+                )
+            else:
+                self.logger.info(
+                    f"📸 Epoch {epoch}: 已保存 {saved_count} 张热力图（尺度: {', '.join(level_names)}）至 {viz_dir}"
+                )
         except Exception as e:
             self.logger.error(f"可视化模块运行崩溃: {e}", exc_info=True)
     
@@ -2973,7 +2995,7 @@ def main() -> None:
                 'config': args.config,
                 'hidden_dim': 256,
                 'decoder_hidden_dim': 256,
-                'num_queries': 300,
+                'num_queries': 100,
                 'top_k': args.top_k,
                 'backbone': args.backbone,
                 'num_decoder_layers': 3,

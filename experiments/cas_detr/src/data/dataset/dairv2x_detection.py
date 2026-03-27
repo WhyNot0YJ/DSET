@@ -52,7 +52,7 @@ class DAIRV2XDetection(DetDataset):
     # 默认的增强配置
     DEFAULT_AUGMENTATION_CONFIG = {
         'target_size': 640,
-        'stop_epoch': 71,
+        'stop_epoch': 21,
         'normalize_mean': [0.485, 0.456, 0.406],
         'normalize_std': [0.229, 0.224, 0.225],
         'photometric_distort_p': 0.5,
@@ -65,7 +65,7 @@ class DAIRV2XDetection(DetDataset):
     
     def __init__(self, data_root: str, split: str = "train", transforms=None, 
                  target_size: int = 640,
-                 stop_epoch: int = 71,
+                 stop_epoch: int = 21,
                  augmentation_config: Dict = None):
         """
         初始化DAIR-V2X数据集
@@ -91,7 +91,7 @@ class DAIRV2XDetection(DetDataset):
         # 向后兼容：如果传入target_size和stop_epoch，覆盖config中的值
         if target_size != 640:
             self.aug_config['target_size'] = target_size
-        if stop_epoch != 71:
+        if stop_epoch != 21:
             self.aug_config['stop_epoch'] = stop_epoch
         
         self.target_size = self.aug_config['target_size']
@@ -421,11 +421,14 @@ class DAIRV2XDetection(DetDataset):
         return processed_annotations
 
     def get_image_path(self, coco_image_id: int) -> Optional[Path]:
-        """供训练结束可视化：由 COCO image_id 解析原始图像路径。"""
+        """由 COCO ``image_id`` 或文件序号解析 ``data_root/image/000xxx.jpg``（训练可视化 / 推理读盘）。"""
         for idx, cid in self.image_idx_to_coco_id.items():
             if int(cid) == int(coco_image_id):
-                return self.data_root / "image" / f"{int(idx):06d}.jpg"
-        return None
+                p = self.data_root / "image" / f"{int(idx):06d}.jpg"
+                return p if p.exists() else None
+        # 回退：target 中 ``image_id`` 有时与文件名序号一致（与 COCO id 相同时）
+        p = self.data_root / "image" / f"{int(coco_image_id):06d}.jpg"
+        return p if p.exists() else None
     
     def get_categories(self):
         """获取类别信息 - COCO格式"""

@@ -22,7 +22,7 @@ model:
   num_decoder_layers: 3
   hidden_dim: 256
   decoder_hidden_dim: 256
-  num_queries: 300
+  num_queries: 100
   cas_detr:
     token_keep_ratio: 0.3
     use_cass: true
@@ -67,7 +67,7 @@ data:
     - others
 augmentation:
   target_size: 640
-  stop_epoch: 20
+  stop_epoch: 21
   scales:
     - 576
     - 608
