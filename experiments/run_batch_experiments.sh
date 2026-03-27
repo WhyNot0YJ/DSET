@@ -16,7 +16,7 @@ export OMP_NUM_THREADS=1
 # 使用方法：
 #   ./run_batch_experiments.sh                                 # 运行所有实验（完整epochs）
 #   ./run_batch_experiments.sh --test                          # 测试模式：运行所有配置，每个只跑2个epoch
-#   ./run_batch_experiments.sh --rt-detr                       # 只运行 RT-DETR（DAIR + UA-DETRAC，含 plr2e5 对照，共 4 个配置）
+#   ./run_batch_experiments.sh --rt-detr                       # 只运行 RT-DETR（DAIR + UA-DETRAC，UA 含 plr2e5 对照，共 3 个配置）
 #   ./run_batch_experiments.sh --rt-detr-finetune              # 与 --rt-detr 相同（保留兼容）
 #   ./run_batch_experiments.sh --moe-rtdetr                    # 只运行MOE-RTDETR实验（2个配置）
 #   ./run_batch_experiments.sh --cas_detr                      # 只运行CaS_DETR实验（4个配置）
@@ -103,7 +103,6 @@ log_warning() {
 # 定义所有可用的实验配置
 declare -A RT_DETR_CONFIGS=(
     ["rt-detr-r18-dairv2x"]="cas_detr/configs/rtdetr_r18_enc1.yaml"
-    ["rt-detr-r18-dairv2x-plr2e5"]="cas_detr/configs/rtdetr_r18_enc1_pretrainedlr2e5.yaml"
     ["rt-detr-r18-uadetrac"]="cas_detr/configs/rtdetr_r18_uadetrac_enc1.yaml"
     ["rt-detr-r18-uadetrac-plr2e5"]="cas_detr/configs/rtdetr_r18_uadetrac_enc1_pretrainedlr2e5.yaml"
 )
