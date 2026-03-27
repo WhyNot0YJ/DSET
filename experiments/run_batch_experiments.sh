@@ -16,8 +16,8 @@ export OMP_NUM_THREADS=1
 # 使用方法：
 #   ./run_batch_experiments.sh                                 # 运行所有实验（完整epochs）
 #   ./run_batch_experiments.sh --test                          # 测试模式：运行所有配置，每个只跑2个epoch
-#   ./run_batch_experiments.sh --rt-detr                       # 只运行 RT-DETR（DAIR + UA-DETRAC，UA 含 plr2e5 对照，共 3 个配置）
-#   ./run_batch_experiments.sh --rt-detr-finetune              # 与 --rt-detr 相同（保留兼容）
+#   ./run_batch_experiments.sh --rt-detr                       # 只运行 RT-DETR（DAIR + UA-DETRAC，共 2 个配置）
+#   ./run_batch_experiments.sh --dairv2x --rt-detr             # 同上但只跑 DAIR-V2X（1 个 RT-DETR 配置）
 #   ./run_batch_experiments.sh --moe-rtdetr                    # 只运行MOE-RTDETR实验（2个配置）
 #   ./run_batch_experiments.sh --cas_detr                      # 只运行CaS_DETR实验（4个配置）
 #   ./run_batch_experiments.sh --yolov8                        # 只运行YOLOv8实验
@@ -36,7 +36,12 @@ export OMP_NUM_THREADS=1
 #   ./run_batch_experiments.sh --r18                           # 只运行ResNet-18实验
 #   ./run_batch_experiments.sh --custom cfg1.yaml cfg2.yaml    # 自定义配置列表
 #   ./run_batch_experiments.sh --keys rt-detr-r18 moe6-r18     # 使用内置键名选择
-#   ./run_batch_experiments.sh --dataset dairv2x,uadetrac       # YOLO配置按两个数据集维度运行
+#   ./run_batch_experiments.sh --dairv2x                       # 只保留 DAIR-V2X 维度（可叠 --rt-detr / --cas_detr 等）
+#   ./run_batch_experiments.sh --uadetrac                     # 只保留 UA-DETRAC 维度
+#   ./run_batch_experiments.sh --dataset dairv2x --rt-detr     # 同上：--dataset 与 --dairv2x 等价；可与 --rt-detr 任意顺序组合
+#   ./run_batch_experiments.sh --rt-detr --dataset dairv2x     # 同上
+#   ./run_batch_experiments.sh --dataset dairv2x --rtdetr      # --rtdetr 为 --rt-detr 别名（无连字符）
+#   ./run_batch_experiments.sh --dataset dairv2x,uadetrac     # 同传 --dairv2x --uadetrac（两者都选则不按数据集筛）
 #   ./run_batch_experiments.sh --select                        # 交互式选择待运行配置
 #   ./run_batch_experiments.sh --rerun-failed [LOG_DIR]        # 自动选择上次失败的实验
 #
@@ -69,7 +74,9 @@ FAILED_EXPERIMENTS=0
 SKIPPED_EXPERIMENTS=0
 TEST_MODE=false  # 测试模式标志
 SKIP_CONFIRM=false  # --yes：跳过「是否开始」确认，便于一键 / CI
-YOLO_DATASETS=("dairv2x")
+# --dairv2x / --uadetrac（或 --dataset）解析后写入；二者同时为 true 时不筛选
+SCOPE_DAIRV2X=false
+SCOPE_UADETRAC=false
 TOTAL_PLANNED_RUNS=0
 
 # 选择可用的 Python 解释器
@@ -100,11 +107,65 @@ log_warning() {
     echo -e "${YELLOW}[WARNING]${NC} $1"
 }
 
+# 根据路径与 NAME_TO_PATH 键判断是否属于 dairv2x / uadetrac；want_* 为 true 时表示当前筛选需要该侧
+_path_allowed_by_dataset_scope() {
+    local path="$1"
+    local want_dair="$2"
+    local want_ua="$3"
+    local is_ua=false
+    local is_dair=false
+    [[ "$path" == *uadetrac* ]] && is_ua=true
+    [[ "$path" == *dairv2x* ]] && is_dair=true
+    local cand
+    for cand in "${!NAME_TO_PATH[@]}"; do
+        [ "${NAME_TO_PATH[$cand]}" = "$path" ] || continue
+        [[ "$cand" == *uadetrac* ]] && is_ua=true
+        [[ "$cand" == *dairv2x* ]] && is_dair=true
+    done
+    if [ "$is_ua" = true ]; then
+        if [ "$want_ua" = true ]; then return 0; else return 1; fi
+    fi
+    if [ "$is_dair" = true ]; then
+        if [ "$want_dair" = true ]; then return 0; else return 1; fi
+    fi
+    if [ "$want_dair" = true ]; then return 0; else return 1; fi
+}
+
+apply_dataset_scope_filter_to_configs() {
+    if [ "$SCOPE_DAIRV2X" != true ] && [ "$SCOPE_UADETRAC" != true ]; then
+        return 0
+    fi
+    if [ "$SCOPE_DAIRV2X" = true ] && [ "$SCOPE_UADETRAC" = true ]; then
+        log_info "数据集: 已同时指定 DAIR-V2X 与 UA-DETRAC，不按数据集筛配置"
+        return 0
+    fi
+    local want_dair=false
+    local want_ua=false
+    [ "$SCOPE_DAIRV2X" = true ] && want_dair=true
+    [ "$SCOPE_UADETRAC" = true ] && want_ua=true
+    local before=${#CONFIGS_TO_RUN[@]}
+    local filtered=()
+    local p
+    for p in "${CONFIGS_TO_RUN[@]}"; do
+        if _path_allowed_by_dataset_scope "$p" "$want_dair" "$want_ua"; then
+            filtered+=("$p")
+        fi
+    done
+    CONFIGS_TO_RUN=("${filtered[@]}")
+    if [ "$SCOPE_DAIRV2X" = true ] && [ "$SCOPE_UADETRAC" != true ]; then
+        log_info "数据集筛选: 仅 DAIR-V2X（与 --rt-detr 等组合使用）"
+    elif [ "$SCOPE_UADETRAC" = true ] && [ "$SCOPE_DAIRV2X" != true ]; then
+        log_info "数据集筛选: 仅 UA-DETRAC"
+    fi
+    if [ "$before" -gt 0 ] && [ ${#CONFIGS_TO_RUN[@]} -eq 0 ]; then
+        log_warning "按数据集筛选后队列为空，请检查与实验类型开关（如 --rt-detr）是否匹配"
+    fi
+}
+
 # 定义所有可用的实验配置
 declare -A RT_DETR_CONFIGS=(
     ["rt-detr-r18-dairv2x"]="cas_detr/configs/rtdetr_r18_enc1.yaml"
     ["rt-detr-r18-uadetrac"]="cas_detr/configs/rtdetr_r18_uadetrac_enc1.yaml"
-    ["rt-detr-r18-uadetrac-plr2e5"]="cas_detr/configs/rtdetr_r18_uadetrac_enc1_pretrainedlr2e5.yaml"
 )
 
 declare -a CORE_EXPERIMENTS=(
@@ -293,6 +354,8 @@ CONFIGS_TO_RUN=()
 
 parse_arguments() {
     build_all_configs
+    SCOPE_DAIRV2X=false
+    SCOPE_UADETRAC=false
     
     # 首先检查特殊标志（--test 和 backbone选择）
     local args=("$@")
@@ -304,10 +367,19 @@ parse_arguments() {
     local has_k09=false
     local filtered_args=()
     
-    YOLO_DATASETS=()
     local idx=0
     while [ $idx -lt ${#args[@]} ]; do
         local arg="${args[$idx]}"
+        if [ "$arg" == "--dairv2x" ]; then
+            SCOPE_DAIRV2X=true
+            idx=$((idx + 1))
+            continue
+        fi
+        if [ "$arg" == "--uadetrac" ]; then
+            SCOPE_UADETRAC=true
+            idx=$((idx + 1))
+            continue
+        fi
         if [ "$arg" == "--test" ]; then
             has_test=true
             TEST_MODE=true
@@ -347,14 +419,18 @@ parse_arguments() {
         if [ "$arg" == "--dataset" ]; then
             local dataset_arg="${args[$((idx + 1))]}"
             if [ -z "$dataset_arg" ]; then
-                log_error "--dataset 需要提供值（可逗号分隔，如 dairv2x,uadetrac）"
+                log_error "--dataset 需要提供值（可逗号分隔，如 dairv2x 或 dairv2x,uadetrac）"
                 exit 1
             fi
             IFS=',' read -ra ds_items <<< "$dataset_arg"
             for ds in "${ds_items[@]}"; do
                 local cleaned="${ds//[[:space:]]/}"
-                if [ -n "$cleaned" ]; then
-                    YOLO_DATASETS+=("$cleaned")
+                if [ "$cleaned" = "dairv2x" ]; then
+                    SCOPE_DAIRV2X=true
+                elif [ "$cleaned" = "uadetrac" ]; then
+                    SCOPE_UADETRAC=true
+                elif [ -n "$cleaned" ]; then
+                    log_warning "忽略未知的数据集名（仅支持 dairv2x、uadetrac）: $cleaned"
                 fi
             done
             idx=$((idx + 2))
@@ -364,11 +440,10 @@ parse_arguments() {
         idx=$((idx + 1))
     done
 
-    if [ ${#YOLO_DATASETS[@]} -eq 0 ]; then
-        YOLO_DATASETS=("dairv2x")
+    if [ "$SCOPE_DAIRV2X" = true ] || [ "$SCOPE_UADETRAC" = true ]; then
+        log_info "数据集作用域已启用（--dataset / --dairv2x / --uadetrac），可与 --rt-detr、--cas_detr 等任意顺序组合"
     fi
-    log_info "YOLO数据集维度: $(IFS=','; echo "${YOLO_DATASETS[*]}")"
-    
+
     # 如果设置了测试模式，显示提示
     if [ "$has_test" = true ]; then
         log_info "测试模式：每个实验只跑2个epoch进行快速验证"
@@ -433,7 +508,14 @@ parse_arguments() {
     # 检查是否有--core选项（优先处理）
     for arg in "$@"; do
         if [ "$arg" == "--core" ]; then
-            CONFIGS_TO_RUN=("${CORE_EXPERIMENTS[@]}")
+            CONFIGS_TO_RUN=()
+            local _core_p
+            for _core_p in "${CORE_EXPERIMENTS[@]}"; do
+                if filter_config "$_core_p"; then
+                    CONFIGS_TO_RUN+=("$_core_p")
+                fi
+            done
+            apply_dataset_scope_filter_to_configs
             log_info "运行核心实验配置（CaS_DETR R18 DAIR）"
             return 0
         fi
@@ -451,7 +533,11 @@ parse_arguments() {
     
     for arg in "$@"; do
         case "$arg" in
-            --rt-detr|--rt-detr-finetune)
+            --rt-detr|--rtdetr)
+                has_rt_detr=true
+                ;;
+            --rt-detr-finetune)
+                log_warning "--rt-detr-finetune 已弃用（已无单独 finetune 配置），将按 --rt-detr 处理"
                 has_rt_detr=true
                 ;;
             --moe-rtdetr)
@@ -682,8 +768,7 @@ parse_arguments() {
         echo "使用方法："
         echo "  ./run_batch_experiments.sh                                 # 运行所有实验（完整epochs）"
         echo "  ./run_batch_experiments.sh --test                          # 测试模式：所有配置各跑2个epoch"
-        echo "  ./run_batch_experiments.sh --rt-detr                       # 只运行 RT-DETR（4 个配置，含 pretrained_lr=2e-5）"
-        echo "  ./run_batch_experiments.sh --rt-detr-finetune              # 同 --rt-detr（兼容旧参数）"
+        echo "  ./run_batch_experiments.sh --rt-detr                       # 只运行 RT-DETR（DAIR + UA-DETRAC）"
         echo "  ./run_batch_experiments.sh --moe-rtdetr                    # 只运行MOE-RTDETR（2个）"
         echo "  ./run_batch_experiments.sh --cas_detr                      # 只运行CaS_DETR（4个）"
         echo "  ./run_batch_experiments.sh --yolov8                        # 只运行YOLOv8"
@@ -710,12 +795,20 @@ parse_arguments() {
         echo "  ./run_batch_experiments.sh --core                          # 只运行核心实验（CaS_DETR R18 DAIR）"
         echo "  ./run_batch_experiments.sh --custom cfg1.yaml cfg2.yaml    # 指定配置文件路径"
         echo "  ./run_batch_experiments.sh --keys rt-detr-r18 moe6-r18     # 通过键名选择"
-        echo "  ./run_batch_experiments.sh --dataset dairv2x,uadetrac       # YOLO按多个数据集维度运行"
+        echo "  ./run_batch_experiments.sh --dairv2x                       # 数据集筛：仅 DAIR-V2X（可叠 --rt-detr 等）"
+        echo "  ./run_batch_experiments.sh --uadetrac                      # 数据集筛：仅 UA-DETRAC"
+        echo "  ./run_batch_experiments.sh --dataset dairv2x --rt-detr      # 推荐：数据集 + 实验类型（顺序任意；--rtdetr 同 --rt-detr）"
+        echo "  ./run_batch_experiments.sh --dataset dairv2x,uadetrac       # 同传 --dairv2x --uadetrac（不筛）"
         echo "  ./run_batch_experiments.sh --select                        # 交互式选择"
         echo "  ./run_batch_experiments.sh --rerun-failed [LOG_DIR]        # 重跑失败实验"
         echo "  ./run_batch_experiments.sh --yes --cas_detr                 # 非交互一键跑 CaS_DETR"
+        echo "  ./run_batch_experiments.sh --dairv2x --rt-detr              # 仅 DAIR-V2X 的 RT-DETR"
+        echo "  ./run_batch_experiments.sh --dataset dairv2x --rtdetr       # 同上（--dataset 写法）"
+        echo "  ./run_batch_experiments.sh --uadetrac --cas_detr            # 仅 UA-DETRAC 的 CaS_DETR"
         exit 1
     fi
+
+    apply_dataset_scope_filter_to_configs
 }
 
 # 运行单个实验
