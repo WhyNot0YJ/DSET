@@ -12,6 +12,14 @@ _experiments_root = Path(__file__).resolve().parent.parent
 if str(_experiments_root) not in sys.path:
     sys.path.insert(0, str(_experiments_root))
 
+_yolo_dir = Path(__file__).resolve().parent
+_external = _yolo_dir / "external"
+if _external.is_dir() and str(_external) not in sys.path:
+    sys.path.insert(0, str(_external))
+_yolox_repo = _external / "YOLOX"
+if _yolox_repo.is_dir() and str(_yolox_repo) not in sys.path:
+    sys.path.insert(0, str(_yolox_repo))
+
 from common.dataset_registry import (
     load_dataset_registry,
     resolve_dataset_profile,

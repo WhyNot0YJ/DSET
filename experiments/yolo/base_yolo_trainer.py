@@ -21,6 +21,16 @@ import shutil
 _experiments_root = Path(__file__).resolve().parent.parent
 if str(_experiments_root) not in sys.path:
     sys.path.insert(0, str(_experiments_root))
+
+# 本地 ``external/ultralytics`` 与 ``external/YOLOX``（非 site-packages）
+_yolo_dir = Path(__file__).resolve().parent
+_external = _yolo_dir / "external"
+if _external.is_dir() and str(_external) not in sys.path:
+    sys.path.insert(0, str(_external))
+_yolox_repo = _external / "YOLOX"
+if _yolox_repo.is_dir() and str(_yolox_repo) not in sys.path:
+    sys.path.insert(0, str(_yolox_repo))
+
 from common.vram_batch import (
     compute_vram_batch_adjustment,
     format_vram_batch_log,
@@ -489,6 +499,47 @@ class BaseYOLOTrainer(ABC):
 
         return out
 
+    def _get_kitti_eval_predictor(self, model):
+        """
+        Return (predictor, num_classes) for KITTI/scale eval.
+        Default: Ultralytics ``YOLO`` loaded from ``weights/best.pt``.
+        """
+        best_pt = self.log_dir / 'weights' / 'best.pt'
+        from ultralytics import YOLO as _YOLO
+        eval_model = _YOLO(str(best_pt)) if best_pt.exists() else model
+        nc = (
+            len(eval_model.names)
+            if eval_model is not None
+            and hasattr(eval_model, 'names')
+            and eval_model.names
+            else max(len(self.class_names), 1)
+        )
+        return eval_model, nc
+
+    def _predict_batch_kitti_eval(self, predictor, batch_paths, imgsz, device):
+        """Run batch inference for KITTI eval (Ultralytics API)."""
+        return predictor.predict(
+            source=[str(p) for p in batch_paths],
+            conf=0.01,
+            imgsz=imgsz,
+            device=device,
+            verbose=False,
+        )
+
+    def _benchmark_eval_predictor(self, eval_predictor) -> Optional[dict]:
+        """GFLOPs/FPS on the same weights used for KITTI eval (e.g. ``best.pt``)."""
+        return self._run_model_benchmark(eval_predictor)
+
+    def _optional_post_train_benchmark(self, model) -> Optional[dict]:
+        """After training: GFLOPs/FPS. Override for non-Ultralytics backends."""
+        if model is None:
+            return None
+        return self._run_model_benchmark(model)
+
+    def _can_run_kitti_eval_without_ultralytics_model(self) -> bool:
+        """If True, run KITTI/scale eval even when ``model`` is None (e.g. YOLOX)."""
+        return False
+
     def _evaluate_kitti_scale_after_training(self, model, bench_dict=None) -> dict:
         """
         训练结束后的 KITTI / multi-scale mAP：
@@ -542,20 +593,16 @@ class BaseYOLOTrainer(ABC):
             return {}
 
         # ── 2. Load best weights & benchmark（各 split 共用）──────────────
-        best_pt = self.log_dir / 'weights' / 'best.pt'
-        from ultralytics import YOLO as _YOLO
-        eval_model = _YOLO(str(best_pt)) if best_pt.exists() else model
+        eval_predictor, nc = self._get_kitti_eval_predictor(model)
+        if eval_predictor is None:
+            self.logger.warning("无可用评估权重/预测器，跳过 KITTI/scale 评估")
+            return {}
 
         device = self.misc_config.get('device', 'cuda')
         imgsz = self.training_config.get('imgsz', 640)
-        nc = (
-            len(eval_model.names)
-            if hasattr(eval_model, 'names') and eval_model.names
-            else max(len(self.class_names), 1)
-        )
 
-        if bench_dict is None and eval_model is not None:
-            bench_dict = self._run_model_benchmark(eval_model)
+        if bench_dict is None and eval_predictor is not None:
+            bench_dict = self._benchmark_eval_predictor(eval_predictor)
 
         model_name = self.model_config.get('model_name', f'yolov{self.VERSION}n')
         if model_name.endswith('.pt'):
@@ -619,12 +666,8 @@ class BaseYOLOTrainer(ABC):
                 BATCH = 32
                 for batch_start in range(0, len(eval_images), BATCH):
                     batch_paths = eval_images[batch_start: batch_start + BATCH]
-                    batch_results = eval_model.predict(
-                        source=[str(p) for p in batch_paths],
-                        conf=0.01,
-                        imgsz=imgsz,
-                        device=device,
-                        verbose=False,
+                    batch_results = self._predict_batch_kitti_eval(
+                        eval_predictor, batch_paths, imgsz, device
                     )
                     for i_in_batch, (result, img_path) in enumerate(
                         zip(batch_results, batch_paths)
@@ -827,9 +870,9 @@ class BaseYOLOTrainer(ABC):
         if best_model_path.exists():
             self.logger.info(f"✓ 最佳模型: {best_model_path}")
 
-        bench_dict = None
-        if model is not None:
-            bench_dict = self._run_model_benchmark(model)
+        bench_dict = self._optional_post_train_benchmark(model)
+        run_eval = model is not None or self._can_run_kitti_eval_without_ultralytics_model()
+        if run_eval:
             try:
                 self._evaluate_kitti_scale_after_training(model, bench_dict=bench_dict)
             except Exception as exc:

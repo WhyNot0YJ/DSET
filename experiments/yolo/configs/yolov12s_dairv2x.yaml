@@ -4,7 +4,7 @@ model:
 
 training:
   epochs: 100
-  batch_size: 16
+  batch_size: 32
   imgsz: 640
   
 data:

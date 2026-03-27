@@ -35,6 +35,14 @@ _experiments_root = Path(__file__).resolve().parent.parent
 if str(_experiments_root) not in sys.path:
     sys.path.insert(0, str(_experiments_root))
 
+_bm_yolo_dir = Path(__file__).resolve().parent
+_bm_ext = _bm_yolo_dir / "external"
+if _bm_ext.is_dir() and str(_bm_ext) not in sys.path:
+    sys.path.insert(0, str(_bm_ext))
+_bm_yolox = _bm_ext / "YOLOX"
+if _bm_yolox.is_dir() and str(_bm_yolox) not in sys.path:
+    sys.path.insert(0, str(_bm_yolox))
+
 from common.model_benchmark import (
     BenchmarkResult,
     benchmark_model,
@@ -176,6 +184,46 @@ def benchmark_yolo(
         warmup_iters=warmup_iters,
         measure_iters=measure_iters,
         use_fp16=use_fp16,
+        postprocess_fn=nms_fn,
+        includes_nms=True,
+    )
+
+
+def benchmark_yolox(
+    model: nn.Module,
+    exp,
+    imgsz: Union[int, List[int], Tuple[int, int]] = 640,
+    device: Optional[Union[str, torch.device]] = None,
+    model_name: Optional[str] = None,
+    warmup_iters: int = 50,
+    measure_iters: int = 200,
+) -> BenchmarkResult:
+    """
+    YOLOX：FPS/Latency 含 ``postprocess``（decode 已在 forward 内时由 head 完成；此处为 NMS）。
+
+    Args:
+        model: 已 ``eval()``、与训练一致的 YOLOX ``nn.Module``
+        exp: ``yolox.exp`` 的 Exp（提供 ``num_classes`` / ``test_conf`` / ``nmsthre``）
+    """
+    from yolox_predict import benchmark_yolox_forward_nms
+
+    name = model_name or "yolox"
+    if device is None:
+        try:
+            device = next(model.parameters()).device
+        except StopIteration:
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    nms_fn = benchmark_yolox_forward_nms(model, exp)
+
+    return benchmark_model(
+        model,
+        imgsz=imgsz,
+        device=device,
+        model_name=name,
+        warmup_iters=warmup_iters,
+        measure_iters=measure_iters,
+        use_fp16=False,
         postprocess_fn=nms_fn,
         includes_nms=True,
     )

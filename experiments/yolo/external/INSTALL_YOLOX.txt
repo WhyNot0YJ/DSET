@@ -1,0 +1,9 @@
+YOLOX (Megvii) is vendored at external/YOLOX/.
+
+Install (recommended):
+  cd experiments/yolo/external/YOLOX
+  python3 -m pip install -e .
+
+Dependencies include: torch, pycocotools, loguru, tabulate (see YOLOX/requirements.txt).
+
+Without pip install -e, `import yolox.tools.train` will fail; the setuptools layout maps `yolox.tools` to the `tools/` directory.
