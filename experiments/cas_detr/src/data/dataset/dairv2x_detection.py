@@ -18,7 +18,7 @@ from ...core import register
 from ..transforms import (
     RandomPhotometricDistort, RandomHorizontalFlip,
     ConvertBoxes, Normalize, SanitizeBoundingBoxes,
-    RandomZoomOut, RandomIoUCrop, ConvertPILImage, LetterboxResize,
+    RandomZoomOut, RandomIoUCrop, ConvertPILImage, build_square_input_transform,
 )
 
 __all__ = ['DAIRV2XDetection']
@@ -59,8 +59,8 @@ class DAIRV2XDetection(DetDataset):
         'zoom_out_enabled': True,
         'iou_crop_p': 0.8,
         'horizontal_flip_p': 0.5,
-        # 1920×1080 等宽屏：始终 letterbox（与 CocoFolder 一致）
-        'letterbox_fill': 0,
+        # letterbox 填充：与 configs 中 augmentation 统一为 114（COCO/YOLO 常用灰边）
+        'letterbox_fill': 114,
     }
     
     def __init__(self, data_root: str, split: str = "train", transforms=None, 
@@ -145,10 +145,7 @@ class DAIRV2XDetection(DetDataset):
         zoom_out_enabled = self.aug_config['zoom_out_enabled']
         iou_crop_p = self.aug_config['iou_crop_p']
         horizontal_flip_p = self.aug_config['horizontal_flip_p']
-        letterbox_fill = int(self.aug_config.get('letterbox_fill', 0))
-
-        def _geom_to_square():
-            return LetterboxResize(size=target_size, fill=letterbox_fill, antialias=True)
+        to_square = build_square_input_transform(self.aug_config)
         
         # 逻辑: 根据当前 epoch 切换增强策略
         if self.split == 'train':
@@ -156,7 +153,7 @@ class DAIRV2XDetection(DetDataset):
             if self.epoch >= self.stop_epoch:
                 # 阶段 2: 仅保留基础 Resize 和 Normalize
                 self.transforms = T.Compose([
-                    _geom_to_square(),
+                    to_square,
                     ConvertPILImage(),
                     T.ToDtype(torch.float32, scale=True),
                     Normalize(mean=normalize_mean, std=normalize_std),
@@ -184,7 +181,7 @@ class DAIRV2XDetection(DetDataset):
                 
                 # 6-10. Resize 和格式转换
                 transforms_list.extend([
-                    _geom_to_square(),
+                    to_square,
                     ConvertPILImage(),
                     T.ToDtype(torch.float32, scale=True),
                     Normalize(mean=normalize_mean, std=normalize_std),
@@ -195,7 +192,7 @@ class DAIRV2XDetection(DetDataset):
         else:
             # 验证/推理配置
             self.transforms = T.Compose([
-                _geom_to_square(),
+                to_square,
                 ConvertPILImage(),
                 T.ToDtype(torch.float32, scale=True),
                 Normalize(mean=normalize_mean, std=normalize_std),

@@ -1,4 +1,4 @@
-# CaS-DETR 配置（DAIR-V2X）
+# 与 cas_detr6_r18_ratio0.3_enc1.yaml 对应；augmentation.resize.mode=resize（直接缩放到方形，无 letterbox pad）
 # 与 cas_detr6_r18_ratio0.5.yaml 一致，仅 encoder.use_encoder_idx 为 [1]（仅 S4 / stride 16 进 Transformer Encoder）
 model:
   num_experts: 6
@@ -86,8 +86,7 @@ augmentation:
   horizontal_flip_p: 0.5
   letterbox_fill: 114
   resize:
-    mode: letterbox
-    letterbox_fill: 114
+    mode: resize
 checkpoint:
   resume_mode: auto
   log_dir: logs

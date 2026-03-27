@@ -23,6 +23,23 @@ from src.data.transforms.letterbox_geom import (
 )
 
 
+def _normalize_resize_mode(mode: str) -> str:
+    m = str(mode or "letterbox").lower()
+    if m in ("stretch", "direct", "warp", "resize"):
+        return "stretch"
+    if m in ("letterbox", "letter_box", "lb"):
+        return "letterbox"
+    raise ValueError(f"resize_mode must be 'letterbox' or 'stretch', got {mode!r}")
+
+
+def resize_mode_from_augmentation_config(config_path: str) -> str:
+    """Read ``augmentation.resize.mode`` from YAML (default letterbox)."""
+    with open(config_path, "r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
+    r = (cfg.get("augmentation") or {}).get("resize") or {}
+    return _normalize_resize_mode(str(r.get("mode", "letterbox")))
+
+
 try:
     from tqdm import tqdm
     HAS_TQDM = True
@@ -148,11 +165,12 @@ def load_model(config_path: str, checkpoint_path: str, device: str = "cuda"):
 def inference_from_preprocessed_image(img_tensor, model, postprocessor, orig_image_path,
                                       conf_threshold=0.3, target_size=640, device='cuda',
                                       class_names=None, colors=None, verbose=False,
-                                      target_dict=None):
+                                      target_dict=None, resize_mode: str = 'letterbox'):
     """
     供 Trainer 调用的推理接口。
-    img_tensor: [1, 3, H, W] 已 letterbox 归一化（与验证 DataLoader 一致）。
+    img_tensor: [1, 3, H, W] 已按与验证 DataLoader 相同方式归一化。
     target_dict: 可选，来自 collate 的 target，用于精确 letterbox meta（推荐）。
+    resize_mode: 当 ``target_dict`` 为 None 时，用于推断几何（应与训练 ``augmentation.resize.mode`` 一致）。
     """
     orig_image = cv2.imread(str(orig_image_path))
     if orig_image is None:
@@ -164,18 +182,33 @@ def inference_from_preprocessed_image(img_tensor, model, postprocessor, orig_ima
     if target_dict is not None:
         meta = build_letterbox_meta_for_postprocess(target_dict, input_h, input_w)
     else:
-        L = compute_letterbox_layout(orig_w, orig_h, max(input_h, input_w))
-        meta = {
-            'orig_size': torch.tensor([[orig_h, orig_w]]),
-            'scale': L['scale'],
-            'pad_left': float(L['pad_left']),
-            'pad_top': float(L['pad_top']),
-            'new_w': int(L['new_w']),
-            'new_h': int(L['new_h']),
-            'padded_h': input_h,
-            'padded_w': input_w,
-            'letterbox_uniform': True,
-        }
+        rm = _normalize_resize_mode(resize_mode)
+        if rm == "stretch":
+            meta = {
+                'orig_size': torch.tensor([[orig_h, orig_w]], dtype=torch.float32),
+                'padded_h': input_h,
+                'padded_w': input_w,
+                'letterbox_uniform': False,
+                'scale_h': float(input_h) / float(orig_h) if orig_h > 0 else 1.0,
+                'scale_w': float(input_w) / float(orig_w) if orig_w > 0 else 1.0,
+                'pad_left': 0.0,
+                'pad_top': 0.0,
+                'new_h': input_h,
+                'new_w': input_w,
+            }
+        else:
+            L = compute_letterbox_layout(orig_w, orig_h, max(input_h, input_w))
+            meta = {
+                'orig_size': torch.tensor([[orig_h, orig_w]]),
+                'scale': L['scale'],
+                'pad_left': float(L['pad_left']),
+                'pad_top': float(L['pad_top']),
+                'new_w': int(L['new_w']),
+                'new_h': int(L['new_h']),
+                'padded_h': input_h,
+                'padded_w': input_w,
+                'letterbox_uniform': True,
+            }
     
     # 推理
     with torch.no_grad():
@@ -205,9 +238,14 @@ def inference_from_preprocessed_image(img_tensor, model, postprocessor, orig_ima
     return result_image
 
 
-def preprocess_image(image_path: str, target_size: int = 640, letterbox_fill: int = 0):
+def preprocess_image(
+    image_path: str,
+    target_size: int = 640,
+    letterbox_fill: int = 0,
+    resize_mode: str = "letterbox",
+):
     """
-    预处理图像：与训练 ``LetterboxResize`` 一致 — 等比缩放、居中 pad、ImageNet 归一化。
+    预处理图像：与训练时 ``build_square_input_transform`` 一致（letterbox 或 stretch）、ImageNet 归一化。
     """
     try:
         image_pil = Image.open(str(image_path)).convert("RGB")
@@ -215,13 +253,34 @@ def preprocess_image(image_path: str, target_size: int = 640, letterbox_fill: in
         raise ValueError(f"无法读取图像: {image_path}, 错误: {e}")
 
     orig_w, orig_h = image_pil.size
-    L = compute_letterbox_layout(orig_w, orig_h, target_size)
-
-    resized_pil = image_pil.resize((L["new_w"], L["new_h"]), resample=Image.BILINEAR)
-    image_tensor = T.functional.to_tensor(resized_pil)
-
     mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
     std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+    rm = _normalize_resize_mode(resize_mode)
+
+    image_bgr_vis = cv2.cvtColor(np.array(image_pil), cv2.COLOR_RGB2BGR)
+
+    if rm == "stretch":
+        resized_pil = image_pil.resize((target_size, target_size), resample=Image.BILINEAR)
+        image_tensor = T.functional.to_tensor(resized_pil)
+        image_tensor = (image_tensor - mean) / std
+        img_input = image_tensor.unsqueeze(0)
+        meta = {
+            "orig_size": torch.tensor([[orig_h, orig_w]]),
+            "padded_h": target_size,
+            "padded_w": target_size,
+            "letterbox_uniform": False,
+            "scale_h": float(target_size) / float(orig_h) if orig_h > 0 else 1.0,
+            "scale_w": float(target_size) / float(orig_w) if orig_w > 0 else 1.0,
+            "pad_left": 0.0,
+            "pad_top": 0.0,
+            "new_h": target_size,
+            "new_w": target_size,
+        }
+        return img_input, image_bgr_vis, meta
+
+    L = compute_letterbox_layout(orig_w, orig_h, target_size)
+    resized_pil = image_pil.resize((L["new_w"], L["new_h"]), resample=Image.BILINEAR)
+    image_tensor = T.functional.to_tensor(resized_pil)
     fill_v = float(letterbox_fill) / 255.0
     padded = F_nn.pad(
         image_tensor,
@@ -230,10 +289,7 @@ def preprocess_image(image_path: str, target_size: int = 640, letterbox_fill: in
         value=fill_v,
     )
     image_tensor = (padded - mean) / std
-
     img_input = image_tensor.unsqueeze(0)
-
-    image_bgr_vis = cv2.cvtColor(np.array(image_pil), cv2.COLOR_RGB2BGR)
 
     meta = {
         "orig_size": torch.tensor([[orig_h, orig_w]]),
@@ -436,11 +492,14 @@ def load_gt_boxes(json_path, class_names_list):
 
 
 def process_single_image(image_path: Path, model, postprocessor, output_dir: Path, 
-                        conf_threshold: float, device: str, target_size: int = 640):
+                        conf_threshold: float, device: str, target_size: int = 640,
+                        resize_mode: str = "letterbox", letterbox_fill: int = 0):
     """处理单张图像"""
     try:
         # 预处理图像
-        img_tensor, orig_image, meta = preprocess_image(str(image_path), target_size)
+        img_tensor, orig_image, meta = preprocess_image(
+            str(image_path), target_size, letterbox_fill=letterbox_fill, resize_mode=resize_mode
+        )
         img_tensor = img_tensor.to(device)
         
         # 推理
@@ -484,8 +543,22 @@ def batch_inference(image_dir: str, config_path: str, checkpoint_path: str,
                    output_dir: str = None, conf_threshold: float = 0.3, 
                    device: str = "cuda", max_images: int = None,
                    target_size: int = 640,
-                   image_extensions: tuple = ('.jpg', '.jpeg', '.png', '.bmp')):
+                   image_extensions: tuple = ('.jpg', '.jpeg', '.png', '.bmp'),
+                   resize_mode: str = None,
+                   letterbox_fill: int = None):
     """批量推理"""
+    if resize_mode is None:
+        resize_mode = resize_mode_from_augmentation_config(config_path)
+    else:
+        resize_mode = _normalize_resize_mode(resize_mode)
+
+    if letterbox_fill is None:
+        with open(config_path, "r", encoding="utf-8") as f:
+            _cfg = yaml.safe_load(f)
+        _aug = _cfg.get("augmentation") or {}
+        _r = _aug.get("resize") or {}
+        letterbox_fill = int(_r.get("letterbox_fill", _aug.get("letterbox_fill", 0)))
+
     # 加载模型
     print(f"加载模型: {checkpoint_path}")
     model, postprocessor = load_model(config_path, checkpoint_path, device)
@@ -503,7 +576,7 @@ def batch_inference(image_dir: str, config_path: str, checkpoint_path: str,
     
     output_dir.mkdir(parents=True, exist_ok=True)
     print(f"输出目录: {output_dir}")
-    print(f"推理尺寸 (Max Size): {target_size}")
+    print(f"推理尺寸: {target_size}, resize_mode={resize_mode}")
     
     # 获取所有图像文件
     image_files = []
@@ -531,7 +604,8 @@ def batch_inference(image_dir: str, config_path: str, checkpoint_path: str,
     for image_path in tqdm(image_files, desc="处理图像"):
         num_detections, success, error = process_single_image(
             image_path, model, postprocessor, output_dir, 
-            conf_threshold, device, target_size
+            conf_threshold, device, target_size,
+            resize_mode=resize_mode, letterbox_fill=letterbox_fill,
         )
         
         if success:
@@ -572,7 +646,20 @@ if __name__ == "__main__":
     parser.add_argument("--max_images", type=int, default=None,
                        help="最大处理图像数量（默认：处理所有图像）")
     parser.add_argument("--target_size", type=int, default=640,
-                       help="推理图像尺寸（长边限制，默认640）")
+                       help="推理方形边长（默认 640，与 target_size 对齐）")
+    parser.add_argument(
+        "--resize_mode",
+        type=str,
+        default=None,
+        choices=["letterbox", "stretch", "resize"],
+        help="覆盖配置文件：letterbox | stretch | resize（resize 与 stretch 等价）；默认读 YAML",
+    )
+    parser.add_argument(
+        "--letterbox_fill",
+        type=int,
+        default=None,
+        help="letterbox 填充灰度 0-255；默认读取 augmentation.resize.letterbox_fill 或 letterbox_fill",
+    )
     
     args = parser.parse_args()
     
@@ -584,5 +671,7 @@ if __name__ == "__main__":
         args.conf,
         args.device,
         args.max_images,
-        args.target_size
+        args.target_size,
+        resize_mode=args.resize_mode,
+        letterbox_fill=args.letterbox_fill,
     )

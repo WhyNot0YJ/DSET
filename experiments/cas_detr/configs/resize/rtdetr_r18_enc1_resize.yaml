@@ -1,13 +1,9 @@
-# CaS-DETR 配置（DAIR-V2X）
-# 与 cas_detr6_r18_ratio0.5.yaml 一致，仅 encoder.use_encoder_idx 为 [1]（仅 S4 / stride 16 进 Transformer Encoder）
+# 与 rtdetr_r18_enc1.yaml 对应；augmentation.resize.mode=resize（直接缩放到方形，无 letterbox pad）
 model:
-  num_experts: 6
-  top_k: 3
-  moe_noise_std: 0.1
   backbone: presnet18
   ablation:
-    enable_cas_predictor: true
-    enable_decoder_moe: true
+    enable_cas_predictor: false
+    enable_decoder_moe: false
   encoder:
     use_encoder_idx:
     - 1
@@ -23,8 +19,8 @@ model:
   decoder_hidden_dim: 256
   num_queries: 300
   cas_detr:
-    token_keep_ratio: 0.3
-    use_cass: true
+    token_keep_ratio: 1.0
+    use_cass: false
     cass_loss_weight: 0.05
     cass_expansion_ratio: 0.8
     cass_min_size: 1.0
@@ -45,11 +41,8 @@ training:
   scheduler: cosine
   early_stopping_patience: 20
   early_stopping_metric: mAP_0.5_0.95
-
   seed: 42
   deterministic: false
-  decoder_moe_balance_weight: 0.01
-  moe_balance_warmup_epochs: 0
   eval_schedule:
     - until_epoch: 50
       every: 10
@@ -86,8 +79,7 @@ augmentation:
   horizontal_flip_p: 0.5
   letterbox_fill: 114
   resize:
-    mode: letterbox
-    letterbox_fill: 114
+    mode: resize
 checkpoint:
   resume_mode: auto
   log_dir: logs

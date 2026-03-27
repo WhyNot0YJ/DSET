@@ -19,6 +19,7 @@ Modes:
 
 import sys
 import argparse
+import yaml
 import cv2
 import numpy as np
 import torch
@@ -34,9 +35,13 @@ if str(project_root.parent) not in sys.path:
 
 # Import from batch_inference
 try:
-    from batch_inference import load_model, preprocess_image
+    from batch_inference import load_model, preprocess_image, resize_mode_from_augmentation_config
 except ImportError:
-    from experiments.cas_detr.batch_inference import load_model, preprocess_image
+    from experiments.cas_detr.batch_inference import (
+        load_model,
+        preprocess_image,
+        resize_mode_from_augmentation_config,
+    )
 
 from src.data.transforms.letterbox_geom import align_feature_map_to_original_np
 
@@ -124,7 +129,16 @@ def visualize_heatmap(image, scores, alpha=0.6):
     return output
 
 
-def run_visualization(model, image_path, device='cuda', output_dir=None, target_size=640, mode='teaser'):
+def run_visualization(
+    model,
+    image_path,
+    device='cuda',
+    output_dir=None,
+    target_size=640,
+    mode='teaser',
+    resize_mode='letterbox',
+    letterbox_fill=0,
+):
     """
     Main visualization routine.
     """
@@ -134,7 +148,12 @@ def run_visualization(model, image_path, device='cuda', output_dir=None, target_
     if orig_image is None:
         raise ValueError(f"Failed to read image: {image_path}")
     
-    img_tensor, _, meta = preprocess_image(str(image_path), target_size=target_size)
+    img_tensor, _, meta = preprocess_image(
+        str(image_path),
+        target_size=target_size,
+        letterbox_fill=letterbox_fill,
+        resize_mode=resize_mode,
+    )
     img_tensor = img_tensor.to(device)
     
     # Dimensions for aligning mask back to original image (crop padding)
@@ -419,6 +438,20 @@ if __name__ == "__main__":
     
     print(f"Initializing model for mode: {args.mode}...")
     model, _ = load_model(args.config, args.checkpoint, args.device)
-    
-    run_visualization(model, args.image, device=args.device, output_dir=args.output_dir, 
-                     target_size=args.target_size, mode=args.mode)
+
+    with open(args.config, "r", encoding="utf-8") as f:
+        _cfg = yaml.safe_load(f)
+    _aug = _cfg.get("augmentation") or {}
+    _r = _aug.get("resize") or {}
+    _lb_fill = int(_r.get("letterbox_fill", _aug.get("letterbox_fill", 0)))
+
+    run_visualization(
+        model,
+        args.image,
+        device=args.device,
+        output_dir=args.output_dir,
+        target_size=args.target_size,
+        mode=args.mode,
+        resize_mode=resize_mode_from_augmentation_config(args.config),
+        letterbox_fill=_lb_fill,
+    )

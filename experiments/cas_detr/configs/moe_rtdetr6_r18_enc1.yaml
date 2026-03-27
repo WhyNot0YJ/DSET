@@ -82,6 +82,10 @@ augmentation:
   zoom_out_enabled: false
   iou_crop_p: 0
   horizontal_flip_p: 0.5
+  letterbox_fill: 114
+  resize:
+    mode: letterbox
+    letterbox_fill: 114
 checkpoint:
   resume_mode: auto
   log_dir: logs
