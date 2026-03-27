@@ -53,8 +53,8 @@ venv.bak/
 ehthumbs.db
 Thumbs.db
 
-# Datasets
-datasets/
+# Datasets（仅忽略仓库根下 datasets/，避免误伤如 YOLOX 的 yolox/data/datasets/）
+/datasets/
 /data/
 
 # Checkpoints

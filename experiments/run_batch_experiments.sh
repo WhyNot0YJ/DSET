@@ -25,6 +25,7 @@ export OMP_NUM_THREADS=1
 #   ./run_batch_experiments.sh --yolov11                       # 只运行YOLOv11实验
 #   ./run_batch_experiments.sh --yolov12                       # 只运行YOLOv12实验
 #   ./run_batch_experiments.sh --yolox                         # 只运行 YOLOX（Megvii）实验
+#   ./run_batch_experiments.sh --fasterrcnn                    # 只运行 torchvision Faster R-CNN（DAIR + UA-DETRAC）
 #   ./run_batch_experiments.sh --deformable-detr               # 只运行Deformable-DETR实验
 #   ./run_batch_experiments.sh --test --rt-detr                # 测试模式只运行RT-DETR
 #   ./run_batch_experiments.sh --test --moe-rtdetr             # 测试模式只运行MOE-RTDETR
@@ -34,6 +35,7 @@ export OMP_NUM_THREADS=1
 #   ./run_batch_experiments.sh --test --yolov11                # 测试模式只运行YOLOv11
 #   ./run_batch_experiments.sh --test --yolov12                # 测试模式只运行YOLOv12
 #   ./run_batch_experiments.sh --test --yolox                  # 测试模式只运行 YOLOX
+#   ./run_batch_experiments.sh --test --fasterrcnn             # 测试模式只运行 Faster R-CNN
 #   ./run_batch_experiments.sh --test --deformable-detr        # 测试模式只运行Deformable-DETR
 #   ./run_batch_experiments.sh --r18                           # 只运行ResNet-18实验
 #   ./run_batch_experiments.sh --custom cfg1.yaml cfg2.yaml    # 自定义配置列表
@@ -219,6 +221,11 @@ declare -A YOLOX_CONFIGS=(
     ["yoloxs-uadetrac"]="yolo/configs/yoloxs_uadetrac.yaml"
 )
 
+declare -A FASTER_RCNN_CONFIGS=(
+    ["fasterrcnn-resnet50-dairv2x"]="yolo/configs/fasterrcnn_resnet50_dairv2x.yaml"
+    ["fasterrcnn-resnet50-uadetrac"]="yolo/configs/fasterrcnn_resnet50_uadetrac.yaml"
+)
+
 declare -A DEFORMABLE_DETR_CONFIGS=(
     ["deformable-detr-r18"]="deformable-detr/train_deformable_r18.py"
 )
@@ -288,6 +295,14 @@ build_all_configs() {
     done
     for key in "${!YOLOX_CONFIGS[@]}"; do
         local p="${YOLOX_CONFIGS[$key]}"
+        all_configs_paths+=("$p")
+        local b
+        b=$(basename "$p" .yaml)
+        NAME_TO_PATH["$key"]="$p"
+        NAME_TO_PATH["$b"]="$p"
+    done
+    for key in "${!FASTER_RCNN_CONFIGS[@]}"; do
+        local p="${FASTER_RCNN_CONFIGS[$key]}"
         all_configs_paths+=("$p")
         local b
         b=$(basename "$p" .yaml)
@@ -545,6 +560,7 @@ parse_arguments() {
     local has_yolov11=false
     local has_yolov12=false
     local has_yolox=false
+    local has_fasterrcnn=false
     local has_deformable_detr=false
     
     for arg in "$@"; do
@@ -577,6 +593,9 @@ parse_arguments() {
             --yolox)
                 has_yolox=true
                 ;;
+            --fasterrcnn)
+                has_fasterrcnn=true
+                ;;
             --deformable-detr)
                 has_deformable_detr=true
                 ;;
@@ -584,7 +603,7 @@ parse_arguments() {
     done
     
     # 如果指定了实验类型，只运行指定的类型（支持多个）
-    if [ "$has_rt_detr" = true ] || [ "$has_moe_rtdetr" = true ] || [ "$has_cas_detr" = true ] || [ "$has_yolov8" = true ] || [ "$has_yolov10" = true ] || [ "$has_yolov11" = true ] || [ "$has_yolov12" = true ] || [ "$has_yolox" = true ] || [ "$has_deformable_detr" = true ]; then
+    if [ "$has_rt_detr" = true ] || [ "$has_moe_rtdetr" = true ] || [ "$has_cas_detr" = true ] || [ "$has_yolov8" = true ] || [ "$has_yolov10" = true ] || [ "$has_yolov11" = true ] || [ "$has_yolov12" = true ] || [ "$has_yolox" = true ] || [ "$has_fasterrcnn" = true ] || [ "$has_deformable_detr" = true ]; then
         # 显示将要运行的类型
         local selected_types=()
         [ "$has_rt_detr" = true ] && selected_types+=("RT-DETR")
@@ -595,6 +614,7 @@ parse_arguments() {
         [ "$has_yolov11" = true ] && selected_types+=("YOLOv11")
         [ "$has_yolov12" = true ] && selected_types+=("YOLOv12")
         [ "$has_yolox" = true ] && selected_types+=("YOLOX")
+        [ "$has_fasterrcnn" = true ] && selected_types+=("FasterRCNN")
         [ "$has_deformable_detr" = true ] && selected_types+=("Deformable-DETR")
         local types_str=$(IFS='+'; echo "${selected_types[*]}")
         if [ "$has_test" = true ]; then
@@ -670,6 +690,13 @@ parse_arguments() {
             done
         fi
 
+        if [ "$has_fasterrcnn" = true ]; then
+            for key in $(printf '%s\n' "${!FASTER_RCNN_CONFIGS[@]}" | sort); do
+                local p="${FASTER_RCNN_CONFIGS[$key]}"
+                CONFIGS_TO_RUN+=("$p")
+            done
+        fi
+
         if [ "$has_deformable_detr" = true ]; then
             for key in $(printf '%s\n' "${!DEFORMABLE_DETR_CONFIGS[@]}" | sort); do
                 local p="${DEFORMABLE_DETR_CONFIGS[$key]}"
@@ -730,6 +757,11 @@ parse_arguments() {
         # YOLOX 实验
         for key in $(printf '%s\n' "${!YOLOX_CONFIGS[@]}" | sort); do
             local p="${YOLOX_CONFIGS[$key]}"
+            CONFIGS_TO_RUN+=("$p")
+        done
+        # torchvision Faster R-CNN（对照）
+        for key in $(printf '%s\n' "${!FASTER_RCNN_CONFIGS[@]}" | sort); do
+            local p="${FASTER_RCNN_CONFIGS[$key]}"
             CONFIGS_TO_RUN+=("$p")
         done
         # Deformable-DETR实验
@@ -808,6 +840,7 @@ parse_arguments() {
         echo "  ./run_batch_experiments.sh --yolov11                       # 只运行YOLOv11"
         echo "  ./run_batch_experiments.sh --yolov12                       # 只运行YOLOv12"
         echo "  ./run_batch_experiments.sh --yolox                         # 只运行 YOLOX"
+        echo "  ./run_batch_experiments.sh --fasterrcnn                    # 只运行 torchvision Faster R-CNN"
         echo "  ./run_batch_experiments.sh --deformable-detr               # 只运行Deformable-DETR"
         echo "  ./run_batch_experiments.sh --test --rt-detr                # 测试模式只运行RT-DETR"
         echo "  ./run_batch_experiments.sh --test --moe-rtdetr             # 测试模式只运行MOE-RTDETR"
@@ -817,6 +850,7 @@ parse_arguments() {
         echo "  ./run_batch_experiments.sh --test --yolov11                # 测试模式只运行YOLOv11"
         echo "  ./run_batch_experiments.sh --test --yolov12                # 测试模式只运行YOLOv12"
         echo "  ./run_batch_experiments.sh --test --yolox                  # 测试模式只运行 YOLOX"
+        echo "  ./run_batch_experiments.sh --test --fasterrcnn             # 测试模式只运行 Faster R-CNN"
         echo "  ./run_batch_experiments.sh --test --deformable-detr        # 测试模式只运行Deformable-DETR"
         echo "  ./run_batch_experiments.sh --rt-detr --moe-rtdetr --cas_detr   # 运行多个实验类型（可叠加）"
         echo "  ./run_batch_experiments.sh --test --rt-detr --cas_detr          # 测试模式运行多个类型"
@@ -900,6 +934,10 @@ run_single_experiment() {
         TRAIN_SCRIPT="yolo/train_yolox.py"
         WORK_DIR="yolo"
         YOLO_VERSION=""
+    elif [[ "$exp_name" == fasterrcnn* ]]; then
+        TRAIN_SCRIPT="yolo/train_fasterrcnn.py"
+        WORK_DIR="yolo"
+        YOLO_VERSION=""
     elif [[ "$exp_dir" == *"cas_detr"* ]]; then
         TRAIN_SCRIPT="cas_detr/train.py"
         WORK_DIR="cas_detr"
@@ -940,6 +978,14 @@ run_single_experiment() {
         "$PYTHON_BIN" train_yolox.py --config "../$config_path" --epochs 2
     elif [[ "$TRAIN_SCRIPT" == *train_yolox.py* ]]; then
         "$PYTHON_BIN" train_yolox.py --config "../$config_path"
+    elif [[ "$exp_name" == fasterrcnn* ]] && [ "$TEST_MODE" = true ]; then
+        local FRCNN_DS="dairv2x"
+        [[ "$exp_name" == *uadetrac* ]] && FRCNN_DS="uadetrac"
+        "$PYTHON_BIN" train_fasterrcnn.py --config "../$config_path" --dataset "$FRCNN_DS" --epochs 2
+    elif [[ "$exp_name" == fasterrcnn* ]]; then
+        local FRCNN_DS="dairv2x"
+        [[ "$exp_name" == *uadetrac* ]] && FRCNN_DS="uadetrac"
+        "$PYTHON_BIN" train_fasterrcnn.py --config "../$config_path" --dataset "$FRCNN_DS"
     elif [ -n "$YOLO_VERSION" ] && [ "$TEST_MODE" = true ]; then
         "$PYTHON_BIN" train.py --version "$YOLO_VERSION" --config "../$config_path" --epochs 2
     elif [ -n "$YOLO_VERSION" ]; then

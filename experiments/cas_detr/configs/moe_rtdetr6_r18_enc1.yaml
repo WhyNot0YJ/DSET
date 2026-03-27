@@ -63,13 +63,7 @@ augmentation:
   target_size: 640
   stop_epoch: 21
   scales:
-    - 576
-    - 608
     - 640
-    - 640
-    - 640
-    - 672
-    - 704
   normalize_mean:
     - 0.485
     - 0.456

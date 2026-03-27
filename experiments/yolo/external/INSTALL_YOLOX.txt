@@ -7,3 +7,8 @@ Install (recommended):
 Dependencies include: torch, pycocotools, loguru, tabulate (see YOLOX/requirements.txt).
 
 Without pip install -e, `import yolox.tools.train` will fail; the setuptools layout maps `yolox.tools` to the `tools/` directory.
+
+Val mAP uses pycocotools COCOeval by default (no JIT). For the faster C++ COCOeval,
+install a toolchain (`apt install build-essential`) and set:
+  export YOLOX_USE_FAST_COCO_EVAL=1
+See yolox/evaluators/coco_evaluator.py.

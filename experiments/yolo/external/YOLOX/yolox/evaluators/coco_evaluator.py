@@ -6,6 +6,7 @@ import contextlib
 import io
 import itertools
 import json
+import os
 import tempfile
 import time
 from collections import ChainMap, defaultdict
@@ -290,14 +291,32 @@ class COCOEvaluator:
                 _, tmp = tempfile.mkstemp()
                 json.dump(data_dict, open(tmp, "w"))
                 cocoDt = cocoGt.loadRes(tmp)
-            try:
-                from yolox.layers import COCOeval_opt as COCOeval
-            except ImportError:
-                from pycocotools.cocoeval import COCOeval
 
-                logger.warning("Use standard COCOeval.")
+            from pycocotools.cocoeval import COCOeval as COCOeval_std
 
-            cocoEval = COCOeval(cocoGt, cocoDt, annType[1])
+            # 默认使用 pycocotools 纯 Python COCOeval，避免每次验证都尝试 JIT 编译
+            # fast_cocoeval（无 g++ 时会刷屏报错）。需要 C++ 加速时再显式开启：
+            #   export YOLOX_USE_FAST_COCO_EVAL=1
+            # 并安装 build-essential。
+            cocoEval = None
+            _use_fast = os.environ.get("YOLOX_USE_FAST_COCO_EVAL", "").lower() in (
+                "1",
+                "true",
+                "yes",
+            )
+            if _use_fast:
+                try:
+                    from yolox.layers import COCOeval_opt
+
+                    cocoEval = COCOeval_opt(cocoGt, cocoDt, annType[1])
+                except Exception as exc:
+                    logger.warning(
+                        "Fast COCOeval (C++ extension) failed: {}. "
+                        "Falling back to pycocotools.cocoeval.COCOeval.",
+                        exc,
+                    )
+            if cocoEval is None:
+                cocoEval = COCOeval_std(cocoGt, cocoDt, annType[1])
             cocoEval.evaluate()
             cocoEval.accumulate()
             redirect_string = io.StringIO()
