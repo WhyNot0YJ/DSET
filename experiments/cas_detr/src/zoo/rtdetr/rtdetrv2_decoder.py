@@ -664,9 +664,9 @@ class RTDETRTransformerv2(nn.Module):
             moe_load_balance_loss = self.get_moe_load_balance_loss()
             out['moe_load_balance_loss'] = moe_load_balance_loss
 
-            if dn_meta is not None:
-                out['dn_aux_outputs'] = self._set_aux_loss(dn_out_logits, dn_out_bboxes)
-                out['dn_meta'] = dn_meta
+        if self.training and dn_meta is not None:
+            out['dn_aux_outputs'] = self._set_aux_loss(dn_out_logits, dn_out_bboxes)
+            out['dn_meta'] = dn_meta
 
         return out
 

@@ -2723,10 +2723,12 @@ class CaS_DETRTrainer:
         self.logger.info(f"开始训练 {epochs} epochs")
         self.logger.info(f"✓ 梯度裁剪: max_norm={self.clip_max_norm}")
         tok_first = getattr(self, 'token_visualization_first_epochs', 5)
-        if tok_first > 0:
+        if tok_first > 0 and getattr(self.model, 'enable_cas_predictor', False):
             self.logger.info(
                 f"✓ Token 热力图: 前 {tok_first} 个 epoch 各保存一次（epoch=0..{tok_first - 1} 结束时）"
             )
+        elif tok_first > 0:
+            self.logger.info("✓ Token 热力图: 已跳过（CasPredictor 未启用，RTDETR 无 token importance heatmap）")
         eval_sched = self.config.get("training", {}).get("eval_schedule")
         self.logger.info(f"✓ 验证策略: {describe_eval_schedule(eval_sched)}")
 
@@ -2865,7 +2867,7 @@ class CaS_DETRTrainer:
             
             # Token 重要性热力图（layer_wise_heatmaps + letterbox 对齐）；仅前 N 个 epoch，见 token_visualization_first_epochs
             tok_first = getattr(self, 'token_visualization_first_epochs', 5)
-            if tok_first > 0 and epoch < tok_first:
+            if tok_first > 0 and epoch < tok_first and getattr(self.model, 'enable_cas_predictor', False):
                 try:
                     self._save_token_visualization(epoch)
                 except Exception as e:
