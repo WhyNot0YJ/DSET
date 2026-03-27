@@ -334,21 +334,32 @@ class HybridEncoder(nn.Module):
 
     @staticmethod
     def build_2d_sincos_position_embedding(w, h, embed_dim=256, temperature=10000.):
+        """生成2D sincos位置编码。
+
+        必须与特征图展平顺序严格一致：
+        feat = proj_feats[enc_ind]                    # [B, C, H, W]
+        tokens = feat.flatten(2).permute(0, 2, 1)     # [B, H*W, C]
+        即：H 是慢维度（行），W 是快维度（列）。
         """
-        """
-        grid_w = torch.arange(int(w), dtype=torch.float32)
-        grid_h = torch.arange(int(h), dtype=torch.float32)
-        grid_w, grid_h = torch.meshgrid(grid_w, grid_h, indexing='ij')
+        grid_h = torch.arange(int(h), dtype=torch.float32)  # 行 (height)
+        grid_w = torch.arange(int(w), dtype=torch.float32)  # 列 (width)
+
+        # indexing='ij' → 输出 (H, W)
+        grid_h, grid_w = torch.meshgrid(grid_h, grid_w, indexing='ij')
+
         assert embed_dim % 4 == 0, \
             'Embed dimension must be divisible by 4 for 2D sin-cos position embedding'
+
         pos_dim = embed_dim // 4
         omega = torch.arange(pos_dim, dtype=torch.float32) / pos_dim
         omega = 1. / (temperature ** omega)
 
+        # 正确对应：grid_w → x (横向), grid_h → y (纵向)
         out_w = grid_w.flatten()[..., None] @ omega[None]
         out_h = grid_h.flatten()[..., None] @ omega[None]
 
-        return torch.concat([out_w.sin(), out_w.cos(), out_h.sin(), out_h.cos()], dim=1)[None, :, :]
+        pe = torch.concat([out_w.sin(), out_w.cos(), out_h.sin(), out_h.cos()], dim=1)
+        return pe[None, :, :]  # [1, H*W, embed_dim]
 
     @staticmethod
     def _normalize_kept_indices(kept_indices: torch.Tensor, batch_size: int) -> torch.Tensor:

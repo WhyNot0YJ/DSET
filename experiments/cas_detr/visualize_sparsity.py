@@ -185,85 +185,60 @@ def run_visualization(
     if hook_handle:
         hook_handle.remove()
 
-    # 3. Process Mask/Scores
+    # 3. Process Scores & Heatmaps — 使用 encoder_info 中正确的 layer_wise_heatmaps
     #
-    # Compute S4 spatial shape from padded tensor dimensions.
-    # use_encoder_idx=[1,2] → S4 (stride 16) and S5 (stride 32).
-    # We only visualize the S4 portion (higher resolution, first segment in
-    # the concatenated sequence).
-    h_s4, w_s4 = padded_h // 16, padded_w // 16
-    num_tokens_s4 = h_s4 * w_s4
-    h_feat, w_feat = h_s4, w_s4
-
-    # (A) Build Binary Mask from Hook's kept_indices (S4 region only)
-    if pruning_hook.kept_indices is not None:
-        kept_indices = pruning_hook.kept_indices[0].cpu().numpy()  # batch 0
-        mask_flat = np.zeros(num_tokens_s4, dtype=np.float32)
-        indices = kept_indices[(kept_indices >= 0) & (kept_indices < num_tokens_s4)]
-        mask_flat[indices] = 1.0
-        feature_mask = mask_flat.reshape(h_s4, w_s4)
-        print(f"  ✓ Captured pruning mask: {indices.shape[0]}/{num_tokens_s4} S4 tokens kept")
-    else:
-        print("⚠ No kept_indices captured. Using all-ones mask (no pruning).")
-        feature_mask = np.ones((h_s4, w_s4), dtype=np.float32)
-
-    # Align Map to Image: Use train.py's physical alignment strategy
-    feature_mask_final = align_feature_map_to_original_np(
-        feature_mask,
-        h_feat,
-        w_feat,
-        padded_h,
-        padded_w,
-        orig_h,
-        orig_w,
-        meta.get("pad_left"),
-        meta.get("pad_top"),
-        meta.get("new_h"),
-        meta.get("new_w"),
-        normalize_before_resize=False,
-        interp_tensor=cv2.INTER_NEAREST,
-        interp_orig=cv2.INTER_NEAREST,
-    )
-
-    # (B) Get Importance Scores — reshape S4 portion to 2D
+    # 优先使用 HybridEncoder 提供的 layer_wise_heatmaps（已按正确空间顺序生成）
+    # 回退到旧的 hook scores 逻辑做兼容
     importance_scores_2d = None
+    h_feat = w_feat = None
+    level_name = "S4"
 
-    def _extract_s4_scores(raw_scores):
-        """Extract S4 portion from raw scores and reshape to 2D."""
-        if isinstance(raw_scores, torch.Tensor):
-            s = raw_scores.detach().cpu().numpy()
-        else:
-            s = np.asarray(raw_scores)
-        if s.ndim >= 2:
-            s = s[0]  # batch 0
-        if len(s) >= num_tokens_s4:
-            return s[:num_tokens_s4].reshape(h_s4, w_s4)
-        return None
+    # Priority 1: 使用 encoder_info['layer_wise_heatmaps']（推荐，正确）
+    encoder_info = {}
+    if isinstance(outputs, tuple) and len(outputs) >= 2:
+        encoder_info = outputs[1] if isinstance(outputs[1], dict) else {}
+    elif isinstance(outputs, dict) and 'encoder_info' in outputs:
+        encoder_info = outputs['encoder_info']
 
-    # Priority 1: Hook scores (most reliable)
-    if pruning_hook.scores is not None:
-        importance_scores_2d = _extract_s4_scores(pruning_hook.scores)
+    heatmaps = encoder_info.get('layer_wise_heatmaps', [])
+    if heatmaps:
+        # 取第一个 heatmap（通常是最高分辨率或第一个 use_encoder_idx）
+        heatmap_tensor = heatmaps[0]                    # [B, 1, H, W]
+        importance_scores_2d = heatmap_tensor[0, 0].detach().cpu().numpy()  # [H, W]
+        h_feat, w_feat = heatmap_tensor.shape[2], heatmap_tensor.shape[3]
+        print(f"  ✓ 使用 layer_wise_heatmaps，shape=({h_feat}, {w_feat})")
+    else:
+        # Priority 2: 旧的 hook 逻辑（兼容）
+        print("  ⚠ 未找到 layer_wise_heatmaps，回退到 pruning_hook.scores")
+        def _extract_scores(raw_scores):
+            if isinstance(raw_scores, torch.Tensor):
+                s = raw_scores.detach().cpu().numpy()
+            else:
+                s = np.asarray(raw_scores)
+            if s.ndim >= 2:
+                s = s[0]  # batch 0
+            return s
 
-    # Priority 2: Fallback — try to get scores from model outputs
+        if pruning_hook.scores is not None:
+            scores = _extract_scores(pruning_hook.scores)
+            # 尝试从 encoder_info 获取真实 shape，否则用保守估算
+            spatial_shapes = encoder_info.get('spatial_shapes', [])
+            if spatial_shapes and len(spatial_shapes) > 0:
+                h_feat, w_feat = spatial_shapes[0]
+                if len(scores) >= h_feat * w_feat:
+                    importance_scores_2d = scores[:h_feat*w_feat].reshape(h_feat, w_feat)
+            else:
+                # 最后 fallback：假设 stride=16
+                h_feat = padded_h // 16
+                w_feat = padded_w // 16
+                if len(scores) >= h_feat * w_feat:
+                    importance_scores_2d = scores[:h_feat*w_feat].reshape(h_feat, w_feat)
+
     if importance_scores_2d is None:
-        def _try_extract_from_encoder_info(encoder_info_out):
-            # Option A: layer_wise_heatmaps (already reshaped per-level by encoder)
-            heatmaps = encoder_info_out.get('layer_wise_heatmaps', [])
-            if heatmaps:
-                # Pick the largest spatial heatmap (S4)
-                hm = max(heatmaps, key=lambda t: t.shape[-2] * t.shape[-1])
-                return hm[0, 0].detach().cpu().numpy()
-            # Option B: importance_scores_list
-            scores_list = encoder_info_out.get('importance_scores_list', [])
-            if scores_list:
-                return _extract_s4_scores(scores_list[0])
-            return None
-
-        if isinstance(outputs, tuple) and len(outputs) == 2:
-            _, encoder_info_out = outputs
-            importance_scores_2d = _try_extract_from_encoder_info(encoder_info_out)
-        elif isinstance(outputs, dict) and 'encoder_info' in outputs:
-            importance_scores_2d = _try_extract_from_encoder_info(outputs['encoder_info'])
+        print("⚠ 无法获取 importance scores，使用全1热力图")
+        h_feat = padded_h // 16
+        w_feat = padded_w // 16
+        importance_scores_2d = np.ones((h_feat, w_feat), dtype=np.float32)
 
     # 4. Generate Visualization based on Mode
     
@@ -300,7 +275,7 @@ def run_visualization(
         return div
 
     if mode == 'teaser':
-        print("Generating Teaser Figure (Paper-style two-column comparison)...")
+        print("Generating Teaser Figure (Paper-style two-column comparison...)")
 
         # Colours (BGR) for image overlays
         C_ORANGE = (15, 55, 140)   # dark burnt-orange / rust (暗沉橙)
@@ -313,6 +288,8 @@ def run_visualization(
         fig_a = apply_mask_overlay(orig_image.copy(), full_mask, C_ORANGE, alpha=0.55)
 
         # (b) Sparse: blue background + red foreground
+        if feature_mask_final is None:
+            feature_mask_final = np.ones((orig_h, orig_w), dtype=np.float32)
         bg_mask  = 1.0 - feature_mask_final
         fig_b = apply_mask_overlay(orig_image.copy(), bg_mask,          C_BLUE,   alpha=0.35)
         fig_b = apply_mask_overlay(fig_b,             feature_mask_final, C_RED,  alpha=0.50)
@@ -360,6 +337,7 @@ def run_visualization(
         ).numpy()
 
         # Align to original image (crop padding + resize)
+        # 使用与 train.py 一致的 meta 参数
         s_final = align_feature_map_to_original_np(
             s_2d,
             h_feat,
@@ -373,6 +351,8 @@ def run_visualization(
             meta.get("new_h"),
             meta.get("new_w"),
             normalize_before_resize=True,
+            interp_tensor=cv2.INTER_LINEAR,
+            interp_orig=cv2.INTER_NEAREST,
         )
 
         # Gaussian blur for smooth appearance
