@@ -290,11 +290,18 @@ class BaseYOLOTrainer(ABC):
         
         pretrained_path = Path(pretrained_weights)
         if not pretrained_path.is_absolute():
+            candidates: List[Path] = []
             if self.config_path:
-                pretrained_path = Path(self.config_path).parent / pretrained_weights
-            if not pretrained_path.exists():
-                project_root = Path(__file__).parent.resolve()
-                pretrained_path = project_root / pretrained_weights
+                candidates.append(
+                    Path(self.config_path).resolve().parent / pretrained_weights
+                )
+            candidates.append(Path(__file__).resolve().parent / pretrained_weights)
+            found: Optional[Path] = None
+            for c in candidates:
+                if c.is_file():
+                    found = c
+                    break
+            pretrained_path = found if found is not None else candidates[-1]
         
         if pretrained_path.exists():
             self.logger.info(f"✓ 加载预训练权重: {pretrained_path}")

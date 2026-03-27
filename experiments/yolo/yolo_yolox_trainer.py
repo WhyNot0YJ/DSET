@@ -61,8 +61,7 @@ class YOLOXTrainer(BaseYOLOTrainer):
             exp.num_classes = len(self.class_names)
         exp.data_num_workers = int(self.misc_config.get("num_workers", 4))
         exp.max_epoch = int(self.training_config.get("epochs", 300))
-        ne = exp.max_epoch
-        exp.eval_interval = min(10, max(1, ne // 5))
+        exp.eval_interval = 1
         exp.print_interval = min(50, max(10, exp.max_epoch))
         exp.save_history_ckpt = False
         exp.output_dir = str(self.log_dir.parent)
@@ -111,6 +110,11 @@ class YOLOXTrainer(BaseYOLOTrainer):
             logger="tensorboard",
             opts=[],
         )
+        if not resume and ckpt:
+            msg = f"[YOLOX] 预训练权重读取成功，将加载: {ckpt}"
+            print(msg, flush=True)
+            if self.logger:
+                self.logger.info(msg)
         return args
 
     def start_training(
