@@ -1,4 +1,4 @@
-# CaS-DETR 配置（DAIR-V2X）
+# CaS-DETR（DAIR-V2X，S4+S5 进 Hybrid Encoder；无后缀表示默认两尺度）
 # augmentation 与 rt-detr/configs/rtdetr_r18.yaml 对齐（含 576–704 多尺度）
 model:
   num_experts: 6

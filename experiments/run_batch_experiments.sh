@@ -19,7 +19,7 @@ export OMP_NUM_THREADS=1
 #   ./run_batch_experiments.sh --rt-detr                       # 只运行 RT-DETR（DAIR + UA-DETRAC，共 2 个配置）
 #   ./run_batch_experiments.sh --dairv2x --rt-detr             # 同上但只跑 DAIR-V2X（1 个 RT-DETR 配置）
 #   ./run_batch_experiments.sh --moe-rtdetr                    # 只运行MOE-RTDETR实验（2个配置）
-#   ./run_batch_experiments.sh --cas_detr                      # 只运行CaS_DETR实验（4个配置）
+#   ./run_batch_experiments.sh --cas_detr                      # 只运行CaS_DETR实验（6个配置）
 #   ./run_batch_experiments.sh --yolov8                        # 只运行YOLOv8实验
 #   ./run_batch_experiments.sh --yolov10                       # 只运行YOLOv10实验
 #   ./run_batch_experiments.sh --yolov11                       # 只运行YOLOv11实验
@@ -168,8 +168,8 @@ apply_dataset_scope_filter_to_configs() {
 
 # 定义所有可用的实验配置
 declare -A RT_DETR_CONFIGS=(
-    ["rt-detr-r18-dairv2x"]="cas_detr/configs/rtdetr_r18_enc1.yaml"
-    ["rt-detr-r18-uadetrac"]="cas_detr/configs/rtdetr_r18_uadetrac_enc1.yaml"
+    ["rt-detr-r18-dairv2x"]="cas_detr/configs/rtdetr_r18.yaml"
+    ["rt-detr-r18-uadetrac"]="cas_detr/configs/rtdetr_r18_uadetrac.yaml"
 )
 
 declare -a CORE_EXPERIMENTS=(
@@ -177,15 +177,17 @@ declare -a CORE_EXPERIMENTS=(
 )
 
 declare -A MOE_RTDETR_CONFIGS=(
-    ["moe6-r18-dairv2x"]="cas_detr/configs/moe_rtdetr6_r18_enc1.yaml"
-    ["moe6-r18-uadetrac"]="cas_detr/configs/moe_rtdetr6_r18_uadetrac_enc1.yaml"
+    ["moe6-r18-dairv2x"]="cas_detr/configs/moe_rtdetr6_r18.yaml"
+    ["moe6-r18-uadetrac"]="cas_detr/configs/moe_rtdetr6_r18_uadetrac.yaml"
 )
 
 declare -A CaS_DETR_CONFIGS=(
     ["cas_detr6-r18-0.3-dairv2x"]="cas_detr/configs/cas_detr6_r18_ratio0.3.yaml"
-    ["cas_detr6-r18-0.3-dairv2x-enc1"]="cas_detr/configs/cas_detr6_r18_ratio0.3_enc1.yaml"
+    ["cas_detr6-r18-0.3-dairv2x-S5"]="cas_detr/configs/cas_detr6_r18_ratio0.3_S5.yaml"
     ["cas_detr6-r18-0.3-uadetrac"]="cas_detr/configs/cas_detr6_r18_ratio0.3_uadetrac.yaml"
-    ["cas_detr6-r18-0.3-uadetrac-enc1"]="cas_detr/configs/cas_detr6_r18_ratio0.3_uadetrac_enc1.yaml"
+    ["cas_detr6-r18-0.3-uadetrac-S5"]="cas_detr/configs/cas_detr6_r18_ratio0.3_uadetrac_S5.yaml"
+    ["cas_detr6-r18-0.5-dairv2x-S5"]="cas_detr/configs/cas_detr6_r18_ratio0.5_S5.yaml"
+    ["cas_detr6-r18-0.5-uadetrac-S5"]="cas_detr/configs/cas_detr6_r18_ratio0.5_uadetrac_S5.yaml"
 )
 
 declare -A YOLOV8_CONFIGS=(
@@ -834,7 +836,7 @@ parse_arguments() {
         echo "  ./run_batch_experiments.sh --test                          # 测试模式：所有配置各跑2个epoch"
         echo "  ./run_batch_experiments.sh --rt-detr                       # 只运行 RT-DETR（DAIR + UA-DETRAC）"
         echo "  ./run_batch_experiments.sh --moe-rtdetr                    # 只运行MOE-RTDETR（2个）"
-        echo "  ./run_batch_experiments.sh --cas_detr                      # 只运行CaS_DETR（4个）"
+        echo "  ./run_batch_experiments.sh --cas_detr                      # 只运行CaS_DETR（6个）"
         echo "  ./run_batch_experiments.sh --yolov8                        # 只运行YOLOv8"
         echo "  ./run_batch_experiments.sh --yolov10                       # 只运行YOLOv10"
         echo "  ./run_batch_experiments.sh --yolov11                       # 只运行YOLOv11"

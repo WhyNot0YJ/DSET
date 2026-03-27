@@ -552,7 +552,7 @@ class CaS_DETRTrainer:
         """
         self.config = config
         self.config_file_path = config_file_path
-        # 供 eval_metrics CSV / benchmark 打印：model 列使用配置文件名（stem），如 rtdetr_r18_uadetrac_enc1
+        # 供 eval_metrics CSV / benchmark 打印：model 列使用配置文件名（stem），如 rtdetr_r18_uadetrac
         if config_file_path:
             self.config["_config_path"] = str(Path(config_file_path).resolve())
 

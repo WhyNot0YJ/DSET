@@ -150,15 +150,19 @@ The current training objective is a combination of:
 
 The current checked-in CaS-DETR configs are:
 
-- `experiments/cas_detr/configs/cas_detr6_r18_ratio0.3.yaml`
-- `experiments/cas_detr/configs/cas_detr6_r18_ratio0.3_enc1.yaml`
-- `experiments/cas_detr/configs/cas_detr6_r18_ratio0.3_uadetrac.yaml`
-- `experiments/cas_detr/configs/cas_detr6_r18_ratio0.3_uadetrac_enc1.yaml`
+- `experiments/cas_detr/configs/cas_detr6_r18_ratio0.3.yaml` — S4+S5 into the hybrid encoder (default; no suffix)
+- `experiments/cas_detr/configs/cas_detr6_r18_ratio0.3_S5.yaml` — S5 only (`_S5` suffix)
+- `experiments/cas_detr/configs/cas_detr6_r18_ratio0.3_uadetrac.yaml` — same as above for UA-DETRAC
+- `experiments/cas_detr/configs/cas_detr6_r18_ratio0.3_uadetrac_S5.yaml` — S5-only UA-DETRAC variant
+- `experiments/cas_detr/configs/cas_detr6_r18_ratio0.5_S5.yaml` — S5-only, token keep ratio 0.5 (DAIR-V2X)
+- `experiments/cas_detr/configs/cas_detr6_r18_ratio0.5_uadetrac_S5.yaml` — same for UA-DETRAC
+
+RT-DETR and MoE-RT-DETR use S5-only configs without extra suffixes, for example `rtdetr_r18.yaml`, `moe_rtdetr6_r18.yaml`.
 
 Their meanings:
 
-- `ratio0.3`: token keep ratio is 0.3
-- `enc1`: only one encoder level is sent into the Transformer encoder branch
+- `ratio0.3` / `ratio0.5`: token keep ratio (e.g. 0.3 or 0.5)
+- `_S5`: only the S5 feature level is fed into the Transformer encoder branch
 - `uadetrac`: UA-DETRAC dataset variant
 
 ## 5. Current default experiment behavior
