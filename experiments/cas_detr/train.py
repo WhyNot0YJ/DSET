@@ -1662,7 +1662,12 @@ class CaS_DETRTrainer:
                 ]
                 for i, _target in enumerate(targets):
                     image_id = batch_idx * bs + i
-                    image_id_to_size[image_id] = (current_w, current_h)
+                    osz = _target.get('orig_size')
+                    if osz is not None and isinstance(osz, torch.Tensor) and osz.numel() >= 2:
+                        oh, ow = int(osz[0].item()), int(osz[1].item())
+                        image_id_to_size[image_id] = (ow, oh)
+                    else:
+                        image_id_to_size[image_id] = (current_w, current_h)
 
                 outputs = self.ema.module(images, targets)
                 has_predictions = ("class_scores" in outputs and "bboxes" in outputs) or (
@@ -2117,10 +2122,15 @@ class CaS_DETRTrainer:
                 targets = [{k: v.to(self.device, non_blocking=True) if isinstance(v, torch.Tensor) else v 
                            for k, v in t.items()} for t in targets]
                 
-                # 记录该 batch 的尺寸信息
+                # COCO：bbox 已映到原图像素，images[].width/height 须为原图 (W,H)，勿用网络输入张量尺寸
                 for i, target in enumerate(targets):
                     image_id = batch_idx * self.config['training']['batch_size'] + i
-                    image_id_to_size[image_id] = (W_tensor, H_tensor)
+                    osz = target.get('orig_size')
+                    if osz is not None and isinstance(osz, torch.Tensor) and osz.numel() >= 2:
+                        orig_h, orig_w = int(osz[0].item()), int(osz[1].item())
+                        image_id_to_size[image_id] = (orig_w, orig_h)
+                    else:
+                        image_id_to_size[image_id] = (int(W_tensor), int(H_tensor))
                 
                 outputs = self.ema.module(images, targets)
                 
@@ -2156,7 +2166,7 @@ class CaS_DETRTrainer:
             # pruning_ratio=0.0 可能是因为 keep_ratio >= 1.0 或配置问题
             self.logger.warning(f"  ⚠ 验证时Token Pruning未生效 (pruning_ratio=0.0)! 请检查keep_ratio配置或EMA模型epoch设置")
         
-        # [修复] 计算 mAP 时，传递 image_id_to_size 以支持多尺度验证精度
+        # COCO 评估：image_id_to_size 为各图原图像素 (width, height)，与 _collect_predictions 的 xywh 一致
         mAP_metrics = self._compute_map_metrics(all_predictions, all_targets, 
                                               image_id_to_size=image_id_to_size,
                                               print_per_category=False)
@@ -2307,7 +2317,11 @@ class CaS_DETRTrainer:
     def _run_coco_eval(self, predictions: List[Dict], targets: List[Dict], categories: List[Dict],
                        img_h: int, img_w: int, image_id_to_size: Dict[int, Tuple[int, int]] = None,
                        print_summary: bool = False):
-        """执行一次 COCOeval，返回 coco_eval 对象；无目标时返回 None。"""
+        """执行一次 COCOeval，返回 coco_eval 对象；无目标时返回 None。
+
+        image_id_to_size: 合成 image_id -> 原图像素尺寸 (width, height)，须与 annotations 中 bbox（原图 xywh）一致。
+        缺省或缺失 id 时回退到 img_w/img_h（一般为最后一次前向的网络输入尺寸，仅作兜底）。
+        """
         if len(targets) == 0:
             return None
 
@@ -2367,7 +2381,10 @@ class CaS_DETRTrainer:
     def _compute_difficulty_aps(self, predictions: List[Dict], targets: List[Dict], categories: List[Dict],
                                 img_h: int, img_w: int,
                                 image_id_to_size: Dict[int, Tuple[int, int]] = None) -> Dict[str, float]:
-        """计算 KITTI 风格 AP_easy / AP_moderate / AP_hard。"""
+        """计算 KITTI 风格 AP_easy / AP_moderate / AP_hard。
+
+        image_id_to_size 语义同 _run_coco_eval：原图 (width, height)。
+        """
         import copy
         easy_targets = []
         moderate_targets = []
@@ -2446,9 +2463,10 @@ class CaS_DETRTrainer:
         Args:
             predictions: 预测结果列表
             targets: 真实标签列表
-            image_id_to_size: 图像ID到(W, H)的映射字典（推荐）
-            img_h: 默认图像高度
-            img_w: 默认图像宽度
+            image_id_to_size: 合成 image_id -> 原图像素 (width, height)，与 COCO bbox（原图 xywh）一致。
+                勿填网络输入张量尺寸。独立 MoE/其它训练脚本若自建 COCO 评估，应对齐本约定或复用本函数。
+            img_h: 无 per-image 记录时的默认高度（兜底，多为末次 batch 输入高）
+            img_w: 无 per-image 记录时的默认宽度（兜底）
             print_per_category: 是否打印每个类别的详细mAP（默认False，只在best_model时打印）
         """
         try:
@@ -2498,7 +2516,7 @@ class CaS_DETRTrainer:
                 }
             }
             
-            # [修复] 动态设置每张图像的正确尺寸
+            # coco_gt.images：宽高为原图像素，与 bbox（已由 _cxcywh_to_xywh_orig 映到原图）同一坐标系
             image_ids = set(target['image_id'] for target in targets)
             for img_id in image_ids:
                 if image_id_to_size and img_id in image_id_to_size:
