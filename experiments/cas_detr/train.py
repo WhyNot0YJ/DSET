@@ -1170,7 +1170,7 @@ class CaS_DETRTrainer:
     
     def _create_data_loaders(self) -> Tuple[DataLoader, DataLoader]:
         """创建初始数据加载器。"""
-        # 使用配置文件中的 batch_size（显存自适应不会再改写训练 batch）
+        # 使用当前 config 中的 batch_size
         current_batch_size = self.config['training']['batch_size']
         
         self.logger.info(f"📦 初始化训练: epoch={self.current_epoch}, 当前使用 batch_size={current_batch_size}")
@@ -2080,7 +2080,7 @@ class CaS_DETRTrainer:
                     if 'total_loss' in outputs:
                         total_loss += outputs['total_loss'].item()
                     
-                    # 收集预测结果（只在需要计算mAP时收集，前30个epoch跳过）
+                    # 有检测头输出时收集预测/GT（本函数仅在 eval_schedule 触发验证时调用）
                     if 'class_scores' in outputs and 'bboxes' in outputs:
                         self._collect_predictions(outputs, targets, sample_offset, all_predictions, all_targets, W_tensor, H_tensor)
 
