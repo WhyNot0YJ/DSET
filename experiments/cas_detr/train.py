@@ -1953,10 +1953,6 @@ class CaS_DETRTrainer:
             self.scaler.update()
             self.ema.update(self.model)
             
-            # 显存清理（每个 batch 后执行，防止碎片化）
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            
             # 统计各种Loss（GPU tensor 累加，避免每 batch .item() 同步）
             total_loss += loss.detach() if isinstance(loss, torch.Tensor) else float(loss)
             if isinstance(outputs, dict):
@@ -2862,8 +2858,6 @@ class CaS_DETRTrainer:
             if should_validate:
                 pass
             gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
             
             # Token 重要性热力图（layer_wise_heatmaps + letterbox 对齐）；仅前 N 个 epoch，见 token_visualization_first_epochs
             tok_first = getattr(self, 'token_visualization_first_epochs', 5)
