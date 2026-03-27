@@ -468,8 +468,7 @@ class CaS_DETRRTDETR(nn.Module):
                     # Get image shape (assuming all images in batch have same size)
                     img_shape = (images.shape[2], images.shape[3])  # (H, W)
                     
-                    # Extract gt_bboxes from targets
-                    # Note: boxes from _collate_fn are always normalized (cx, cy, w, h in [0, 1])
+                    # Extract gt_bboxes from targets (cxcywh normalized to current tensor W/H)
                     gt_bboxes = []
                     for t in targets:
                         if t is not None and 'boxes' in t:
@@ -1253,64 +1252,6 @@ class CaS_DETRTrainer:
             generator=self._make_dataloader_generator(offset=0),
         )
     
-    def _collate_fn(self, batch: List[Tuple]) -> Tuple[torch.Tensor, List[Dict]]:
-        """数据整理函数。"""
-        images, targets = zip(*batch)
-        
-        # 1. 处理图像 (保持 Tensor 格式)
-        if not isinstance(images[0], torch.Tensor):
-            processed_images = [T.functional.to_tensor(img) for img in images]
-        else:
-            processed_images = list(images)
-
-        # 2. 计算 Batch 最大尺寸
-        sizes = [img.shape[-2:] for img in processed_images]
-        stride = 32
-        max_h_raw = max(s[0] for s in sizes)
-        max_w_raw = max(s[1] for s in sizes)
-        # 向上取整到 32 倍数
-        max_h = (max_h_raw + stride - 1) // stride * stride
-        max_w = (max_w_raw + stride - 1) // stride * stride
-        
-        # 3. 创建画布并填充 (左上角对齐)
-        batch_images = torch.zeros(len(processed_images), 3, max_h, max_w, 
-                                   dtype=processed_images[0].dtype)
-        
-        for i, img in enumerate(processed_images):
-            h, w = img.shape[-2:]
-            batch_images[i, :, :h, :w] = img
-
-        # 4. Normalize targets based on final Batch size
-        # [修复] 坐标归一化基准不统一问题
-        # 关键：所有样本的 boxes 必须使用相同的归一化基准（batch 的最大尺寸 max_w, max_h）
-        # 这样去噪分支和主分支才能使用相同的归一化基准，避免数值崩溃
-        new_targets = []
-        for i, t in enumerate(list(targets)):
-            # [FIX] Use deepcopy or clone to ensure original data is not modified
-            new_t = t.copy()
-            # Must clone, otherwise boxes[:, 0] = ... modifies source tensor
-            boxes = new_t['boxes'].clone()
-            
-            # 手动归一化：除以 max_w 和 max_h（batch 最大尺寸，不是单个样本尺寸）
-            # 格式是 cx, cy, w, h
-            # x轴数据 (cx, w) 除以 max_w
-            # y轴数据 (cy, h) 除以 max_h
-            # 注意：所有样本都使用相同的 max_w 和 max_h，确保归一化基准统一
-            boxes[:, 0] = boxes[:, 0] / max_w
-            boxes[:, 1] = boxes[:, 1] / max_h
-            boxes[:, 2] = boxes[:, 2] / max_w
-            boxes[:, 3] = boxes[:, 3] / max_h
-            
-            # 限制数值在 0-1 之间 (防止浮点溢出)
-            boxes = torch.clamp(boxes, 0.0, 1.0)
-            
-            new_t['boxes'] = boxes
-            # [修复] 保存归一化基准，确保去噪分支和主分支使用相同的基准
-            new_t['normalization_size'] = torch.tensor([max_w, max_h], dtype=torch.float32)
-            new_targets.append(new_t)
-        
-        return batch_images, new_targets
-    
     def _create_optimizer(self) -> optim.AdamW:
         """创建优化器（使用分组学习率，与rt-detr保持一致）。"""
         # 获取配置中的学习率，确保是浮点数类型
@@ -1650,7 +1591,7 @@ class CaS_DETRTrainer:
         all_targets = []
         image_id_to_size = {}
         current_h, current_w = 640, 640
-        bs = self.config["training"]["batch_size"]
+        sample_offset = 0
 
         with torch.no_grad():
             for batch_idx, (images, targets) in enumerate(dataloader):
@@ -1661,7 +1602,7 @@ class CaS_DETRTrainer:
                     for t in targets
                 ]
                 for i, _target in enumerate(targets):
-                    image_id = batch_idx * bs + i
+                    image_id = sample_offset + i
                     osz = _target.get('orig_size')
                     if osz is not None and isinstance(osz, torch.Tensor) and osz.numel() >= 2:
                         oh, ow = int(osz[0].item()), int(osz[1].item())
@@ -1675,8 +1616,10 @@ class CaS_DETRTrainer:
                 )
                 if has_predictions:
                     self._collect_predictions(
-                        outputs, targets, batch_idx, all_predictions, all_targets, current_w, current_h
+                        outputs, targets, sample_offset, all_predictions, all_targets, current_w, current_h
                     )
+
+                sample_offset += int(images.shape[0])
 
         if len(all_predictions) == 0 or len(all_targets) == 0:
             self.logger.warning(f"best_model 在 {split_label} 上无有效预测或标注，跳过 AP")
@@ -2084,20 +2027,11 @@ class CaS_DETRTrainer:
         """验证模型并计算mAP。"""
         self.ema.module.eval()
         
-        # 设置encoder的epoch（验证时也需要，虽然Token Pruning从epoch 0就启用）
-        # 1. 更新训练模型 (保持原样)
-        # 设置模型的epoch（Token Pruning从epoch 0开始就启用）
-        # 这会同时更新encoder的epoch（在model.set_epoch内部调用）
+        # 训练与 EMA 为独立副本：验证前两者都需 set_epoch（token pruning 等依赖 epoch）
         if hasattr(self.model, 'set_epoch'):
             self.model.set_epoch(self.current_epoch)
-        
-        # =========================================================
-        # [修复] 必须同时更新 EMA 模型的 epoch，否则验证时不会剪枝！
-        # EMA模型是deepcopy的独立副本，需要单独设置epoch
-        # =========================================================
         if hasattr(self.ema.module, 'set_epoch'):
             self.ema.module.set_epoch(self.current_epoch)
-            # 调试：验证EMA模型的pruning状态（pruning现在从epoch 0开始就启用）
             if hasattr(self.ema.module, 'encoder') and hasattr(self.ema.module.encoder, 'shared_token_pruner') and self.ema.module.encoder.shared_token_pruner:
                 pruner = self.ema.module.encoder.shared_token_pruner
                 keep_ratio = pruner.keep_ratio if hasattr(pruner, 'keep_ratio') else 'N/A'
@@ -2112,7 +2046,8 @@ class CaS_DETRTrainer:
         # 统计验证时的剪枝比例
         val_pruning_ratios = []
         
-        # 验证逻辑
+        # 验证逻辑（image_id 按样本累计，避免首 batch 不满时与 _collect_predictions 错位）
+        sample_offset = 0
         with torch.no_grad():
             for batch_idx, (images, targets) in enumerate(self.val_loader):
                 # 动态获取 Tensor 尺寸
@@ -2124,7 +2059,7 @@ class CaS_DETRTrainer:
                 
                 # COCO：bbox 已映到原图像素，images[].width/height 须为原图 (W,H)，勿用网络输入张量尺寸
                 for i, target in enumerate(targets):
-                    image_id = batch_idx * self.config['training']['batch_size'] + i
+                    image_id = sample_offset + i
                     osz = target.get('orig_size')
                     if osz is not None and isinstance(osz, torch.Tensor) and osz.numel() >= 2:
                         orig_h, orig_w = int(osz[0].item()), int(osz[1].item())
@@ -2147,7 +2082,9 @@ class CaS_DETRTrainer:
                     
                     # 收集预测结果（只在需要计算mAP时收集，前30个epoch跳过）
                     if 'class_scores' in outputs and 'bboxes' in outputs:
-                        self._collect_predictions(outputs, targets, batch_idx, all_predictions, all_targets, W_tensor, H_tensor)
+                        self._collect_predictions(outputs, targets, sample_offset, all_predictions, all_targets, W_tensor, H_tensor)
+
+                sample_offset += B
         
         # 保存预测结果用于后续打印每个类别mAP（避免重复计算）
         self._last_val_predictions = all_predictions
@@ -2232,9 +2169,13 @@ class CaS_DETRTrainer:
         h = (bh / sy).clamp(min=1.0, max=oh)
         return torch.stack([x1, y1, w, h], dim=1).cpu().numpy()
 
-    def _collect_predictions(self, outputs: Dict, targets: List[Dict], batch_idx: int,
+    def _collect_predictions(self, outputs: Dict, targets: List[Dict], image_id_base: int,
                             all_predictions: List, all_targets: List, img_w: int, img_h: int) -> None:
-        """向量化收集预测/GT，单次 .cpu().numpy() 替代逐元素 .item()。"""
+        """向量化收集预测/GT，单次 .cpu().numpy() 替代逐元素 .item()。
+
+        Args:
+            image_id_base: 本 batch 第一个样本在验证集内的连续编号（与 ``image_id_to_size`` 一致）。
+        """
         if 'class_scores' in outputs:
             pred_logits = outputs['class_scores']
             pred_boxes = outputs['bboxes']
@@ -2244,11 +2185,10 @@ class CaS_DETRTrainer:
         else:
             return
 
-        bs = self.config['training']['batch_size']
         batch_size = pred_logits.shape[0]
 
         for i in range(batch_size):
-            image_id = batch_idx * bs + i
+            image_id = image_id_base + i
             orig_h, orig_w = targets[i]['orig_size'].tolist()
             lb_pad = targets[i].get('letterbox_pad')
             lb_scale = targets[i].get('letterbox_scale')
