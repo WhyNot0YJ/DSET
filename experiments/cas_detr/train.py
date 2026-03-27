@@ -728,10 +728,8 @@ class CaS_DETRTrainer:
         while len(self.colors) < len(self.class_names):
             self.colors.append((128, 128, 128))
         self.colors = self.colors[: len(self.class_names)]
-        self._dair_truncation_categorical = (
-            dc.get("dataset_class") == "DAIRV2XDetection"
-            or "DAIR-V2X" in str(dc.get("data_root", ""))
-        )
+        # 仅按 dataset_class 判定
+        self._dair_truncation_categorical = dc.get("dataset_class") == "DAIRV2XDetection"
 
     def _resolve_dataset_class(self):
         name = self.config.get("data", {}).get("dataset_class", "DAIRV2XDetection")
