@@ -23,23 +23,6 @@ from src.data.transforms.letterbox_geom import (
 )
 
 
-def _normalize_resize_mode(mode: str) -> str:
-    m = str(mode or "letterbox").lower()
-    if m in ("stretch", "direct", "warp", "resize"):
-        return "stretch"
-    if m in ("letterbox", "letter_box", "lb"):
-        return "letterbox"
-    raise ValueError(f"resize_mode must be 'letterbox' or 'stretch', got {mode!r}")
-
-
-def resize_mode_from_augmentation_config(config_path: str) -> str:
-    """Read ``augmentation.resize.mode`` from YAML (default letterbox)."""
-    with open(config_path, "r", encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
-    r = (cfg.get("augmentation") or {}).get("resize") or {}
-    return _normalize_resize_mode(str(r.get("mode", "letterbox")))
-
-
 try:
     from tqdm import tqdm
     HAS_TQDM = True
@@ -76,10 +59,10 @@ def _setup_paths():
 def _import_modules():
     """延迟导入模块"""
     _setup_paths()
-    from train import RTDETRTrainer, create_backbone
+    from train import CaS_DETRRTDETR
     from src.nn.postprocessor.detr_postprocessor import DetDETRPostProcessor
-    from src.nn.postprocessor.box_revert import box_revert, BoxProcessFormat
-    return RTDETRTrainer, create_backbone, DetDETRPostProcessor, BoxProcessFormat
+    from src.nn.postprocessor.box_revert import BoxProcessFormat
+    return CaS_DETRRTDETR, DetDETRPostProcessor, BoxProcessFormat
 
 # 类别名称（8类）
 CLASS_NAMES = [
@@ -100,22 +83,52 @@ COLORS = [
 
 def load_model(config_path: str, checkpoint_path: str, device: str = "cuda"):
     """加载模型和权重"""
-    RTDETRTrainer, _, DetDETRPostProcessor, BoxProcessFormat = _import_modules()
+    CaS_DETRRTDETR, DetDETRPostProcessor, BoxProcessFormat = _import_modules()
     
     # 加载配置
     with open(config_path, 'r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
     
-    # 创建训练器以构建模型
-    trainer = RTDETRTrainer(config)
-    
-    # 创建一个简单的logger（推理时不需要日志，只需要模型能创建）
-    if trainer.logger is None:
-        class SimpleLogger:
-            def info(self, msg): pass  # 什么都不做
-        trainer.logger = SimpleLogger()
-    
-    model = trainer.create_model()
+    model_cfg = config.get("model", {})
+    encoder_cfg = model_cfg.get("encoder", {})
+    ablation_cfg = model_cfg.get("ablation", {})
+    cas_detr_cfg = model_cfg.get("cas_detr", {})
+    training_cfg = config.get("training", {})
+    data_cfg = config.get("data", {})
+
+    enable_cas_predictor = bool(ablation_cfg.get("enable_cas_predictor", True))
+    enable_decoder_moe = bool(ablation_cfg.get("enable_decoder_moe", True))
+    token_keep_ratio = cas_detr_cfg.get(
+        "token_keep_ratio", 1.0 if not enable_cas_predictor else 0.7
+    )
+
+    model = CaS_DETRRTDETR(
+        hidden_dim=model_cfg["hidden_dim"],
+        decoder_hidden_dim=model_cfg.get("decoder_hidden_dim"),
+        num_queries=model_cfg["num_queries"],
+        top_k=model_cfg.get("top_k", 1),
+        backbone_type=model_cfg["backbone"],
+        num_decoder_layers=model_cfg["num_decoder_layers"],
+        encoder_in_channels=encoder_cfg["in_channels"],
+        encoder_expansion=encoder_cfg["expansion"],
+        num_experts=model_cfg.get("num_experts", 6),
+        num_encoder_layers=encoder_cfg.get("num_encoder_layers", 1),
+        use_encoder_idx=encoder_cfg.get("use_encoder_idx", [1, 2]),
+        token_keep_ratio=token_keep_ratio,
+        enable_cas_predictor=enable_cas_predictor,
+        enable_decoder_moe=enable_decoder_moe,
+        decoder_moe_balance_weight=training_cfg.get("decoder_moe_balance_weight"),
+        moe_balance_warmup_epochs=training_cfg.get("moe_balance_warmup_epochs", 0),
+        use_cass=cas_detr_cfg.get("use_cass", False),
+        cass_loss_weight=cas_detr_cfg.get("cass_loss_weight", 0.2),
+        cass_expansion_ratio=cas_detr_cfg.get("cass_expansion_ratio", 0.3),
+        cass_min_size=cas_detr_cfg.get("cass_min_size", 1.0),
+        cass_loss_type=cas_detr_cfg.get("cass_loss_type", "vfl"),
+        cass_focal_alpha=cas_detr_cfg.get("cass_focal_alpha", 0.75),
+        cass_focal_beta=cas_detr_cfg.get("cass_focal_beta", 2.0),
+        moe_noise_std=model_cfg.get("moe_noise_std", 0.1),
+        num_classes=int(data_cfg.get("num_classes", len(CLASS_NAMES))),
+    )
     
     # 加载checkpoint
     # 兼容 PyTorch 2.6+ (weights_only=True by default)
@@ -165,12 +178,11 @@ def load_model(config_path: str, checkpoint_path: str, device: str = "cuda"):
 def inference_from_preprocessed_image(img_tensor, model, postprocessor, orig_image_path,
                                       conf_threshold=0.3, target_size=640, device='cuda',
                                       class_names=None, colors=None, verbose=False,
-                                      target_dict=None, resize_mode: str = 'letterbox'):
+                                      target_dict=None):
     """
     供 Trainer 调用的推理接口。
     img_tensor: [1, 3, H, W] 已按与验证 DataLoader 相同方式归一化。
     target_dict: 可选，来自 collate 的 target，用于精确 letterbox meta（推荐）。
-    resize_mode: 当 ``target_dict`` 为 None 时，用于推断几何（应与训练 ``augmentation.resize.mode`` 一致）。
     """
     orig_image = cv2.imread(str(orig_image_path))
     if orig_image is None:
@@ -182,33 +194,18 @@ def inference_from_preprocessed_image(img_tensor, model, postprocessor, orig_ima
     if target_dict is not None:
         meta = build_letterbox_meta_for_postprocess(target_dict, input_h, input_w)
     else:
-        rm = _normalize_resize_mode(resize_mode)
-        if rm == "stretch":
-            meta = {
-                'orig_size': torch.tensor([[orig_h, orig_w]], dtype=torch.float32),
-                'padded_h': input_h,
-                'padded_w': input_w,
-                'letterbox_uniform': False,
-                'scale_h': float(input_h) / float(orig_h) if orig_h > 0 else 1.0,
-                'scale_w': float(input_w) / float(orig_w) if orig_w > 0 else 1.0,
-                'pad_left': 0.0,
-                'pad_top': 0.0,
-                'new_h': input_h,
-                'new_w': input_w,
-            }
-        else:
-            L = compute_letterbox_layout(orig_w, orig_h, max(input_h, input_w))
-            meta = {
-                'orig_size': torch.tensor([[orig_h, orig_w]]),
-                'scale': L['scale'],
-                'pad_left': float(L['pad_left']),
-                'pad_top': float(L['pad_top']),
-                'new_w': int(L['new_w']),
-                'new_h': int(L['new_h']),
-                'padded_h': input_h,
-                'padded_w': input_w,
-                'letterbox_uniform': True,
-            }
+        L = compute_letterbox_layout(orig_w, orig_h, max(input_h, input_w))
+        meta = {
+            'orig_size': torch.tensor([[orig_h, orig_w]]),
+            'scale': L['scale'],
+            'pad_left': float(L['pad_left']),
+            'pad_top': float(L['pad_top']),
+            'new_w': int(L['new_w']),
+            'new_h': int(L['new_h']),
+            'padded_h': input_h,
+            'padded_w': input_w,
+            'letterbox_uniform': True,
+        }
     
     # 推理
     with torch.no_grad():
@@ -242,10 +239,9 @@ def preprocess_image(
     image_path: str,
     target_size: int = 640,
     letterbox_fill: int = 0,
-    resize_mode: str = "letterbox",
 ):
     """
-    预处理图像：与训练时 ``build_square_input_transform`` 一致（letterbox 或 stretch）、ImageNet 归一化。
+    预处理图像：与训练时 ``build_square_input_transform`` 一致（letterbox）、ImageNet 归一化。
     """
     try:
         image_pil = Image.open(str(image_path)).convert("RGB")
@@ -255,28 +251,8 @@ def preprocess_image(
     orig_w, orig_h = image_pil.size
     mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
     std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
-    rm = _normalize_resize_mode(resize_mode)
 
     image_bgr_vis = cv2.cvtColor(np.array(image_pil), cv2.COLOR_RGB2BGR)
-
-    if rm == "stretch":
-        resized_pil = image_pil.resize((target_size, target_size), resample=Image.BILINEAR)
-        image_tensor = T.functional.to_tensor(resized_pil)
-        image_tensor = (image_tensor - mean) / std
-        img_input = image_tensor.unsqueeze(0)
-        meta = {
-            "orig_size": torch.tensor([[orig_h, orig_w]]),
-            "padded_h": target_size,
-            "padded_w": target_size,
-            "letterbox_uniform": False,
-            "scale_h": float(target_size) / float(orig_h) if orig_h > 0 else 1.0,
-            "scale_w": float(target_size) / float(orig_w) if orig_w > 0 else 1.0,
-            "pad_left": 0.0,
-            "pad_top": 0.0,
-            "new_h": target_size,
-            "new_w": target_size,
-        }
-        return img_input, image_bgr_vis, meta
 
     L = compute_letterbox_layout(orig_w, orig_h, target_size)
     resized_pil = image_pil.resize((L["new_w"], L["new_h"]), resample=Image.BILINEAR)
@@ -493,12 +469,12 @@ def load_gt_boxes(json_path, class_names_list):
 
 def process_single_image(image_path: Path, model, postprocessor, output_dir: Path, 
                         conf_threshold: float, device: str, target_size: int = 640,
-                        resize_mode: str = "letterbox", letterbox_fill: int = 0):
+                        letterbox_fill: int = 0):
     """处理单张图像"""
     try:
         # 预处理图像
         img_tensor, orig_image, meta = preprocess_image(
-            str(image_path), target_size, letterbox_fill=letterbox_fill, resize_mode=resize_mode
+            str(image_path), target_size, letterbox_fill=letterbox_fill
         )
         img_tensor = img_tensor.to(device)
         
@@ -544,14 +520,8 @@ def batch_inference(image_dir: str, config_path: str, checkpoint_path: str,
                    device: str = "cuda", max_images: int = None,
                    target_size: int = 640,
                    image_extensions: tuple = ('.jpg', '.jpeg', '.png', '.bmp'),
-                   resize_mode: str = None,
                    letterbox_fill: int = None):
     """批量推理"""
-    if resize_mode is None:
-        resize_mode = resize_mode_from_augmentation_config(config_path)
-    else:
-        resize_mode = _normalize_resize_mode(resize_mode)
-
     if letterbox_fill is None:
         with open(config_path, "r", encoding="utf-8") as f:
             _cfg = yaml.safe_load(f)
@@ -576,7 +546,7 @@ def batch_inference(image_dir: str, config_path: str, checkpoint_path: str,
     
     output_dir.mkdir(parents=True, exist_ok=True)
     print(f"输出目录: {output_dir}")
-    print(f"推理尺寸: {target_size}, resize_mode={resize_mode}")
+    print(f"推理尺寸: {target_size}, letterbox")
     
     # 获取所有图像文件
     image_files = []
@@ -605,7 +575,7 @@ def batch_inference(image_dir: str, config_path: str, checkpoint_path: str,
         num_detections, success, error = process_single_image(
             image_path, model, postprocessor, output_dir, 
             conf_threshold, device, target_size,
-            resize_mode=resize_mode, letterbox_fill=letterbox_fill,
+            letterbox_fill=letterbox_fill,
         )
         
         if success:
@@ -648,13 +618,6 @@ if __name__ == "__main__":
     parser.add_argument("--target_size", type=int, default=640,
                        help="推理方形边长（默认 640，与 target_size 对齐）")
     parser.add_argument(
-        "--resize_mode",
-        type=str,
-        default=None,
-        choices=["letterbox", "stretch", "resize"],
-        help="覆盖配置文件：letterbox | stretch | resize（resize 与 stretch 等价）；默认读 YAML",
-    )
-    parser.add_argument(
         "--letterbox_fill",
         type=int,
         default=None,
@@ -672,6 +635,5 @@ if __name__ == "__main__":
         args.device,
         args.max_images,
         args.target_size,
-        resize_mode=args.resize_mode,
         letterbox_fill=args.letterbox_fill,
     )

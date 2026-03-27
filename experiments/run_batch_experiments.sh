@@ -20,7 +20,6 @@ export OMP_NUM_THREADS=1
 #   ./run_batch_experiments.sh --rt-detr-finetune              # 与 --rt-detr 相同（保留兼容）
 #   ./run_batch_experiments.sh --moe-rtdetr                    # 只运行MOE-RTDETR实验（2个配置）
 #   ./run_batch_experiments.sh --cas_detr                      # 只运行CaS_DETR实验（4个配置）
-#   ./run_batch_experiments.sh --detr_resize                   # 8个配置：resize.mode=resize（RT-DETR+MOE+CaS 各数据集）
 #   ./run_batch_experiments.sh --yolov8                        # 只运行YOLOv8实验
 #   ./run_batch_experiments.sh --yolov10                       # 只运行YOLOv10实验
 #   ./run_batch_experiments.sh --yolov11                       # 只运行YOLOv11实验
@@ -41,13 +40,10 @@ export OMP_NUM_THREADS=1
 #   ./run_batch_experiments.sh --select                        # 交互式选择待运行配置
 #   ./run_batch_experiments.sh --rerun-failed [LOG_DIR]        # 自动选择上次失败的实验
 #
-# CaS_DETR / RT-DETR / MOE（cas_detr/configs/*.yaml）的输入几何由 YAML 中 augmentation.resize 控制：
-#   mode: letterbox | resize | stretch（resize/stretch 为直接缩放到方形；letterbox_fill 仅 letterbox 有效；configs 统一 114）。
-#   letterbox 版：cas_detr/configs/*.yaml ； resize 版：cas_detr/configs/resize/*_resize.yaml ，用 --detr_resize 一键跑齐。
+# CaS_DETR / RT-DETR / MOE：输入为 letterbox 到 target_size（见各 YAML 中 augmentation.resize.letterbox_fill，一般 114）。
 # 一键非交互（跳过确认）示例：
 #   ./run_batch_experiments.sh --yes --cas_detr
 #   ./run_batch_experiments.sh --yes --test --rt-detr --moe-rtdetr --cas_detr
-#   ./run_batch_experiments.sh --yes --detr_resize              # 8 个 YAML：augmentation.resize.mode=resize（直接缩放到方形）
 ################################################################################
 
 set -e  # 遇到错误时不退出（我们会手动处理）
@@ -126,18 +122,6 @@ declare -A CaS_DETR_CONFIGS=(
     ["cas_detr6-r18-0.3-uadetrac-enc1"]="cas_detr/configs/cas_detr6_r18_ratio0.3_uadetrac_enc1.yaml"
 )
 
-# 与上面对应，仅 augmentation.resize.mode=resize（非 letterbox，直接缩放到 target_size 方形）
-declare -A DETR_RESIZE_CONFIGS=(
-    ["rt-detr-r18-dairv2x-resize"]="cas_detr/configs/resize/rtdetr_r18_enc1_resize.yaml"
-    ["rt-detr-r18-uadetrac-resize"]="cas_detr/configs/resize/rtdetr_r18_uadetrac_enc1_resize.yaml"
-    ["moe6-r18-dairv2x-resize"]="cas_detr/configs/resize/moe_rtdetr6_r18_enc1_resize.yaml"
-    ["moe6-r18-uadetrac-resize"]="cas_detr/configs/resize/moe_rtdetr6_r18_uadetrac_enc1_resize.yaml"
-    ["cas_detr6-r18-0.3-dairv2x-resize"]="cas_detr/configs/resize/cas_detr6_r18_ratio0.3_resize.yaml"
-    ["cas_detr6-r18-0.3-dairv2x-enc1-resize"]="cas_detr/configs/resize/cas_detr6_r18_ratio0.3_enc1_resize.yaml"
-    ["cas_detr6-r18-0.3-uadetrac-resize"]="cas_detr/configs/resize/cas_detr6_r18_ratio0.3_uadetrac_resize.yaml"
-    ["cas_detr6-r18-0.3-uadetrac-enc1-resize"]="cas_detr/configs/resize/cas_detr6_r18_ratio0.3_uadetrac_enc1_resize.yaml"
-)
-
 declare -A YOLOV8_CONFIGS=(
     ["yolov8n-dairv2x"]="yolo/configs/yolov8n_dairv2x.yaml"
     ["yolov8n-uadetrac"]="yolo/configs/yolov8n_uadetrac.yaml"
@@ -195,14 +179,6 @@ build_all_configs() {
     done
     for key in "${!CaS_DETR_CONFIGS[@]}"; do
         local p="${CaS_DETR_CONFIGS[$key]}"
-        all_configs_paths+=("$p")
-        local b
-        b=$(basename "$p" .yaml)
-        NAME_TO_PATH["$key"]="$p"
-        NAME_TO_PATH["$b"]="$p"
-    done
-    for key in "${!DETR_RESIZE_CONFIGS[@]}"; do
-        local p="${DETR_RESIZE_CONFIGS[$key]}"
         all_configs_paths+=("$p")
         local b
         b=$(basename "$p" .yaml)
@@ -466,7 +442,6 @@ parse_arguments() {
     local has_rt_detr=false
     local has_moe_rtdetr=false
     local has_cas_detr=false
-    local has_detr_resize=false
     local has_yolov8=false
     local has_yolov10=false
     local has_yolov11=false
@@ -483,9 +458,6 @@ parse_arguments() {
                 ;;
             --cas_detr)
                 has_cas_detr=true
-                ;;
-            --detr_resize)
-                has_detr_resize=true
                 ;;
             --yolov8)
                 has_yolov8=true
@@ -506,13 +478,12 @@ parse_arguments() {
     done
     
     # 如果指定了实验类型，只运行指定的类型（支持多个）
-    if [ "$has_rt_detr" = true ] || [ "$has_moe_rtdetr" = true ] || [ "$has_cas_detr" = true ] || [ "$has_detr_resize" = true ] || [ "$has_yolov8" = true ] || [ "$has_yolov10" = true ] || [ "$has_yolov11" = true ] || [ "$has_yolov12" = true ] || [ "$has_deformable_detr" = true ]; then
+    if [ "$has_rt_detr" = true ] || [ "$has_moe_rtdetr" = true ] || [ "$has_cas_detr" = true ] || [ "$has_yolov8" = true ] || [ "$has_yolov10" = true ] || [ "$has_yolov11" = true ] || [ "$has_yolov12" = true ] || [ "$has_deformable_detr" = true ]; then
         # 显示将要运行的类型
         local selected_types=()
         [ "$has_rt_detr" = true ] && selected_types+=("RT-DETR")
         [ "$has_moe_rtdetr" = true ] && selected_types+=("MOE-RTDETR")
         [ "$has_cas_detr" = true ] && selected_types+=("CaS_DETR")
-        [ "$has_detr_resize" = true ] && selected_types+=("DETR-resize模式")
         [ "$has_yolov8" = true ] && selected_types+=("YOLOv8")
         [ "$has_yolov10" = true ] && selected_types+=("YOLOv10")
         [ "$has_yolov11" = true ] && selected_types+=("YOLOv11")
@@ -547,15 +518,6 @@ parse_arguments() {
         if [ "$has_cas_detr" = true ]; then
             for key in $(printf '%s\n' "${!CaS_DETR_CONFIGS[@]}" | sort); do
                 local p="${CaS_DETR_CONFIGS[$key]}"
-                if filter_config "$p"; then
-                    CONFIGS_TO_RUN+=("$p")
-                fi
-            done
-        fi
-
-        if [ "$has_detr_resize" = true ]; then
-            for key in $(printf '%s\n' "${!DETR_RESIZE_CONFIGS[@]}" | sort); do
-                local p="${DETR_RESIZE_CONFIGS[$key]}"
                 if filter_config "$p"; then
                     CONFIGS_TO_RUN+=("$p")
                 fi
@@ -723,7 +685,6 @@ parse_arguments() {
         echo "  ./run_batch_experiments.sh --rt-detr-finetune              # 同 --rt-detr（兼容旧参数）"
         echo "  ./run_batch_experiments.sh --moe-rtdetr                    # 只运行MOE-RTDETR（2个）"
         echo "  ./run_batch_experiments.sh --cas_detr                      # 只运行CaS_DETR（4个）"
-        echo "  ./run_batch_experiments.sh --detr_resize                   # 只运行 resize 模式 DETR 配置（8个）"
         echo "  ./run_batch_experiments.sh --yolov8                        # 只运行YOLOv8"
         echo "  ./run_batch_experiments.sh --yolov10                       # 只运行YOLOv10"
         echo "  ./run_batch_experiments.sh --yolov11                       # 只运行YOLOv11"
@@ -732,7 +693,6 @@ parse_arguments() {
         echo "  ./run_batch_experiments.sh --test --rt-detr                # 测试模式只运行RT-DETR"
         echo "  ./run_batch_experiments.sh --test --moe-rtdetr             # 测试模式只运行MOE-RTDETR"
         echo "  ./run_batch_experiments.sh --test --cas_detr                   # 测试模式只运行CaS_DETR"
-        echo "  ./run_batch_experiments.sh --yes --detr_resize                 # 一键非交互跑 resize 模式 8 配置"
         echo "  ./run_batch_experiments.sh --test --yolov8                 # 测试模式只运行YOLOv8"
         echo "  ./run_batch_experiments.sh --test --yolov10                # 测试模式只运行YOLOv10"
         echo "  ./run_batch_experiments.sh --test --yolov11                # 测试模式只运行YOLOv11"
@@ -752,7 +712,7 @@ parse_arguments() {
         echo "  ./run_batch_experiments.sh --dataset dairv2x,uadetrac       # YOLO按多个数据集维度运行"
         echo "  ./run_batch_experiments.sh --select                        # 交互式选择"
         echo "  ./run_batch_experiments.sh --rerun-failed [LOG_DIR]        # 重跑失败实验"
-        echo "  ./run_batch_experiments.sh --yes --cas_detr                 # 非交互一键跑 CaS_DETR（resize 见各 YAML）"
+        echo "  ./run_batch_experiments.sh --yes --cas_detr                 # 非交互一键跑 CaS_DETR"
         exit 1
     fi
 }

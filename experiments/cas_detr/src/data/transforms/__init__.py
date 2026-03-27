@@ -10,7 +10,6 @@ from ._transforms import (
     RandomHorizontalFlip,
     RandomResize,
     LetterboxResize,
-    StretchToSquareResize,
     build_square_input_transform,
     Resize,
     PadToSize,

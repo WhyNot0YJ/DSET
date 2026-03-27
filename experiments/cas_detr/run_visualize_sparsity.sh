@@ -15,7 +15,7 @@ DEFAULT_IMAGE=${IMAGE:-000562.jpg}
 DEFAULT_MODE=${MODE:-heatmap}
 DEFAULT_OUTPUT_DIR=${OUTPUT_DIR:-}
 DEFAULT_DEVICE=${DEVICE:-cuda}
-DEFAULT_TARGET_SIZE=${TARGET_SIZE:-1280}
+DEFAULT_TARGET_SIZE=${TARGET_SIZE:-}
 
 # 解析命令行参数
 CONFIG_FILE=$DEFAULT_CONFIG
@@ -77,7 +77,11 @@ else
     echo "输出目录: 图像所在目录"
 fi
 echo "设备: $DEVICE"
-echo "推理尺寸: $TARGET_SIZE"
+if [ -n "$TARGET_SIZE" ]; then
+    echo "推理尺寸: $TARGET_SIZE"
+else
+    echo "推理尺寸: 使用配置文件中的 augmentation.target_size"
+fi
 echo "============================================================"
 
 # 检查图像文件是否存在
@@ -123,17 +127,20 @@ VISUALIZE_ARGS=(
     --checkpoint "$CHECKPOINT_FILE"
     --mode "$MODE"
     --device "$DEVICE"
-    --target_size "$TARGET_SIZE"
 )
 
 if [ -n "$OUTPUT_DIR" ]; then
     VISUALIZE_ARGS+=(--output_dir "$OUTPUT_DIR")
 fi
 
+if [ -n "$TARGET_SIZE" ]; then
+    VISUALIZE_ARGS+=(--target_size "$TARGET_SIZE")
+fi
+
 VISUALIZE_ARGS+=("${ARGS[@]}")
 
 # 运行可视化脚本
-python visualize_sparsity.py "${VISUALIZE_ARGS[@]}"
+python3 visualize_sparsity.py "${VISUALIZE_ARGS[@]}"
 
 EXIT_CODE=$?
 

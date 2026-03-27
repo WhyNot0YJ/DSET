@@ -246,50 +246,10 @@ class LetterboxResize(torch.nn.Module):
         return image, target
 
 
-@register()
-class StretchToSquareResize(torch.nn.Module):
-    """非等比缩放到 size×square；不写入 ``letterbox_*``，与 ``build_letterbox_meta_for_postprocess`` 的 stretch 分支一致。"""
-
-    def __init__(self, size: int, antialias: bool = True) -> None:
-        super().__init__()
-        self.size = int(size)
-        self.antialias = antialias
-
-    def forward(self, *inputs: Any) -> Any:
-        image, target = inputs
-        tw = th = self.size
-        w, h = image.size
-
-        sx = tw / float(w)
-        sy = th / float(h)
-        new_w, new_h = tw, th
-
-        image = F.resize(image, [new_h, new_w], antialias=self.antialias)
-
-        if 'boxes' in target and isinstance(target['boxes'], BoundingBoxes):
-            boxes_t = target['boxes'].clone()
-            if boxes_t.numel() > 0:
-                fac = boxes_t.new_tensor([sx, sy, sx, sy])
-                boxes_t = boxes_t * fac
-            target['boxes'] = convert_to_tv_tensor(
-                boxes_t, key='boxes', box_format='XYXY', spatial_size=(new_h, new_w)
-            )
-
-        target.pop('letterbox_scale', None)
-        target.pop('letterbox_pad', None)
-        return image, target
-
-
 def build_square_input_transform(aug_config: Mapping[str, Any]) -> torch.nn.Module:
-    """根据 ``augmentation`` 配置构造到 ``target_size`` 方图的变换。
+    """根据 ``augmentation`` 配置构造到 ``target_size`` 方图的 letterbox 变换。
 
-    ``augmentation.resize`` 为可选子配置::
-
-        resize:
-          mode: letterbox   # letterbox | resize | stretch（resize/stretch 等价：非等比拉到方形）
-          letterbox_fill: 114   # 可选；仅 letterbox；默认沿用顶层 ``letterbox_fill``
-
-    未提供 ``resize`` 时与旧行为一致（letterbox + 顶层 ``letterbox_fill``）。
+    ``augmentation.resize`` 为可选子配置，仅用于 ``letterbox_fill``（默认沿用顶层 ``letterbox_fill``）。
     """
     resize_cfg = aug_config.get('resize')
     if resize_cfg is None:
@@ -297,15 +257,6 @@ def build_square_input_transform(aug_config: Mapping[str, Any]) -> torch.nn.Modu
     elif not isinstance(resize_cfg, Mapping):
         raise TypeError('augmentation.resize must be a dict when provided')
 
-    mode = str(resize_cfg.get('mode', 'letterbox')).lower()
     target_size = int(aug_config['target_size'])
-
-    if mode in ('stretch', 'direct', 'warp', 'resize'):
-        return StretchToSquareResize(size=target_size, antialias=True)
-    if mode in ('letterbox', 'letter_box', 'lb'):
-        fill = resize_cfg.get('letterbox_fill', aug_config.get('letterbox_fill', 114))
-        return LetterboxResize(size=target_size, fill=int(fill), antialias=True)
-
-    raise ValueError(
-        f"augmentation.resize.mode must be 'letterbox', 'resize', or 'stretch', got {mode!r}"
-    )
+    fill = resize_cfg.get('letterbox_fill', aug_config.get('letterbox_fill', 114))
+    return LetterboxResize(size=target_size, fill=int(fill), antialias=True)

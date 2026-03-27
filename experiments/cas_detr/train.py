@@ -553,7 +553,10 @@ class CaS_DETRTrainer:
         """
         self.config = config
         self.config_file_path = config_file_path
-        
+        # 供 eval_metrics CSV / benchmark 打印：model 列使用配置文件名（stem），如 rtdetr_r18_uadetrac_enc1
+        if config_file_path:
+            self.config["_config_path"] = str(Path(config_file_path).resolve())
+
         # 如果使用配置文件，验证必需的配置项
         if config_file_path:
             self._validate_config_file()
@@ -1815,7 +1818,7 @@ class CaS_DETRTrainer:
                         nh = max(1, int(round(float(orig_h) * sc)))
                         nw = max(1, int(round(float(orig_w) * sc)))
                     else:
-                        # stretch / resize 等非 letterbox：整幅 tensor 为有效内容
+                        # 无 letterbox 元信息时：整幅 tensor 视为内容区（兼容旧数据）
                         pl = pt = 0.0
                         nh, nw = H_tensor, W_tensor
 

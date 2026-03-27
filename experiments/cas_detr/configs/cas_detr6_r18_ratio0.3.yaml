@@ -22,7 +22,7 @@ model:
   num_decoder_layers: 3
   hidden_dim: 256
   decoder_hidden_dim: 256
-  num_queries: 100
+  num_queries: 300
   cas_detr:
     token_keep_ratio: 0.3
     use_cass: true
@@ -88,7 +88,6 @@ augmentation:
   horizontal_flip_p: 0.5
   letterbox_fill: 114
   resize:
-    mode: letterbox
     letterbox_fill: 114
 checkpoint:
   resume_mode: auto

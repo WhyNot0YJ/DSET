@@ -35,13 +35,9 @@ if str(project_root.parent) not in sys.path:
 
 # Import from batch_inference
 try:
-    from batch_inference import load_model, preprocess_image, resize_mode_from_augmentation_config
+    from batch_inference import load_model, preprocess_image
 except ImportError:
-    from experiments.cas_detr.batch_inference import (
-        load_model,
-        preprocess_image,
-        resize_mode_from_augmentation_config,
-    )
+    from experiments.cas_detr.batch_inference import load_model, preprocess_image
 
 from src.data.transforms.letterbox_geom import align_feature_map_to_original_np
 
@@ -167,7 +163,6 @@ def run_visualization(
     output_dir=None,
     target_size=640,
     mode='teaser',
-    resize_mode='letterbox',
     letterbox_fill=0,
 ):
     """
@@ -183,7 +178,6 @@ def run_visualization(
         str(image_path),
         target_size=target_size,
         letterbox_fill=letterbox_fill,
-        resize_mode=resize_mode,
     )
     img_tensor = img_tensor.to(device)
     
@@ -474,7 +468,7 @@ if __name__ == "__main__":
                         help="Visualization mode: 'teaser' (binary mask, 3-color) or 'heatmap' (continuous scores)")
     parser.add_argument("--output_dir", type=str, default=None, help="Output directory")
     parser.add_argument("--device", type=str, default="cuda", help="Device (cuda/cpu)")
-    parser.add_argument("--target_size", type=int, default=640, help="Inference size")
+    parser.add_argument("--target_size", type=int, default=None, help="Inference size; defaults to augmentation.target_size in config")
     
     args = parser.parse_args()
     
@@ -486,14 +480,14 @@ if __name__ == "__main__":
     _aug = _cfg.get("augmentation") or {}
     _r = _aug.get("resize") or {}
     _lb_fill = int(_r.get("letterbox_fill", _aug.get("letterbox_fill", 0)))
+    _target_size = int(args.target_size) if args.target_size is not None else int(_aug.get("target_size", 640))
 
     run_visualization(
         model,
         args.image,
         device=args.device,
         output_dir=args.output_dir,
-        target_size=args.target_size,
+        target_size=_target_size,
         mode=args.mode,
-        resize_mode=resize_mode_from_augmentation_config(args.config),
         letterbox_fill=_lb_fill,
     )
