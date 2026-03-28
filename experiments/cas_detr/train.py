@@ -944,6 +944,7 @@ class CaS_DETRTrainer:
             expert_clone_count = 0
             
             final_state_dict = {}
+            standard_decoder_ffn_load_count = 0
             # 第一步：收集需要克隆的 Decoder FFN 权重
             decoder_ffn_weights_to_clone = {}  # {layer_idx: {'linear1.weight': tensor, 'linear1.bias': tensor, ...}}
             # 跟踪成功克隆的FFN权重键名（用于从missing_keys中排除）
@@ -968,11 +969,30 @@ class CaS_DETRTrainer:
                     layer_idx = int(decoder_ffn_match.group(1))
                     linear_name = decoder_ffn_match.group(2)  # 'linear1' or 'linear2'
                     param_type = decoder_ffn_match.group(3)  # 'weight' or 'bias'
-                    
+
+                    # 标准 Decoder：直接把预训练 FFN 权重映射回 linear1/linear2，
+                    # 仅 Decoder MoE 需要暂存后克隆到 experts。
+                    if not model.enable_decoder_moe:
+                        decoder_candidates = [
+                            f'decoder.decoder.layers.{layer_idx}.{linear_name}.{param_type}',
+                            f'decoder.layers.{layer_idx}.{linear_name}.{param_type}',
+                        ]
+                        matched = False
+                        for canonical in decoder_candidates:
+                            if canonical in model_state_dict and v.shape == model_state_dict[canonical].shape:
+                                final_state_dict[canonical] = v
+                                load_count += 1
+                                standard_decoder_ffn_load_count += 1
+                                matched = True
+                                break
+                        if not matched:
+                            mismatch_count += 1
+                        continue
+
                     if layer_idx not in decoder_ffn_weights_to_clone:
                         decoder_ffn_weights_to_clone[layer_idx] = {}
                     decoder_ffn_weights_to_clone[layer_idx][f'{linear_name}.{param_type}'] = v
-                    continue  # 暂时跳过，稍后处理
+                    continue  # MoE Decoder 暂存 FFN，稍后克隆到 experts
                 
                 # 检测Encoder层的FFN权重
                 # 支持多种格式：
@@ -1149,6 +1169,8 @@ class CaS_DETRTrainer:
             self.logger.info(f"✓ 成功加载权重参数: {load_count} 个")
             if expert_clone_count > 0:
                 self.logger.info(f"  - 专家克隆总计: {expert_clone_count} 个参数")
+            if standard_decoder_ffn_load_count > 0:
+                self.logger.info(f"  - 标准Decoder FFN直载: {standard_decoder_ffn_load_count} 个参数")
             if mismatch_count > 0:
                 self.logger.info(f"  - 维度不匹配跳过: {mismatch_count} 个参数")
             
