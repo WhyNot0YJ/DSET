@@ -183,6 +183,7 @@ declare -A MOE_RTDETR_CONFIGS=(
 
 declare -A CaS_DETR_CONFIGS=(
     ["cas_detr6-r18-0.5-dairv2x-prune-only"]="cas_detr/configs/cas_detr6_r18_ratio0.5_prune_only.yaml"
+    ["cas_detr6-r18-0.5-uadetrac-prune-only"]="cas_detr/configs/cas_detr6_r18_ratio0.5_prune_only_uadetrac.yaml"
     ["cas_detr6-r18-0.3-dairv2x"]="cas_detr/configs/cas_detr6_r18_ratio0.3.yaml"
     ["cas_detr6-r18-0.5-dairv2x"]="cas_detr/configs/cas_detr6_r18_ratio0.5.yaml"
     ["cas_detr6-r18-0.7-dairv2x"]="cas_detr/configs/cas_detr6_r18_ratio0.7.yaml"
