@@ -45,107 +45,17 @@ from common.model_benchmark import (
     merge_benchmark_dict_into_metrics,
 )
 from common.det_eval_metrics import (
+    coco_ap_at_iou50_all,
+    coco_area_ap_at_iou50,
     coco_area_bucket_counts_from_xywh_annotations,
+    coco_gt_with_difficulty_iscrowd,
+    extract_per_category_ap_from_coco_eval,
     format_area_bucket_counts,
+    kitti_difficulty_from_coco_ann,
+    run_coco_bbox_eval,
 )
 
-from yolo_validator_utils import MetricsLogger, MultiScaleMetricsCalculator
-
-
-# ---------------------------------------------------------------------------
-# Module-level AP helpers (used by BaseYOLOTrainer._evaluate_kitti_scale_*)
-# ---------------------------------------------------------------------------
-
-def _iou_xyxy(a, b) -> float:
-    """IoU between two (x1,y1,x2,y2) boxes."""
-    ax1, ay1, ax2, ay2 = a
-    bx1, by1, bx2, by2 = b
-    ix1, iy1 = max(ax1, bx1), max(ay1, by1)
-    ix2, iy2 = min(ax2, bx2), min(ay2, by2)
-    iw = max(0.0, ix2 - ix1)
-    ih = max(0.0, iy2 - iy1)
-    inter = iw * ih
-    if inter <= 0:
-        return 0.0
-    aa = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
-    ba = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
-    union = aa + ba - inter
-    return inter / union if union > 0 else 0.0
-
-
-def _compute_ap_for_class(preds, pos_gt_by_img, ign_gt_by_img, iou_thr=0.5) -> float:
-    """
-    VOC-style AP (AUC with monotone precision envelope) for one class.
-
-    preds         : [(img_idx, score, xyxy_list), ...]
-    pos_gt_by_img : {img_idx: [xyxy, ...]}  positive GT boxes
-    ign_gt_by_img : {img_idx: [xyxy, ...]}  ignore GT boxes
-                    (predictions matching these are skipped – neither TP nor FP)
-    """
-    n_pos = sum(len(v) for v in pos_gt_by_img.values())
-    if n_pos == 0 or not preds:
-        return 0.0
-
-    preds_sorted = sorted(preds, key=lambda x: -x[1])
-    matched = {img_idx: [False] * len(boxes) for img_idx, boxes in pos_gt_by_img.items()}
-    tps: List[int] = []
-    fps: List[int] = []
-
-    for img_idx, _score, pred_box in preds_sorted:
-        # 1) 先尝试匹配正样本 GT（pos 优先于 ign）
-        pos_boxes = pos_gt_by_img.get(img_idx, [])
-        best_iou, best_j = 0.0, -1
-        for j, gt_box in enumerate(pos_boxes):
-            iou = _iou_xyxy(pred_box, gt_box)
-            if iou > best_iou:
-                best_iou, best_j = iou, j
-
-        if best_iou >= iou_thr and best_j >= 0 and not matched[img_idx][best_j]:
-            tps.append(1)
-            fps.append(0)
-            matched[img_idx][best_j] = True
-            continue
-
-        # 2) 未匹配到 pos → 查 ign：若与 ign GT 重叠则跳过（不算 FP）
-        ign_boxes = ign_gt_by_img.get(img_idx, [])
-        if ign_boxes and max(_iou_xyxy(pred_box, gb) for gb in ign_boxes) >= iou_thr:
-            continue
-
-        # 3) 既不匹配 pos 也不在 ign 区域 → FP
-        tps.append(0)
-        fps.append(1)
-
-    if not tps:
-        return 0.0
-
-    tp_c = np.cumsum(tps, dtype=float)
-    fp_c = np.cumsum(fps, dtype=float)
-    recalls = tp_c / n_pos
-    precisions = tp_c / (tp_c + fp_c)
-
-    mrec = np.concatenate(([0.0], recalls, [1.0]))
-    mpre = np.concatenate(([0.0], precisions, [0.0]))
-    for i in range(len(mpre) - 1, 0, -1):
-        mpre[i - 1] = max(mpre[i - 1], mpre[i])
-    idx = np.where(mrec[1:] != mrec[:-1])[0]
-    return float(np.sum((mrec[idx + 1] - mrec[idx]) * mpre[idx + 1]))
-
-
-# 与 COCO 检测 AP 一致：0.50, 0.55, …, 0.95 共 10 档，用于「面积 S/M/L 的 mAP@0.5:0.95」
-IOU_THRESHOLDS_COCO = tuple(float(x) for x in np.linspace(0.5, 0.95, 10))
-
-
-def _compute_ap_mean_over_ious(
-    preds, pos_gt_by_img, ign_gt_by_img, iou_thresholds
-) -> float:
-    """多 IoU 阈值下各类 AP 的算术平均（与 COCO 的 AP@0.5:0.95 口径一致）。"""
-    if not iou_thresholds:
-        return 0.0
-    vals = [
-        _compute_ap_for_class(preds, pos_gt_by_img, ign_gt_by_img, iou_thr=float(t))
-        for t in iou_thresholds
-    ]
-    return float(np.mean(vals))
+from yolo_validator_utils import MetricsLogger
 
 
 class BaseYOLOTrainer(ABC):
@@ -448,35 +358,6 @@ class BaseYOLOTrainer(ABC):
             raise
     
     # ------------------------------------------------------------------
-    # Truncation normalisation
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _normalize_truncation(tr: float, *, dair_categorical: bool = False) -> float:
-        """
-        Map dataset-specific truncation fields to a KITTI-style ratio in [0, 1]
-        for ``categorize_by_kitti_difficulty`` (thresholds 0.15 / 0.30 / 0.50).
-
-        **DAIR-V2X（官方）**：``truncated_state ∈ {0,1,2}`` 表示
-        不截断 / **横向截断** / **纵向截断**，不是「被截断的百分比」。
-        这里将 1、2 映射为同一代理比例（均视为「有截断」、且 ≤ hard 上限），
-        横向与纵向在 KITTI 难度里不区分轴向，仅区分是否超过比例阈值。
-
-        **UA-DETRAC**：``truncated_state`` 为连续截断比例，直接裁剪到 [0, 1]。
-        """
-        tr = float(tr)
-        if dair_categorical:
-            k = int(round(tr))
-            if k == 0:
-                return 0.0
-            if k == 1:
-                return 0.20   # 横向截断 → 通过 moderate(≤0.30) 和 hard(≤0.50)
-            if k == 2:
-                return 0.40   # 纵向截断 → 只通过 hard(≤0.50)
-            return max(0.0, min(1.0, tr))
-        return max(0.0, min(1.0, tr))
-
-    # ------------------------------------------------------------------
     # Post-training KITTI / multi-scale evaluation
     # ------------------------------------------------------------------
 
@@ -672,11 +553,15 @@ class BaseYOLOTrainer(ABC):
                 self.logger.info(f"📊 评估 [{eval_split}, {len(eval_images)} 张]")
 
                 # ── 4. Collect GT and raw predictions ───────────────────────
-                gt_info: Dict[int, list] = {c: [] for c in range(nc)}
-                preds_by_cls: Dict[int, list] = {c: [] for c in range(nc)}
                 debug_gt_annotations: List[Dict[str, Any]] = []
                 debug_pred_annotations: List[Dict[str, Any]] = []
                 debug_image_ids: set[int] = set()
+                # COCOeval（与 DETR 同：kitti_difficulty_from_coco_ann + iscrowd 三档 / 全类 mAP / S/M/L / 每类 AP）
+                img_sizes: Dict[int, Tuple[int, int]] = {}
+                coco_annotations: List[Dict[str, Any]] = []
+                ann_difficulties: List[str] = []
+                coco_predictions: List[Dict[str, Any]] = []
+                ann_id = 0
 
                 BATCH = 32
                 for batch_start in range(0, len(eval_images), BATCH):
@@ -689,6 +574,7 @@ class BaseYOLOTrainer(ABC):
                     ):
                         img_idx = batch_start + i_in_batch
                         img_h, img_w = result.orig_shape
+                        img_sizes[img_idx] = (int(img_w), int(img_h))
                         debug_image_ids.add(img_idx)
                         raw = json.loads(
                             meta_by_stem[img_path.stem].read_text(encoding='utf-8')
@@ -722,16 +608,26 @@ class BaseYOLOTrainer(ABC):
                                 continue
 
                             occ = float(entry.get('occluded_state', 0))
-                            tr = self._normalize_truncation(
-                                float(entry.get('truncated_state', 0)),
-                                dair_categorical=dair_categorical,
+                            tr_raw = float(entry.get('truncated_state', 0))
+                            level = kitti_difficulty_from_coco_ann(
+                                {
+                                    "bbox": [float(px1), float(py1), float(w_px), float(h_px)],
+                                    "occluded_state": occ,
+                                    "truncated_state": tr_raw,
+                                },
+                                dair_categorical_trunc=dair_categorical,
                             )
-                            diff = MultiScaleMetricsCalculator.categorize_by_kitti_difficulty(
-                                h_px, occ, tr
-                            )
-                            scale = MultiScaleMetricsCalculator.categorize_by_scale(area_px)
-                            gt_info[cls].append(
-                                (img_idx, (px1, py1, px2, py2), diff, scale, h_px)
+                            ann_difficulties.append(level)
+                            ann_id += 1
+                            coco_annotations.append(
+                                {
+                                    "id": ann_id,
+                                    "image_id": img_idx,
+                                    "category_id": cls + 1,
+                                    "bbox": [float(px1), float(py1), float(w_px), float(h_px)],
+                                    "area": float(w_px * h_px),
+                                    "iscrowd": 0,
+                                }
                             )
                             debug_gt_annotations.append(
                                 {
@@ -750,11 +646,18 @@ class BaseYOLOTrainer(ABC):
                                 c = int(cls_t)
                                 if 0 <= c < nc:
                                     box_list = box.tolist()
-                                    preds_by_cls[c].append((img_idx, float(conf), box_list))
                                     x1, y1, x2, y2 = map(float, box_list)
                                     w_px = x2 - x1
                                     h_px = y2 - y1
                                     if w_px > 0 and h_px > 0:
+                                        coco_predictions.append(
+                                            {
+                                                "image_id": img_idx,
+                                                "category_id": c + 1,
+                                                "bbox": [x1, y1, w_px, h_px],
+                                                "score": float(conf),
+                                            }
+                                        )
                                         debug_pred_annotations.append(
                                             {
                                                 "image_id": img_idx,
@@ -774,74 +677,89 @@ class BaseYOLOTrainer(ABC):
                         format_area_bucket_counts("pred", pred_counts),
                     )
 
-                # ── 5. AP：难度 + scale + per-class ─────────────────────────
-                DIFF_INCLUDE = {
-                    'easy':     {'easy'},
-                    'moderate': {'moderate'},
-                    'hard':     {'hard'},
-                }
-                SCALE_LEVELS = ('small', 'medium', 'large')
+                # ── 5. AP：KITTI E/M/H（与 DETR ``_compute_difficulty_aps`` 同：三次 COCOeval + iscrowd）
+                #        + 全类 mAP / S/M/L / 每类 AP（一次 COCOeval，全 GT iscrowd=0）
                 metrics: Dict[str, Any] = {}
 
-                _MIN_H = MultiScaleMetricsCalculator.MIN_HEIGHT
-                for diff_key, include in DIFF_INCLUDE.items():
-                    aps = []
-                    for cls in range(nc):
-                        pos: Dict[int, list] = {}
-                        ign: Dict[int, list] = {}
-                        for img_idx, xyxy, d, _s, _h in gt_info[cls]:
-                            if d in include:
-                                pos.setdefault(img_idx, []).append(xyxy)
-                            else:
-                                ign.setdefault(img_idx, []).append(xyxy)
-                        aps.append(_compute_ap_for_class(preds_by_cls[cls], pos, ign))
-                    metrics[f'mAP_{diff_key}'] = float(np.mean(aps))
+                categories_coco = [
+                    {'id': i + 1, 'name': class_names[i]} for i in range(nc)
+                ]
+                coco_gt = {
+                    'images': [
+                        {
+                            'id': i,
+                            'width': img_sizes[i][0],
+                            'height': img_sizes[i][1],
+                        }
+                        for i in range(len(eval_images))
+                    ],
+                    'categories': categories_coco,
+                    'annotations': coco_annotations,
+                }
 
-                for scale in SCALE_LEVELS:
-                    aps50: List[float] = []
-                    aps5095: List[float] = []
-                    for cls in range(nc):
-                        pos: Dict[int, list] = {}
-                        ign: Dict[int, list] = {}
-                        for img_idx, xyxy, _d, s, h in gt_info[cls]:
-                            if s == scale:
-                                pos.setdefault(img_idx, []).append(xyxy)
-                            else:
-                                ign.setdefault(img_idx, []).append(xyxy)
-                        aps50.append(
-                            _compute_ap_for_class(preds_by_cls[cls], pos, ign, iou_thr=0.5)
-                        )
-                        aps5095.append(
-                            _compute_ap_mean_over_ious(
-                                preds_by_cls[cls], pos, ign, IOU_THRESHOLDS_COCO
-                            )
-                        )
-                    metrics[f'mAP_{scale}'] = float(np.mean(aps50))
-                    metrics[f'mAP_{scale}_5095'] = float(np.mean(aps5095))
+                for k in ('easy', 'moderate', 'hard'):
+                    gt_k = coco_gt_with_difficulty_iscrowd(
+                        coco_gt, ann_difficulties, k
+                    )
+                    ev_k = run_coco_bbox_eval(gt_k, coco_predictions)
+                    metrics[f'mAP_{k}'] = coco_ap_at_iou50_all(ev_k)
 
+                coco_eval = run_coco_bbox_eval(coco_gt, coco_predictions)
                 per_cls_50: List[float] = []
                 per_cls_5095: List[float] = []
-                for cls in range(nc):
-                    pos_all: Dict[int, list] = {}
-                    ign_all: Dict[int, list] = {}
-                    for img_idx, xyxy, _d, _s, h in gt_info[cls]:
-                        if h >= _MIN_H:
-                            pos_all.setdefault(img_idx, []).append(xyxy)
-                        else:
-                            ign_all.setdefault(img_idx, []).append(xyxy)
-                    ap50 = _compute_ap_for_class(
-                        preds_by_cls[cls], pos_all, ign_all, iou_thr=0.5
+                if coco_eval is None:
+                    self.logger.warning(
+                        f"[{eval_split}] COCOeval 未运行（无 GT 或 pycocotools 不可用），"
+                        'COCO 口径指标置 0'
                     )
-                    ap5095 = _compute_ap_mean_over_ious(
-                        preds_by_cls[cls], pos_all, ign_all, IOU_THRESHOLDS_COCO
+                    metrics['mAP_50_all'] = 0.0
+                    metrics['mAP_5095_all'] = 0.0
+                    metrics['mAP_small'] = 0.0
+                    metrics['mAP_medium'] = 0.0
+                    metrics['mAP_large'] = 0.0
+                    metrics['mAP_small_5095'] = 0.0
+                    metrics['mAP_medium_5095'] = 0.0
+                    metrics['mAP_large_5095'] = 0.0
+                    per_cls_50 = [0.0] * nc
+                    per_cls_5095 = [0.0] * nc
+                    for i in range(nc):
+                        nm = class_names[i]
+                        metrics[f'AP50_{nm}'] = 0.0
+                        metrics[f'AP5095_{nm}'] = 0.0
+                else:
+                    metrics['mAP_50_all'] = coco_ap_at_iou50_all(coco_eval)
+                    metrics['mAP_5095_all'] = (
+                        max(0.0, float(coco_eval.stats[0]))
+                        if len(coco_eval.stats) > 0
+                        else 0.0
                     )
-                    per_cls_50.append(ap50)
-                    per_cls_5095.append(ap5095)
-                    metrics[f'AP50_{class_names[cls]}'] = ap50
-                    metrics[f'AP5095_{class_names[cls]}'] = ap5095
+                    s50, m50, l50 = coco_area_ap_at_iou50(coco_eval)
+                    metrics['mAP_small'] = s50
+                    metrics['mAP_medium'] = m50
+                    metrics['mAP_large'] = l50
+                    if len(coco_eval.stats) >= 6:
+                        metrics['mAP_small_5095'] = max(0.0, float(coco_eval.stats[3]))
+                        metrics['mAP_medium_5095'] = max(0.0, float(coco_eval.stats[4]))
+                        metrics['mAP_large_5095'] = max(0.0, float(coco_eval.stats[5]))
+                    else:
+                        metrics['mAP_small_5095'] = 0.0
+                        metrics['mAP_medium_5095'] = 0.0
+                        metrics['mAP_large_5095'] = 0.0
 
-                metrics['mAP_50_all'] = float(np.mean(per_cls_50))
-                metrics['mAP_5095_all'] = float(np.mean(per_cls_5095))
+                    per_cat_50, per_cat_5095 = extract_per_category_ap_from_coco_eval(
+                        coco_eval, categories_coco
+                    )
+                    per_cls_50 = [
+                        per_cat_50.get(class_names[i], 0.0) for i in range(nc)
+                    ]
+                    per_cls_5095 = [
+                        per_cat_5095.get(class_names[i], 0.0) for i in range(nc)
+                    ]
+                    for i in range(nc):
+                        nm = class_names[i]
+                        metrics[f'AP50_{nm}'] = per_cat_50.get(nm, 0.0)
+                        metrics[f'AP5095_{nm}'] = per_cat_5095.get(nm, 0.0)
+
                 metrics['eval_split'] = eval_split
                 merge_benchmark_dict_into_metrics(metrics, bench_dict)
 

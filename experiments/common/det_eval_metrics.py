@@ -1,21 +1,27 @@
 """
 DETR / YOLO 共用的 KITTI 难度与 COCO 评估辅助。
 
-- 难度分档：与 ``yolo_validator_utils.MultiScaleMetricsCalculator.categorize_by_kitti_difficulty``
-  及 ``BaseYOLOTrainer._normalize_truncation`` 一致，便于与 YOLO 训练后 KITTI 评估对比。
-- AP_easy / moderate / hard：DETR 侧应取 COCOeval.stats[1]（AP@IoU=0.50），与 YOLO 的 mAP@0.5 口径一致；
-  stats[0] 为 AP@0.5:0.95，不宜与 YOLO 的 KITTI 难度表直接对比。
-- AP_small/medium/large：COCO 默认 stats[3:6] 为 0.5:0.95 按面积均值；YOLO 训练后多尺度为 IoU=0.50 单阈值。
-  本模块提供 ``coco_area_ap_at_iou50`` 供「与 YOLO 公平对比」。
+- 难度分档：``kitti_difficulty_from_coco_ann`` / ``normalize_truncation``（DAIR 截断映射与 DETR 一致）。
+- AP_easy / moderate / hard：DETR 与 YOLO 均为「三次 COCOeval + 非本档 iscrowd=1」，
+  再取 ``coco_ap_at_iou50_all``（stats[1]，AP@0.5）；勿用 stats[0] 与 KITTI 难度表对比。
+- AP_small/medium/large @0.5：``coco_area_ap_at_iou50``；@0.5:0.95 可用 stats[3:6]。
 """
 
 from __future__ import annotations
 
 import csv
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
+
+# pycocotools（与 DETR / YOLO COCOeval 路径共用）
+try:
+    from pycocotools.coco import COCO
+    from pycocotools.cocoeval import COCOeval
+except ImportError:  # pragma: no cover
+    COCO = None  # type: ignore[misc, assignment]
+    COCOeval = None  # type: ignore[misc, assignment]
 
 # 与 yolo_validator_utils.MultiScaleMetricsCalculator 一致
 SMALL_AREA_THRESHOLD = 32 * 32
@@ -99,6 +105,23 @@ def kitti_difficulty_from_coco_ann(
     return kitti_difficulty_label(h, occ, tr, dair_categorical_trunc=dair_categorical_trunc)
 
 
+def coco_gt_with_difficulty_iscrowd(
+    coco_gt: Dict[str, Any],
+    ann_difficulties: Sequence[str],
+    target_level: str,
+) -> Dict[str, Any]:
+    """
+    与 DETR ``_compute_difficulty_aps`` 一致：仅 ``target_level``（easy|moderate|hard）档 GT 为
+    ``iscrowd=0``，其余难度（含 ignore）为 ``iscrowd=1``，再交给 ``COCOeval``。
+    """
+    anns: List[Dict[str, Any]] = []
+    for ann, lev in zip(coco_gt["annotations"], ann_difficulties):
+        a = dict(ann)
+        a["iscrowd"] = 1 if lev != target_level else 0
+        anns.append(a)
+    return {**coco_gt, "annotations": anns}
+
+
 def coco_ap_at_iou50_all(coco_eval) -> float:
     """
     主 AP@IoU=0.50（COCOeval.stats[1]）。
@@ -132,6 +155,93 @@ def coco_area_ap_at_iou50(coco_eval) -> Tuple[float, float, float]:
         p = p[p > -1]
         out.append(float(np.mean(p)) if p.size > 0 else 0.0)
     return out[0], out[1], out[2]
+
+
+def extract_per_category_ap_from_coco_eval(
+    coco_eval: Any,
+    categories: List[Dict[str, Any]],
+) -> Tuple[Dict[str, float], Dict[str, float]]:
+    """
+    从 ``COCOeval.accumulate()`` 后的 ``precision[T,R,K,A,M]`` 提取每类 AP@0.5 与 AP@0.5:0.95。
+
+    与 ``cas_detr/train.py`` 原 ``_extract_per_category_ap_from_eval`` 逻辑一致，供 DETR / YOLO 共用。
+    """
+    per_cat_50 = {str(cat["name"]): 0.0 for cat in categories}
+    per_cat_5095 = {str(cat["name"]): 0.0 for cat in categories}
+    if coco_eval is None or not hasattr(coco_eval, "eval") or "precision" not in coco_eval.eval:
+        return per_cat_50, per_cat_5095
+
+    try:
+        precision = coco_eval.eval["precision"]
+        area_index = 0
+        max_det_index = len(coco_eval.params.maxDets) - 1
+        cat_id_to_index = {cat_id: idx for idx, cat_id in enumerate(coco_eval.params.catIds)}
+
+        for cat in categories:
+            cat_id = cat["id"]
+            cat_name = str(cat["name"])
+            if cat_id not in cat_id_to_index:
+                continue
+
+            cat_index = cat_id_to_index[cat_id]
+            p50 = precision[0, :, cat_index, area_index, max_det_index]
+            v50 = p50[p50 > -1]
+            per_cat_50[cat_name] = float(np.mean(v50)) if v50.size > 0 else 0.0
+            p5095 = precision[:, :, cat_index, area_index, max_det_index]
+            v5095 = p5095[p5095 > -1]
+            per_cat_5095[cat_name] = float(np.mean(v5095)) if v5095.size > 0 else 0.0
+    except Exception:
+        pass
+
+    return per_cat_50, per_cat_5095
+
+
+def run_coco_bbox_eval(
+    coco_gt: Dict[str, Any],
+    predictions: List[Dict[str, Any]],
+) -> Optional[Any]:
+    """
+    对 COCO 格式的 ``gt`` + 检测 ``predictions`` 跑一次 ``COCOeval``（bbox），抑制 stdout。
+
+    Returns:
+        ``coco_eval`` 或失败时 ``None``（例如未安装 pycocotools、无有效 GT）。
+    """
+    if COCO is None or COCOeval is None:
+        return None
+    if not coco_gt.get("annotations"):
+        return None
+
+    from io import StringIO
+    import sys
+
+    try:
+        coco_gt_obj = COCO()
+        coco_gt_obj.dataset = coco_gt
+        old_stdout = sys.stdout
+        sys.stdout = StringIO()
+        try:
+            coco_gt_obj.createIndex()
+        finally:
+            sys.stdout = old_stdout
+
+        sys.stdout = StringIO()
+        try:
+            coco_dt = coco_gt_obj.loadRes(predictions)
+        finally:
+            sys.stdout = old_stdout
+
+        coco_eval = COCOeval(coco_gt_obj, coco_dt, "bbox")
+        sys.stdout = StringIO()
+        try:
+            coco_eval.evaluate()
+            coco_eval.accumulate()
+            coco_eval.summarize()
+        finally:
+            sys.stdout = old_stdout
+
+        return coco_eval
+    except Exception:
+        return None
 
 
 def coco_area_bucket_name(area: float) -> str:

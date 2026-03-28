@@ -26,6 +26,7 @@ from common.det_eval_metrics import (
     coco_area_ap_at_iou50,
     coco_area_bucket_counts_from_xywh_annotations,
     dataset_dir_name,
+    extract_per_category_ap_from_coco_eval,
     format_area_bucket_counts,
 )
 from common.detr_eval_utils import (
@@ -2397,34 +2398,7 @@ class CaS_DETRTrainer:
         self, coco_eval, categories: List[Dict]
     ) -> Tuple[Dict[str, float], Dict[str, float]]:
         """从一次 COCOeval 的 precision[T,R,K,A,M] 提取各类别 AP@50 与 AP@0.5:0.95（T=0 为 IoU=0.5）。"""
-        per_cat_50 = {cat["name"]: 0.0 for cat in categories}
-        per_cat_5095 = {cat["name"]: 0.0 for cat in categories}
-        if coco_eval is None or not hasattr(coco_eval, "eval") or "precision" not in coco_eval.eval:
-            return per_cat_50, per_cat_5095
-
-        try:
-            precision = coco_eval.eval["precision"]
-            area_index = 0
-            max_det_index = len(coco_eval.params.maxDets) - 1
-            cat_id_to_index = {cat_id: idx for idx, cat_id in enumerate(coco_eval.params.catIds)}
-
-            for cat in categories:
-                cat_id = cat["id"]
-                cat_name = cat["name"]
-                if cat_id not in cat_id_to_index:
-                    continue
-
-                cat_index = cat_id_to_index[cat_id]
-                p50 = precision[0, :, cat_index, area_index, max_det_index]
-                v50 = p50[p50 > -1]
-                per_cat_50[cat_name] = float(np.mean(v50)) if v50.size > 0 else 0.0
-                p5095 = precision[:, :, cat_index, area_index, max_det_index]
-                v5095 = p5095[p5095 > -1]
-                per_cat_5095[cat_name] = float(np.mean(v5095)) if v5095.size > 0 else 0.0
-        except Exception as e:
-            self.logger.debug(f"从COCOeval提取每类AP失败: {e}")
-
-        return per_cat_50, per_cat_5095
+        return extract_per_category_ap_from_coco_eval(coco_eval, categories)
     
     def _compute_map_metrics(self, predictions: List[Dict], targets: List[Dict], 
                              image_id_to_size: Dict[int, Tuple[int, int]] = None,
