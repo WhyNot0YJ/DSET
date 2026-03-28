@@ -199,6 +199,8 @@ declare -A YOLOV8_CONFIGS=(
     ["yolov8n-uadetrac"]="yolo/configs/yolov8n_uadetrac.yaml"
     ["yolov8s-dairv2x"]="yolo/configs/yolov8s_dairv2x.yaml"
     ["yolov8s-uadetrac"]="yolo/configs/yolov8s_uadetrac.yaml"
+    ["yolov8m-dairv2x"]="yolo/configs/yolov8m_dairv2x.yaml"
+    ["yolov8m-uadetrac"]="yolo/configs/yolov8m_uadetrac.yaml"
 )
 
 declare -A YOLOV10_CONFIGS=(
@@ -206,6 +208,8 @@ declare -A YOLOV10_CONFIGS=(
     ["yolov10n-uadetrac"]="yolo/configs/yolov10n_uadetrac.yaml"
     ["yolov10s-dairv2x"]="yolo/configs/yolov10s_dairv2x.yaml"
     ["yolov10s-uadetrac"]="yolo/configs/yolov10s_uadetrac.yaml"
+    ["yolov10m-dairv2x"]="yolo/configs/yolov10m_dairv2x.yaml"
+    ["yolov10m-uadetrac"]="yolo/configs/yolov10m_uadetrac.yaml"
 )
 
 declare -A YOLOV11_CONFIGS=(
@@ -213,6 +217,8 @@ declare -A YOLOV11_CONFIGS=(
     ["yolov11n-uadetrac"]="yolo/configs/yolov11n_uadetrac.yaml"
     ["yolov11s-dairv2x"]="yolo/configs/yolov11s_dairv2x.yaml"
     ["yolov11s-uadetrac"]="yolo/configs/yolov11s_uadetrac.yaml"
+    ["yolov11m-dairv2x"]="yolo/configs/yolov11m_dairv2x.yaml"
+    ["yolov11m-uadetrac"]="yolo/configs/yolov11m_uadetrac.yaml"
 )
 
 declare -A YOLOV12_CONFIGS=(
@@ -220,11 +226,15 @@ declare -A YOLOV12_CONFIGS=(
     ["yolov12n-uadetrac"]="yolo/configs/yolov12n_uadetrac.yaml"
     ["yolov12s-dairv2x"]="yolo/configs/yolov12s_dairv2x.yaml"
     ["yolov12s-uadetrac"]="yolo/configs/yolov12s_uadetrac.yaml"
+    ["yolov12m-dairv2x"]="yolo/configs/yolov12m_dairv2x.yaml"
+    ["yolov12m-uadetrac"]="yolo/configs/yolov12m_uadetrac.yaml"
 )
 
 declare -A YOLOX_CONFIGS=(
     ["yoloxs-dairv2x"]="yolo/configs/yoloxs_dairv2x.yaml"
     ["yoloxs-uadetrac"]="yolo/configs/yoloxs_uadetrac.yaml"
+    ["yoloxm-dairv2x"]="yolo/configs/yoloxm_dairv2x.yaml"
+    ["yoloxm-uadetrac"]="yolo/configs/yoloxm_uadetrac.yaml"
 )
 
 declare -A FASTER_RCNN_CONFIGS=(

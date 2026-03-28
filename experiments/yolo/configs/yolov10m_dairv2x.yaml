@@ -1,0 +1,18 @@
+model:
+  model_name: "yolov10m.pt"
+  pretrained_weights: "pretrained/yolov10m.pt"
+
+training:
+  epochs: 100
+  batch_size: 32
+  imgsz: 640
+
+data:
+  data_yaml: "/root/autodl-fs/datasets/DAIR-V2X_YOLO/dairv2x.yaml"
+
+checkpoint:
+  log_dir: "logs"
+
+misc:
+  device: "cuda"
+  num_workers: 2
