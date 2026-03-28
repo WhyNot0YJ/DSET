@@ -10,10 +10,13 @@ DETR / YOLO 共用的 KITTI 难度与 COCO 评估辅助。
 from __future__ import annotations
 
 import csv
+import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
+
+_LOG = logging.getLogger(__name__)
 
 # pycocotools（与 DETR / YOLO COCOeval 路径共用）
 try:
@@ -22,6 +25,9 @@ try:
 except ImportError:  # pragma: no cover
     COCO = None  # type: ignore[misc, assignment]
     COCOeval = None  # type: ignore[misc, assignment]
+
+# 供 YOLO/DETR 日志区分「未安装 pycocotools」与「无 GT」
+PYCOCOTOOLS_AVAILABLE: bool = COCO is not None
 
 # 与 yolo_validator_utils.MultiScaleMetricsCalculator 一致
 SMALL_AREA_THRESHOLD = 32 * 32
@@ -240,7 +246,8 @@ def run_coco_bbox_eval(
             sys.stdout = old_stdout
 
         return coco_eval
-    except Exception:
+    except Exception as exc:
+        _LOG.warning("COCOeval 异常（将跳过该次评估）: %s", exc, exc_info=True)
         return None
 
 

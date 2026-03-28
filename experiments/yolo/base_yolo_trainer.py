@@ -45,6 +45,7 @@ from common.model_benchmark import (
     merge_benchmark_dict_into_metrics,
 )
 from common.det_eval_metrics import (
+    PYCOCOTOOLS_AVAILABLE,
     coco_ap_at_iou50_all,
     coco_area_ap_at_iou50,
     coco_area_bucket_counts_from_xywh_annotations,
@@ -677,6 +678,14 @@ class BaseYOLOTrainer(ABC):
                         format_area_bucket_counts("pred", pred_counts),
                     )
 
+                self.logger.info(
+                    "[%s] COCO 评估输入: pycocotools=%s, GT=%d 条, pred=%d 条",
+                    eval_split,
+                    PYCOCOTOOLS_AVAILABLE,
+                    len(coco_annotations),
+                    len(coco_predictions),
+                )
+
                 # ── 5. AP：KITTI E/M/H（与 DETR ``_compute_difficulty_aps`` 同：三次 COCOeval + iscrowd）
                 #        + 全类 mAP / S/M/L / 每类 AP（一次 COCOeval，全 GT iscrowd=0）
                 metrics: Dict[str, Any] = {}
@@ -708,10 +717,21 @@ class BaseYOLOTrainer(ABC):
                 per_cls_50: List[float] = []
                 per_cls_5095: List[float] = []
                 if coco_eval is None:
-                    self.logger.warning(
-                        f"[{eval_split}] COCOeval 未运行（无 GT 或 pycocotools 不可用），"
-                        'COCO 口径指标置 0'
-                    )
+                    if not PYCOCOTOOLS_AVAILABLE:
+                        self.logger.warning(
+                            f"[{eval_split}] COCOeval 跳过：未安装 pycocotools，"
+                            "请执行: pip install pycocotools  （COCO 口径指标已置 0）"
+                        )
+                    elif not coco_annotations:
+                        self.logger.warning(
+                            f"[{eval_split}] COCOeval 跳过：未解析到任何 GT（labels_meta 与图像是否匹配、"
+                            "bbox_yolo/bbox_xyxy 是否存在），COCO 口径指标置 0"
+                        )
+                    else:
+                        self.logger.warning(
+                            f"[{eval_split}] COCOeval 失败（pycocotools 运行异常），"
+                            "COCO 口径指标置 0"
+                        )
                     metrics['mAP_50_all'] = 0.0
                     metrics['mAP_5095_all'] = 0.0
                     metrics['mAP_small'] = 0.0
