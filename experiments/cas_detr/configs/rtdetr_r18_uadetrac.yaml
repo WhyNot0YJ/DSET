@@ -43,12 +43,12 @@ training:
   early_stopping_metric: mAP_0.5_0.95
   seed: 42
   deterministic: false
+  # 0-based：前 5 个 epoch（0–4）不验证；从 epoch 5 起每轮验证
   eval_schedule:
-    - until_epoch: 20
-      every: 10
+    - until_epoch: 5
+      enabled: false
     - until_epoch: null
-      since_epoch: 20
-      every: 2
+      always: true
 data:
   data_root: /root/autodl-fs/datasets/UA-DETRAC_COCO
   dataset_class: CocoFolderDetection
@@ -62,7 +62,19 @@ augmentation:
   target_size: 640
   stop_epoch: 21
   scales:
+    - 480
+    - 512
+    - 544
+    - 576
+    - 608
     - 640
+    - 640
+    - 640
+    - 672
+    - 704
+    - 736
+    - 768
+    - 800
   normalize_mean:
     - 0.485
     - 0.456

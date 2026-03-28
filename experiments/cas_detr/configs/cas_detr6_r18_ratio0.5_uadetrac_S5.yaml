@@ -1,5 +1,5 @@
 # CaS-DETR（UA-DETRAC，仅 S5 进 Hybrid Encoder；ratio0.5 + _S5）
-# augmentation 与 rt-detr/configs/rtdetr_r18_uadetrac.yaml 对齐（含 576–704 多尺度）
+# augmentation 与 rt-detr/configs/rtdetr_r18_uadetrac.yaml 对齐（含 480–800 多尺度，步长 32）
 model:
   num_experts: 6
   top_k: 3
@@ -49,12 +49,12 @@ training:
   deterministic: false
   decoder_moe_balance_weight: 0.01
   moe_balance_warmup_epochs: 0
+  # 0-based：前 5 个 epoch（0–4）不验证；从 epoch 5 起每轮验证
   eval_schedule:
-    - until_epoch: 20
-      every: 10
+    - until_epoch: 5
+      enabled: false
     - until_epoch: null
-      since_epoch: 20
-      every: 2
+      always: true
 data:
   data_root: /root/autodl-fs/datasets/UA-DETRAC_COCO
   dataset_class: CocoFolderDetection
@@ -68,7 +68,19 @@ augmentation:
   target_size: 640
   stop_epoch: 21
   scales:
+    - 480
+    - 512
+    - 544
+    - 576
+    - 608
     - 640
+    - 640
+    - 640
+    - 672
+    - 704
+    - 736
+    - 768
+    - 800
   normalize_mean:
     - 0.485
     - 0.456
