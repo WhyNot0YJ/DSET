@@ -37,12 +37,19 @@ from common.vram_batch import (
     resolve_cuda_device_index,
 )
 from common.model_benchmark import (
-    BENCHMARK_EVAL_METRIC_KEYS,
     benchmark_to_dict,
     format_benchmark_eval_line,
-    format_eval_csv_cell,
     log_benchmark,
     merge_benchmark_dict_into_metrics,
+)
+from common.det_eval_metrics import (
+    coco_area_ap_at_iou50,
+    coco_stat,
+    compute_difficulty_aps,
+    dataset_display_name,
+    extract_per_category_ap_from_eval,
+    run_coco_eval,
+    write_eval_csv,
 )
 
 from yolo_validator_utils import MetricsLogger, MultiScaleMetricsCalculator
@@ -613,233 +620,236 @@ class BaseYOLOTrainer(ABC):
             bench_dict = self._benchmark_eval_predictor(eval_predictor)
 
         model_name = self.model_config.get('model_name', f'yolov{self.VERSION}n')
-        if model_name.endswith('.pt'):
-            model_name = model_name[:-3]
-        dataset_name = Path(self.data_config.get('data_yaml', '')).stem or 'unknown'
-        if 'dairv2x' in dataset_name.lower() or 'dair' in dataset_name.lower():
-            dataset_name = 'DAIR-V2X'
-        elif 'uadetrac' in dataset_name.lower() or 'ua-detrac' in dataset_name.lower():
-            dataset_name = 'UA-DETRAC'
-
-        import csv
-        fieldnames = [
-            'model', 'dataset', 'eval_split',
-            'mAP_50_all', 'mAP_5095_all',
-            'mAP_easy', 'mAP_moderate', 'mAP_hard',
-            'mAP_small', 'mAP_medium', 'mAP_large',
-            'mAP_small_5095', 'mAP_medium_5095', 'mAP_large_5095',
-            *BENCHMARK_EVAL_METRIC_KEYS,
-        ]
+        if model_name.endswith(('.pt', '.pth')):
+            model_name = model_name.rsplit('.', 1)[0]
+        dataset_name = dataset_display_name(
+            {'data': {'data_root': self.data_config.get('coco_data_root', '')}}
+        )
         class_names = self.class_names if self.class_names else [f'cls_{i}' for i in range(nc)]
-        for name in class_names:
-            fieldnames.append(f'AP50_{name}')
-            fieldnames.append(f'AP5095_{name}')
-
+        categories = [
+            {'id': cls_idx + 1, 'name': class_names[cls_idx], 'supercategory': 'object'}
+            for cls_idx in range(nc)
+        ]
         summary_csv = self.log_dir.parent / 'eval_metrics.csv'
-        write_header = not summary_csv.exists() or summary_csv.stat().st_size == 0
+        if summary_csv.exists():
+            try:
+                with summary_csv.open('r', encoding='utf-8') as fh:
+                    header = fh.readline().strip()
+                if 'mAP_50_all' in header:
+                    summary_csv = self.log_dir.parent / 'eval_metrics_fair.csv'
+                    self.logger.info(
+                        "检测到旧版 YOLO eval_metrics.csv 列定义；公平评估结果将写入: %s",
+                        summary_csv,
+                    )
+            except Exception:
+                pass
         last_metrics: Dict[str, Any] = {}
-
-        with summary_csv.open('a', newline='', encoding='utf-8') as fh:
-            writer = csv.DictWriter(fh, fieldnames=fieldnames, extrasaction='ignore')
-            if write_header:
-                writer.writeheader()
-
-            for eval_split, eval_img_dir, labels_meta_dir in splits:
-                # ── 3. Per-split: images + meta ───────────────────────────
-                meta_by_stem = {p.stem: p for p in labels_meta_dir.glob('*.json')}
-                if not meta_by_stem:
-                    self.logger.warning(
-                        f"labels_meta/{eval_split} 为空，跳过: {labels_meta_dir}"
-                    )
-                    continue
-
-                eval_images = sorted(
-                    p
-                    for ext in ('.jpg', '.jpeg', '.png')
-                    for p in eval_img_dir.glob(f'*{ext}')
-                    if p.stem in meta_by_stem
+        for eval_split, eval_img_dir, labels_meta_dir in splits:
+            meta_by_stem = {p.stem: p for p in labels_meta_dir.glob('*.json')}
+            if not meta_by_stem:
+                self.logger.warning(
+                    f"labels_meta/{eval_split} 为空，跳过: {labels_meta_dir}"
                 )
-                if not eval_images:
-                    self.logger.warning(
-                        f"{eval_split} 无与 meta 匹配的图像: {eval_img_dir}"
+                continue
+
+            eval_images = sorted(
+                p
+                for ext in ('.jpg', '.jpeg', '.png')
+                for p in eval_img_dir.glob(f'*{ext}')
+                if p.stem in meta_by_stem
+            )
+            if not eval_images:
+                self.logger.warning(
+                    f"{eval_split} 无与 meta 匹配的图像: {eval_img_dir}"
+                )
+                continue
+
+            self.logger.info(f"📊 评估 [{eval_split}, {len(eval_images)} 张]")
+
+            predictions: List[Dict[str, Any]] = []
+            targets: List[Dict[str, Any]] = []
+            image_id_to_size: Dict[int, Tuple[int, int]] = {}
+            default_img_h, default_img_w = imgsz, imgsz
+
+            batch_size = 32
+            for batch_start in range(0, len(eval_images), batch_size):
+                batch_paths = eval_images[batch_start: batch_start + batch_size]
+                batch_results = self._predict_batch_kitti_eval(
+                    eval_predictor, batch_paths, imgsz, device
+                )
+                for i_in_batch, (result, img_path) in enumerate(
+                    zip(batch_results, batch_paths)
+                ):
+                    image_id = batch_start + i_in_batch
+                    img_h, img_w = result.orig_shape
+                    default_img_h, default_img_w = img_h, img_w
+                    image_id_to_size[image_id] = (img_w, img_h)
+
+                    raw = json.loads(
+                        meta_by_stem[img_path.stem].read_text(encoding='utf-8')
                     )
-                    continue
+                    if isinstance(raw, list):
+                        entries = raw
+                    elif isinstance(raw, dict) and 'objects' in raw:
+                        entries = raw['objects']
+                    else:
+                        entries = []
 
-                self.logger.info(f"📊 评估 [{eval_split}, {len(eval_images)} 张]")
-
-                # ── 4. Collect GT and raw predictions ───────────────────────
-                gt_info: Dict[int, list] = {c: [] for c in range(nc)}
-                preds_by_cls: Dict[int, list] = {c: [] for c in range(nc)}
-
-                BATCH = 32
-                for batch_start in range(0, len(eval_images), BATCH):
-                    batch_paths = eval_images[batch_start: batch_start + BATCH]
-                    batch_results = self._predict_batch_kitti_eval(
-                        eval_predictor, batch_paths, imgsz, device
-                    )
-                    for i_in_batch, (result, img_path) in enumerate(
-                        zip(batch_results, batch_paths)
-                    ):
-                        img_idx = batch_start + i_in_batch
-                        img_h, img_w = result.orig_shape
-                        raw = json.loads(
-                            meta_by_stem[img_path.stem].read_text(encoding='utf-8')
-                        )
-                        if isinstance(raw, list):
-                            entries = raw
-                        elif isinstance(raw, dict) and 'objects' in raw:
-                            entries = raw['objects']
+                    for entry in entries:
+                        cls = int(entry['class_id'])
+                        if not (0 <= cls < nc):
+                            continue
+                        if 'bbox_yolo' in entry:
+                            byo = entry['bbox_yolo']
+                            cx, cy, bw, bh = byo['cx'], byo['cy'], byo['w'], byo['h']
+                            x1 = (cx - bw / 2) * img_w
+                            y1 = (cy - bh / 2) * img_h
+                            w = bw * img_w
+                            h = bh * img_h
+                        elif 'bbox_xyxy' in entry:
+                            x1, y1, x2, y2 = map(float, entry['bbox_xyxy'][:4])
+                            w = x2 - x1
+                            h = y2 - y1
                         else:
-                            entries = []
+                            continue
+                        if w <= 0 or h <= 0:
+                            continue
 
-                        for entry in entries:
-                            cls = int(entry['class_id'])
+                        targets.append(
+                            {
+                                'image_id': image_id,
+                                'category_id': cls + 1,
+                                'bbox': [float(x1), float(y1), float(w), float(h)],
+                                'area': float(w * h),
+                                'iscrowd': int(entry.get('iscrowd', 0)),
+                                'occluded_state': float(entry.get('occluded_state', 0)),
+                                'truncated_state': float(entry.get('truncated_state', 0)),
+                                'bbox_height': float(h),
+                            }
+                        )
+
+                    if result.boxes is not None:
+                        for box, conf, cls_t in zip(
+                            result.boxes.xyxy.cpu().numpy(),
+                            result.boxes.conf.cpu().numpy(),
+                            result.boxes.cls.cpu().numpy().astype(int),
+                        ):
+                            cls = int(cls_t)
                             if not (0 <= cls < nc):
                                 continue
-                            if 'bbox_yolo' in entry:
-                                byo = entry['bbox_yolo']
-                                cx, cy, bw, bh = byo['cx'], byo['cy'], byo['w'], byo['h']
-                                px1 = (cx - bw / 2) * img_w
-                                py1 = (cy - bh / 2) * img_h
-                                px2 = (cx + bw / 2) * img_w
-                                py2 = (cy + bh / 2) * img_h
-                            elif 'bbox_xyxy' in entry:
-                                px1, py1, px2, py2 = map(float, entry['bbox_xyxy'][:4])
-                            else:
+                            x1, y1, x2, y2 = map(float, box.tolist())
+                            w = x2 - x1
+                            h = y2 - y1
+                            if w <= 0 or h <= 0:
                                 continue
-                            h_px = py2 - py1
-                            area_px = (px2 - px1) * h_px
-
-                            occ = float(entry.get('occluded_state', 0))
-                            tr = self._normalize_truncation(
-                                float(entry.get('truncated_state', 0)),
-                                dair_categorical=dair_categorical,
-                            )
-                            diff = MultiScaleMetricsCalculator.categorize_by_kitti_difficulty(
-                                h_px, occ, tr
-                            )
-                            scale = MultiScaleMetricsCalculator.categorize_by_scale(area_px)
-                            gt_info[cls].append(
-                                (img_idx, (px1, py1, px2, py2), diff, scale, h_px)
+                            predictions.append(
+                                {
+                                    'image_id': image_id,
+                                    'category_id': cls + 1,
+                                    'bbox': [x1, y1, w, h],
+                                    'score': float(conf),
+                                }
                             )
 
-                        if result.boxes is not None:
-                            for box, conf, cls_t in zip(
-                                result.boxes.xyxy.cpu().numpy(),
-                                result.boxes.conf.cpu().numpy(),
-                                result.boxes.cls.cpu().numpy().astype(int),
-                            ):
-                                c = int(cls_t)
-                                if 0 <= c < nc:
-                                    preds_by_cls[c].append(
-                                        (img_idx, float(conf), box.tolist())
-                                    )
+            metrics: Dict[str, Any] = {
+                'mAP_0.5': 0.0,
+                'mAP_0.75': 0.0,
+                'mAP_0.5_0.95': 0.0,
+                'AP_small': 0.0,
+                'AP_medium': 0.0,
+                'AP_large': 0.0,
+                'AP_small_50': 0.0,
+                'AP_medium_50': 0.0,
+                'AP_large_50': 0.0,
+                'AP_easy': 0.0,
+                'AP_moderate': 0.0,
+                'AP_hard': 0.0,
+            }
+            for name in class_names:
+                metrics[f'AP50_{name}'] = 0.0
+                metrics[f'AP5095_{name}'] = 0.0
 
-                # ── 5. AP：难度 + scale + per-class ─────────────────────────
-                DIFF_INCLUDE = {
-                    'easy':     {'easy'},
-                    'moderate': {'moderate'},
-                    'hard':     {'hard'},
-                }
-                SCALE_LEVELS = ('small', 'medium', 'large')
-                metrics: Dict[str, Any] = {}
-
-                _MIN_H = MultiScaleMetricsCalculator.MIN_HEIGHT
-                for diff_key, include in DIFF_INCLUDE.items():
-                    aps = []
-                    for cls in range(nc):
-                        pos: Dict[int, list] = {}
-                        ign: Dict[int, list] = {}
-                        for img_idx, xyxy, d, _s, _h in gt_info[cls]:
-                            if d in include:
-                                pos.setdefault(img_idx, []).append(xyxy)
-                            else:
-                                ign.setdefault(img_idx, []).append(xyxy)
-                        aps.append(_compute_ap_for_class(preds_by_cls[cls], pos, ign))
-                    metrics[f'mAP_{diff_key}'] = float(np.mean(aps))
-
-                for scale in SCALE_LEVELS:
-                    aps50: List[float] = []
-                    aps5095: List[float] = []
-                    for cls in range(nc):
-                        pos: Dict[int, list] = {}
-                        ign: Dict[int, list] = {}
-                        for img_idx, xyxy, _d, s, h in gt_info[cls]:
-                            if s == scale and h >= _MIN_H:
-                                pos.setdefault(img_idx, []).append(xyxy)
-                            else:
-                                ign.setdefault(img_idx, []).append(xyxy)
-                        aps50.append(
-                            _compute_ap_for_class(preds_by_cls[cls], pos, ign, iou_thr=0.5)
-                        )
-                        aps5095.append(
-                            _compute_ap_mean_over_ious(
-                                preds_by_cls[cls], pos, ign, IOU_THRESHOLDS_COCO
-                            )
-                        )
-                    metrics[f'mAP_{scale}'] = float(np.mean(aps50))
-                    metrics[f'mAP_{scale}_5095'] = float(np.mean(aps5095))
-
-                per_cls_50: List[float] = []
-                per_cls_5095: List[float] = []
-                for cls in range(nc):
-                    pos_all: Dict[int, list] = {}
-                    ign_all: Dict[int, list] = {}
-                    for img_idx, xyxy, _d, _s, h in gt_info[cls]:
-                        if h >= _MIN_H:
-                            pos_all.setdefault(img_idx, []).append(xyxy)
-                        else:
-                            ign_all.setdefault(img_idx, []).append(xyxy)
-                    ap50 = _compute_ap_for_class(
-                        preds_by_cls[cls], pos_all, ign_all, iou_thr=0.5
-                    )
-                    ap5095 = _compute_ap_mean_over_ious(
-                        preds_by_cls[cls], pos_all, ign_all, IOU_THRESHOLDS_COCO
-                    )
-                    per_cls_50.append(ap50)
-                    per_cls_5095.append(ap5095)
-                    metrics[f'AP50_{class_names[cls]}'] = ap50
-                    metrics[f'AP5095_{class_names[cls]}'] = ap5095
-
-                metrics['mAP_50_all'] = float(np.mean(per_cls_50))
-                metrics['mAP_5095_all'] = float(np.mean(per_cls_5095))
-                metrics['eval_split'] = eval_split
-                merge_benchmark_dict_into_metrics(metrics, bench_dict)
-
-                self.logger.info(
-                    f"🎯 [{eval_split}] KITTI@0.5  E/M/H = "
-                    f"{metrics['mAP_easy']:.4f} / {metrics['mAP_moderate']:.4f} / "
-                    f"{metrics['mAP_hard']:.4f}"
+            coco_eval = run_coco_eval(
+                predictions,
+                targets,
+                categories,
+                default_img_h=default_img_h,
+                default_img_w=default_img_w,
+                image_id_to_size=image_id_to_size,
+                print_summary=False,
+            )
+            if coco_eval is not None:
+                s50, m50, l50 = coco_area_ap_at_iou50(coco_eval)
+                per_cat_50, per_cat_5095 = extract_per_category_ap_from_eval(
+                    coco_eval, categories
                 )
-                self.logger.info(
-                    f"📐 [{eval_split}] S/M/L  "
-                    f"@0.5: {metrics['mAP_small']:.4f} / {metrics['mAP_medium']:.4f} / "
-                    f"{metrics['mAP_large']:.4f}  |  "
-                    f"@0.5:0.95: {metrics['mAP_small_5095']:.4f} / "
-                    f"{metrics['mAP_medium_5095']:.4f} / {metrics['mAP_large_5095']:.4f}"
+                difficulty_metrics = compute_difficulty_aps(
+                    predictions,
+                    targets,
+                    categories,
+                    default_img_h=default_img_h,
+                    default_img_w=default_img_w,
+                    dair_categorical_trunc=dair_categorical,
+                    image_id_to_size=image_id_to_size,
                 )
-                cls_50_str = ' | '.join(
-                    f'{class_names[i]}={per_cls_50[i]:.4f}' for i in range(nc)
-                )
-                cls_5095_str = ' | '.join(
-                    f'{class_names[i]}={per_cls_5095[i]:.4f}' for i in range(nc)
-                )
-                self.logger.info(f"📋 [{eval_split}] Per-class AP@0.5:  {cls_50_str}")
-                self.logger.info(f"📋 [{eval_split}] Per-class AP@0.5:0.95:  {cls_5095_str}")
-                if (bm_line := format_benchmark_eval_line(metrics)):
-                    self.logger.info(bm_line)
 
-                row = {}
-                for k in fieldnames:
-                    if k in ('model', 'dataset'):
-                        continue
-                    row[k] = (
-                        format_eval_csv_cell(k, metrics[k]) if k in metrics else ''
-                    )
-                row['model'] = model_name
-                row['dataset'] = dataset_name
-                writer.writerow(row)
-                last_metrics = metrics
+                metrics.update(
+                    {
+                        'mAP_0.5': coco_stat(coco_eval, 1),
+                        'mAP_0.75': coco_stat(coco_eval, 2),
+                        'mAP_0.5_0.95': coco_stat(coco_eval, 0),
+                        'AP_small': coco_stat(coco_eval, 3),
+                        'AP_medium': coco_stat(coco_eval, 4),
+                        'AP_large': coco_stat(coco_eval, 5),
+                        'AP_small_50': s50,
+                        'AP_medium_50': m50,
+                        'AP_large_50': l50,
+                        'AP_easy': difficulty_metrics['AP_easy'],
+                        'AP_moderate': difficulty_metrics['AP_moderate'],
+                        'AP_hard': difficulty_metrics['AP_hard'],
+                    }
+                )
+                for name in class_names:
+                    metrics[f'AP50_{name}'] = per_cat_50.get(name, 0.0)
+                    metrics[f'AP5095_{name}'] = per_cat_5095.get(name, 0.0)
+
+            metrics['eval_split'] = eval_split
+            merge_benchmark_dict_into_metrics(metrics, bench_dict)
+
+            self.logger.info(
+                f"🎯 [{eval_split}] KITTI@0.5  E/M/H = "
+                f"{metrics['AP_easy']:.4f} / {metrics['AP_moderate']:.4f} / "
+                f"{metrics['AP_hard']:.4f}"
+            )
+            self.logger.info(
+                f"📐 [{eval_split}] S/M/L  "
+                f"@0.5: {metrics['AP_small_50']:.4f} / {metrics['AP_medium_50']:.4f} / "
+                f"{metrics['AP_large_50']:.4f}  |  "
+                f"@0.5:0.95: {metrics['AP_small']:.4f} / "
+                f"{metrics['AP_medium']:.4f} / {metrics['AP_large']:.4f}"
+            )
+            cls_50_str = ' | '.join(
+                f'{name}={metrics[f"AP50_{name}"]:.4f}' for name in class_names
+            )
+            cls_5095_str = ' | '.join(
+                f'{name}={metrics[f"AP5095_{name}"]:.4f}' for name in class_names
+            )
+            self.logger.info(f"📋 [{eval_split}] Per-class AP@0.5:  {cls_50_str}")
+            self.logger.info(f"📋 [{eval_split}] Per-class AP@0.5:0.95:  {cls_5095_str}")
+            if (bm_line := format_benchmark_eval_line(metrics)):
+                self.logger.info(bm_line)
+
+            write_eval_csv(
+                summary_csv,
+                model=model_name,
+                dataset=dataset_name,
+                eval_split=eval_split,
+                metrics=metrics,
+                class_names=class_names,
+                append=summary_csv.exists(),
+                benchmark=bench_dict,
+            )
+            last_metrics = metrics
 
         self.logger.info(f"✓ 指标已追加: {summary_csv}")
         self.logger.info(f"{'='*80}")
