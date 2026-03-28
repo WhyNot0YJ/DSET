@@ -1,5 +1,5 @@
-# CaS-DETR（DAIR-V2X，仅 S5 进 Hybrid Encoder；ratio0.5 + _S5）
-# augmentation 与 rt-detr/configs/rtdetr_r18.yaml 对齐（含 480–800 多尺度，步长 32）
+# CaS-DETR（UA-DETRAC，仅 S5 进 Hybrid Encoder；token_keep_ratio=0.7）
+# augmentation 与 rt-detr/configs/rtdetr_r18_uadetrac.yaml 对齐（含 480–800 多尺度，步长 32）
 model:
   num_experts: 6
   top_k: 3
@@ -23,7 +23,7 @@ model:
   decoder_hidden_dim: 256
   num_queries: 300
   cas_detr:
-    token_keep_ratio: 0.5
+    token_keep_ratio: 0.7
     use_cass: true
     cass_loss_weight: 0.05
     cass_expansion_ratio: 0.8
@@ -33,7 +33,7 @@ model:
     cass_focal_alpha: 2.0
     cass_focal_beta: 4.0
 training:
-  epochs: 100
+  epochs: 50
   batch_size: 24
   warmup_epochs: 3
   pretrained_lr: 1e-5
@@ -45,23 +45,25 @@ training:
   scheduler: cosine
   early_stopping_patience: 20
   early_stopping_metric: mAP_0.5_0.95
-
   seed: 42
   deterministic: false
   decoder_moe_balance_weight: 0.01
   moe_balance_warmup_epochs: 0
-  # 与历史硬编码一致：前 50 / 50–70 / 70–90 / 90+
+  # 0-based：前 5 个 epoch（0–4）不验证；从 epoch 5 起每轮验证
   eval_schedule:
-    - until_epoch: 50
-      every: 10
-    - until_epoch: 70
-      every: 5
-    - until_epoch: 90
-      every: 2
+    - until_epoch: 5
+      enabled: false
     - until_epoch: null
       always: true
 data:
-  data_root: /root/autodl-fs/datasets/DAIR-V2X
+  data_root: /root/autodl-fs/datasets/UA-DETRAC_COCO
+  dataset_class: CocoFolderDetection
+  num_classes: 4
+  class_names:
+    - car
+    - van
+    - bus
+    - others
 augmentation:
   target_size: 640
   stop_epoch: 21

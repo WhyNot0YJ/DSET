@@ -182,12 +182,15 @@ declare -A MOE_RTDETR_CONFIGS=(
 )
 
 declare -A CaS_DETR_CONFIGS=(
+    ["cas_detr6-r18-0.3-dairv2x-prune-only"]="cas_detr/configs/cas_detr6_r18_ratio0.3_prune_only.yaml"
     ["cas_detr6-r18-0.3-dairv2x"]="cas_detr/configs/cas_detr6_r18_ratio0.3.yaml"
-    ["cas_detr6-r18-0.3-dairv2x-S5"]="cas_detr/configs/cas_detr6_r18_ratio0.3_S5.yaml"
+    ["cas_detr6-r18-0.5-dairv2x"]="cas_detr/configs/cas_detr6_r18_ratio0.5.yaml"
+    ["cas_detr6-r18-0.7-dairv2x"]="cas_detr/configs/cas_detr6_r18_ratio0.7.yaml"
+    ["cas_detr6-r18-0.9-dairv2x"]="cas_detr/configs/cas_detr6_r18_ratio0.9.yaml"
     ["cas_detr6-r18-0.3-uadetrac"]="cas_detr/configs/cas_detr6_r18_ratio0.3_uadetrac.yaml"
-    ["cas_detr6-r18-0.3-uadetrac-S5"]="cas_detr/configs/cas_detr6_r18_ratio0.3_uadetrac_S5.yaml"
-    ["cas_detr6-r18-0.5-dairv2x-S5"]="cas_detr/configs/cas_detr6_r18_ratio0.5_S5.yaml"
-    ["cas_detr6-r18-0.5-uadetrac-S5"]="cas_detr/configs/cas_detr6_r18_ratio0.5_uadetrac_S5.yaml"
+    ["cas_detr6-r18-0.5-uadetrac"]="cas_detr/configs/cas_detr6_r18_ratio0.5_uadetrac.yaml"
+    ["cas_detr6-r18-0.7-uadetrac"]="cas_detr/configs/cas_detr6_r18_ratio0.7_uadetrac.yaml"
+    ["cas_detr6-r18-0.9-uadetrac"]="cas_detr/configs/cas_detr6_r18_ratio0.9_uadetrac.yaml"
 )
 
 declare -A YOLOV8_CONFIGS=(

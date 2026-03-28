@@ -176,14 +176,14 @@ class CaS_DETRRTDETR(nn.Module):
     def infer_variant_name(enable_cas_predictor: bool, enable_decoder_moe: bool) -> str:
         if enable_cas_predictor and enable_decoder_moe:
             return 'cas_detr'
+        if enable_cas_predictor and (not enable_decoder_moe):
+            # Hybrid Encoder token pruning + 标准 Decoder FFN（无 Decoder MoE）
+            return 'cas_detr_prune'
         if (not enable_cas_predictor) and enable_decoder_moe:
             return 'moe_rtdetr'
         if (not enable_cas_predictor) and (not enable_decoder_moe):
             return 'rtdetr'
-        raise ValueError(
-            "Unsupported ablation combination: enable_cas_predictor=True requires "
-            "enable_decoder_moe=True."
-        )
+        raise ValueError("Unreachable ablation combination")
     
     def __init__(self, hidden_dim: int = 256,
                  decoder_hidden_dim: Optional[int] = None,
@@ -627,7 +627,7 @@ class CaS_DETRTrainer:
         self.ema = self._create_ema()
         self.scaler = self._create_scaler()
 
-        if self.model.enable_cas_predictor and self.model.enable_decoder_moe:
+        if self.model.enable_cas_predictor:
             visualizer_type = 'cas_detr'
         elif self.model.enable_decoder_moe:
             visualizer_type = 'moe'
@@ -760,6 +760,8 @@ class CaS_DETRTrainer:
             variant_name = self._resolve_variant_name()
             if variant_name == 'cas_detr':
                 self.experiment_name = f"cas_detr{num_decoder_experts}_{backbone_short}"
+            elif variant_name == 'cas_detr_prune':
+                self.experiment_name = f"cas_detr_prune{num_decoder_experts}_{backbone_short}"
             elif variant_name == 'moe_rtdetr':
                 self.experiment_name = f"moe_rtdetr{num_decoder_experts}_{backbone_short}"
             else:
