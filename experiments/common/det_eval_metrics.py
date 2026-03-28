@@ -221,8 +221,15 @@ def run_coco_bbox_eval(
     import sys
 
     try:
+        # pycocotools COCO.loadRes 会执行 res.dataset['info'] = copy.deepcopy(self.dataset['info'])，缺省 KeyError
+        coco_in = dict(coco_gt)
+        coco_in.setdefault(
+            "info",
+            {"description": "CaS_DETR_eval", "version": "1.0", "year": 2024},
+        )
+
         coco_gt_obj = COCO()
-        coco_gt_obj.dataset = coco_gt
+        coco_gt_obj.dataset = coco_in
         old_stdout = sys.stdout
         sys.stdout = StringIO()
         try:
