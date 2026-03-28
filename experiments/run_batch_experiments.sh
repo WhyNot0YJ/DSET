@@ -24,6 +24,9 @@ export OMP_NUM_THREADS=1
 #   ./run_batch_experiments.sh --yolov8                        # 只运行YOLOv8实验
 #   ./run_batch_experiments.sh --yolov12                       # 只运行YOLOv12实验
 #   ./run_batch_experiments.sh --yolox                         # 只运行 YOLOX（Megvii）实验
+#   ./run_batch_experiments.sh --yolo                          # 一键：YOLOv5+v8+v12+YOLOX（常与 --n/--s/--m 组合）
+#   ./run_batch_experiments.sh --yolo --s                      # 仅 s 规模（两数据集全跑）
+#   ./run_batch_experiments.sh --yes --test --yolo --m --dairv2x  # 测试模式仅 DAIR 的 m 规模 YOLO 全家桶
 #   ./run_batch_experiments.sh --fasterrcnn                    # 只运行 torchvision Faster R-CNN（DAIR + UA-DETRAC）
 #   ./run_batch_experiments.sh --deformable-detr               # 只运行Deformable-DETR实验
 #   ./run_batch_experiments.sh --test --rt-detr                # 测试模式只运行RT-DETR
@@ -220,7 +223,7 @@ apply_model_size_filter_to_configs() {
     log_info "模型规模筛选: ${size_str}"
 
     if [ "$before" -gt 0 ] && [ ${#CONFIGS_TO_RUN[@]} -eq 0 ]; then
-        log_warning "按模型规模筛选后队列为空，请检查是否与 --yolov5 / --yolov8 / --yolov12 / --yolox 组合正确"
+        log_warning "按模型规模筛选后队列为空，请使用 --yolo 或同时开启 --yolov5/--yolov8/--yolov12/--yolox，并检查 --n/--s/--m"
     fi
 }
 
@@ -552,7 +555,7 @@ parse_arguments() {
         log_info "数据集作用域已启用（--dataset / --dairv2x / --uadetrac），可与 --rt-detr、--cas_detr 等任意顺序组合"
     fi
     if [ "$has_n" = true ] || [ "$has_s" = true ] || [ "$has_m" = true ]; then
-        log_info "模型规模作用域已启用（--n / --s / --m），可与 --yolov5 / --yolov8 / --yolov12 / --yolox 任意组合"
+        log_info "模型规模作用域已启用（--n / --s / --m）；推荐与 --yolo 或 --yolov5/--yolov8/--yolov12/--yolox 组合"
     fi
 
     # 如果设置了测试模式，显示提示
@@ -669,6 +672,12 @@ parse_arguments() {
                 has_yolov12=true
                 ;;
             --yolox)
+                has_yolox=true
+                ;;
+            --yolo|--yolo-all)
+                has_yolov5=true
+                has_yolov8=true
+                has_yolov12=true
                 has_yolox=true
                 ;;
             --fasterrcnn)
@@ -902,6 +911,9 @@ parse_arguments() {
         echo "  ./run_batch_experiments.sh --yolov8                        # 只运行YOLOv8"
         echo "  ./run_batch_experiments.sh --yolov12                       # 只运行YOLOv12"
         echo "  ./run_batch_experiments.sh --yolox                         # 只运行 YOLOX"
+        echo "  ./run_batch_experiments.sh --yolo                          # 一键 YOLOv5+v8+v12+YOLOX"
+        echo "  ./run_batch_experiments.sh --yolo --s                      # 仅 s 规模（两数据集）"
+        echo "  ./run_batch_experiments.sh --yolo --n --dairv2x            # 仅 DAIR 的 n 规模"
         echo "  ./run_batch_experiments.sh --fasterrcnn                    # 只运行 torchvision Faster R-CNN"
         echo "  ./run_batch_experiments.sh --deformable-detr               # 只运行Deformable-DETR"
         echo "  ./run_batch_experiments.sh --test --rt-detr                # 测试模式只运行RT-DETR"
@@ -937,6 +949,7 @@ parse_arguments() {
         echo "  ./run_batch_experiments.sh --dairv2x --rt-detr              # 仅 DAIR-V2X 的 RT-DETR"
         echo "  ./run_batch_experiments.sh --dataset dairv2x --rtdetr       # 同上（--dataset 写法）"
         echo "  ./run_batch_experiments.sh --uadetrac --cas_detr            # 仅 UA-DETRAC 的 CaS_DETR"
+        echo "  ./run_batch_experiments.sh --yolo --s                      # 同上（推荐简写）"
         echo "  ./run_batch_experiments.sh --yolov5 --yolov8 --yolov12 --yolox --s  # 跑所有 s 规模 YOLO / YOLOX"
         exit 1
     fi
