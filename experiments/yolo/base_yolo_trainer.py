@@ -514,6 +514,45 @@ class BaseYOLOTrainer(ABC):
 
         return out
 
+    def _resolve_coco_eval_splits(self) -> List[Tuple[str, Path]]:
+        """
+        返回 [(split, instances_json_path), ...]，优先用于“与 DETR 完全同口径”的公平评估。
+        """
+        root_str = str(self.data_config.get('coco_data_root', '')).strip()
+        if not root_str:
+            return []
+        root = Path(root_str).expanduser()
+        ann_dir = root / 'annotations'
+        if not ann_dir.is_dir():
+            return []
+
+        eval_test = self.data_config.get('eval_test_after_training', True)
+        out: List[Tuple[str, Path]] = []
+        val_json = ann_dir / 'instances_val.json'
+        if val_json.is_file():
+            out.append(('val', val_json))
+        test_json = ann_dir / 'instances_test.json'
+        if eval_test and test_json.is_file():
+            out.append(('test', test_json))
+        return out
+
+    @staticmethod
+    def _resolve_coco_image_path(root: Path, split: str, file_name: str) -> Path:
+        """
+        从 COCO image.file_name 推断实际图像路径。
+
+        - DAIR-V2X: ``image/000021.jpg`` → ``root / file_name``
+        - UA-DETRAC: ``1.jpg``          → ``root / split / file_name``
+        """
+        file_name = str(file_name).strip()
+        direct = (root / file_name).resolve()
+        if direct.is_file():
+            return direct
+        split_join = (root / split / file_name).resolve()
+        if split_join.is_file():
+            return split_join
+        return direct
+
     def _get_kitti_eval_predictor(self, model):
         """
         Return (predictor, num_classes) for KITTI/scale eval.
@@ -600,10 +639,16 @@ class BaseYOLOTrainer(ABC):
                         root = cand
                         break
 
+        coco_splits = self._resolve_coco_eval_splits()
         splits = self._resolve_kitti_eval_splits(data_cfg, root)
-        if not splits:
+        if coco_splits:
+            self.logger.info(
+                "公平评估使用 COCO annotations（与 DETR 对齐），共 %d 个 split",
+                len(coco_splits),
+            )
+        elif not splits:
             self.logger.warning(
-                '未找到可用的 KITTI/scale 评估划分（需 labels_meta/val 或 labels_meta/test 且含 JSON）'
+                '未找到可用的公平评估划分（需 coco_data_root/annotations 或 labels_meta/{val,test}）'
             )
             return {}
 
@@ -644,112 +689,219 @@ class BaseYOLOTrainer(ABC):
             except Exception:
                 pass
         last_metrics: Dict[str, Any] = {}
-        for eval_split, eval_img_dir, labels_meta_dir in splits:
-            meta_by_stem = {p.stem: p for p in labels_meta_dir.glob('*.json')}
-            if not meta_by_stem:
-                self.logger.warning(
-                    f"labels_meta/{eval_split} 为空，跳过: {labels_meta_dir}"
-                )
-                continue
-
-            eval_images = sorted(
-                p
-                for ext in ('.jpg', '.jpeg', '.png')
-                for p in eval_img_dir.glob(f'*{ext}')
-                if p.stem in meta_by_stem
-            )
-            if not eval_images:
-                self.logger.warning(
-                    f"{eval_split} 无与 meta 匹配的图像: {eval_img_dir}"
-                )
-                continue
-
-            self.logger.info(f"📊 评估 [{eval_split}, {len(eval_images)} 张]")
-
+        active_splits: List[Any] = coco_splits if coco_splits else splits
+        for split_spec in active_splits:
             predictions: List[Dict[str, Any]] = []
             targets: List[Dict[str, Any]] = []
             image_id_to_size: Dict[int, Tuple[int, int]] = {}
             default_img_h, default_img_w = imgsz, imgsz
 
-            batch_size = 32
-            for batch_start in range(0, len(eval_images), batch_size):
-                batch_paths = eval_images[batch_start: batch_start + batch_size]
-                batch_results = self._predict_batch_kitti_eval(
-                    eval_predictor, batch_paths, imgsz, device
-                )
-                for i_in_batch, (result, img_path) in enumerate(
-                    zip(batch_results, batch_paths)
-                ):
-                    image_id = batch_start + i_in_batch
-                    img_h, img_w = result.orig_shape
-                    default_img_h, default_img_w = img_h, img_w
-                    image_id_to_size[image_id] = (img_w, img_h)
+            if coco_splits:
+                eval_split, ann_path = split_spec
+                with ann_path.open('r', encoding='utf-8') as fh:
+                    coco_data = json.load(fh)
 
-                    raw = json.loads(
-                        meta_by_stem[img_path.stem].read_text(encoding='utf-8')
+                coco_root = Path(str(self.data_config.get('coco_data_root', '')).strip()).expanduser()
+                cats = sorted(coco_data.get('categories', []), key=lambda c: int(c['id']))
+                if cats:
+                    categories = [
+                        {
+                            'id': int(cat['id']),
+                            'name': str(cat['name']),
+                            'supercategory': str(cat.get('supercategory', 'object')),
+                        }
+                        for cat in cats
+                    ]
+                    class_names = [cat['name'] for cat in categories]
+                cat_ids_by_index = [int(cat['id']) for cat in categories]
+
+                images = list(coco_data.get('images', []))
+                anns_by_img: Dict[int, List[Dict[str, Any]]] = {}
+                for ann in coco_data.get('annotations', []):
+                    img_id = int(ann.get('image_id', -1))
+                    if img_id < 0:
+                        continue
+                    anns_by_img.setdefault(img_id, []).append(ann)
+
+                eval_image_items: List[Tuple[int, Path]] = []
+                for im in images:
+                    img_id = int(im['id'])
+                    file_name = str(im.get('file_name', ''))
+                    img_path = self._resolve_coco_image_path(coco_root, eval_split, file_name)
+                    if not img_path.is_file():
+                        continue
+                    eval_image_items.append((img_id, img_path))
+                    image_id_to_size[img_id] = (
+                        int(im.get('width', imgsz)),
+                        int(im.get('height', imgsz)),
                     )
-                    if isinstance(raw, list):
-                        entries = raw
-                    elif isinstance(raw, dict) and 'objects' in raw:
-                        entries = raw['objects']
-                    else:
-                        entries = []
+                if not eval_image_items:
+                    self.logger.warning("COCO split %s 无可用图像，跳过: %s", eval_split, ann_path)
+                    continue
 
-                    for entry in entries:
-                        cls = int(entry['class_id'])
-                        if not (0 <= cls < nc):
-                            continue
-                        if 'bbox_yolo' in entry:
-                            byo = entry['bbox_yolo']
-                            cx, cy, bw, bh = byo['cx'], byo['cy'], byo['w'], byo['h']
-                            x1 = (cx - bw / 2) * img_w
-                            y1 = (cy - bh / 2) * img_h
-                            w = bw * img_w
-                            h = bh * img_h
-                        elif 'bbox_xyxy' in entry:
-                            x1, y1, x2, y2 = map(float, entry['bbox_xyxy'][:4])
-                            w = x2 - x1
-                            h = y2 - y1
-                        else:
-                            continue
-                        if w <= 0 or h <= 0:
-                            continue
+                self.logger.info(f"📊 评估 [{eval_split}, {len(eval_image_items)} 张]")
 
-                        targets.append(
-                            {
-                                'image_id': image_id,
-                                'category_id': cls + 1,
-                                'bbox': [float(x1), float(y1), float(w), float(h)],
-                                'area': float(w * h),
-                                'iscrowd': int(entry.get('iscrowd', 0)),
-                                'occluded_state': float(entry.get('occluded_state', 0)),
-                                'truncated_state': float(entry.get('truncated_state', 0)),
-                                'bbox_height': float(h),
-                            }
-                        )
+                batch_size = 32
+                for batch_start in range(0, len(eval_image_items), batch_size):
+                    batch_items = eval_image_items[batch_start: batch_start + batch_size]
+                    batch_paths = [p for _, p in batch_items]
+                    batch_results = self._predict_batch_kitti_eval(
+                        eval_predictor, batch_paths, imgsz, device
+                    )
+                    for result, (image_id, _img_path) in zip(batch_results, batch_items):
+                        img_h, img_w = result.orig_shape
+                        default_img_h, default_img_w = img_h, img_w
+                        image_id_to_size[image_id] = (img_w, img_h)
 
-                    if result.boxes is not None:
-                        for box, conf, cls_t in zip(
-                            result.boxes.xyxy.cpu().numpy(),
-                            result.boxes.conf.cpu().numpy(),
-                            result.boxes.cls.cpu().numpy().astype(int),
-                        ):
-                            cls = int(cls_t)
-                            if not (0 <= cls < nc):
+                        for ann in anns_by_img.get(image_id, []):
+                            bbox = ann.get('bbox', [0, 0, 0, 0])
+                            if len(bbox) != 4:
                                 continue
-                            x1, y1, x2, y2 = map(float, box.tolist())
-                            w = x2 - x1
-                            h = y2 - y1
+                            w = float(bbox[2])
+                            h = float(bbox[3])
                             if w <= 0 or h <= 0:
                                 continue
-                            predictions.append(
+                            targets.append(
+                                {
+                                    'image_id': image_id,
+                                    'category_id': int(ann.get('category_id', 0)),
+                                    'bbox': [float(bbox[0]), float(bbox[1]), w, h],
+                                    'area': float(ann.get('area', w * h)),
+                                    'iscrowd': int(ann.get('iscrowd', 0)),
+                                    'occluded_state': float(
+                                        ann.get('occluded_state', ann.get('occlusion_status', 0))
+                                    ),
+                                    'truncated_state': float(
+                                        ann.get('truncated_state', ann.get('truncation_ratio', 0))
+                                    ),
+                                    'bbox_height': h,
+                                }
+                            )
+
+                        if result.boxes is not None:
+                            for box, conf, cls_t in zip(
+                                result.boxes.xyxy.cpu().numpy(),
+                                result.boxes.conf.cpu().numpy(),
+                                result.boxes.cls.cpu().numpy().astype(int),
+                            ):
+                                cls = int(cls_t)
+                                if not (0 <= cls < len(cat_ids_by_index)):
+                                    continue
+                                x1, y1, x2, y2 = map(float, box.tolist())
+                                w = x2 - x1
+                                h = y2 - y1
+                                if w <= 0 or h <= 0:
+                                    continue
+                                predictions.append(
+                                    {
+                                        'image_id': image_id,
+                                        'category_id': cat_ids_by_index[cls],
+                                        'bbox': [x1, y1, w, h],
+                                        'score': float(conf),
+                                    }
+                                )
+            else:
+                eval_split, eval_img_dir, labels_meta_dir = split_spec
+                meta_by_stem = {p.stem: p for p in labels_meta_dir.glob('*.json')}
+                if not meta_by_stem:
+                    self.logger.warning(
+                        f"labels_meta/{eval_split} 为空，跳过: {labels_meta_dir}"
+                    )
+                    continue
+
+                eval_images = sorted(
+                    p
+                    for ext in ('.jpg', '.jpeg', '.png')
+                    for p in eval_img_dir.glob(f'*{ext}')
+                    if p.stem in meta_by_stem
+                )
+                if not eval_images:
+                    self.logger.warning(
+                        f"{eval_split} 无与 meta 匹配的图像: {eval_img_dir}"
+                    )
+                    continue
+
+                self.logger.info(f"📊 评估 [{eval_split}, {len(eval_images)} 张]")
+
+                batch_size = 32
+                for batch_start in range(0, len(eval_images), batch_size):
+                    batch_paths = eval_images[batch_start: batch_start + batch_size]
+                    batch_results = self._predict_batch_kitti_eval(
+                        eval_predictor, batch_paths, imgsz, device
+                    )
+                    for i_in_batch, (result, img_path) in enumerate(
+                        zip(batch_results, batch_paths)
+                    ):
+                        image_id = batch_start + i_in_batch
+                        img_h, img_w = result.orig_shape
+                        default_img_h, default_img_w = img_h, img_w
+                        image_id_to_size[image_id] = (img_w, img_h)
+
+                        raw = json.loads(
+                            meta_by_stem[img_path.stem].read_text(encoding='utf-8')
+                        )
+                        if isinstance(raw, list):
+                            entries = raw
+                        elif isinstance(raw, dict) and 'objects' in raw:
+                            entries = raw['objects']
+                        else:
+                            entries = []
+
+                        for entry in entries:
+                            cls = int(entry['class_id'])
+                            if not (0 <= cls < nc):
+                                continue
+                            if 'bbox_yolo' in entry:
+                                byo = entry['bbox_yolo']
+                                cx, cy, bw, bh = byo['cx'], byo['cy'], byo['w'], byo['h']
+                                x1 = (cx - bw / 2) * img_w
+                                y1 = (cy - bh / 2) * img_h
+                                w = bw * img_w
+                                h = bh * img_h
+                            elif 'bbox_xyxy' in entry:
+                                x1, y1, x2, y2 = map(float, entry['bbox_xyxy'][:4])
+                                w = x2 - x1
+                                h = y2 - y1
+                            else:
+                                continue
+                            if w <= 0 or h <= 0:
+                                continue
+
+                            targets.append(
                                 {
                                     'image_id': image_id,
                                     'category_id': cls + 1,
-                                    'bbox': [x1, y1, w, h],
-                                    'score': float(conf),
+                                    'bbox': [float(x1), float(y1), float(w), float(h)],
+                                    'area': float(w * h),
+                                    'iscrowd': int(entry.get('iscrowd', 0)),
+                                    'occluded_state': float(entry.get('occluded_state', 0)),
+                                    'truncated_state': float(entry.get('truncated_state', 0)),
+                                    'bbox_height': float(h),
                                 }
                             )
+
+                        if result.boxes is not None:
+                            for box, conf, cls_t in zip(
+                                result.boxes.xyxy.cpu().numpy(),
+                                result.boxes.conf.cpu().numpy(),
+                                result.boxes.cls.cpu().numpy().astype(int),
+                            ):
+                                cls = int(cls_t)
+                                if not (0 <= cls < nc):
+                                    continue
+                                x1, y1, x2, y2 = map(float, box.tolist())
+                                w = x2 - x1
+                                h = y2 - y1
+                                if w <= 0 or h <= 0:
+                                    continue
+                                predictions.append(
+                                    {
+                                        'image_id': image_id,
+                                        'category_id': cls + 1,
+                                        'bbox': [x1, y1, w, h],
+                                        'score': float(conf),
+                                    }
+                                )
 
             metrics: Dict[str, Any] = {
                 'mAP_0.5': 0.0,
