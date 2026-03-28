@@ -1,5 +1,5 @@
 # CaS-DETR（UA-DETRAC，仅 S5 进 Hybrid Encoder；token_keep_ratio=0.9）
-# augmentation 与 rt-detr/configs/rtdetr_r18_uadetrac.yaml 对齐（含 480–800 多尺度，步长 32）
+# augmentation 与 rt-detr/configs/rtdetr_r18_uadetrac.yaml 对齐（多尺度：576–704，含 608/672 与 640×3）
 model:
   num_experts: 6
   top_k: 3
@@ -68,9 +68,6 @@ augmentation:
   target_size: 640
   stop_epoch: 21
   scales:
-    - 480
-    - 512
-    - 544
     - 576
     - 608
     - 640
@@ -78,9 +75,6 @@ augmentation:
     - 640
     - 672
     - 704
-    - 736
-    - 768
-    - 800
   normalize_mean:
     - 0.485
     - 0.456
