@@ -2,7 +2,7 @@ model:
   model_name: "fasterrcnn_resnet50_fpn"
 
 training:
-  epochs: 50
+  epochs: 100
   batch_size: 8
   imgsz: 640
 

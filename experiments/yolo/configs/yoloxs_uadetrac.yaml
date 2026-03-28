@@ -4,7 +4,7 @@ model:
   yolox_exp_file: "yolox_exps/yolox_s_uadetrac.py"
 
 training:
-  epochs: 50
+  epochs: 100
   batch_size: 32
   imgsz: 640
   fp16: true
