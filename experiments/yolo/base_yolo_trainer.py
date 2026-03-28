@@ -191,7 +191,7 @@ class BaseYOLOTrainer(ABC):
         resume_checkpoint = getattr(self, '_resume_checkpoint_path', None)
         
         if resume_checkpoint and Path(resume_checkpoint).exists():
-            self.log_dir = Path(resume_checkpoint).parent
+            self.log_dir = Path(resume_checkpoint).parent.resolve()
             self.experiment_name = self.log_dir.name
         else:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -209,7 +209,8 @@ class BaseYOLOTrainer(ABC):
                 ds_dir = 'uadetrac'
             else:
                 ds_dir = ds_stem
-            self.log_dir = Path(f"{log_base}/{ds_dir}/{self.experiment_name}_{timestamp}")
+            # 锚定到本文件所在目录（experiments/yolo），避免 cwd 与 YOLOX/Ultralytics 不一致时路径错位
+            self.log_dir = (_yolo_dir / log_base / ds_dir / f"{self.experiment_name}_{timestamp}").resolve()
             self.log_dir.mkdir(parents=True, exist_ok=True)
         
         # 配置日志处理器
@@ -870,23 +871,38 @@ class BaseYOLOTrainer(ABC):
         self.logger.info("✅ 训练完成！")
         self.logger.info("=" * 80)
 
-        self._plot_training_curves()
-        self._align_file_naming()
+        bench_dict = None
+        try:
+            self._plot_training_curves()
+            self._align_file_naming()
 
-        best_model_path = self.log_dir / "best_model.pth"
-        if best_model_path.exists():
-            self.logger.info(f"✓ 最佳模型: {best_model_path}")
+            best_model_path = self.log_dir / "best_model.pth"
+            if best_model_path.exists():
+                self.logger.info(f"✓ 最佳模型: {best_model_path}")
 
-        bench_dict = self._optional_post_train_benchmark(model)
-        run_eval = model is not None or self._can_run_kitti_eval_without_ultralytics_model()
-        if run_eval:
             try:
-                self._evaluate_kitti_scale_after_training(model, bench_dict=bench_dict)
+                bench_dict = self._optional_post_train_benchmark(model)
             except Exception as exc:
-                self.logger.warning(f"KITTI/scale 评估出错（训练结果不受影响）: {exc}")
+                self.logger.exception(
+                    "训练后 benchmark/预测器准备失败（不影响已保存权重；eval 阶段会重试加载）: %s",
+                    exc,
+                )
 
-        self.logger.info(f"✓ 所有输出已保存到: {self.log_dir}")
-        self.logger.info("=" * 80)
+            run_eval = model is not None or self._can_run_kitti_eval_without_ultralytics_model()
+            if not run_eval:
+                self.logger.warning(
+                    "跳过 KITTI/scale 与 eval_metrics：无 Ultralytics 模型且未在 log_dir 检测到可评估权重。"
+                    " log_dir=%s （请确认 best_ckpt.pth / weights/best.pt 是否在此目录下）",
+                    self.log_dir.resolve(),
+                )
+            else:
+                try:
+                    self._evaluate_kitti_scale_after_training(model, bench_dict=bench_dict)
+                except Exception as exc:
+                    self.logger.warning(f"KITTI/scale 评估出错（训练结果不受影响）: {exc}")
+        finally:
+            self.logger.info(f"✓ 所有输出已保存到: {self.log_dir.resolve()}")
+            self.logger.info("=" * 80)
     
     def _parse_and_print_training_results(self):
         """解析results.csv并输出"""

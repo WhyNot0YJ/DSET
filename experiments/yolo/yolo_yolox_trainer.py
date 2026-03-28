@@ -160,34 +160,57 @@ class YOLOXTrainer(BaseYOLOTrainer):
         self._post_training_processing(None)
 
     def _sync_yolox_weights_to_weights_dir(self):
-        wd = self.log_dir / "weights"
+        """Megvii YOLOX 写入 ``{output_dir}/{experiment_name}/``：``best_ckpt.pth``、``last_epoch_ckpt.pth``。"""
+        wd = (self.log_dir / "weights").resolve()
         wd.mkdir(parents=True, exist_ok=True)
-        best = self.log_dir / "best_ckpt.pth"
+        root = self.log_dir.resolve()
+        best = root / "best_ckpt.pth"
         if best.exists():
             shutil.copy2(best, wd / "best_ckpt.pth")
-        latest = self.log_dir / "latest_ckpt.pth"
-        if latest.exists():
-            shutil.copy2(latest, wd / "latest_ckpt.pth")
+        last_ep = root / "last_epoch_ckpt.pth"
+        if last_ep.exists():
+            shutil.copy2(last_ep, wd / "last_epoch_ckpt.pth")
+            shutil.copy2(last_ep, wd / "latest_ckpt.pth")
+
+    def _yolox_ckpt_candidates(self):
+        """优先 best；无 best 时用 last_epoch（AP 未刷新时可能只有 last）。"""
+        root = self.log_dir.resolve()
+        wd = root / "weights"
+        return [
+            wd / "best_ckpt.pth",
+            root / "best_ckpt.pth",
+            wd / "last_epoch_ckpt.pth",
+            root / "last_epoch_ckpt.pth",
+            wd / "latest_ckpt.pth",
+            root / "latest_ckpt.pth",
+        ]
+
+    def _resolve_yolox_eval_ckpt(self) -> Optional[Path]:
+        for p in self._yolox_ckpt_candidates():
+            if p.exists():
+                return p
+        return None
 
     def _optional_post_train_benchmark(self, model) -> Optional[dict]:
-        pred, _ = self._get_kitti_eval_predictor(None)
-        if pred is None:
-            return None
-        return self._benchmark_eval_predictor(pred)
+        """
+        不在此处加载 YOLOX + 跑 FPS benchmark：训练刚结束显存紧张，且会与 KITTI eval 重复加载。
+        GFLOPs/FPS 在 ``_evaluate_kitti_scale_after_training`` 里对同一 eval_predictor 计算一次。
+        """
+        return None
 
     def _can_run_kitti_eval_without_ultralytics_model(self) -> bool:
-        return (
-            (self.log_dir / "weights" / "best_ckpt.pth").exists()
-            or (self.log_dir / "best_ckpt.pth").exists()
-        )
+        return self._resolve_yolox_eval_ckpt() is not None
 
     def _get_kitti_eval_predictor(self, model):
-        ckpt = self.log_dir / "weights" / "best_ckpt.pth"
-        if not ckpt.exists():
-            ckpt = self.log_dir / "best_ckpt.pth"
-        if not ckpt.exists():
-            self.logger.warning("未找到 YOLOX best_ckpt.pth，跳过评估")
+        ckpt = self._resolve_yolox_eval_ckpt()
+        if ckpt is None:
+            self.logger.warning(
+                "未找到 YOLOX 权重（best_ckpt / last_epoch_ckpt），跳过 KITTI/scale 与 eval_metrics"
+            )
             return None, max(len(self.class_names), 1)
+
+        if ckpt.name != "best_ckpt.pth":
+            self.logger.info("YOLOX 未使用 best_ckpt.pth，评估权重: %s", ckpt)
 
         exp = self._load_yolox_exp()
         device = self.misc_config.get("device", "cuda")
