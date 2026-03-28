@@ -123,11 +123,11 @@ def main():
     if metrics:
         logger.info("=" * 60)
         logger.info("评估完成")
-        logger.info(f"  mAP@0.5 全类:      {metrics.get('mAP_0.5', 0):.4f}")
-        logger.info(f"  mAP@0.5:0.95 全类: {metrics.get('mAP_0.5_0.95', 0):.4f}")
+        logger.info(f"  mAP@0.5 全类:      {metrics.get('mAP_50_all', 0):.4f}")
+        logger.info(f"  mAP@0.5:0.95 全类: {metrics.get('mAP_5095_all', 0):.4f}")
         logger.info(
-            f"  KITTI E/M/H: {metrics.get('AP_easy',0):.4f} / "
-            f"{metrics.get('AP_moderate',0):.4f} / {metrics.get('AP_hard',0):.4f}"
+            f"  KITTI E/M/H: {metrics.get('mAP_easy',0):.4f} / "
+            f"{metrics.get('mAP_moderate',0):.4f} / {metrics.get('mAP_hard',0):.4f}"
         )
         if (bm := format_benchmark_eval_line(metrics)):
             logger.info(f"  {bm}")
