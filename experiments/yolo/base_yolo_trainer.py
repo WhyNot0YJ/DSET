@@ -44,6 +44,10 @@ from common.model_benchmark import (
     log_benchmark,
     merge_benchmark_dict_into_metrics,
 )
+from common.det_eval_metrics import (
+    coco_area_bucket_counts_from_xywh_annotations,
+    format_area_bucket_counts,
+)
 
 from yolo_validator_utils import MetricsLogger, MultiScaleMetricsCalculator
 
@@ -670,6 +674,9 @@ class BaseYOLOTrainer(ABC):
                 # ── 4. Collect GT and raw predictions ───────────────────────
                 gt_info: Dict[int, list] = {c: [] for c in range(nc)}
                 preds_by_cls: Dict[int, list] = {c: [] for c in range(nc)}
+                debug_gt_annotations: List[Dict[str, Any]] = []
+                debug_pred_annotations: List[Dict[str, Any]] = []
+                debug_image_ids: set[int] = set()
 
                 BATCH = 32
                 for batch_start in range(0, len(eval_images), BATCH):
@@ -682,6 +689,7 @@ class BaseYOLOTrainer(ABC):
                     ):
                         img_idx = batch_start + i_in_batch
                         img_h, img_w = result.orig_shape
+                        debug_image_ids.add(img_idx)
                         raw = json.loads(
                             meta_by_stem[img_path.stem].read_text(encoding='utf-8')
                         )
@@ -708,7 +716,10 @@ class BaseYOLOTrainer(ABC):
                             else:
                                 continue
                             h_px = py2 - py1
-                            area_px = (px2 - px1) * h_px
+                            w_px = (px2 - px1)
+                            area_px = w_px * h_px
+                            if w_px <= 0 or h_px <= 0:
+                                continue
 
                             occ = float(entry.get('occluded_state', 0))
                             tr = self._normalize_truncation(
@@ -722,6 +733,13 @@ class BaseYOLOTrainer(ABC):
                             gt_info[cls].append(
                                 (img_idx, (px1, py1, px2, py2), diff, scale, h_px)
                             )
+                            debug_gt_annotations.append(
+                                {
+                                    "image_id": img_idx,
+                                    "category_id": cls + 1,
+                                    "bbox": [float(px1), float(py1), float(w_px), float(h_px)],
+                                }
+                            )
 
                         if result.boxes is not None:
                             for box, conf, cls_t in zip(
@@ -731,9 +749,30 @@ class BaseYOLOTrainer(ABC):
                             ):
                                 c = int(cls_t)
                                 if 0 <= c < nc:
-                                    preds_by_cls[c].append(
-                                        (img_idx, float(conf), box.tolist())
-                                    )
+                                    box_list = box.tolist()
+                                    preds_by_cls[c].append((img_idx, float(conf), box_list))
+                                    x1, y1, x2, y2 = map(float, box_list)
+                                    w_px = x2 - x1
+                                    h_px = y2 - y1
+                                    if w_px > 0 and h_px > 0:
+                                        debug_pred_annotations.append(
+                                            {
+                                                "image_id": img_idx,
+                                                "category_id": c + 1,
+                                                "bbox": [x1, y1, w_px, h_px],
+                                            }
+                                        )
+
+                if os.getenv("CAS_DEBUG_AREA_METRICS", "0") == "1":
+                    gt_counts = coco_area_bucket_counts_from_xywh_annotations(debug_gt_annotations)
+                    pred_counts = coco_area_bucket_counts_from_xywh_annotations(debug_pred_annotations)
+                    self.logger.info(
+                        "[DEBUG][YOLO][AREA][%s] images=%d  %s  %s",
+                        eval_split,
+                        len(debug_image_ids),
+                        format_area_bucket_counts("gt", gt_counts),
+                        format_area_bucket_counts("pred", pred_counts),
+                    )
 
                 # ── 5. AP：难度 + scale + per-class ─────────────────────────
                 DIFF_INCLUDE = {

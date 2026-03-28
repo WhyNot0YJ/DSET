@@ -24,7 +24,9 @@ from common.det_eval_metrics import (
     kitti_difficulty_from_coco_ann,
     coco_ap_at_iou50_all,
     coco_area_ap_at_iou50,
+    coco_area_bucket_counts_from_xywh_annotations,
     dataset_dir_name,
+    format_area_bucket_counts,
 )
 from common.detr_eval_utils import (
     evaluate_best_model_after_training,
@@ -2504,6 +2506,16 @@ class CaS_DETRTrainer:
             for i, target in enumerate(targets):
                 target['id'] = i + 1
                 coco_gt['annotations'].append(target)
+
+            if os.getenv("CAS_DEBUG_AREA_METRICS", "0") == "1":
+                gt_counts = coco_area_bucket_counts_from_xywh_annotations(coco_gt['annotations'])
+                pred_counts = coco_area_bucket_counts_from_xywh_annotations(predictions)
+                self.logger.info(
+                    "[DEBUG][DETR][AREA] images=%d  %s  %s",
+                    len(coco_gt['images']),
+                    format_area_bucket_counts("gt", gt_counts),
+                    format_area_bucket_counts("pred", pred_counts),
+                )
             
             # 使用pycocotools评估（抑制所有输出以节省时间）
             from io import StringIO

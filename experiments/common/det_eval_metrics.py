@@ -134,6 +134,46 @@ def coco_area_ap_at_iou50(coco_eval) -> Tuple[float, float, float]:
     return out[0], out[1], out[2]
 
 
+def coco_area_bucket_name(area: float) -> str:
+    """按 COCO 面积阈值返回 ``small`` / ``medium`` / ``large``。"""
+    area = float(area)
+    if area < SMALL_AREA_THRESHOLD:
+        return "small"
+    if area < MEDIUM_AREA_THRESHOLD:
+        return "medium"
+    return "large"
+
+
+def coco_area_bucket_counts_from_xywh_annotations(
+    annotations: List[Dict[str, Any]],
+) -> Dict[str, int]:
+    """
+    统计 COCO ``bbox=[x,y,w,h]`` 标注列表在 small / medium / large 上的数量。
+    """
+    counts = {"small": 0, "medium": 0, "large": 0}
+    for ann in annotations:
+        bbox = ann.get("bbox", [0, 0, 0, 0])
+        if len(bbox) != 4:
+            continue
+        w = float(bbox[2])
+        h = float(bbox[3])
+        if w <= 0 or h <= 0:
+            continue
+        counts[coco_area_bucket_name(w * h)] += 1
+    return counts
+
+
+def format_area_bucket_counts(prefix: str, counts: Dict[str, int]) -> str:
+    """将面积桶计数格式化成日志短句。"""
+    total = int(counts.get("small", 0) + counts.get("medium", 0) + counts.get("large", 0))
+    return (
+        f"{prefix} total={total}  "
+        f"small={int(counts.get('small', 0))}  "
+        f"medium={int(counts.get('medium', 0))}  "
+        f"large={int(counts.get('large', 0))}"
+    )
+
+
 # ── CSV 指标输出（DETR / YOLO 共用）──────────────────────────────────────
 
 EVAL_CSV_FIELDS: List[str] = [
