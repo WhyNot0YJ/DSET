@@ -203,6 +203,7 @@ class CaS_DETRRTDETR(nn.Module):
                 cass_loss_weight: float = 0.2,
                 cass_expansion_ratio: float = 0.3,
                 cass_min_size: float = 1.0,
+                 use_subpixel_offset: bool = True,
                 # CASS Loss config
                 cass_loss_type: str = 'vfl',  # 'focal' or 'vfl'
                 cass_focal_alpha: float = 0.75,
@@ -231,6 +232,7 @@ class CaS_DETRRTDETR(nn.Module):
             cass_loss_weight: CASS loss weight
             cass_expansion_ratio: Context band expansion ratio (0.2-0.8)
             cass_min_size: Minimum box size on feature map (protects small objects)
+            use_subpixel_offset: Whether to use sub-pixel offset compensation in CASS
             cass_loss_type: Loss type ('focal' for Focal Loss, 'vfl' for Varifocal Loss)
             cass_focal_alpha: Focal/VFL alpha parameter (positive sample weight)
             cass_focal_beta: Focal/VFL beta/gamma parameter (hard example mining strength)
@@ -264,6 +266,7 @@ class CaS_DETRRTDETR(nn.Module):
         self.cass_loss_weight = cass_loss_weight
         self.cass_expansion_ratio = cass_expansion_ratio
         self.cass_min_size = cass_min_size
+        self.use_subpixel_offset = use_subpixel_offset
         # CASS Loss configuration
         self.cass_loss_type = cass_loss_type
         self.cass_focal_alpha = cass_focal_alpha
@@ -349,6 +352,7 @@ class CaS_DETRRTDETR(nn.Module):
             cass_expansion_ratio=self.cass_expansion_ratio,
             cass_min_size=self.cass_min_size,
             cass_decay_type='gaussian',
+            use_subpixel_offset=self.use_subpixel_offset,
             cass_loss_type=self.cass_loss_type,
             cass_focal_alpha=self.cass_focal_alpha,
             cass_focal_beta=self.cass_focal_beta,
@@ -815,6 +819,7 @@ class CaS_DETRTrainer:
         cass_loss_weight = cas_detr_config.get('cass_loss_weight', 0.2)
         cass_expansion_ratio = cas_detr_config.get('cass_expansion_ratio', 0.3)
         cass_min_size = cas_detr_config.get('cass_min_size', 1.0)
+        use_subpixel_offset = cas_detr_config.get('use_subpixel_offset', True)
         # CASS Loss 配置
         cass_loss_type = cas_detr_config.get('cass_loss_type', 'vfl')  # 'focal' or 'vfl'
         cass_focal_alpha = cas_detr_config.get('cass_focal_alpha', 0.75)
@@ -850,6 +855,7 @@ class CaS_DETRTrainer:
             cass_loss_weight=cass_loss_weight,
             cass_expansion_ratio=cass_expansion_ratio,
             cass_min_size=cass_min_size,
+            use_subpixel_offset=use_subpixel_offset,
             cass_loss_type=cass_loss_type,
             cass_focal_alpha=cass_focal_alpha,
             cass_focal_beta=cass_focal_beta,
@@ -887,7 +893,7 @@ class CaS_DETRTrainer:
         self.logger.info("  损失权重配置:")
         self.logger.info(f"    - CASS Supervision: {model.use_cass} (loss_type={cass_loss_type}, weight={cass_loss_weight}, expansion={cass_expansion_ratio}, min_size={cass_min_size})")
         if model.use_cass:
-            self.logger.info(f"      → CASS Loss params: alpha={cass_focal_alpha}, beta={cass_focal_beta}")
+            self.logger.info(f"      → CASS Loss params: alpha={cass_focal_alpha}, beta={cass_focal_beta}, subpixel_offset={use_subpixel_offset}")
         self.logger.info(f"    - Decoder MoE: {decoder_moe_balance_weight if decoder_moe_balance_weight else 'auto'}")
         if model.enable_decoder_moe and moe_balance_warmup_epochs > 0:
             self.logger.info(f"    - MOE Balance Warmup: {moe_balance_warmup_epochs} epochs (延迟平衡策略：前{moe_balance_warmup_epochs}个epoch不应用MOE平衡损失)")

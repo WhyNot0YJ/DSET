@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""统一YOLO训练入口（v8/v10/v11/v12）"""
+"""统一YOLO训练入口（v5/v8/v12）"""
 
 import argparse
 import sys
@@ -34,8 +34,8 @@ def normalize_version(version: str) -> str:
     value = version.lower().strip()
     if value.startswith("v"):
         value = value[1:]
-    if value not in {"8", "10", "11", "12"}:
-        raise ValueError(f"不支持的YOLO版本: {version}，可选: v8/v10/v11/v12")
+    if value not in {"5", "8", "12"}:
+        raise ValueError(f"不支持的YOLO版本: {version}，可选: v5/v8/v12")
     return value
 
 
@@ -75,7 +75,7 @@ def find_latest_checkpoint(log_base: str) -> Optional[str]:
 
 def main():
     parser = argparse.ArgumentParser(description="统一YOLO训练入口")
-    parser.add_argument("--version", type=str, required=True, help="YOLO版本: v8/v10/v11/v12")
+    parser.add_argument("--version", type=str, required=True, help="YOLO版本: v5/v8/v12")
     parser.add_argument("--config", type=str, default=None, help="YAML配置文件路径")
     parser.add_argument("--dataset", type=str, default=None, help="数据集键名或别名（在 configs/datasets.yaml 中定义）")
     parser.add_argument("--dataset_registry", type=str, default="configs/datasets.yaml", help="数据集注册表路径")

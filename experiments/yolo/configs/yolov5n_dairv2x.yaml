@@ -1,12 +1,12 @@
 model:
-  model_name: "yolo11n.pt"
-  pretrained_weights: "pretrained/yolo11n.pt"
+  model_name: "yolov5n.pt"
+  pretrained_weights: "pretrained/yolov5n.pt"
 
 training:
   epochs: 100
   batch_size: 32
   imgsz: 640
-  
+
 data:
   data_yaml: "/root/autodl-fs/datasets/DAIR-V2X_YOLO/dairv2x.yaml"
 

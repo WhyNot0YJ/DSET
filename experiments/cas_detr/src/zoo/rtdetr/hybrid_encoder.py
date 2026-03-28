@@ -206,6 +206,7 @@ class HybridEncoder(nn.Module):
                  cass_expansion_ratio=0.3,
                  cass_min_size=1.0,
                  cass_decay_type='gaussian',
+                 use_subpixel_offset=True,
                  # CASS Loss 参数
                  cass_loss_type='vfl',  # 'focal' or 'vfl'
                  cass_focal_alpha=0.75,
@@ -219,6 +220,7 @@ class HybridEncoder(nn.Module):
             cass_expansion_ratio: Context band expansion ratio (0.2-0.8)
             cass_min_size: Minimum box size on feature map (protects small objects)
             cass_decay_type: Decay type for context band ('gaussian' or 'linear')
+            use_subpixel_offset: Whether to use sub-pixel offset compensation
             cass_loss_type: Loss type ('focal' for Focal Loss, 'vfl' for Varifocal Loss)
             cass_focal_alpha: Focal/VFL alpha parameter (positive sample weight)
             cass_focal_beta: Focal/VFL beta/gamma parameter (hard example mining strength)
@@ -242,6 +244,7 @@ class HybridEncoder(nn.Module):
         self.cass_expansion_ratio = cass_expansion_ratio
         self.cass_min_size = cass_min_size
         self.cass_decay_type = cass_decay_type
+        self.use_subpixel_offset = use_subpixel_offset
         # CASS Loss parameters
         self.cass_loss_type = cass_loss_type
         self.cass_focal_alpha = cass_focal_alpha
@@ -285,6 +288,7 @@ class HybridEncoder(nn.Module):
                 cass_expansion_ratio=cass_expansion_ratio,
                 cass_min_size=cass_min_size,
                 cass_decay_type=cass_decay_type,
+                use_subpixel_offset=use_subpixel_offset,
                 # CASS Loss parameters
                 cass_loss_type=cass_loss_type,
                 cass_focal_alpha=cass_focal_alpha,

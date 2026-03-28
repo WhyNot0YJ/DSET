@@ -20,9 +20,8 @@ export OMP_NUM_THREADS=1
 #   ./run_batch_experiments.sh --dairv2x --rt-detr             # 同上但只跑 DAIR-V2X（1 个 RT-DETR 配置）
 #   ./run_batch_experiments.sh --moe-rtdetr                    # 只运行MOE-RTDETR实验（2个配置）
 #   ./run_batch_experiments.sh --cas_detr                      # 只运行CaS_DETR实验（6个配置）
+#   ./run_batch_experiments.sh --yolov5                        # 只运行YOLOv5实验
 #   ./run_batch_experiments.sh --yolov8                        # 只运行YOLOv8实验
-#   ./run_batch_experiments.sh --yolov10                       # 只运行YOLOv10实验
-#   ./run_batch_experiments.sh --yolov11                       # 只运行YOLOv11实验
 #   ./run_batch_experiments.sh --yolov12                       # 只运行YOLOv12实验
 #   ./run_batch_experiments.sh --yolox                         # 只运行 YOLOX（Megvii）实验
 #   ./run_batch_experiments.sh --fasterrcnn                    # 只运行 torchvision Faster R-CNN（DAIR + UA-DETRAC）
@@ -30,14 +29,16 @@ export OMP_NUM_THREADS=1
 #   ./run_batch_experiments.sh --test --rt-detr                # 测试模式只运行RT-DETR
 #   ./run_batch_experiments.sh --test --moe-rtdetr             # 测试模式只运行MOE-RTDETR
 #   ./run_batch_experiments.sh --test --cas_detr                   # 测试模式只运行CaS_DETR
+#   ./run_batch_experiments.sh --test --yolov5                 # 测试模式只运行YOLOv5
 #   ./run_batch_experiments.sh --test --yolov8                 # 测试模式只运行YOLOv8
-#   ./run_batch_experiments.sh --test --yolov10                # 测试模式只运行YOLOv10
-#   ./run_batch_experiments.sh --test --yolov11                # 测试模式只运行YOLOv11
 #   ./run_batch_experiments.sh --test --yolov12                # 测试模式只运行YOLOv12
 #   ./run_batch_experiments.sh --test --yolox                  # 测试模式只运行 YOLOX
 #   ./run_batch_experiments.sh --test --fasterrcnn             # 测试模式只运行 Faster R-CNN
 #   ./run_batch_experiments.sh --test --deformable-detr        # 测试模式只运行Deformable-DETR
 #   ./run_batch_experiments.sh --r18                           # 只运行ResNet-18实验
+#   ./run_batch_experiments.sh --n                             # 只运行所有 n 规模 YOLO（v5/v8/v12）
+#   ./run_batch_experiments.sh --s                             # 只运行所有 s 规模 YOLO / YOLOX
+#   ./run_batch_experiments.sh --m                             # 只运行所有 m 规模 YOLO / YOLOX
 #   ./run_batch_experiments.sh --custom cfg1.yaml cfg2.yaml    # 自定义配置列表
 #   ./run_batch_experiments.sh --keys rt-detr-r18 moe6-r18     # 使用内置键名选择
 #   ./run_batch_experiments.sh --dairv2x                       # 只保留 DAIR-V2X 维度（可叠 --rt-detr / --cas_detr 等）
@@ -81,6 +82,9 @@ SKIP_CONFIRM=false  # --yes：跳过「是否开始」确认，便于一键 / CI
 # --dairv2x / --uadetrac（或 --dataset）解析后写入；二者同时为 true 时不筛选
 SCOPE_DAIRV2X=false
 SCOPE_UADETRAC=false
+SCOPE_SIZE_N=false
+SCOPE_SIZE_S=false
+SCOPE_SIZE_M=false
 TOTAL_PLANNED_RUNS=0
 
 # 选择可用的 Python 解释器
@@ -166,6 +170,60 @@ apply_dataset_scope_filter_to_configs() {
     fi
 }
 
+_path_allowed_by_model_size_scope() {
+    local path="$1"
+    local want_n="$2"
+    local want_s="$3"
+    local want_m="$4"
+    local base
+    base=$(basename "$path")
+
+    if [[ "$base" =~ ^yolov(5|8|12)n_.*\.yaml$ ]]; then
+        [ "$want_n" = true ] && return 0 || return 1
+    fi
+    if [[ "$base" =~ ^(yolov(5|8|12)s_|yoloxs_).*.yaml$ ]]; then
+        [ "$want_s" = true ] && return 0 || return 1
+    fi
+    if [[ "$base" =~ ^(yolov(5|8|12)m_|yoloxm_).*.yaml$ ]]; then
+        [ "$want_m" = true ] && return 0 || return 1
+    fi
+
+    return 1
+}
+
+apply_model_size_filter_to_configs() {
+    if [ "$SCOPE_SIZE_N" != true ] && [ "$SCOPE_SIZE_S" != true ] && [ "$SCOPE_SIZE_M" != true ]; then
+        return 0
+    fi
+    local want_n=false
+    local want_s=false
+    local want_m=false
+    [ "$SCOPE_SIZE_N" = true ] && want_n=true
+    [ "$SCOPE_SIZE_S" = true ] && want_s=true
+    [ "$SCOPE_SIZE_M" = true ] && want_m=true
+    local before=${#CONFIGS_TO_RUN[@]}
+    local filtered=()
+    local p
+    for p in "${CONFIGS_TO_RUN[@]}"; do
+        if _path_allowed_by_model_size_scope "$p" "$want_n" "$want_s" "$want_m"; then
+            filtered+=("$p")
+        fi
+    done
+    CONFIGS_TO_RUN=("${filtered[@]}")
+
+    local selected_sizes=()
+    [ "$want_n" = true ] && selected_sizes+=("n")
+    [ "$want_s" = true ] && selected_sizes+=("s")
+    [ "$want_m" = true ] && selected_sizes+=("m")
+    local size_str
+    size_str=$(IFS='/'; echo "${selected_sizes[*]}")
+    log_info "模型规模筛选: ${size_str}"
+
+    if [ "$before" -gt 0 ] && [ ${#CONFIGS_TO_RUN[@]} -eq 0 ]; then
+        log_warning "按模型规模筛选后队列为空，请检查是否与 --yolov5 / --yolov8 / --yolov12 / --yolox 组合正确"
+    fi
+}
+
 # 定义所有可用的实验配置
 declare -A RT_DETR_CONFIGS=(
     ["rt-detr-r18-dairv2x"]="cas_detr/configs/rtdetr_r18.yaml"
@@ -194,6 +252,15 @@ declare -A CaS_DETR_CONFIGS=(
     ["cas_detr6-r18-0.9-uadetrac"]="cas_detr/configs/cas_detr6_r18_ratio0.9_uadetrac.yaml"
 )
 
+declare -A YOLOV5_CONFIGS=(
+    ["yolov5n-dairv2x"]="yolo/configs/yolov5n_dairv2x.yaml"
+    ["yolov5n-uadetrac"]="yolo/configs/yolov5n_uadetrac.yaml"
+    ["yolov5s-dairv2x"]="yolo/configs/yolov5s_dairv2x.yaml"
+    ["yolov5s-uadetrac"]="yolo/configs/yolov5s_uadetrac.yaml"
+    ["yolov5m-dairv2x"]="yolo/configs/yolov5m_dairv2x.yaml"
+    ["yolov5m-uadetrac"]="yolo/configs/yolov5m_uadetrac.yaml"
+)
+
 declare -A YOLOV8_CONFIGS=(
     ["yolov8n-dairv2x"]="yolo/configs/yolov8n_dairv2x.yaml"
     ["yolov8n-uadetrac"]="yolo/configs/yolov8n_uadetrac.yaml"
@@ -201,24 +268,6 @@ declare -A YOLOV8_CONFIGS=(
     ["yolov8s-uadetrac"]="yolo/configs/yolov8s_uadetrac.yaml"
     ["yolov8m-dairv2x"]="yolo/configs/yolov8m_dairv2x.yaml"
     ["yolov8m-uadetrac"]="yolo/configs/yolov8m_uadetrac.yaml"
-)
-
-declare -A YOLOV10_CONFIGS=(
-    ["yolov10n-dairv2x"]="yolo/configs/yolov10n_dairv2x.yaml"
-    ["yolov10n-uadetrac"]="yolo/configs/yolov10n_uadetrac.yaml"
-    ["yolov10s-dairv2x"]="yolo/configs/yolov10s_dairv2x.yaml"
-    ["yolov10s-uadetrac"]="yolo/configs/yolov10s_uadetrac.yaml"
-    ["yolov10m-dairv2x"]="yolo/configs/yolov10m_dairv2x.yaml"
-    ["yolov10m-uadetrac"]="yolo/configs/yolov10m_uadetrac.yaml"
-)
-
-declare -A YOLOV11_CONFIGS=(
-    ["yolov11n-dairv2x"]="yolo/configs/yolov11n_dairv2x.yaml"
-    ["yolov11n-uadetrac"]="yolo/configs/yolov11n_uadetrac.yaml"
-    ["yolov11s-dairv2x"]="yolo/configs/yolov11s_dairv2x.yaml"
-    ["yolov11s-uadetrac"]="yolo/configs/yolov11s_uadetrac.yaml"
-    ["yolov11m-dairv2x"]="yolo/configs/yolov11m_dairv2x.yaml"
-    ["yolov11m-uadetrac"]="yolo/configs/yolov11m_uadetrac.yaml"
 )
 
 declare -A YOLOV12_CONFIGS=(
@@ -277,24 +326,16 @@ build_all_configs() {
         NAME_TO_PATH["$key"]="$p"
         NAME_TO_PATH["$b"]="$p"
     done
+    for key in "${!YOLOV5_CONFIGS[@]}"; do
+        local p="${YOLOV5_CONFIGS[$key]}"
+        all_configs_paths+=("$p")
+        local b
+        b=$(basename "$p" .yaml)
+        NAME_TO_PATH["$key"]="$p"
+        NAME_TO_PATH["$b"]="$p"
+    done
     for key in "${!YOLOV8_CONFIGS[@]}"; do
         local p="${YOLOV8_CONFIGS[$key]}"
-        all_configs_paths+=("$p")
-        local b
-        b=$(basename "$p" .yaml)
-        NAME_TO_PATH["$key"]="$p"
-        NAME_TO_PATH["$b"]="$p"
-    done
-    for key in "${!YOLOV10_CONFIGS[@]}"; do
-        local p="${YOLOV10_CONFIGS[$key]}"
-        all_configs_paths+=("$p")
-        local b
-        b=$(basename "$p" .yaml)
-        NAME_TO_PATH["$key"]="$p"
-        NAME_TO_PATH["$b"]="$p"
-    done
-    for key in "${!YOLOV11_CONFIGS[@]}"; do
-        local p="${YOLOV11_CONFIGS[$key]}"
         all_configs_paths+=("$p")
         local b
         b=$(basename "$p" .yaml)
@@ -407,6 +448,9 @@ parse_arguments() {
     local args=("$@")
     local has_test=false
     local has_r18=false
+    local has_n=false
+    local has_s=false
+    local has_m=false
     local has_k03=false
     local has_k05=false
     local has_k07=false
@@ -439,6 +483,24 @@ parse_arguments() {
         fi
         if [ "$arg" == "--r18" ]; then
             has_r18=true
+            idx=$((idx + 1))
+            continue
+        fi
+        if [ "$arg" == "--n" ]; then
+            has_n=true
+            SCOPE_SIZE_N=true
+            idx=$((idx + 1))
+            continue
+        fi
+        if [ "$arg" == "--s" ]; then
+            has_s=true
+            SCOPE_SIZE_S=true
+            idx=$((idx + 1))
+            continue
+        fi
+        if [ "$arg" == "--m" ]; then
+            has_m=true
+            SCOPE_SIZE_M=true
             idx=$((idx + 1))
             continue
         fi
@@ -488,6 +550,9 @@ parse_arguments() {
 
     if [ "$SCOPE_DAIRV2X" = true ] || [ "$SCOPE_UADETRAC" = true ]; then
         log_info "数据集作用域已启用（--dataset / --dairv2x / --uadetrac），可与 --rt-detr、--cas_detr 等任意顺序组合"
+    fi
+    if [ "$has_n" = true ] || [ "$has_s" = true ] || [ "$has_m" = true ]; then
+        log_info "模型规模作用域已启用（--n / --s / --m），可与 --yolov5 / --yolov8 / --yolov12 / --yolox 任意组合"
     fi
 
     # 如果设置了测试模式，显示提示
@@ -562,6 +627,7 @@ parse_arguments() {
                 fi
             done
             apply_dataset_scope_filter_to_configs
+            apply_model_size_filter_to_configs
             log_info "运行核心实验配置（CaS_DETR R18 DAIR）"
             return 0
         fi
@@ -571,9 +637,8 @@ parse_arguments() {
     local has_rt_detr=false
     local has_moe_rtdetr=false
     local has_cas_detr=false
+    local has_yolov5=false
     local has_yolov8=false
-    local has_yolov10=false
-    local has_yolov11=false
     local has_yolov12=false
     local has_yolox=false
     local has_fasterrcnn=false
@@ -594,14 +659,11 @@ parse_arguments() {
             --cas_detr)
                 has_cas_detr=true
                 ;;
+            --yolov5)
+                has_yolov5=true
+                ;;
             --yolov8)
                 has_yolov8=true
-                ;;
-            --yolov10)
-                has_yolov10=true
-                ;;
-            --yolov11)
-                has_yolov11=true
                 ;;
             --yolov12)
                 has_yolov12=true
@@ -619,15 +681,14 @@ parse_arguments() {
     done
     
     # 如果指定了实验类型，只运行指定的类型（支持多个）
-    if [ "$has_rt_detr" = true ] || [ "$has_moe_rtdetr" = true ] || [ "$has_cas_detr" = true ] || [ "$has_yolov8" = true ] || [ "$has_yolov10" = true ] || [ "$has_yolov11" = true ] || [ "$has_yolov12" = true ] || [ "$has_yolox" = true ] || [ "$has_fasterrcnn" = true ] || [ "$has_deformable_detr" = true ]; then
+    if [ "$has_rt_detr" = true ] || [ "$has_moe_rtdetr" = true ] || [ "$has_cas_detr" = true ] || [ "$has_yolov5" = true ] || [ "$has_yolov8" = true ] || [ "$has_yolov12" = true ] || [ "$has_yolox" = true ] || [ "$has_fasterrcnn" = true ] || [ "$has_deformable_detr" = true ]; then
         # 显示将要运行的类型
         local selected_types=()
         [ "$has_rt_detr" = true ] && selected_types+=("RT-DETR")
         [ "$has_moe_rtdetr" = true ] && selected_types+=("MOE-RTDETR")
         [ "$has_cas_detr" = true ] && selected_types+=("CaS_DETR")
+        [ "$has_yolov5" = true ] && selected_types+=("YOLOv5")
         [ "$has_yolov8" = true ] && selected_types+=("YOLOv8")
-        [ "$has_yolov10" = true ] && selected_types+=("YOLOv10")
-        [ "$has_yolov11" = true ] && selected_types+=("YOLOv11")
         [ "$has_yolov12" = true ] && selected_types+=("YOLOv12")
         [ "$has_yolox" = true ] && selected_types+=("YOLOX")
         [ "$has_fasterrcnn" = true ] && selected_types+=("FasterRCNN")
@@ -667,26 +728,17 @@ parse_arguments() {
             done
         fi
         
+        if [ "$has_yolov5" = true ]; then
+            for key in $(printf '%s\n' "${!YOLOV5_CONFIGS[@]}" | sort); do
+                local p="${YOLOV5_CONFIGS[$key]}"
+                CONFIGS_TO_RUN+=("$p")
+            done
+        fi
+
         if [ "$has_yolov8" = true ]; then
             for key in $(printf '%s\n' "${!YOLOV8_CONFIGS[@]}" | sort); do
                 local p="${YOLOV8_CONFIGS[$key]}"
                 # YOLOv8不使用backbone过滤（它有自己的模型大小）
-                CONFIGS_TO_RUN+=("$p")
-            done
-        fi
-
-        if [ "$has_yolov10" = true ]; then
-            for key in $(printf '%s\n' "${!YOLOV10_CONFIGS[@]}" | sort); do
-                local p="${YOLOV10_CONFIGS[$key]}"
-                # YOLOv10不使用backbone过滤（它有自己的模型大小）
-                CONFIGS_TO_RUN+=("$p")
-            done
-        fi
-
-        if [ "$has_yolov11" = true ]; then
-            for key in $(printf '%s\n' "${!YOLOV11_CONFIGS[@]}" | sort); do
-                local p="${YOLOV11_CONFIGS[$key]}"
-                # YOLOv11不使用backbone过滤（它有自己的模型大小）
                 CONFIGS_TO_RUN+=("$p")
             done
         fi
@@ -749,20 +801,15 @@ parse_arguments() {
                 CONFIGS_TO_RUN+=("$p")
             fi
         done
-        # YOLOv8实验（仅s配置）
+        # YOLOv5实验
+        for key in $(printf '%s\n' "${!YOLOV5_CONFIGS[@]}" | sort); do
+            local p="${YOLOV5_CONFIGS[$key]}"
+            CONFIGS_TO_RUN+=("$p")
+        done
+        # YOLOv8实验
         for key in $(printf '%s\n' "${!YOLOV8_CONFIGS[@]}" | sort); do
             local p="${YOLOV8_CONFIGS[$key]}"
             # YOLOv8不使用backbone过滤（它有自己的模型大小）
-            CONFIGS_TO_RUN+=("$p")
-        done
-        # YOLOv10实验
-        for key in $(printf '%s\n' "${!YOLOV10_CONFIGS[@]}" | sort); do
-            local p="${YOLOV10_CONFIGS[$key]}"
-            CONFIGS_TO_RUN+=("$p")
-        done
-        # YOLOv11实验
-        for key in $(printf '%s\n' "${!YOLOV11_CONFIGS[@]}" | sort); do
-            local p="${YOLOV11_CONFIGS[$key]}"
             CONFIGS_TO_RUN+=("$p")
         done
         # YOLOv12实验
@@ -851,9 +898,8 @@ parse_arguments() {
         echo "  ./run_batch_experiments.sh --rt-detr                       # 只运行 RT-DETR（DAIR + UA-DETRAC）"
         echo "  ./run_batch_experiments.sh --moe-rtdetr                    # 只运行MOE-RTDETR（2个）"
         echo "  ./run_batch_experiments.sh --cas_detr                      # 只运行CaS_DETR（6个）"
+        echo "  ./run_batch_experiments.sh --yolov5                        # 只运行YOLOv5"
         echo "  ./run_batch_experiments.sh --yolov8                        # 只运行YOLOv8"
-        echo "  ./run_batch_experiments.sh --yolov10                       # 只运行YOLOv10"
-        echo "  ./run_batch_experiments.sh --yolov11                       # 只运行YOLOv11"
         echo "  ./run_batch_experiments.sh --yolov12                       # 只运行YOLOv12"
         echo "  ./run_batch_experiments.sh --yolox                         # 只运行 YOLOX"
         echo "  ./run_batch_experiments.sh --fasterrcnn                    # 只运行 torchvision Faster R-CNN"
@@ -861,9 +907,8 @@ parse_arguments() {
         echo "  ./run_batch_experiments.sh --test --rt-detr                # 测试模式只运行RT-DETR"
         echo "  ./run_batch_experiments.sh --test --moe-rtdetr             # 测试模式只运行MOE-RTDETR"
         echo "  ./run_batch_experiments.sh --test --cas_detr                   # 测试模式只运行CaS_DETR"
+        echo "  ./run_batch_experiments.sh --test --yolov5                 # 测试模式只运行YOLOv5"
         echo "  ./run_batch_experiments.sh --test --yolov8                 # 测试模式只运行YOLOv8"
-        echo "  ./run_batch_experiments.sh --test --yolov10                # 测试模式只运行YOLOv10"
-        echo "  ./run_batch_experiments.sh --test --yolov11                # 测试模式只运行YOLOv11"
         echo "  ./run_batch_experiments.sh --test --yolov12                # 测试模式只运行YOLOv12"
         echo "  ./run_batch_experiments.sh --test --yolox                  # 测试模式只运行 YOLOX"
         echo "  ./run_batch_experiments.sh --test --fasterrcnn             # 测试模式只运行 Faster R-CNN"
@@ -872,6 +917,9 @@ parse_arguments() {
         echo "  ./run_batch_experiments.sh --test --rt-detr --cas_detr          # 测试模式运行多个类型"
         echo "  ./run_batch_experiments.sh --r18                           # 只运行R18"
         echo "  ./run_batch_experiments.sh --r18                           # 只运行R18"
+        echo "  ./run_batch_experiments.sh --n                             # 只运行所有 n 规模 YOLO（v5/v8/v12）"
+        echo "  ./run_batch_experiments.sh --s                             # 只运行所有 s 规模 YOLO / YOLOX"
+        echo "  ./run_batch_experiments.sh --m                             # 只运行所有 m 规模 YOLO / YOLOX"
         echo "  ./run_batch_experiments.sh --k0.3                          # 只运行 Keep Ratio 0.3 (Fast)"
         echo "  ./run_batch_experiments.sh --k0.5                          # 只运行 Keep Ratio 0.5 (Best/Default)"
         echo "  ./run_batch_experiments.sh --k0.7                          # 只运行 Keep Ratio 0.7"
@@ -889,10 +937,12 @@ parse_arguments() {
         echo "  ./run_batch_experiments.sh --dairv2x --rt-detr              # 仅 DAIR-V2X 的 RT-DETR"
         echo "  ./run_batch_experiments.sh --dataset dairv2x --rtdetr       # 同上（--dataset 写法）"
         echo "  ./run_batch_experiments.sh --uadetrac --cas_detr            # 仅 UA-DETRAC 的 CaS_DETR"
+        echo "  ./run_batch_experiments.sh --yolov5 --yolov8 --yolov12 --yolox --s  # 跑所有 s 规模 YOLO / YOLOX"
         exit 1
     fi
 
     apply_dataset_scope_filter_to_configs
+    apply_model_size_filter_to_configs
 }
 
 # 运行单个实验
@@ -930,18 +980,14 @@ run_single_experiment() {
     
     # 确定训练脚本路径
     local YOLO_VERSION=""
-    if [[ "$exp_name" == yolov8* ]]; then
+    if [[ "$exp_name" == yolov5* ]]; then
+        TRAIN_SCRIPT="yolo/train.py"
+        WORK_DIR="yolo"
+        YOLO_VERSION="5"
+    elif [[ "$exp_name" == yolov8* ]]; then
         TRAIN_SCRIPT="yolo/train.py"
         WORK_DIR="yolo"
         YOLO_VERSION="8"
-    elif [[ "$exp_name" == yolov10* ]]; then
-        TRAIN_SCRIPT="yolo/train.py"
-        WORK_DIR="yolo"
-        YOLO_VERSION="10"
-    elif [[ "$exp_name" == yolov11* ]]; then
-        TRAIN_SCRIPT="yolo/train.py"
-        WORK_DIR="yolo"
-        YOLO_VERSION="11"
     elif [[ "$exp_name" == yolov12* ]]; then
         TRAIN_SCRIPT="yolo/train.py"
         WORK_DIR="yolo"
