@@ -113,6 +113,88 @@ class CSPRepLayer(nn.Module):
         return self.conv3(x_1 + x_2)
 
 
+class CAIPPredictor(nn.Module):
+    """Context-Aware Importance Predictor (CAIP).
+
+    Enhances token pruning robustness by fusing a lightweight global context
+    branch with the existing local Linear scorer and exposes a scalar
+    ``scene_complexity`` signal that drives downstream dynamic pruning and
+    dynamic MoE expert routing (CSR).
+
+    Paths
+    -----
+    * **Local Path** – identical to ``LinearImportancePredictor``
+      (fc1 → GELU → Dropout → ``local_feat [B, N, hidden]``).
+      Supervised by CASS loss through the final ``importance_scores``.
+    * **Global Path** – GAP over the token dimension →
+      1×1 Conv → GELU → 1×1 Conv → Sigmoid → ``global_weights [B, hidden]``.
+      The pre-sigmoid activation mean is returned as ``scene_complexity``.
+    * **Interaction** – element-wise product of ``local_feat`` and
+      ``global_weights``, projected to a scalar per token.
+    """
+
+    def __init__(self, input_dim: int, hidden_dim: int = 128,
+                 reduction_ratio: int = 4, dropout: float = 0.1):
+        super().__init__()
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim
+        reduced_dim = max(input_dim // reduction_ratio, 16)
+
+        # --- Local Path (mirrors LinearImportancePredictor) ---
+        self.local_fc1 = nn.Linear(input_dim, hidden_dim)
+        self.local_act = nn.GELU()
+        self.local_dropout = nn.Dropout(dropout)
+        self.local_fc2 = nn.Linear(hidden_dim, 1)
+
+        # --- Global Path (GAP → 1×1 Conv → GELU → 1×1 Conv → Sigmoid) ---
+        self.global_fc1 = nn.Conv1d(input_dim, reduced_dim, kernel_size=1)
+        self.global_act = nn.GELU()
+        self.global_fc2 = nn.Conv1d(reduced_dim, hidden_dim, kernel_size=1)
+
+        self._init_weights()
+
+    def _init_weights(self):
+        for m in (self.local_fc1, self.local_fc2):
+            nn.init.xavier_uniform_(m.weight)
+            nn.init.zeros_(m.bias)
+        for m in (self.global_fc1, self.global_fc2):
+            nn.init.xavier_uniform_(m.weight)
+            nn.init.zeros_(m.bias)
+
+    def forward(self, tokens: torch.Tensor, H: int = 0, W: int = 0):
+        """
+        Args:
+            tokens: [B, N, C] input token sequence (possibly multi-scale concatenated).
+            H, W: kept for API compatibility with ``LinearImportancePredictor``.
+
+        Returns:
+            importance_scores: [B, N] logits (no sigmoid), CASS-supervised.
+            scene_complexity:  scalar – mean pre-sigmoid activation of the
+                               global path; higher ⇒ more complex scene.
+        """
+        # Local Path
+        local_feat = self.local_fc1(tokens)       # [B, N, hidden]
+        local_feat = self.local_act(local_feat)
+        local_feat = self.local_dropout(local_feat)
+
+        # Global Path: GAP → 1×1 Conv → GELU → 1×1 Conv → Sigmoid
+        gap = tokens.mean(dim=1, keepdim=True)     # [B, 1, C]
+        gap = gap.permute(0, 2, 1)                 # [B, C, 1]
+        g = self.global_fc1(gap)                   # [B, reduced, 1]
+        g = self.global_act(g)
+        pre_sigmoid = self.global_fc2(g)           # [B, hidden, 1]
+        global_weights = torch.sigmoid(pre_sigmoid)  # [B, hidden, 1]
+
+        scene_complexity = pre_sigmoid.mean()      # scalar
+
+        # Interaction: modulate local features with global channel weights
+        global_weights = global_weights.squeeze(-1).unsqueeze(1)  # [B, 1, hidden]
+        modulated = local_feat * global_weights    # [B, N, hidden]
+
+        importance_scores = self.local_fc2(modulated).squeeze(-1)  # [B, N]
+        return importance_scores, scene_complexity
+
+
 # transformer
 class TransformerEncoderLayer(nn.Module):
     def __init__(self,
@@ -211,6 +293,11 @@ class HybridEncoder(nn.Module):
                  cass_loss_type='vfl',  # 'focal' or 'vfl'
                  cass_focal_alpha=0.75,
                  cass_focal_beta=2.0,
+                 # CAIP (Context-Aware Importance Predictor) 参数
+                 use_caip=False,
+                 caip_reduction_ratio=4,
+                 caip_complexity_alpha=0.3,
+                 caip_complexity_beta=0.3,
                  **kwargs):  # **kwargs for backward compatibility (accepts but ignores token_pruning_warmup_epochs)
         """
         Args:
@@ -224,6 +311,10 @@ class HybridEncoder(nn.Module):
             cass_loss_type: Loss type ('focal' for Focal Loss, 'vfl' for Varifocal Loss)
             cass_focal_alpha: Focal/VFL alpha parameter (positive sample weight)
             cass_focal_beta: Focal/VFL beta/gamma parameter (hard example mining strength)
+            use_caip: Whether to use CAIP (global context branch for importance scoring)
+            caip_reduction_ratio: Channel reduction ratio in the CAIP global path
+            caip_complexity_alpha: Sensitivity for dynamic keep-ratio adjustment (0–1)
+            caip_complexity_beta: Sensitivity for dynamic MoE top-k adjustment (0–1)
         """
         super().__init__()
         self.in_channels = in_channels
@@ -252,6 +343,11 @@ class HybridEncoder(nn.Module):
         
         self.use_token_pruning = enable_cas_predictor
         self.use_token_level_pruning = enable_cas_predictor
+        
+        # CAIP parameters
+        self.use_caip = use_caip and enable_cas_predictor
+        self.caip_complexity_alpha = caip_complexity_alpha
+        self.caip_complexity_beta = caip_complexity_beta
         
         self.input_proj = nn.ModuleList()
         for in_channel in in_channels:
@@ -296,6 +392,17 @@ class HybridEncoder(nn.Module):
             )
         else:
             self.shared_token_pruner = None
+        
+        # CAIP predictor (replaces internal Linear scorer when enabled)
+        if self.use_caip:
+            self.caip_predictor = CAIPPredictor(
+                input_dim=hidden_dim,
+                hidden_dim=128,
+                reduction_ratio=caip_reduction_ratio,
+                dropout=0.1,
+            )
+        else:
+            self.caip_predictor = None
         
         encoder_layer = TransformerEncoderLayer(
             hidden_dim, 
@@ -471,11 +578,27 @@ class HybridEncoder(nn.Module):
             pos_embed_total = torch.cat(pos_embed_list, dim=1)
 
             if self.shared_token_pruner is not None:
+                # --- CAIP branch: global-context-aware scoring + dynamic ratio ---
+                caip_scores = None
+                dynamic_keep_ratio = None
+                scene_complexity = None
+
+                if self.caip_predictor is not None:
+                    caip_scores, scene_complexity = self.caip_predictor(src_flatten_total)
+                    # Dynamic keep-ratio: higher complexity ⇒ retain more tokens
+                    complexity_norm = torch.sigmoid(scene_complexity).item()
+                    base_ratio = self.shared_token_pruner.keep_ratio
+                    dynamic_keep_ratio = base_ratio + (1.0 - base_ratio) * complexity_norm * self.caip_complexity_alpha
+                    dynamic_keep_ratio = float(min(max(dynamic_keep_ratio, base_ratio), 1.0))
+                    encoder_info['scene_complexity'] = scene_complexity
+
                 # Global pruning across all levels
                 src_pruned, kept_indices, prune_info = self.shared_token_pruner(
                     src_flatten_total,
                     spatial_shape=None,
-                    return_indices=True
+                    return_indices=True,
+                    external_scores=caip_scores,
+                    dynamic_keep_ratio=dynamic_keep_ratio,
                 )
                 encoder_info['token_pruning_ratios'].append(prune_info.get('pruning_ratio', 0.0))
 
@@ -484,7 +607,6 @@ class HybridEncoder(nn.Module):
                     encoder_info['importance_scores_list'].append(global_scores)
                     encoder_info['feat_shapes_list'].append(spatial_shapes)
 
-                    # 验证/可视化用 heatmap；训练阶段不构建，减少多余 view 与 dict 占用
                     if level_sizes and not self.training:
                         scores_per_level = torch.split(global_scores, level_sizes, dim=1)
                         heatmaps = []

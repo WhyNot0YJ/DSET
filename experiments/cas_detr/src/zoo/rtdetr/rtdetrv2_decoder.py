@@ -222,9 +222,9 @@ class TransformerDecoderLayer(nn.Module):
     def with_pos_embed(self, tensor, pos):
         return tensor if pos is None else tensor + pos
 
-    def forward_ffn(self, tgt):
+    def forward_ffn(self, tgt, dynamic_top_k=None):
         if self.use_moe:
-            return self.decoder_moe_layer(tgt)
+            return self.decoder_moe_layer(tgt, dynamic_top_k=dynamic_top_k)
         else:
             return self.linear2(self.dropout3(self.activation(self.linear1(tgt))))
 
@@ -235,7 +235,8 @@ class TransformerDecoderLayer(nn.Module):
                 memory_spatial_shapes,
                 attn_mask=None,
                 memory_mask=None,
-                query_pos_embed=None):
+                query_pos_embed=None,
+                dynamic_top_k=None):
         # self attention
         q = k = self.with_pos_embed(target, query_pos_embed)
 
@@ -254,7 +255,7 @@ class TransformerDecoderLayer(nn.Module):
         target = self.norm2(target)
 
         # ffn
-        target2 = self.forward_ffn(target)
+        target2 = self.forward_ffn(target, dynamic_top_k=dynamic_top_k)
         target = target + self.dropout4(target2)
         target = self.norm3(target)
 
@@ -278,7 +279,8 @@ class TransformerDecoder(nn.Module):
                 score_head,
                 query_pos_head,
                 attn_mask=None,
-                memory_mask=None):
+                memory_mask=None,
+                dynamic_top_k=None):
         dec_out_bboxes = []
         dec_out_logits = []
         ref_points_detach = F.sigmoid(ref_points_unact)
@@ -299,10 +301,11 @@ class TransformerDecoder(nn.Module):
                     attn_mask, 
                     memory_mask, 
                     query_pos_embed,
+                    dynamic_top_k,
                     use_reentrant=False
                 )
             else:
-                output = layer(output, ref_points_input, memory, memory_spatial_shapes, attn_mask, memory_mask, query_pos_embed)
+                output = layer(output, ref_points_input, memory, memory_spatial_shapes, attn_mask, memory_mask, query_pos_embed, dynamic_top_k=dynamic_top_k)
 
             inter_ref_bbox = F.sigmoid(bbox_head[i](output) + inverse_sigmoid(ref_points_detach))
 
@@ -355,7 +358,8 @@ class RTDETRTransformerv2(nn.Module):
                  num_experts=6,
                  moe_top_k=2,
                  moe_noise_std=0.1,
-                 router_init_std=0.02): 
+                 router_init_std=0.02,
+                 caip_complexity_beta=0.3): 
         super().__init__()
         assert len(feat_channels) <= num_levels
         assert len(feat_strides) == len(feat_channels)
@@ -380,6 +384,7 @@ class RTDETRTransformerv2(nn.Module):
         self.moe_top_k = moe_top_k
         self.moe_noise_std = moe_noise_std
         self.router_init_std = router_init_std # [新增]
+        self.caip_complexity_beta = caip_complexity_beta
 
         assert query_select_method in ('default', 'one2many', 'agnostic'), ''
         assert cross_attn_method in ('default', 'discrete'), ''
@@ -611,13 +616,21 @@ class RTDETRTransformerv2(nn.Module):
         return topk_memory, topk_logits, topk_coords
 
 
-    def forward(self, feats, targets=None):
+    def forward(self, feats, targets=None, scene_complexity=None):
         # [修复] 共享层模式下，每个 Batch 开始前清空 MoE 记录
         if self.use_moe:
             for layer in self.decoder.layers:
                 if hasattr(layer, 'decoder_moe_layer') and hasattr(layer.decoder_moe_layer, 'reset_cache'):
                     layer.decoder_moe_layer.reset_cache()
-                    
+
+        # CAIP dynamic routing: compute dynamic_top_k from scene_complexity
+        dynamic_top_k = None
+        if scene_complexity is not None and self.use_moe:
+            complexity_norm = torch.sigmoid(scene_complexity).item()
+            beta = self.caip_complexity_beta
+            dynamic_top_k = int(self.moe_top_k + (self.num_experts - self.moe_top_k) * complexity_norm * beta)
+            dynamic_top_k = max(1, min(dynamic_top_k, self.num_experts))
+
         # input projection and embedding
         memory, spatial_shapes = self._get_encoder_input(feats)
         
@@ -646,7 +659,8 @@ class RTDETRTransformerv2(nn.Module):
             self.dec_bbox_head,
             self.dec_score_head,
             self.query_pos_head,
-            attn_mask=attn_mask)
+            attn_mask=attn_mask,
+            dynamic_top_k=dynamic_top_k)
 
         if self.training and dn_meta is not None:
             dn_out_bboxes, out_bboxes = torch.split(out_bboxes, dn_meta['dn_num_split'], dim=2)

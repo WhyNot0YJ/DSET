@@ -62,19 +62,22 @@ class MoELayer(nn.Module):
         self.router_logits_cache = []
         self.expert_indices_cache = []
     
-    def forward(self, x: torch.Tensor, spatial_shape: Optional[Tuple[int, int]] = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, spatial_shape: Optional[Tuple[int, int]] = None,
+                dynamic_top_k: Optional[int] = None) -> torch.Tensor:
         """
         Memory-Efficient Token-Grouping MoE - Scales with Token Count, not Weight-Token Product.
         Optimized to prevent OOM on large batches.
         
         Args:
             x: [B, N, C] Token features
+            dynamic_top_k: Optional override for the number of activated experts
+                           (driven by CAIP scene_complexity).
         Returns:
             output: [B, N, C]
         """
         B, N, C = x.shape
         E = self.num_experts
-        K = self.top_k
+        K = dynamic_top_k if (dynamic_top_k is not None and 1 <= dynamic_top_k <= E) else self.top_k
         
         # 1. Router Logic
         router_logits = self.router(x)  # [B, N, E]

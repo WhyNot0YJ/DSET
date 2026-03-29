@@ -109,12 +109,19 @@ class TokenLevelPruner(nn.Module):
     def forward(self,
                 tokens: torch.Tensor,
                 spatial_shape: Optional[Tuple[int, int]],
-                return_indices: bool = False) -> Tuple[torch.Tensor, Optional[torch.Tensor], dict]:
+                return_indices: bool = False,
+                external_scores: Optional[torch.Tensor] = None,
+                dynamic_keep_ratio: Optional[float] = None,
+                ) -> Tuple[torch.Tensor, Optional[torch.Tensor], dict]:
         """
         Args:
             tokens: [B, N, C] token特征，N = H*W
             spatial_shape: (H, W) 空间形状
             return_indices: 是否返回保留索引
+            external_scores: [B, N] 可选的外部重要性分数（来自 CAIP），
+                             提供时跳过内部 importance_predictor
+            dynamic_keep_ratio: 可选的动态保留比例（来自 CAIP scene_complexity），
+                                提供时覆盖 self.keep_ratio
         
         Returns:
             pruned_tokens: [B, N', C] 剪枝后tokens
@@ -129,12 +136,17 @@ class TokenLevelPruner(nn.Module):
         else:
             H, W = 0, 0
         
-        # Compute importance scores (always computed for CASS Loss)
-        token_importance_scores = self.importance_predictor(tokens, H, W)  # [B, N]
+        # Use external CAIP scores when provided; otherwise fall back to internal predictor
+        if external_scores is not None:
+            token_importance_scores = external_scores
+        else:
+            token_importance_scores = self.importance_predictor(tokens, H, W)  # [B, N]
 
-        # Determine if pruning should be applied
-        # Pruning is enabled immediately if keep_ratio < 1.0 (no warmup)
-        should_prune = (self.keep_ratio < 1.0) and (self.training or self.prune_in_eval)
+        # Effective keep ratio: prefer dynamic (CAIP) over static
+        effective_keep_ratio = dynamic_keep_ratio if dynamic_keep_ratio is not None else self.keep_ratio
+
+        # Pruning is enabled if effective ratio < 1.0 (no warmup)
+        should_prune = (effective_keep_ratio < 1.0) and (self.training or self.prune_in_eval)
         
         # If pruning is disabled (keep_ratio >= 1.0), return all tokens
         if not should_prune:
@@ -168,7 +180,7 @@ class TokenLevelPruner(nn.Module):
             return tokens, kept_indices, info
         
         # Get keep ratio and calculate number of tokens to keep
-        current_keep_ratio = self.get_current_keep_ratio()
+        current_keep_ratio = dynamic_keep_ratio if dynamic_keep_ratio is not None else self.get_current_keep_ratio()
         num_keep_tokens_by_ratio = int(num_tokens * current_keep_ratio)
         num_keep_tokens = min(max(self.min_tokens, num_keep_tokens_by_ratio), num_tokens)
         

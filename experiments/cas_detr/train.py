@@ -214,7 +214,12 @@ class CaS_DETRRTDETR(nn.Module):
                 cass_focal_beta: float = 2.0,
                 # MoE noise_std config
                 moe_noise_std: float = 0.1,
-                num_classes: int = 8):
+                num_classes: int = 8,
+                # CAIP (Context-Aware Importance Predictor) config
+                use_caip: bool = False,
+                caip_reduction_ratio: int = 4,
+                caip_complexity_alpha: float = 0.3,
+                caip_complexity_beta: float = 0.3):
         """Initialize CaS_DETR RT-DETR model.
         
         Args:
@@ -280,6 +285,12 @@ class CaS_DETRRTDETR(nn.Module):
         self.moe_noise_std = moe_noise_std
         self.num_classes = num_classes
         
+        # CAIP configuration
+        self.use_caip = use_caip and self.enable_cas_predictor
+        self.caip_reduction_ratio = caip_reduction_ratio
+        self.caip_complexity_alpha = caip_complexity_alpha
+        self.caip_complexity_beta = caip_complexity_beta
+        
         # MoE和Token Pruning权重配置
         if decoder_moe_balance_weight is not None:
             self.decoder_moe_balance_weight = decoder_moe_balance_weight
@@ -312,7 +323,8 @@ class CaS_DETRRTDETR(nn.Module):
             use_moe=self.enable_decoder_moe,
             num_experts=self.num_experts,
             moe_top_k=top_k,
-            moe_noise_std=self.moe_noise_std
+            moe_noise_std=self.moe_noise_std,
+            caip_complexity_beta=self.caip_complexity_beta
         )
 
         if self.enable_decoder_moe:
@@ -360,6 +372,10 @@ class CaS_DETRRTDETR(nn.Module):
             cass_loss_type=self.cass_loss_type,
             cass_focal_alpha=self.cass_focal_alpha,
             cass_focal_beta=self.cass_focal_beta,
+            use_caip=self.use_caip,
+            caip_reduction_ratio=self.caip_reduction_ratio,
+            caip_complexity_alpha=self.caip_complexity_alpha,
+            caip_complexity_beta=self.caip_complexity_beta,
         )
     
     def _build_detr_criterion(self) -> RTDETRCriterionv2:
@@ -430,7 +446,10 @@ class CaS_DETRRTDETR(nn.Module):
         backbone_features = self.backbone(images)
         
         encoder_features, encoder_info = self.encoder(backbone_features, return_encoder_info=True)
-        decoder_output = self.decoder(encoder_features, targets)
+        
+        # CAIP: propagate scene_complexity to decoder for dynamic MoE routing
+        scene_complexity = encoder_info.get('scene_complexity', None) if encoder_info else None
+        decoder_output = self.decoder(encoder_features, targets, scene_complexity=scene_complexity)
         
         # 构建输出字典
         output = {
@@ -846,6 +865,12 @@ class CaS_DETRTrainer:
         cass_focal_alpha = cas_detr_config.get('cass_focal_alpha', 0.75)
         cass_focal_beta = cas_detr_config.get('cass_focal_beta', 2.0)
         
+        # CAIP (Context-Aware Importance Predictor) 配置
+        use_caip = cas_detr_config.get('use_caip', False)
+        caip_reduction_ratio = cas_detr_config.get('caip_reduction_ratio', 4)
+        caip_complexity_alpha = cas_detr_config.get('caip_complexity_alpha', 0.3)
+        caip_complexity_beta = cas_detr_config.get('caip_complexity_beta', 0.3)
+        
         # 从配置文件读取MoE权重
         decoder_moe_balance_weight = self.config.get('training', {}).get('decoder_moe_balance_weight', None)
         # MOE Balance Warmup: 在前N个epoch内不应用MOE平衡损失
@@ -882,6 +907,10 @@ class CaS_DETRTrainer:
             cass_focal_beta=cass_focal_beta,
             moe_noise_std=moe_noise_std,
             num_classes=self.num_classes,
+            use_caip=use_caip,
+            caip_reduction_ratio=caip_reduction_ratio,
+            caip_complexity_alpha=caip_complexity_alpha,
+            caip_complexity_beta=caip_complexity_beta,
         )
         
         # [修复] 移除 _create_model 内部的加载逻辑，统一在 CaS_DETRTrainer.__init__ 中处理
