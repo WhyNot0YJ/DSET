@@ -62,6 +62,19 @@ def main():
     with config_yaml.open(encoding="utf-8") as fh:
         config = yaml.safe_load(fh) or {}
 
+    # CaS_DETR / 本仓库 DETR：checkpoint 非 Ultralytics 格式，勿用本脚本
+    _m = config.get("model") or {}
+    if isinstance(_m.get("cas_detr"), dict) or str(_m.get("backbone", "")).lower().startswith(
+        "presnet"
+    ):
+        print(
+            "ERROR: 该 config 来自 CaS_DETR / DETR 实验（含 model.cas_detr 或 backbone=presnet）。\n"
+            "  weights/best.pt 不是 Ultralytics YOLO 权重，eval_best_model.py 无法加载。\n"
+            "  请改用 experiments/cas_detr 下的评估；Ultralytics 评估请使用 experiments/yolo 下的实验目录"
+            "（config 中含 data.data_yaml，且 weights/best.pt 为 YOLO 训练产出）。"
+        )
+        sys.exit(1)
+
     if args.device is not None:
         config.setdefault("misc", {})["device"] = args.device
 

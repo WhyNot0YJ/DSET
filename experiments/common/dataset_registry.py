@@ -43,6 +43,30 @@ def find_dataset_profile_by_data_yaml(datasets: Dict[str, Any], data_yaml: str) 
     return None
 
 
+def find_dataset_profile_by_coco_root(
+    datasets: Dict[str, Any], data_root: Path | str
+) -> Optional[Dict[str, Any]]:
+    """
+    按 ``coco_data_root``（DETR/CaS_DETR 的 ``data.data_root``）匹配注册表项，
+    用于在无 ``data_yaml`` 时反查 Ultralytics ``data_yaml`` 路径。
+    """
+    try:
+        target = Path(data_root).resolve()
+    except Exception:
+        return None
+    for _, profile in datasets.items():
+        cr = profile.get("coco_data_root")
+        if not cr:
+            continue
+        try:
+            p = Path(str(cr)).resolve()
+        except Exception:
+            continue
+        if p == target:
+            return profile
+    return None
+
+
 def apply_yolo_dataset_profile(config: Dict[str, Any], profile: Dict[str, Any]) -> Dict[str, Any]:
     merged = dict(config)
     merged_data = dict(merged.get("data", {}))

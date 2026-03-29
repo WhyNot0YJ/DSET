@@ -246,11 +246,37 @@ class BaseYOLOTrainer(ABC):
             return model_name
     
     def _resolve_data_yaml(self) -> str:
-        """解析数据 YAML 路径（与 DETR 共用 ``common.detr_data_root.resolve_autodl_fs_path``）。"""
+        """解析 Ultralytics 用的 data.yaml 路径（与 DETR 共用路径解析）。"""
         from common.detr_data_root import resolve_autodl_fs_path
+        from common.dataset_registry import (
+            load_dataset_registry,
+            find_dataset_profile_by_coco_root,
+        )
 
-        data_yaml = self.data_config.get('data_yaml')
-        return resolve_autodl_fs_path(data_yaml)
+        data_yaml = self.data_config.get("data_yaml")
+        if data_yaml and str(data_yaml).strip():
+            return resolve_autodl_fs_path(data_yaml)
+
+        # CaS_DETR 等仅配置 data_root（COCO 根），无 data_yaml：从 datasets.yaml 按 coco_data_root 反查
+        root_raw = self.data_config.get("data_root") or self.data_config.get("coco_data_root")
+        if root_raw and str(root_raw).strip():
+            resolved_root = resolve_autodl_fs_path(str(root_raw).strip())
+            registry_path = Path(__file__).resolve().parent / "configs" / "datasets.yaml"
+            if registry_path.is_file():
+                try:
+                    datasets = load_dataset_registry(registry_path)
+                    profile = find_dataset_profile_by_coco_root(datasets, resolved_root)
+                    dy = (profile or {}).get("data_yaml")
+                    if dy and str(dy).strip():
+                        return resolve_autodl_fs_path(str(dy).strip())
+                except Exception:
+                    pass
+            raise FileNotFoundError(
+                f"配置中无 data_yaml，且无法根据 data_root={resolved_root!r} "
+                f"在 {registry_path} 中匹配到 coco_data_root；请显式设置 data.data_yaml"
+            )
+
+        raise ValueError("路径为空：data.data_yaml 未设置且 data.data_root 为空")
     
     def _apply_vram_batch_size_rule(self):
         """使用配置中的 batch / workers；CUDA 下记录显存信息（与 cas_detr 共用 common.vram_batch）。"""
@@ -507,7 +533,19 @@ class BaseYOLOTrainer(ABC):
         # ── 2. Load best weights & benchmark（各 split 共用）──────────────
         eval_predictor, nc = self._get_kitti_eval_predictor(model)
         if eval_predictor is None:
-            self.logger.warning("无可用评估权重/预测器，跳过 KITTI/scale 评估")
+            best_pt = (self.log_dir / "weights" / "best.pt").resolve()
+            last_pt = (self.log_dir / "weights" / "last.pt").resolve()
+            self.logger.warning(
+                "无可用评估权重/预测器，跳过 KITTI/scale 评估：未找到 %s "
+                "（eval_best_model 未传入内存中的 model，必须依赖该文件）",
+                best_pt,
+            )
+            if last_pt.is_file():
+                self.logger.warning(
+                    "  发现 last.pt，可执行: cp %s %s 后再评估",
+                    last_pt,
+                    best_pt,
+                )
             return {}
 
         device = self.misc_config.get('device', 'cuda')
