@@ -99,6 +99,14 @@ def log_detr_eval_summary(
         f"{m.get('AP_large', 0):.4f}"
         f"{bench_line}"
     )
+    if "gt_boxes_easy" in m:
+        logger.info(
+            "    KITTI GT 框数: easy=%d moderate=%d hard=%d ignore=%d（与本次评估 GT 一致）",
+            int(m["gt_boxes_easy"]),
+            int(m["gt_boxes_moderate"]),
+            int(m["gt_boxes_hard"]),
+            int(m["gt_boxes_ignore"]),
+        )
 
 
 def write_detr_eval_csv(

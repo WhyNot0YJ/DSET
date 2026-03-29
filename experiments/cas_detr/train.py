@@ -4,6 +4,7 @@
 import os
 import sys
 import argparse
+from collections import Counter
 from pathlib import Path
 
 _experiments_root = Path(__file__).resolve().parent.parent
@@ -2554,6 +2555,16 @@ class CaS_DETRTrainer:
                     predictions, targets, categories, img_h, img_w,
                     image_id_to_size=image_id_to_size
                 )
+
+            gt_boxes_easy = gt_boxes_moderate = gt_boxes_hard = gt_boxes_ignore = 0
+            if compute_difficulty:
+                _dc = Counter()
+                for t in targets:
+                    _dc[self._get_kitti_difficulty(t)] += 1
+                gt_boxes_easy = int(_dc.get("easy", 0))
+                gt_boxes_moderate = int(_dc.get("moderate", 0))
+                gt_boxes_hard = int(_dc.get("hard", 0))
+                gt_boxes_ignore = int(_dc.get("ignore", 0))
             
             result = {
                 'mAP_0.5': coco_eval.stats[1],
@@ -2572,6 +2583,11 @@ class CaS_DETRTrainer:
                 'AP_moderate': difficulty_metrics['AP_moderate'],
                 'AP_hard': difficulty_metrics['AP_hard'],
             }
+            if compute_difficulty:
+                result['gt_boxes_easy'] = gt_boxes_easy
+                result['gt_boxes_moderate'] = gt_boxes_moderate
+                result['gt_boxes_hard'] = gt_boxes_hard
+                result['gt_boxes_ignore'] = gt_boxes_ignore
             
             for cat_name in per_cat_5095.keys():
                 result[f"AP50_{cat_name}"] = per_cat_50.get(cat_name, 0.0)
