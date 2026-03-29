@@ -727,6 +727,23 @@ class CaS_DETRTrainer:
         enable_cas_predictor, enable_decoder_moe = self._resolve_ablation_switches()
         return CaS_DETRRTDETR.infer_variant_name(enable_cas_predictor, enable_decoder_moe)
 
+    @staticmethod
+    def _infer_dataset_class_name(data: Dict) -> str:
+        """
+        显式 ``dataset_class`` 优先；否则根据 ``data_root`` 推断 UA-DETRAC vs DAIR-V2X，
+        与 YOLO 侧 ``dair_categorical``（路径含 dairv2x → DAIR 类别截断）对齐。
+        """
+        ex = data.get("dataset_class")
+        if ex:
+            return str(ex)
+        root = str(data.get("data_root", "")).lower()
+        if any(
+            tok in root
+            for tok in ("uadetrac", "ua-detrac", "ua_detrac", "uadetrac_coco")
+        ):
+            return "CocoFolderDetection"
+        return "DAIRV2XDetection"
+
     def _init_dataset_derived_fields(self) -> None:
         dc = self.config.setdefault("data", {})
         self.num_classes = int(dc.get("num_classes", self.num_classes))
@@ -736,12 +753,11 @@ class CaS_DETRTrainer:
         while len(self.colors) < len(self.class_names):
             self.colors.append((128, 128, 128))
         self.colors = self.colors[: len(self.class_names)]
-        # 与 _resolve_dataset_class 默认一致：未写 dataset_class 时仍为 DAIRV2XDetection
-        _ds_cls = dc.get("dataset_class", "DAIRV2XDetection")
+        _ds_cls = self._infer_dataset_class_name(dc)
         self._dair_truncation_categorical = _ds_cls == "DAIRV2XDetection"
 
     def _resolve_dataset_class(self):
-        name = self.config.get("data", {}).get("dataset_class", "DAIRV2XDetection")
+        name = self._infer_dataset_class_name(self.config.get("data", {}))
         if name == "DAIRV2XDetection":
             return DAIRV2XDetection
         if name == "CocoFolderDetection":
