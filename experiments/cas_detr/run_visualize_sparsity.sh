@@ -4,12 +4,12 @@
 # 使用方法: ./run_visualize_sparsity.sh [参数覆盖...]
 # 
 # 示例:
-#   ./run_visualize_sparsity.sh --image 000562.jpg --config configs/cas_detr6_r18_ratio0.3.yaml --checkpoint logs/cas_detr6_r18_20251224_153734/best_model.pth
+#   ./run_visualize_sparsity.sh --image 000562.jpg --config configs/cas_detr6_r18_ratio0.5.yaml --checkpoint logs/cas_detr6_r18_20251224_153734/best_model.pth
 #   ./run_visualize_sparsity.sh --image 000562.jpg --mode heatmap
 #   ./run_visualize_sparsity.sh --image 000562.jpg --mode teaser --output_dir ./visualizations
 
 # 默认参数
-DEFAULT_CONFIG=${CONFIG:-configs/cas_detr6_r18_ratio0.3.yaml}
+DEFAULT_CONFIG=${CONFIG:-configs/cas_detr6_r18_ratio0.5.yaml}
 DEFAULT_CHECKPOINT=${CHECKPOINT:-logs/cas_detr6_r18_20260126_173526/best_model.pth}
 DEFAULT_IMAGE=${IMAGE:-000562.jpg}
 DEFAULT_MODE=${MODE:-heatmap}

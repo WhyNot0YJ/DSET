@@ -42,16 +42,8 @@ CaS_DETR Pruning Curve Benchmark Script
     # 2. 测试多个模型（在一张图上）
     # 首先创建 JSON 配置文件（例如 models.json）：
     # {
-    #   "CaS_DETR_r18_0.3": {
-    #     "config": "experiments/cas_detr/configs/cas_detr6_r18_ratio0.3.yaml",
-    #     "checkpoint": "experiments/cas_detr/logs/cas_detr6_r18_20251209_155547/best_model.pth"
-    #   },
     #   "CaS_DETR_r18_0.5": {
     #     "config": "experiments/cas_detr/configs/cas_detr6_r18_ratio0.5.yaml",
-    #     "checkpoint": "experiments/cas_detr/logs/cas_detr6_r18_20251209_155547/best_model.pth"
-    #   },
-    #   "CaS_DETR_r18_0.9": {
-    #     "config": "experiments/cas_detr/configs/cas_detr6_r18_ratio0.9.yaml",
     #     "checkpoint": "experiments/cas_detr/logs/cas_detr6_r18_20251209_155547/best_model.pth"
     #   }
     # }

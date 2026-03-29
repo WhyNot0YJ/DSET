@@ -148,18 +148,18 @@ The current training objective is a combination of:
 
 ## 4. Current config files
 
-The current checked-in CaS-DETR configs are (all use **S5-only** into the hybrid encoder, `use_encoder_idx: [2]`):
+The current checked-in CaS-DETR configs use token keep ratio **0.5** only (all use **S5-only** into the hybrid encoder, `use_encoder_idx: [2]`):
 
-- `experiments/cas_detr/configs/cas_detr6_r18_ratio0.3.yaml` — DAIR-V2X, token keep ratio 0.3
-- `experiments/cas_detr/configs/cas_detr6_r18_ratio0.5.yaml` — DAIR-V2X, token keep ratio 0.5
-- `experiments/cas_detr/configs/cas_detr6_r18_ratio0.3_uadetrac.yaml` — UA-DETRAC, ratio 0.3
-- `experiments/cas_detr/configs/cas_detr6_r18_ratio0.5_uadetrac.yaml` — UA-DETRAC, ratio 0.5
+- `experiments/cas_detr/configs/cas_detr6_r18_ratio0.5.yaml` — DAIR-V2X
+- `experiments/cas_detr/configs/cas_detr6_r18_ratio0.5_uadetrac.yaml` — UA-DETRAC
+- `experiments/cas_detr/configs/cas_detr6_r18_ratio0.5_640.yaml` — DAIR-V2X, multi-scale disabled (640 only)
+- `experiments/cas_detr/configs/cas_detr6_r18_ratio0.5_prune_only.yaml` / `..._prune_only_uadetrac.yaml` — prune-only variants
 
 RT-DETR and MoE-RT-DETR use the same S5-only encoder setting in `rtdetr_r18.yaml`, `moe_rtdetr6_r18.yaml`, and UA-DETRAC counterparts.
 
 Their meanings:
 
-- `ratio0.3` / `ratio0.5`: token keep ratio (e.g. 0.3 or 0.5)
+- `ratio0.5`: token keep ratio 0.5
 - `uadetrac`: UA-DETRAC dataset variant
 
 ## 5. Current default experiment behavior
@@ -169,7 +169,7 @@ Their meanings:
 - `num_queries: 300`
 - `batch_size: 24`
 - `epochs: 100`
-- `stop_epoch: 40`
+- `stop_epoch: 71`
 - `num_workers: 16`
 - `prefetch_factor: 4`
 
@@ -178,7 +178,7 @@ Their meanings:
 - `num_queries: 300`
 - `batch_size: 16`
 - `epochs: 50`
-- `stop_epoch: 20`
+- `stop_epoch: 71`
 - `num_workers: 16`
 - `prefetch_factor: 4`
 

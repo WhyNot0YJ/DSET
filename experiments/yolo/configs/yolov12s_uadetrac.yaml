@@ -6,7 +6,7 @@ training:
   epochs: 100
   batch_size: 32
   imgsz: 640
-  seed: 42
+  seed: 666
   deterministic: false
 
 data:
