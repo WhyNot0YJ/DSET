@@ -10,7 +10,7 @@ training:
 
 data:
   data_yaml: "/root/autodl-fs/datasets/UA-DETRAC_YOLO/data.yaml"
-  coco_data_root: "/root/autodl-fs/datasets/UA-DETRAC_YOLO"
+  coco_data_root: "/root/autodl-fs/datasets/UA-DETRAC_COCO"
 
 checkpoint:
   log_dir: "logs"

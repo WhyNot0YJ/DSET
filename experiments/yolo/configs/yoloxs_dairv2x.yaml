@@ -10,7 +10,7 @@ training:
 
 data:
   data_yaml: "/root/autodl-fs/datasets/DAIR-V2X_YOLO/dairv2x.yaml"
-  coco_data_root: "/root/autodl-fs/datasets/DAIR-V2X_YOLO"
+  coco_data_root: "/root/autodl-fs/datasets/DAIR-V2X"
 
 checkpoint:
   log_dir: "logs"
