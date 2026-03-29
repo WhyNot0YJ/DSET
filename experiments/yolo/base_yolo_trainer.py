@@ -16,6 +16,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import Optional, Dict, List, Any, Tuple
 from abc import ABC, abstractmethod
+from collections import Counter
 import shutil
 
 _experiments_root = Path(__file__).resolve().parent.parent
@@ -65,7 +66,13 @@ class BaseYOLOTrainer(ABC):
     # 子类需要实现的版本名称
     VERSION = "base"
     
-    def __init__(self, config: Dict, config_path: Optional[str] = None, class_names: Optional[List[str]] = None):
+    def __init__(
+        self,
+        config: Dict,
+        config_path: Optional[str] = None,
+        class_names: Optional[List[str]] = None,
+        resume_checkpoint: Optional[str] = None,
+    ):
         """
         初始化基础训练器
         
@@ -73,12 +80,14 @@ class BaseYOLOTrainer(ABC):
             config: 配置字典
             config_path: 配置文件路径
             class_names: 类别名称列表
+            resume_checkpoint: 若从 ``weights/*.pt`` 续训，传入路径可在首次 ``setup_logging`` 时锚定实验根目录
         """
         self.config = config
         self.config_path = config_path
         self.class_names = class_names or []
         self.num_classes = len(self.class_names)
-        
+        self._resume_checkpoint_path = resume_checkpoint
+
         # 提取配置段
         self.model_config = config.get('model', {})
         self.training_config = config.get('training', {})
@@ -104,9 +113,18 @@ class BaseYOLOTrainer(ABC):
     def setup_logging(self):
         """设置日志系统"""
         resume_checkpoint = getattr(self, '_resume_checkpoint_path', None)
+
+        def _experiment_root_from_ckpt(ckpt: Path) -> Path:
+            ckpt = ckpt.resolve()
+            parent = ckpt.parent
+            if parent.name == "weights":
+                exp = parent.parent
+                if (exp / "config.yaml").is_file():
+                    return exp
+            return parent
         
         if resume_checkpoint and Path(resume_checkpoint).exists():
-            self.log_dir = Path(resume_checkpoint).parent.resolve()
+            self.log_dir = _experiment_root_from_ckpt(Path(resume_checkpoint))
             self.experiment_name = self.log_dir.name
         else:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -686,6 +704,30 @@ class BaseYOLOTrainer(ABC):
                     len(coco_predictions),
                 )
 
+                _diff_cnt = Counter(ann_difficulties)
+                _ne = int(_diff_cnt.get("easy", 0))
+                _nm = int(_diff_cnt.get("moderate", 0))
+                _nh = int(_diff_cnt.get("hard", 0))
+                _ni = int(_diff_cnt.get("ignore", 0))
+                _ngt = _ne + _nm + _nh + _ni
+                if _ngt != len(coco_annotations):
+                    self.logger.warning(
+                        "[%s] KITTI 难度计数与 GT 条数不一致: %s vs %d",
+                        eval_split,
+                        _ngt,
+                        len(coco_annotations),
+                    )
+                self.logger.info(
+                    "[%s] KITTI GT 难度框数: easy=%d  moderate=%d  hard=%d  "
+                    "ignore=%d  (合计=%d，与本次 COCO GT 条数一致)",
+                    eval_split,
+                    _ne,
+                    _nm,
+                    _nh,
+                    _ni,
+                    _ngt,
+                )
+
                 # ── 5. AP：KITTI E/M/H（与 DETR ``_compute_difficulty_aps`` 同：三次 COCOeval + iscrowd）
                 #        + 全类 mAP / S/M/L / 每类 AP（一次 COCOeval，全 GT iscrowd=0）
                 metrics: Dict[str, Any] = {}
@@ -781,6 +823,10 @@ class BaseYOLOTrainer(ABC):
                         metrics[f'AP5095_{nm}'] = per_cat_5095.get(nm, 0.0)
 
                 metrics['eval_split'] = eval_split
+                metrics['gt_boxes_easy'] = _ne
+                metrics['gt_boxes_moderate'] = _nm
+                metrics['gt_boxes_hard'] = _nh
+                metrics['gt_boxes_ignore'] = _ni
                 merge_benchmark_dict_into_metrics(metrics, bench_dict)
 
                 self.logger.info(

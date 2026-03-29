@@ -113,10 +113,36 @@ def main():
     logger.info(f"实验目录: {log_dir}")
     logger.info(f"best.pt:  {log_dir / 'weights' / 'best.pt'}")
     logger.info(f"推理设备: {trainer.misc_config.get('device', 'cpu')}")
-    logger.info(
-        f"YOLO版本: v{version}  |  共 {len(class_names)} 类: "
-        f"{', '.join(class_names) or '从模型读取'}"
-    )
+
+    model_name = (config.get("model") or {}).get("model_name", "")
+    is_fasterrcnn = "fasterrcnn" in str(model_name).lower()
+
+    if is_fasterrcnn:
+        from fasterrcnn_trainer import FasterRCNNTrainer
+
+        trainer = FasterRCNNTrainer.__new__(FasterRCNNTrainer)
+        trainer.config = config
+        trainer.config_path = str(config_yaml)
+        trainer.model_config = config.get("model", {})
+        trainer.training_config = config.get("training", {})
+        trainer.data_config = config.get("data", {})
+        trainer.checkpoint_config = config.get("checkpoint", {})
+        trainer.misc_config = config.get("misc", {})
+        trainer.log_dir = log_dir
+        trainer.logger = logger
+        trainer.metrics_logger = None
+        trainer.class_names = class_names
+        trainer.num_classes = len(class_names) if class_names else 8
+        trainer.VERSION = FasterRCNNTrainer.VERSION
+        logger.info(
+            f"后端: Faster R-CNN ({model_name})  |  {trainer.num_classes} 类: "
+            f"{', '.join(class_names) or '(未从 registry 解析)'}"
+        )
+    else:
+        logger.info(
+            f"YOLO版本: v{version}  |  共 {len(class_names)} 类: "
+            f"{', '.join(class_names) or '从模型读取'}"
+        )
 
     metrics = trainer._evaluate_kitti_scale_after_training(model=None)
 
@@ -128,6 +154,22 @@ def main():
         logger.info(
             f"  KITTI E/M/H: {metrics.get('mAP_easy',0):.4f} / "
             f"{metrics.get('mAP_moderate',0):.4f} / {metrics.get('mAP_hard',0):.4f}"
+        )
+        if 'gt_boxes_easy' in metrics:
+            logger.info(
+                "  KITTI GT 框数: easy=%d  moderate=%d  hard=%d  ignore=%d",
+                int(metrics.get('gt_boxes_easy', 0)),
+                int(metrics.get('gt_boxes_moderate', 0)),
+                int(metrics.get('gt_boxes_hard', 0)),
+                int(metrics.get('gt_boxes_ignore', 0)),
+            )
+        logger.info(
+            f"  COCO 面积档 @0.5 S/M/L:   {metrics.get('mAP_small',0):.4f} / "
+            f"{metrics.get('mAP_medium',0):.4f} / {metrics.get('mAP_large',0):.4f}"
+        )
+        logger.info(
+            f"  COCO 面积档 @0.5:0.95 S/M/L: {metrics.get('mAP_small_5095',0):.4f} / "
+            f"{metrics.get('mAP_medium_5095',0):.4f} / {metrics.get('mAP_large_5095',0):.4f}"
         )
         if (bm := format_benchmark_eval_line(metrics)):
             logger.info(f"  {bm}")

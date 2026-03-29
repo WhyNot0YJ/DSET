@@ -87,8 +87,9 @@ class FasterRCNNTrainer(BaseYOLOTrainer):
         config: Dict,
         config_path: Optional[str] = None,
         class_names: Optional[List[str]] = None,
+        resume_checkpoint: Optional[str] = None,
     ):
-        super().__init__(config, config_path, class_names)
+        super().__init__(config, config_path, class_names, resume_checkpoint=resume_checkpoint)
 
     # ── model creation ────────────────────────────────────────────────
 
@@ -160,16 +161,21 @@ class FasterRCNNTrainer(BaseYOLOTrainer):
             pin_memory=True,
         )
 
-        # resume
+        # resume（checkpoint 内 epoch 为「已成功结束的上一个 epoch 的 1-based 编号」，
+        # 与保存时 epoch_loop+1 一致；下次训练从该值作为 0-based 下标开始）
         start_epoch = 0
+        resume_ckpt: Optional[Dict[str, Any]] = None
         if resume_checkpoint and Path(resume_checkpoint).exists():
-            ckpt = torch.load(resume_checkpoint, map_location=device)
-            if isinstance(ckpt, dict) and "model_state_dict" in ckpt:
-                model.load_state_dict(ckpt["model_state_dict"])
-                start_epoch = ckpt.get("epoch", 0)
-                self.logger.info(f"📦 从检查点恢复: epoch {start_epoch}")
+            resume_ckpt = torch.load(resume_checkpoint, map_location=device)
+            if isinstance(resume_ckpt, dict) and "model_state_dict" in resume_ckpt:
+                model.load_state_dict(resume_ckpt["model_state_dict"])
+                start_epoch = int(resume_ckpt.get("epoch", 0))
+                self.logger.info(
+                    f"📦 从检查点恢复: 下一轮将从 Epoch {start_epoch + 1}/{epochs} 继续 "
+                    f"(checkpoint['epoch']={start_epoch})"
+                )
             else:
-                model.load_state_dict(ckpt)
+                model.load_state_dict(resume_ckpt)
                 self.logger.info(f"📦 从检查点恢复权重: {resume_checkpoint}")
 
         # optimizer & scheduler
@@ -184,16 +190,73 @@ class FasterRCNNTrainer(BaseYOLOTrainer):
             gamma=0.1,
         )
 
+        best_val_loss = float("inf")
+        results_rows: List[Dict[str, Any]] = []
+        csv_path = self.log_dir / "results.csv"
+        if (
+            resume_ckpt is not None
+            and csv_path.exists()
+        ):
+            try:
+                import pandas as pd
+                prev = pd.read_csv(csv_path)
+                results_rows = prev.to_dict("records")
+                if results_rows:
+                    best_val_loss = float(
+                        min(float(r["val/total_loss"]) for r in results_rows)
+                    )
+                self.logger.info(
+                    f"📈 已载入历史 results.csv 共 {len(results_rows)} 行, "
+                    f"历史 best val_loss≈{best_val_loss:.4f}"
+                )
+            except Exception as exc:
+                self.logger.warning(f"读取已有 results.csv 失败（将从头记曲线）: {exc}")
+
+        if resume_ckpt is not None and isinstance(resume_ckpt, dict):
+            if "optimizer_state_dict" in resume_ckpt:
+                try:
+                    optimizer.load_state_dict(
+                        resume_ckpt["optimizer_state_dict"]
+                    )
+                except Exception as exc:
+                    self.logger.warning(
+                        "优化器状态加载失败（将用全新优化器）: %s", exc
+                    )
+            if "scheduler_state_dict" in resume_ckpt:
+                try:
+                    main_scheduler.load_state_dict(
+                        resume_ckpt["scheduler_state_dict"]
+                    )
+                except Exception as exc:
+                    self.logger.warning(
+                        "调度器状态加载失败，尝试按 epoch 快进: %s", exc
+                    )
+                    n_ff = max(0, start_epoch - warmup_epochs)
+                    for _ in range(n_ff):
+                        main_scheduler.step()
+            elif start_epoch > 0:
+                self.logger.warning(
+                    "检查点无 scheduler 状态：仅按 epoch 快进 MultiStepLR（旧版 .pt）"
+                )
+                n_ff = max(0, start_epoch - warmup_epochs)
+                for _ in range(n_ff):
+                    main_scheduler.step()
+            if "best_val_loss" in resume_ckpt:
+                try:
+                    best_val_loss = float(resume_ckpt["best_val_loss"])
+                except (TypeError, ValueError):
+                    pass
+
         weights_dir = self.log_dir / "weights"
         weights_dir.mkdir(parents=True, exist_ok=True)
 
-        self._log_fasterrcnn_config(
-            epochs, batch_size, data_yaml, device, train_ds, val_ds,
-        )
+        if start_epoch > 0:
+            self._log_fasterrcnn_resume(epochs, batch_size, data_yaml, device, train_ds, val_ds, start_epoch)
+        else:
+            self._log_fasterrcnn_config(
+                epochs, batch_size, data_yaml, device, train_ds, val_ds,
+            )
 
-        # training state
-        best_val_loss = float("inf")
-        results_rows: List[Dict[str, Any]] = []
         total_batches = math.ceil(len(train_ds) / batch_size)
 
         for epoch in range(start_epoch, epochs):
@@ -261,6 +324,9 @@ class FasterRCNNTrainer(BaseYOLOTrainer):
             ckpt_payload = {
                 "epoch": epoch + 1,
                 "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "scheduler_state_dict": main_scheduler.state_dict(),
+                "best_val_loss": best_val_loss,
             }
             torch.save(ckpt_payload, weights_dir / "last.pt")
 
@@ -306,6 +372,30 @@ class FasterRCNNTrainer(BaseYOLOTrainer):
         csv_path = self.log_dir / "results.csv"
         df.to_csv(csv_path, index=False)
         self.logger.info(f"✓ 训练曲线数据: {csv_path}")
+
+    def _log_fasterrcnn_resume(
+        self,
+        epochs,
+        batch_size,
+        data_yaml,
+        device,
+        train_ds,
+        val_ds,
+        start_epoch: int,
+    ):
+        self.logger.info("=" * 80)
+        self.logger.info("▶ 恢复 Faster R-CNN (ResNet-50 FPN) 训练")
+        self.logger.info("=" * 80)
+        self.logger.info(f"  数据集路径: {data_yaml}")
+        self.logger.info(f"  训练集: {len(train_ds)} 张")
+        self.logger.info(f"  验证集: {len(val_ds)} 张")
+        self.logger.info(
+            f"  进度: 从 Epoch {start_epoch + 1}/{epochs} 继续 → 共 {epochs} epoch 配置"
+        )
+        self.logger.info(f"  批次大小: {batch_size}")
+        self.logger.info(f"  设备: {device}")
+        self.logger.info(f"  输出目录: {self.log_dir}")
+        self.logger.info("=" * 80)
 
     def _log_fasterrcnn_config(self, epochs, batch_size, data_yaml, device, train_ds, val_ds):
         self.logger.info("=" * 80)
