@@ -1,4 +1,4 @@
-# MOE RT-DETR（DAIR-V2X，仅 S5 进 Hybrid Encoder）
+# MoE RT-DETR6 · DAIR-V2X
 model:
   num_experts: 6
   top_k: 3

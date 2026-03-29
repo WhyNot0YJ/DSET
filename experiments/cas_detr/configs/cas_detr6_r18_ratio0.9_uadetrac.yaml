@@ -1,5 +1,4 @@
-# CaS-DETR（UA-DETRAC，仅 S5 进 Hybrid Encoder；token_keep_ratio=0.9）
-# augmentation 与 rt-detr/configs/rtdetr_r18_uadetrac.yaml 对齐（多尺度：576–704，含 608/672 与 640×3）
+# CaS-DETR6 · UA-DETRAC · keep=0.9
 model:
   num_experts: 6
   top_k: 3
@@ -33,7 +32,7 @@ model:
     cass_focal_alpha: 2.0
     cass_focal_beta: 4.0
 training:
-  epochs: 50
+  epochs: 100
   batch_size: 24
   warmup_epochs: 3
   pretrained_lr: 1e-5

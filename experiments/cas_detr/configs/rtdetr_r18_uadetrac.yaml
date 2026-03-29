@@ -1,4 +1,4 @@
-# RT-DETR（UA-DETRAC，仅 S5 进 Hybrid Encoder）
+# RT-DETR R18 · UA-DETRAC
 model:
   backbone: presnet18
   ablation:
@@ -29,7 +29,7 @@ model:
     cass_focal_alpha: 2.0
     cass_focal_beta: 4.0
 training:
-  epochs: 50
+  epochs: 100
   batch_size: 24
   warmup_epochs: 3
   pretrained_lr: 1e-5

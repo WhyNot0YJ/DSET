@@ -1,4 +1,4 @@
-# MOE RT-DETR（UA-DETRAC，仅 S5 进 Hybrid Encoder）
+# MoE RT-DETR6 · UA-DETRAC
 model:
   num_experts: 6
   top_k: 3
@@ -32,7 +32,7 @@ model:
     cass_focal_alpha: 2.0
     cass_focal_beta: 4.0
 training:
-  epochs: 50
+  epochs: 100
   batch_size: 24
   warmup_epochs: 3
   pretrained_lr: 1e-5

@@ -6,7 +6,9 @@ training:
   epochs: 100
   batch_size: 32
   imgsz: 640
-  
+  seed: 42
+  deterministic: false
+
 data:
   data_yaml: "/root/autodl-fs/datasets/DAIR-V2X_YOLO/dairv2x.yaml"
 

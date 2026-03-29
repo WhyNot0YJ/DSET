@@ -1,6 +1,4 @@
-# 消融：Hybrid Encoder 内 Token Pruning（CaS predictor）开启，Decoder 为标准 FFN（无 MoE）
-# 与 cas_detr6_r18_ratio0.5.yaml 相同，仅 model.ablation.enable_decoder_moe: false
-# train.py variant: cas_detr_prune；日志目录前缀: cas_detr_prune6_r18
+# CaS-DETR6 prune-only · DAIR-V2X · keep=0.5
 model:
   num_experts: 6
   top_k: 3

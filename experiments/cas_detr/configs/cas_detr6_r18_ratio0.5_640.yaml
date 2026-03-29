@@ -1,5 +1,4 @@
-# CaS-DETR（DAIR-V2X，仅 S5 进 Hybrid Encoder；token_keep_ratio=0.5；固定 640 单尺度）
-# 用于对照 `cas_detr6_r18_ratio0.5.yaml`，仅将多尺度训练改为单尺度 640，其他配置保持一致
+# CaS-DETR6 · DAIR-V2X · keep=0.5 · 640 only
 model:
   num_experts: 6
   top_k: 3

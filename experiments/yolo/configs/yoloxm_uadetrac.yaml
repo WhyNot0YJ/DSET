@@ -7,6 +7,8 @@ training:
   epochs: 100
   batch_size: 32
   imgsz: 640
+  seed: 42
+  deterministic: false
 
 data:
   data_yaml: "/root/autodl-fs/datasets/UA-DETRAC_YOLO/data.yaml"
