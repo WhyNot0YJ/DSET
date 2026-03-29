@@ -16,10 +16,15 @@ def remove_useless_info(coco):
     """
     Remove useless info in coco dataset. COCO object is modified inplace.
     This function is mainly used for saving memory (save about 30% mem).
+
+    Note: must not remove ``dataset['info']`` entirely — ``pycocotools.COCO.loadRes``
+    does ``res.dataset['info'] = copy.deepcopy(self.dataset['info'])`` and will
+    raise KeyError if the key is missing.
     """
     if isinstance(coco, COCO):
         dataset = coco.dataset
-        dataset.pop("info", None)
+        # 占位即可满足 pycocotools COCO.loadRes 对 dataset['info'] 的 deepcopy
+        dataset["info"] = {"description": "yolox", "version": "1.0", "year": 2024}
         dataset.pop("licenses", None)
         for img in dataset["images"]:
             img.pop("license", None)
