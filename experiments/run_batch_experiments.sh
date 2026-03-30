@@ -17,6 +17,8 @@ export OMP_NUM_THREADS=1
 #   ./run_batch_experiments.sh                                 # 运行所有实验（完整epochs）
 #   ./run_batch_experiments.sh --test                          # 测试模式：运行所有配置，每个只跑2个epoch
 #   ./run_batch_experiments.sh --rt-detr                       # 只运行 RT-DETR（DAIR + UA-DETRAC，共 2 个配置）
+#   ./run_batch_experiments.sh --finetune                      # RT-DETR UA-DETRAC 消融批（zoomout / enc expansion 1.0 / mosaic，共 3 个）
+#   ./run_batch_experiments.sh --uadetrac --finetune           # 同上（显式数据集筛时仍只含 UA 配置）
 #   ./run_batch_experiments.sh --dairv2x --rt-detr             # 同上但只跑 DAIR-V2X（1 个 RT-DETR 配置）
 #   ./run_batch_experiments.sh --moe-rtdetr                    # 只运行MOE-RTDETR实验（2个配置）
 #   ./run_batch_experiments.sh --cas_detr                      # 只运行CaS_DETR实验（6个配置）
@@ -233,6 +235,13 @@ declare -A RT_DETR_CONFIGS=(
     ["rt-detr-r18-uadetrac"]="cas_detr/configs/rtdetr_r18_uadetrac.yaml"
 )
 
+# RT-DETR · UA-DETRAC 消融（zoomout / encoder expansion / mosaic），由 --finetune 单独成批
+declare -a RT_DETR_FINETUNE_EXPERIMENTS=(
+    "cas_detr/configs/rtdetr_r18_uadetrac_zoomout.yaml"
+    "cas_detr/configs/rtdetr_r18_uadetrac_enc_expansion_1.0.yaml"
+    "cas_detr/configs/rtdetr_r18_uadetrac_mosaic_p0.5.yaml"
+)
+
 declare -a CORE_EXPERIMENTS=(
     "cas_detr/configs/cas_detr6_r18_ratio0.5.yaml"
 )
@@ -308,6 +317,12 @@ build_all_configs() {
         b=$(basename "$p" .yaml)
         NAME_TO_PATH["$key"]="$p"
         NAME_TO_PATH["$b"]="$p"
+    done
+    local _ftp _fb
+    for _ftp in "${RT_DETR_FINETUNE_EXPERIMENTS[@]}"; do
+        all_configs_paths+=("$_ftp")
+        _fb=$(basename "$_ftp" .yaml)
+        NAME_TO_PATH["$_fb"]="$_ftp"
     done
     for key in "${!MOE_RTDETR_CONFIGS[@]}"; do
         local p="${MOE_RTDETR_CONFIGS[$key]}"
@@ -455,6 +470,7 @@ parse_arguments() {
     local has_k07=false
     local has_k09=false
     local filtered_args=()
+    local has_finetune=false
     
     local idx=0
     while [ $idx -lt ${#args[@]} ]; do
@@ -520,6 +536,11 @@ parse_arguments() {
         fi
         if [ "$arg" == "--k0.9" ]; then
             has_k09=true
+            idx=$((idx + 1))
+            continue
+        fi
+        if [ "$arg" == "--finetune" ]; then
+            has_finetune=true
             idx=$((idx + 1))
             continue
         fi
@@ -615,6 +636,20 @@ parse_arguments() {
         return 0
     }
     
+    if [ "$has_finetune" = true ]; then
+        CONFIGS_TO_RUN=()
+        local _ftp
+        for _ftp in "${RT_DETR_FINETUNE_EXPERIMENTS[@]}"; do
+            if filter_config "$_ftp"; then
+                CONFIGS_TO_RUN+=("$_ftp")
+            fi
+        done
+        apply_dataset_scope_filter_to_configs
+        apply_model_size_filter_to_configs
+        log_info "运行 RT-DETR UA-DETRAC 消融批次（--finetune：zoomout / enc expansion 1.0 / mosaic 0.5）"
+        return 0
+    fi
+    
     # 检查是否有--core选项（优先处理）
     for arg in "$@"; do
         if [ "$arg" == "--core" ]; then
@@ -649,7 +684,7 @@ parse_arguments() {
                 has_rt_detr=true
                 ;;
             --rt-detr-finetune)
-                log_warning "--rt-detr-finetune 已弃用（已无单独 finetune 配置），将按 --rt-detr 处理"
+                log_warning "--rt-detr-finetune 已弃用，请使用 --finetune（UA-DETRAC RT-DETR 消融批）或 --rt-detr"
                 has_rt_detr=true
                 ;;
             --moe-rtdetr)
@@ -901,6 +936,7 @@ parse_arguments() {
         echo "  ./run_batch_experiments.sh                                 # 运行所有实验（完整epochs）"
         echo "  ./run_batch_experiments.sh --test                          # 测试模式：所有配置各跑2个epoch"
         echo "  ./run_batch_experiments.sh --rt-detr                       # 只运行 RT-DETR（DAIR + UA-DETRAC）"
+        echo "  ./run_batch_experiments.sh --finetune                      # RT-DETR UA-DETRAC 消融批（3 个 yaml）"
         echo "  ./run_batch_experiments.sh --moe-rtdetr                    # 只运行MOE-RTDETR（2个）"
         echo "  ./run_batch_experiments.sh --cas_detr                      # 只运行CaS_DETR（6个）"
         echo "  ./run_batch_experiments.sh --yolov5                        # 只运行YOLOv5"

@@ -3,6 +3,7 @@ COCO 检测数据集：按 split 子目录存放图像（如 UA-DETRAC_COCO/trai
 """
 
 import json
+import random
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -42,6 +43,7 @@ class CocoFolderDetection(DetDataset):
         "iou_crop_p": 0.8,
         "horizontal_flip_p": 0.5,
         "letterbox_fill": 114,
+        "mosaic_p": 0.0,
     }
 
     def __init__(
@@ -61,6 +63,11 @@ class CocoFolderDetection(DetDataset):
         self.aug_config = self.DEFAULT_AUGMENTATION_CONFIG.copy()
         if augmentation_config is not None:
             self.aug_config.update(augmentation_config)
+            if (
+                "mosaic_p" not in augmentation_config
+                and isinstance(augmentation_config.get("mosaic"), (int, float))
+            ):
+                self.aug_config["mosaic_p"] = float(augmentation_config["mosaic"])
         if target_size != 640:
             self.aug_config["target_size"] = target_size
         if stop_epoch != 21:
@@ -209,6 +216,26 @@ class CocoFolderDetection(DetDataset):
 
     def __getitem__(self, idx):
         image, target = self.load_item(idx)
+        mp = float(self.aug_config.get("mosaic_p") or 0.0)
+        if (
+            self.split == "train"
+            and self.epoch < self.stop_epoch
+            and mp > 0.0
+            and random.random() < mp
+        ):
+            from ..transforms.mosaic import Mosaic
+
+            ts = int(self.aug_config.get("target_size", 640))
+            mosaic_t = Mosaic(size=(ts, ts), max_size=ts)
+            image, target, _ = mosaic_t(image, target, self)
+            if "image_id" in target and isinstance(target["image_id"], torch.Tensor):
+                if target["image_id"].numel() > 1:
+                    target["image_id"] = torch.tensor(
+                        [int(target["image_id"].flatten()[0].item())]
+                    )
+            w, h = image.size
+            target["orig_size"] = torch.tensor([h, w])
+
         if self.transforms is not None:
             image, target = self.transforms(image, target)
         if isinstance(image, torch.Tensor):
