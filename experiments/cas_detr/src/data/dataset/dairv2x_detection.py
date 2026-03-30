@@ -3,6 +3,7 @@ DAIR-V2X数据集检测器 - 基于COCO格式
 专门为DAIR-V2X车路协同数据集设计，支持COCO格式评估
 """
 
+import random
 import torch
 import json
 import numpy as np
@@ -61,6 +62,7 @@ class DAIRV2XDetection(DetDataset):
         'horizontal_flip_p': 0.5,
         # letterbox 填充：与 configs 中 augmentation 统一为 114（COCO/YOLO 常用灰边）
         'letterbox_fill': 114,
+        'mosaic_p': 0.0,
     }
     
     def __init__(self, data_root: str, split: str = "train", transforms=None, 
@@ -87,7 +89,12 @@ class DAIRV2XDetection(DetDataset):
         self.aug_config = self.DEFAULT_AUGMENTATION_CONFIG.copy()
         if augmentation_config is not None:
             self.aug_config.update(augmentation_config)
-        
+            if (
+                "mosaic_p" not in augmentation_config
+                and isinstance(augmentation_config.get("mosaic"), (int, float))
+            ):
+                self.aug_config["mosaic_p"] = float(augmentation_config["mosaic"])
+
         # 向后兼容：如果传入target_size和stop_epoch，覆盖config中的值
         if target_size != 640:
             self.aug_config['target_size'] = target_size
@@ -345,13 +352,27 @@ class DAIRV2XDetection(DetDataset):
 
     def __getitem__(self, idx):
         """获取数据项 - 返回COCO格式的数据"""
-        # 1. Load Base Item
         image, target = self.load_item(idx)
-        
-        # 2. Apply Mosaic / Mixup (if enabled and in training)
-        # Note: Mosaic/Mixup are now handled through hardcoded transform pipeline
-        
-        # 3. 应用标准变换
+        mp = float(self.aug_config.get("mosaic_p") or 0.0)
+        if (
+            self.split == "train"
+            and self.epoch < self.stop_epoch
+            and mp > 0.0
+            and random.random() < mp
+        ):
+            from ..transforms.mosaic import Mosaic
+
+            ts = int(self.aug_config.get("target_size", 640))
+            mosaic_t = Mosaic(size=(ts, ts), max_size=ts)
+            image, target, _ = mosaic_t(image, target, self)
+            if "image_id" in target and isinstance(target["image_id"], torch.Tensor):
+                if target["image_id"].numel() > 1:
+                    target["image_id"] = torch.tensor(
+                        [int(target["image_id"].flatten()[0].item())]
+                    )
+            w, h = image.size
+            target["orig_size"] = torch.tensor([h, w])
+
         if self.transforms is not None:
             image, target = self.transforms(image, target)
         
