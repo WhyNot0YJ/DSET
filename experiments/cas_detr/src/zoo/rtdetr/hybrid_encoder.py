@@ -325,6 +325,14 @@ class HybridEncoder(nn.Module):
         self.pe_temperature = pe_temperature
         self.out_channels = [hidden_dim for _ in range(len(in_channels))]
         self.out_strides = feat_strides
+
+        # Multi-scale level embedding [L, C] — only when L = len(use_encoder_idx) > 1 (single-level RT-DETR skips)
+        _n_enc_levels = len(self.use_encoder_idx) if self.use_encoder_idx else 0
+        if _n_enc_levels > 1:
+            self.level_embed = nn.Parameter(torch.empty(_n_enc_levels, hidden_dim))
+            nn.init.normal_(self.level_embed, mean=0.0, std=0.02)
+        else:
+            self.level_embed = None
         
         # CaS_DETR dual-sparse parameters - 保存参数以便后续使用
         self.token_keep_ratio = token_keep_ratio
@@ -561,13 +569,14 @@ class HybridEncoder(nn.Module):
             spatial_shapes = []
             level_sizes = []
 
-            for enc_ind in self.use_encoder_idx:
+            for idx_level, enc_ind in enumerate(self.use_encoder_idx):
                 h, w = proj_feats[enc_ind].shape[2:]
                 spatial_shapes.append((h, w))
                 level_sizes.append(h * w)
-                src_flatten_list.append(
-                    proj_feats[enc_ind].flatten(2).permute(0, 2, 1)
-                )  # [B, H*W, C]
+                feat_flat = proj_feats[enc_ind].flatten(2).permute(0, 2, 1)  # [B, H*W, C]
+                if self.level_embed is not None:
+                    feat_flat = feat_flat + self.level_embed[idx_level].view(1, 1, -1)
+                src_flatten_list.append(feat_flat)
 
                 pos_embed_full = self.build_2d_sincos_position_embedding(
                     w, h, self.hidden_dim, self.pe_temperature

@@ -10,6 +10,7 @@ model:
     enable_decoder_moe: true
   encoder:
     use_encoder_idx:
+    - 1
     - 2
     in_channels:
     - 128
@@ -42,7 +43,7 @@ training:
   batch_size: 24
   warmup_epochs: 3
   pretrained_lr: 1e-5
-  new_lr: 1e-4
+  new_lr: 5e-5
   eta_min: 1e-6
   weight_decay: 0.0001
   ema_decay: 0.9999
@@ -89,7 +90,7 @@ augmentation:
     - 0.225
   photometric_distort_p: 0.5
   zoom_out_enabled: false
-  iou_crop_p: 0
+  iou_crop_p: 0.5
   horizontal_flip_p: 0.5
   letterbox_fill: 114
   resize:

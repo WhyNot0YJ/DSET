@@ -9,6 +9,7 @@ model:
     enable_decoder_moe: true
   encoder:
     use_encoder_idx:
+    - 1
     - 2
     in_channels:
     - 128
@@ -80,7 +81,7 @@ augmentation:
     - 0.225
   photometric_distort_p: 0.5
   zoom_out_enabled: false
-  iou_crop_p: 0
+  iou_crop_p: 0.2
   horizontal_flip_p: 0.5
   letterbox_fill: 114
   resize:
