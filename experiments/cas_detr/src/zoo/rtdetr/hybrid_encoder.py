@@ -1,8 +1,10 @@
 """CaS_DETR HybridEncoder - 集成Token Pruning"""
 
 import copy
+import logging
+import os
 from collections import OrderedDict
-from typing import Dict
+from typing import Dict, List
 
 import torch 
 import torch.nn as nn 
@@ -16,6 +18,7 @@ from ...core import register
 
 __all__ = ['HybridEncoder']
 
+_LOGGER = logging.getLogger(__name__)
 
 
 class ConvNormLayer(nn.Module):
@@ -547,7 +550,27 @@ class HybridEncoder(nn.Module):
                 memory_2d_flat[:, :memory.shape[1]] = memory
 
         return memory_2d_flat
-    
+
+    @staticmethod
+    def _count_kept_tokens_per_level(
+        kept_indices: torch.Tensor, level_sizes: List[int]
+    ) -> List[int]:
+        """
+        kept_indices: [B, K] 拼接后序列上的全局下标；与 forward 里先 S4 段再 S5 段的顺序一致。
+        返回 batch 0 上各 level 保留个数；level i 对应 ``use_encoder_idx[i]`` 与配置中 backbone 下标。
+        """
+        if kept_indices is None or not level_sizes:
+            return []
+        idx = kept_indices[0].long()
+        starts = [0]
+        for s in level_sizes:
+            starts.append(starts[-1] + int(s))
+        counts: List[int] = []
+        for i in range(len(level_sizes)):
+            lo, hi = starts[i], starts[i + 1]
+            counts.append(int(((idx >= lo) & (idx < hi)).sum().item()))
+        return counts
+
     def set_epoch(self, epoch: int):
         """设置当前epoch"""
         if self.shared_token_pruner is not None:
@@ -610,6 +633,36 @@ class HybridEncoder(nn.Module):
                     dynamic_keep_ratio=dynamic_keep_ratio,
                 )
                 encoder_info['token_pruning_ratios'].append(prune_info.get('pruning_ratio', 0.0))
+
+                if level_sizes and kept_indices is not None:
+                    kept_per_level = self._count_kept_tokens_per_level(
+                        kept_indices, level_sizes
+                    )
+                    encoder_info['num_kept_tokens'] = int(kept_indices.shape[1])
+                    encoder_info['num_input_tokens'] = int(src_flatten_total.shape[1])
+                    encoder_info['kept_tokens_per_level'] = kept_per_level
+                    encoder_info['kept_tokens_level_enc_indices'] = list(
+                        self.use_encoder_idx
+                    )
+                    log_every = max(
+                        1, int(os.environ.get("CAS_LOG_PRUNE_LEVEL_EVERY", "100"))
+                    )
+                    self._prune_level_dist_log_counter = getattr(
+                        self, "_prune_level_dist_log_counter", 0
+                    ) + 1
+                    if self._prune_level_dist_log_counter % log_every == 1:
+                        parts = ", ".join(
+                            f"enc[{enc}]={c}/{lv} ({100.0 * c / max(lv, 1):.1f}% of level tokens)"
+                            for enc, c, lv in zip(
+                                self.use_encoder_idx, kept_per_level, level_sizes
+                            )
+                        )
+                        _LOGGER.info(
+                            "[TokenPruning] batch_0 kept=%d input=%d | %s",
+                            kept_indices.shape[1],
+                            src_flatten_total.shape[1],
+                            parts,
+                        )
 
                 if 'token_importance_scores' in prune_info and prune_info['token_importance_scores'] is not None:
                     global_scores = prune_info['token_importance_scores']
