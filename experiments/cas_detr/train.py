@@ -212,6 +212,7 @@ class CaS_DETRRTDETR(nn.Module):
                 cass_loss_type: str = 'vfl',  # 'focal' or 'vfl'
                 cass_focal_alpha: float = 0.75,
                 cass_focal_beta: float = 2.0,
+                cass_small_weight_alpha: float = 2.0,
                 # MoE noise_std config
                 moe_noise_std: float = 0.1,
                 num_classes: int = 8,
@@ -245,6 +246,7 @@ class CaS_DETRRTDETR(nn.Module):
             cass_loss_type: Loss type ('focal' for Focal Loss, 'vfl' for Varifocal Loss)
             cass_focal_alpha: Focal/VFL alpha parameter (positive sample weight)
             cass_focal_beta: Focal/VFL beta/gamma parameter (hard example mining strength)
+            cass_small_weight_alpha: Extra weight multiplier for small-object tokens
             
         Note:
         """
@@ -280,6 +282,7 @@ class CaS_DETRRTDETR(nn.Module):
         self.cass_loss_type = cass_loss_type
         self.cass_focal_alpha = cass_focal_alpha
         self.cass_focal_beta = cass_focal_beta
+        self.cass_small_weight_alpha = cass_small_weight_alpha
         
         # MoE noise_std configuration
         self.moe_noise_std = moe_noise_std
@@ -372,6 +375,7 @@ class CaS_DETRRTDETR(nn.Module):
             cass_loss_type=self.cass_loss_type,
             cass_focal_alpha=self.cass_focal_alpha,
             cass_focal_beta=self.cass_focal_beta,
+            cass_small_weight_alpha=self.cass_small_weight_alpha,
             use_caip=self.use_caip,
             caip_reduction_ratio=self.caip_reduction_ratio,
             caip_complexity_alpha=self.caip_complexity_alpha,
@@ -864,6 +868,7 @@ class CaS_DETRTrainer:
         cass_loss_type = cas_detr_config.get('cass_loss_type', 'vfl')  # 'focal' or 'vfl'
         cass_focal_alpha = cas_detr_config.get('cass_focal_alpha', 0.75)
         cass_focal_beta = cas_detr_config.get('cass_focal_beta', 2.0)
+        cass_small_weight_alpha = cas_detr_config.get('cass_small_weight_alpha', 2.0)
         
         # CAIP (Context-Aware Importance Predictor) 配置
         use_caip = cas_detr_config.get('use_caip', False)
@@ -905,6 +910,7 @@ class CaS_DETRTrainer:
             cass_loss_type=cass_loss_type,
             cass_focal_alpha=cass_focal_alpha,
             cass_focal_beta=cass_focal_beta,
+            cass_small_weight_alpha=cass_small_weight_alpha,
             moe_noise_std=moe_noise_std,
             num_classes=self.num_classes,
             use_caip=use_caip,
@@ -943,7 +949,11 @@ class CaS_DETRTrainer:
         self.logger.info("  损失权重配置:")
         self.logger.info(f"    - CASS Supervision: {model.use_cass} (loss_type={cass_loss_type}, weight={cass_loss_weight}, expansion={cass_expansion_ratio}, min_size={cass_min_size})")
         if model.use_cass:
-            self.logger.info(f"      → CASS Loss params: alpha={cass_focal_alpha}, beta={cass_focal_beta}, subpixel_offset={use_subpixel_offset}")
+            self.logger.info(
+                f"      → CASS Loss params: alpha={cass_focal_alpha}, "
+                f"beta={cass_focal_beta}, small_alpha={cass_small_weight_alpha}, "
+                f"subpixel_offset={use_subpixel_offset}"
+            )
         self.logger.info(f"    - Decoder MoE: {decoder_moe_balance_weight if decoder_moe_balance_weight else 'auto'}")
         if model.enable_decoder_moe and moe_balance_warmup_epochs > 0:
             self.logger.info(f"    - MOE Balance Warmup: {moe_balance_warmup_epochs} epochs (延迟平衡策略：前{moe_balance_warmup_epochs}个epoch不应用MOE平衡损失)")
@@ -2812,6 +2822,9 @@ class CaS_DETRTrainer:
 
             # 训练
             train_metrics = self.train_epoch()
+            enc = getattr(self.model, "encoder", None)
+            if enc is not None and hasattr(enc, "finalize_prune_level_aggregate_epoch"):
+                enc.finalize_prune_level_aggregate_epoch(epoch)
             
             should_validate = should_run_validation(epoch, eval_sched)
 

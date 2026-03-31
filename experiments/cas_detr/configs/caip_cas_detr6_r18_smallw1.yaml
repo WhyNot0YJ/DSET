@@ -1,4 +1,6 @@
-# CaS-DETR6 · DAIR-V2X · keep=0.3
+# CAIP CaS-DETR6 · DAIR-V2X · keep=0.3 · cass_small_weight_alpha=1.0
+# 与 caip_cas_detr6_r18.yaml 相同，仅 CASS 尺度加权关闭，等价于不对小目标 token 乘额外系数
+# CAIP: Context-Aware Importance Predictor with dynamic pruning + dynamic MoE routing
 model:
   num_experts: 6
   top_k: 3
@@ -32,6 +34,12 @@ model:
     cass_loss_type: vfl
     cass_focal_alpha: 2.0
     cass_focal_beta: 4.0
+    cass_small_weight_alpha: 1.0
+    # CAIP settings
+    use_caip: true
+    caip_reduction_ratio: 4
+    caip_complexity_alpha: 0.3
+    caip_complexity_beta: 0.3
 training:
   epochs: 100
   batch_size: 24
@@ -50,7 +58,6 @@ training:
   deterministic: false
   decoder_moe_balance_weight: 0.01
   moe_balance_warmup_epochs: 0
-  # 与历史硬编码一致：前 50 / 50–70 / 70–90 / 90+
   eval_schedule:
     - until_epoch: 50
       every: 10

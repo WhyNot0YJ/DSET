@@ -4,7 +4,7 @@ import copy
 import logging
 import os
 from collections import OrderedDict
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import torch 
 import torch.nn as nn 
@@ -296,6 +296,7 @@ class HybridEncoder(nn.Module):
                  cass_loss_type='vfl',  # 'focal' or 'vfl'
                  cass_focal_alpha=0.75,
                  cass_focal_beta=2.0,
+                 cass_small_weight_alpha=2.0,
                  # CAIP (Context-Aware Importance Predictor) 参数
                  use_caip=False,
                  caip_reduction_ratio=4,
@@ -314,6 +315,7 @@ class HybridEncoder(nn.Module):
             cass_loss_type: Loss type ('focal' for Focal Loss, 'vfl' for Varifocal Loss)
             cass_focal_alpha: Focal/VFL alpha parameter (positive sample weight)
             cass_focal_beta: Focal/VFL beta/gamma parameter (hard example mining strength)
+            cass_small_weight_alpha: Extra weight multiplier for small-object tokens
             use_caip: Whether to use CAIP (global context branch for importance scoring)
             caip_reduction_ratio: Channel reduction ratio in the CAIP global path
             caip_complexity_alpha: Sensitivity for dynamic keep-ratio adjustment (0–1)
@@ -351,6 +353,7 @@ class HybridEncoder(nn.Module):
         self.cass_loss_type = cass_loss_type
         self.cass_focal_alpha = cass_focal_alpha
         self.cass_focal_beta = cass_focal_beta
+        self.cass_small_weight_alpha = cass_small_weight_alpha
         
         self.use_token_pruning = enable_cas_predictor
         self.use_token_level_pruning = enable_cas_predictor
@@ -399,7 +402,8 @@ class HybridEncoder(nn.Module):
                 # CASS Loss parameters
                 cass_loss_type=cass_loss_type,
                 cass_focal_alpha=cass_focal_alpha,
-                cass_focal_beta=cass_focal_beta
+                cass_focal_beta=cass_focal_beta,
+                cass_small_weight_alpha=cass_small_weight_alpha
             )
         else:
             self.shared_token_pruner = None
@@ -414,6 +418,12 @@ class HybridEncoder(nn.Module):
             )
         else:
             self.caip_predictor = None
+
+        # 训练时按 epoch 汇总各层保留 token 数，由 train.py 在 epoch 结束时调用 finalize
+        self._prune_agg_sum_kept: Optional[torch.Tensor] = None
+        self._prune_agg_n_images: int = 0
+        self._prune_agg_level_sizes: Optional[List[int]] = None
+        self._prune_agg_level_names: Optional[List[str]] = None
         
         encoder_layer = TransformerEncoderLayer(
             hidden_dim, 
@@ -571,6 +581,70 @@ class HybridEncoder(nn.Module):
             counts.append(int(((idx >= lo) & (idx < hi)).sum().item()))
         return counts
 
+    @staticmethod
+    def _count_kept_tokens_per_level_all(
+        kept_indices: torch.Tensor, level_sizes: List[int]
+    ) -> torch.Tensor:
+        """
+        kept_indices: [B, K] 与 ``_count_kept_tokens_per_level`` 相同索引约定。
+        返回形状 [B, L]，每行对应一张图在各 level 上保留的 token 数。
+        """
+        if kept_indices is None or not level_sizes:
+            return torch.zeros(0, 0, device=kept_indices.device, dtype=torch.float32)
+        idx = kept_indices.long()
+        starts = [0]
+        for s in level_sizes:
+            starts.append(starts[-1] + int(s))
+        counts: List[torch.Tensor] = []
+        for i in range(len(level_sizes)):
+            lo, hi = starts[i], starts[i + 1]
+            in_level = (idx >= lo) & (idx < hi)
+            counts.append(in_level.sum(dim=1).float())
+        return torch.stack(counts, dim=1)
+
+    def _reset_prune_aggregate_stats(self) -> None:
+        self._prune_agg_sum_kept = None
+        self._prune_agg_n_images = 0
+        self._prune_agg_level_sizes = None
+        self._prune_agg_level_names = None
+
+    def finalize_prune_level_aggregate_epoch(self, epoch: int) -> None:
+        """
+        在训练循环每个 epoch 结束处调用。按环境变量 ``CAS_PRUNE_LEVEL_EPOCH_AGGREGATE_EVERY``
+        默认每 10 个 epoch 汇总本 epoch 内全部训练 batch、全部图像上的各层平均保留数并打日志。
+        设为 0 则关闭本汇总，并清空缓冲区。
+        """
+        interval = int(os.environ.get("CAS_PRUNE_LEVEL_EPOCH_AGGREGATE_EVERY", "10"))
+        if interval <= 0:
+            self._reset_prune_aggregate_stats()
+            return
+        if self._prune_agg_n_images == 0 or self._prune_agg_sum_kept is None:
+            self._reset_prune_aggregate_stats()
+            return
+        if (epoch + 1) % interval != 0:
+            self._reset_prune_aggregate_stats()
+            return
+        n = float(self._prune_agg_n_images)
+        means = (self._prune_agg_sum_kept / n).tolist()
+        level_sizes = self._prune_agg_level_sizes or []
+        names = self._prune_agg_level_names or []
+        parts = []
+        for name, m, lv in zip(names, means, level_sizes):
+            pct = 100.0 * m / max(float(lv), 1.0)
+            parts.append(f"{name} mean_kept={m:.1f}/{lv} ({pct:.1f}%)")
+        total_in = float(sum(level_sizes)) if level_sizes else 1.0
+        mean_total = float(sum(means))
+        _LOGGER.info(
+            "[TokenPruning] epoch_agg epoch=%d images=%d | total mean_kept=%.1f/%d (%.1f%%) | %s",
+            epoch,
+            self._prune_agg_n_images,
+            mean_total,
+            int(total_in),
+            100.0 * mean_total / max(total_in, 1.0),
+            " | ".join(parts),
+        )
+        self._reset_prune_aggregate_stats()
+
     def set_epoch(self, epoch: int):
         """设置当前epoch"""
         if self.shared_token_pruner is not None:
@@ -656,13 +730,19 @@ class HybridEncoder(nn.Module):
                         prune_info.get('num_tokens', src_flatten_total.shape[1])
                     )
                     did_prune = num_kept_total < num_input_total
-                    log_every = max(
-                        1, int(os.environ.get("CAS_LOG_PRUNE_LEVEL_EVERY", "1"))
+                    agg_interval = int(
+                        os.environ.get("CAS_PRUNE_LEVEL_EPOCH_AGGREGATE_EVERY", "10")
                     )
+                    if "CAS_LOG_PRUNE_LEVEL_EVERY" in os.environ:
+                        log_every = int(os.environ["CAS_LOG_PRUNE_LEVEL_EVERY"])
+                    else:
+                        log_every = 0 if agg_interval > 0 else 1
+                    if log_every < 0:
+                        log_every = 0
                     self._prune_level_dist_log_counter = getattr(
                         self, "_prune_level_dist_log_counter", 0
                     ) + 1
-                    if did_prune and (
+                    if did_prune and log_every > 0 and (
                         self._prune_level_dist_log_counter % log_every == 1
                     ):
                         parts = ", ".join(
@@ -677,6 +757,20 @@ class HybridEncoder(nn.Module):
                             num_input_total,
                             parts,
                         )
+                    if self.training:
+                        counts_all = self._count_kept_tokens_per_level_all(
+                            kept_indices, level_sizes
+                        )
+                        sum_b = counts_all.sum(dim=0).detach().cpu().float()
+                        if self._prune_agg_sum_kept is None:
+                            self._prune_agg_sum_kept = sum_b
+                            self._prune_agg_level_sizes = list(level_sizes)
+                            self._prune_agg_level_names = list(level_display_names)
+                        else:
+                            self._prune_agg_sum_kept = (
+                                self._prune_agg_sum_kept + sum_b
+                            )
+                        self._prune_agg_n_images += int(kept_indices.shape[0])
 
                 if 'token_importance_scores' in prune_info and prune_info['token_importance_scores'] is not None:
                     global_scores = prune_info['token_importance_scores']

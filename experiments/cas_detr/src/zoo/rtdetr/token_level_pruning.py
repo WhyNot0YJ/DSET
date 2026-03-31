@@ -44,6 +44,7 @@ class LinearImportancePredictor(nn.Module):
 
 class TokenLevelPruner(nn.Module):
     """Token级别剪枝器，支持CASS监督学习（每个token独立处理）"""
+    DEFAULT_SMALL_OBJECT_AREA_THRESH = 0.0025
     
     def __init__(self, 
                  input_dim: int,
@@ -59,7 +60,9 @@ class TokenLevelPruner(nn.Module):
                  use_subpixel_offset: bool = True,
                  cass_loss_type: str = 'vfl',  # 'focal' or 'vfl'
                  cass_focal_alpha: float = 0.75,
-                 cass_focal_beta: float = 2.0):
+                 cass_focal_beta: float = 2.0,
+                 cass_small_weight_alpha: float = 2.0,
+                 cass_small_area_thresh: float = DEFAULT_SMALL_OBJECT_AREA_THRESH):
         """
         Args:
             input_dim: Input feature dimension
@@ -75,6 +78,8 @@ class TokenLevelPruner(nn.Module):
             cass_loss_type: Loss type ('focal' for Focal Loss, 'vfl' for Varifocal Loss)
             cass_focal_alpha: Focal/VFL alpha parameter (positive sample weight)
             cass_focal_beta: Focal/VFL beta/gamma parameter (hard example mining strength)
+            cass_small_weight_alpha: Extra weight multiplier for small-object tokens
+            cass_small_area_thresh: Normalized area threshold for small objects
         """
         super().__init__()
         self.input_dim = input_dim
@@ -92,6 +97,8 @@ class TokenLevelPruner(nn.Module):
         self.cass_loss_type = cass_loss_type
         self.cass_focal_alpha = cass_focal_alpha
         self.cass_focal_beta = cass_focal_beta
+        self.cass_small_weight_alpha = cass_small_weight_alpha
+        self.cass_small_area_thresh = cass_small_area_thresh
         
         # 只使用 Linear 预测器
         self.importance_predictor = LinearImportancePredictor(input_dim)
@@ -592,11 +599,150 @@ class TokenLevelPruner(nn.Module):
         all_obj_masks = box_masks.view(Total_Objects, -1)
         
         return all_obj_masks, batch_indices
+
+    def _flatten_gt_boxes(
+        self,
+        gt_bboxes: List[torch.Tensor],
+        device: torch.device
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Flatten batch GT boxes and keep batch indices aligned with mask generation order."""
+        flat_boxes = []
+        batch_indices = []
+
+        for b_idx, bboxes in enumerate(gt_bboxes):
+            if bboxes is None or len(bboxes) == 0:
+                continue
+
+            if bboxes.dim() == 1:
+                bboxes = bboxes.unsqueeze(0)
+
+            bboxes = bboxes.float().to(device)
+            flat_boxes.append(bboxes)
+            batch_indices.append(
+                torch.full((bboxes.shape[0],), b_idx, device=device, dtype=torch.long)
+            )
+
+        if not flat_boxes:
+            return (
+                torch.zeros((0, 4), device=device, dtype=torch.float32),
+                torch.zeros((0,), device=device, dtype=torch.long),
+            )
+
+        return torch.cat(flat_boxes, dim=0), torch.cat(batch_indices, dim=0)
+
+    def _get_small_object_flags(
+        self,
+        gt_bboxes: List[torch.Tensor],
+        img_shape: Tuple[int, int],
+        device: torch.device,
+        area_thresh: Optional[float] = None
+    ) -> torch.Tensor:
+        """Identify small objects using normalized box area."""
+        area_thresh = (
+            area_thresh if area_thresh is not None else self.cass_small_area_thresh
+        )
+        flat_boxes, _ = self._flatten_gt_boxes(gt_bboxes, device)
+        if flat_boxes.numel() == 0:
+            return torch.zeros((0,), device=device, dtype=torch.bool)
+
+        img_h, img_w = img_shape
+        img_area = max(float(img_h * img_w), 1.0)
+        box_w = (flat_boxes[:, 2] - flat_boxes[:, 0]).clamp(min=0.0)
+        box_h = (flat_boxes[:, 3] - flat_boxes[:, 1]).clamp(min=0.0)
+        normalized_area = (box_w * box_h) / img_area
+        return normalized_area < area_thresh
+
+    def generate_scale_aware_loss_weight(
+        self,
+        gt_bboxes: List[torch.Tensor],
+        feat_shape,
+        img_shape: Tuple[int, int],
+        device: torch.device,
+        expansion_ratio: Optional[float] = None,
+        min_size: Optional[float] = None,
+        decay_type: Optional[str] = None,
+        small_weight_alpha: Optional[float] = None,
+        small_area_thresh: Optional[float] = None
+    ) -> torch.Tensor:
+        """
+        Generate per-token loss weights that emphasize small-object regions.
+
+        The returned tensor follows the same token order as the dense CASS target:
+        single-scale uses [H*W], multi-scale uses concatenated levels in input order.
+        """
+        small_weight_alpha = (
+            small_weight_alpha
+            if small_weight_alpha is not None
+            else self.cass_small_weight_alpha
+        )
+
+        if isinstance(feat_shape, (list, tuple)) and len(feat_shape) > 0 \
+           and isinstance(feat_shape[0], (list, tuple)):
+            spatial_shapes = [(int(s[0]), int(s[1])) for s in feat_shape]
+        else:
+            spatial_shapes = [(int(feat_shape[0]), int(feat_shape[1]))]
+
+        num_total_tokens = sum(h * w for h, w in spatial_shapes)
+        loss_weight = torch.ones(
+            (len(gt_bboxes), num_total_tokens), device=device, dtype=torch.float32
+        )
+
+        if small_weight_alpha <= 1.0 or not spatial_shapes:
+            return loss_weight
+
+        small_object_flags = self._get_small_object_flags(
+            gt_bboxes=gt_bboxes,
+            img_shape=img_shape,
+            device=device,
+            area_thresh=small_area_thresh
+        )
+        if small_object_flags.numel() == 0 or not torch.any(small_object_flags):
+            return loss_weight
+
+        level_weights = []
+        for h, w in spatial_shapes:
+            num_tokens = h * w
+            level_weight = torch.ones(
+                (len(gt_bboxes), num_tokens), device=device, dtype=torch.float32
+            )
+
+            all_obj_masks, batch_indices = self.generate_all_object_masks(
+                gt_bboxes=gt_bboxes,
+                feat_shape=(h, w),
+                img_shape=img_shape,
+                device=device,
+                expansion_ratio=expansion_ratio,
+                min_size=min_size,
+                decay_type=decay_type
+            )
+
+            if all_obj_masks.numel() == 0:
+                level_weights.append(level_weight)
+                continue
+
+            small_obj_masks = all_obj_masks[small_object_flags]
+            small_batch_indices = batch_indices[small_object_flags]
+            if small_obj_masks.numel() == 0:
+                level_weights.append(level_weight)
+                continue
+
+            for b_idx in range(level_weight.shape[0]):
+                obj_mask = small_batch_indices == b_idx
+                if not torch.any(obj_mask):
+                    continue
+                small_region = small_obj_masks[obj_mask].amax(dim=0)
+                level_weight[b_idx] = level_weight[b_idx] + \
+                    (small_weight_alpha - 1.0) * (small_region > 0).float()
+
+            level_weights.append(level_weight)
+
+        return torch.cat(level_weights, dim=1)
     
     def _compute_focal_loss(
         self,
         pred_scores: torch.Tensor,
         target_mask: torch.Tensor,
+        loss_weight: Optional[torch.Tensor] = None,
         reduction: str = 'mean'
     ) -> torch.Tensor:
         """
@@ -620,10 +766,6 @@ class TokenLevelPruner(nn.Module):
         # Tightened clamp range: [-8, 8] ensures p won't be too small, preventing log(p) explosion
         pred_scores = torch.clamp(pred_scores, min=-8.0, max=8.0)
         
-        # Use PyTorch's built-in binary_cross_entropy_with_logits for numerical stability
-        # It internally optimizes log(sigmoid) computation, extremely stable
-        bce_loss = F.binary_cross_entropy_with_logits(pred_scores, target_mask, reduction='none')
-        
         # Compute probability p = sigmoid(pred_scores)
         p = torch.sigmoid(pred_scores)
         
@@ -642,8 +784,13 @@ class TokenLevelPruner(nn.Module):
         else:
             focal_weight = alpha * torch.pow(1.0 - p_t, gamma)
         
-        # Focal Loss: focal_weight * bce_loss
-        loss = focal_weight * bce_loss
+        bce_weight = focal_weight if loss_weight is None else focal_weight * loss_weight
+        loss = F.binary_cross_entropy_with_logits(
+            pred_scores,
+            target_mask,
+            weight=bce_weight,
+            reduction='none'
+        )
         
         if reduction == 'mean':
             return loss.mean()
@@ -656,6 +803,7 @@ class TokenLevelPruner(nn.Module):
         self,
         pred_scores: torch.Tensor,
         target_mask: torch.Tensor,
+        loss_weight: Optional[torch.Tensor] = None,
         reduction: str = 'mean'
     ) -> torch.Tensor:
         """
@@ -680,18 +828,9 @@ class TokenLevelPruner(nn.Module):
         pred_scores = torch.clamp(pred_scores, min=-8.0, max=8.0)
         pred_probs = torch.sigmoid(pred_scores)
         
-        # Add epsilon for numerical stability in log computation
-        epsilon = 1e-8
-        log_p = torch.log(pred_probs + epsilon)
-        log_one_minus_p = torch.log(1.0 - pred_probs + epsilon)
-        
         # Identify positive and negative samples
         is_positive = target_mask > 0
         
-        # For positive samples: Loss = -y * [y * log(p) + (1-y) * log(1-p)]
-        pos_loss = -target_mask * (target_mask * log_p + (1.0 - target_mask) * log_one_minus_p)
-        
-        # For negative samples: Loss = -α * p^γ * log(1-p)
         alpha = self.cass_focal_alpha
         gamma = self.cass_focal_beta
         
@@ -703,10 +842,20 @@ class TokenLevelPruner(nn.Module):
         else:
             p_gamma = torch.pow(pred_probs, gamma)
         
-        neg_loss = -alpha * p_gamma * log_one_minus_p
-        
-        # Combine losses: use positive loss where y > 0, negative loss where y = 0
-        loss = torch.where(is_positive, pos_loss, neg_loss)
+        vfl_weight = torch.where(
+            is_positive,
+            target_mask,
+            alpha * p_gamma
+        )
+        if loss_weight is not None:
+            vfl_weight = vfl_weight * loss_weight
+
+        loss = F.binary_cross_entropy_with_logits(
+            pred_scores,
+            target_mask,
+            weight=vfl_weight,
+            reduction='none'
+        )
         
         if reduction == 'mean':
             return loss.mean()
@@ -719,6 +868,7 @@ class TokenLevelPruner(nn.Module):
         self,
         pred_scores: torch.Tensor,
         target_mask: torch.Tensor,
+        loss_weight: Optional[torch.Tensor] = None,
         reduction: str = 'mean'
     ) -> torch.Tensor:
         """
@@ -737,9 +887,13 @@ class TokenLevelPruner(nn.Module):
         pred_scores = torch.clamp(pred_scores, min=-8.0, max=8.0)
         
         if self.cass_loss_type == 'focal':
-            loss = self._compute_focal_loss(pred_scores, target_mask, reduction)
+            loss = self._compute_focal_loss(
+                pred_scores, target_mask, loss_weight=loss_weight, reduction=reduction
+            )
         elif self.cass_loss_type == 'vfl':
-            loss = self._compute_vfl(pred_scores, target_mask, reduction)
+            loss = self._compute_vfl(
+                pred_scores, target_mask, loss_weight=loss_weight, reduction=reduction
+            )
         else:
             raise ValueError(f"Unsupported cass_loss_type: {self.cass_loss_type}. Must be 'focal' or 'vfl'")
         
@@ -799,9 +953,16 @@ class TokenLevelPruner(nn.Module):
         # Token-level dense loss: Element-wise computation
         # pred_scores: [B, H*W], target_mask: [B, H*W]
         # Each token gets its own loss value, no aggregation
+        loss_weight = self.generate_scale_aware_loss_weight(
+            gt_bboxes=gt_bboxes,
+            feat_shape=feat_shape,
+            img_shape=img_shape,
+            device=device
+        )
         loss = self.compute_cass_loss(
             pred_scores,
             target_mask,
+            loss_weight=loss_weight,
             reduction='mean'  # Average over all tokens in batch
         )
         

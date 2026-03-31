@@ -33,6 +33,7 @@ model:
     cass_loss_type: vfl
     cass_focal_alpha: 2.0
     cass_focal_beta: 4.0
+    cass_small_weight_alpha: 2.0
     # CAIP settings
     use_caip: true
     caip_reduction_ratio: 4
@@ -69,7 +70,7 @@ data:
   data_root: /root/autodl-fs/datasets/DAIR-V2X
 augmentation:
   target_size: 640
-  stop_epoch: 71
+  stop_epoch: 50
   scales:
     - 576
     - 608

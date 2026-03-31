@@ -126,6 +126,7 @@ def load_model(config_path: str, checkpoint_path: str, device: str = "cuda"):
         cass_loss_type=cas_detr_cfg.get("cass_loss_type", "vfl"),
         cass_focal_alpha=cas_detr_cfg.get("cass_focal_alpha", 0.75),
         cass_focal_beta=cas_detr_cfg.get("cass_focal_beta", 2.0),
+        cass_small_weight_alpha=cas_detr_cfg.get("cass_small_weight_alpha", 2.0),
         moe_noise_std=model_cfg.get("moe_noise_std", 0.1),
         num_classes=int(data_cfg.get("num_classes", len(CLASS_NAMES))),
     )
