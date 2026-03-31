@@ -69,7 +69,7 @@ data:
   data_root: /root/autodl-fs/datasets/DAIR-V2X
 augmentation:
   target_size: 640
-  stop_epoch: 71
+  stop_epoch: 50
   scales:
     - 576
     - 608
