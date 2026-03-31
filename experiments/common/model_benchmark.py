@@ -438,7 +438,15 @@ def _unwrap(model: nn.Module) -> nn.Module:
 
 
 def _guess_in_channels(model: nn.Module) -> int:
-    """推断模型输入通道数（默认 3）。"""
+    """推断模型输入通道数（默认 3）。
+
+    YOLOX CSPDarknet 的 ``Focus`` 茎在首层 Conv 之前把 3 通道拼成 12 通道；若按首个
+    ``nn.Conv2d.in_channels`` 会得到 12，进而 dummy 误用 12 通道，``Focus`` 再拼成 48 与首层不匹配。
+    若存在 ``Focus`` 模块，对外输入仍为 RGB 三通道。
+    """
+    for m in model.modules():
+        if m.__class__.__name__ == "Focus":
+            return 3
     for m in model.modules():
         if isinstance(m, nn.Conv2d):
             return m.in_channels
