@@ -316,7 +316,13 @@ class Trainer:
             else:
                 ckpt_file = self.args.ckpt
 
-            ckpt = torch.load(ckpt_file, map_location=self.device)
+            # PyTorch 2.6+ defaults weights_only=True; YOLOX ckpt dicts contain numpy scalars etc.
+            try:
+                ckpt = torch.load(
+                    ckpt_file, map_location=self.device, weights_only=False
+                )
+            except TypeError:
+                ckpt = torch.load(ckpt_file, map_location=self.device)
             # resume the model/optimizer state dict
             model.load_state_dict(ckpt["model"])
             self.optimizer.load_state_dict(ckpt["optimizer"])
@@ -337,7 +343,12 @@ class Trainer:
             if self.args.ckpt is not None:
                 logger.info("loading checkpoint for fine tuning")
                 ckpt_file = self.args.ckpt
-                raw = torch.load(ckpt_file, map_location=self.device)
+                try:
+                    raw = torch.load(
+                        ckpt_file, map_location=self.device, weights_only=False
+                    )
+                except TypeError:
+                    raw = torch.load(ckpt_file, map_location=self.device)
                 if isinstance(raw, dict) and "model" in raw:
                     ckpt = raw["model"]
                 else:

@@ -91,10 +91,16 @@ def main():
 
     if args.resume and not args.resume_from_checkpoint:
         log_base = config.get("checkpoint", {}).get("log_dir", "logs")
-        latest = _find_latest_yolox_ckpt(log_base)
+        latest = _find_latest_yolox_ckpt(_yolo_dir, log_base, config)
         if latest:
             args.resume_from_checkpoint = latest
             print(f"📦 找到最新检查点: {latest}")
+        else:
+            print(
+                "⚠️ 未在对应数据集日志子目录下找到 latest_ckpt.pth，"
+                "请用 --resume_from_checkpoint 指定路径",
+                flush=True,
+            )
 
     from yolo_yolox_trainer import YOLOXTrainer
 
@@ -102,6 +108,7 @@ def main():
         config,
         config_path=str(config_path),
         class_names=selected_class_names,
+        resume_checkpoint=args.resume_from_checkpoint,
     )
     trainer.start_training(
         resume_checkpoint=args.resume_from_checkpoint,
@@ -109,16 +116,41 @@ def main():
     )
 
 
-def _find_latest_yolox_ckpt(log_base: str) -> Optional[str]:
-    log_dir = Path(log_base)
-    if not log_dir.exists():
+def _infer_dataset_log_subdir(config: dict) -> Optional[str]:
+    """与 BaseYOLOTrainer.setup_logging 一致，只在同一数据集目录下找续训权重。"""
+    data_yaml = config.get("data", {}).get("data_yaml", "") or ""
+    path_s = str(data_yaml).lower()
+    stem = Path(data_yaml).stem.lower() if data_yaml else ""
+    if "dair" in path_s or "dairv2x" in stem:
+        return "dairv2x"
+    if "uadetrac" in path_s or "ua-detrac" in path_s or stem == "data":
+        return "uadetrac"
+    return None
+
+
+def _find_latest_yolox_ckpt(
+    yolo_root: Path, log_base: str, config: dict
+) -> Optional[str]:
+    """
+    在 ``{yolo_root}/{log_base}/{dataset_subdir}/`` 下按修改时间选最新 ``latest_ckpt.pth``，
+    避免 DAIR 与 UA-DETRAC 等不同数据集的实验互相误选。
+    若能从 ``data_yaml`` 推断子目录则只搜该子目录；否则搜整个 ``log_base``。
+    """
+    base = (yolo_root / log_base).resolve()
+    sub = _infer_dataset_log_subdir(config)
+    if sub and (base / sub).is_dir():
+        search_root = base / sub
+    else:
+        search_root = base
+    if not search_root.is_dir():
         return None
-    cks = list(log_dir.glob("**/latest_ckpt.pth"))
-    if not cks:
-        cks = list(log_dir.glob("**/weights/latest_ckpt.pth"))
+    cks = list(search_root.glob("**/latest_ckpt.pth"))
+    cks.extend(search_root.glob("**/weights/latest_ckpt.pth"))
     if not cks:
         return None
-    return str(max(cks, key=lambda p: p.stat().st_mtime))
+    uniq = {p.resolve(): p for p in cks}
+    best = max(uniq.values(), key=lambda p: p.stat().st_mtime)
+    return str(best)
 
 
 if __name__ == "__main__":
