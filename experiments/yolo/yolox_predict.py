@@ -15,6 +15,15 @@ from yolox.data.data_augment import ValTransform
 from yolox.utils import fuse_model, postprocess
 
 
+def _torch_load_yolox_ckpt(path: Union[str, Path], map_location="cpu"):
+    """Load Megvii YOLOX ``.pth`` dicts. PyTorch 2.6+ defaults ``weights_only=True``, which rejects numpy scalars in pickles."""
+    p = str(path)
+    try:
+        return torch.load(p, map_location=map_location, weights_only=False)
+    except TypeError:
+        return torch.load(p, map_location=map_location)
+
+
 class _EvalBoxes:
     __slots__ = ("xyxy", "conf", "cls")
 
@@ -116,7 +125,7 @@ def load_yolox_for_eval(
     from yolox.utils import load_ckpt
 
     model = exp.get_model()
-    ckpt = torch.load(str(ckpt_path), map_location="cpu")
+    ckpt = _torch_load_yolox_ckpt(ckpt_path, map_location="cpu")
     state = ckpt.get("model", ckpt)
     model = load_ckpt(model, state)
     if fuse_bn:

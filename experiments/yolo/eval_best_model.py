@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""独立评估：对已有实验目录的 best.pt 做 KITTI 与多尺度评估。
+"""独立评估：对已有实验目录的权重做 KITTI 与多尺度评估。
+
+- Ultralytics：``weights/best.pt``
+- YOLOX：``weights/best_ckpt.pth``（或 ``last_epoch_ckpt.pth``）
+- Faster R-CNN：``weights/best.pt``
 
 复用 ``BaseYOLOTrainer._evaluate_kitti_scale_after_training``。
 """
@@ -46,8 +50,17 @@ def _resolve_version(config: dict) -> str:
     return "8"
 
 
+def _is_yolox_experiment(config: dict) -> bool:
+    m = config.get("model") or {}
+    if m.get("yolox_exp_file"):
+        return True
+    return "yolox" in str(m.get("model_name", "")).lower()
+
+
 def main():
-    parser = argparse.ArgumentParser(description="YOLO best.pt 重新评估，KITTI 与多尺度")
+    parser = argparse.ArgumentParser(
+        description="Ultralytics YOLO、YOLOX 或 Faster R-CNN 实验目录的 KITTI 与多尺度重新评估"
+    )
     parser.add_argument("--log_dir", type=str, required=True)
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--dataset_registry", type=str, default="configs/datasets.yaml")
@@ -110,27 +123,28 @@ def main():
         def _apply_vram_batch_size_rule(self):
             pass
 
-    trainer = _EvalTrainer.__new__(_EvalTrainer)
-    trainer.config = config
-    trainer.model_config = config.get("model", {})
-    trainer.training_config = config.get("training", {})
-    trainer.data_config = config.get("data", {})
-    trainer.checkpoint_config = config.get("checkpoint", {})
-    trainer.misc_config = config.get("misc", {})
-    trainer.log_dir = log_dir
-    trainer.logger = logger
-    trainer.class_names = class_names
-    trainer.num_classes = len(class_names)
-    trainer.VERSION = version
-
-    logger.info(f"实验目录: {log_dir}")
-    logger.info(f"best.pt:  {log_dir / 'weights' / 'best.pt'}")
-    logger.info(f"推理设备: {trainer.misc_config.get('device', 'cpu')}")
-
     model_name = (config.get("model") or {}).get("model_name", "")
     is_fasterrcnn = "fasterrcnn" in str(model_name).lower()
+    is_yolox = _is_yolox_experiment(config)
 
-    if is_fasterrcnn:
+    if is_yolox:
+        from yolo_yolox_trainer import YOLOXTrainer
+
+        trainer = YOLOXTrainer.__new__(YOLOXTrainer)
+        trainer.config = config
+        trainer.config_path = str(config_yaml)
+        trainer.model_config = config.get("model", {})
+        trainer.training_config = config.get("training", {})
+        trainer.data_config = config.get("data", {})
+        trainer.checkpoint_config = config.get("checkpoint", {})
+        trainer.misc_config = config.get("misc", {})
+        trainer.log_dir = log_dir
+        trainer.logger = logger
+        trainer.metrics_logger = None
+        trainer.class_names = class_names
+        trainer.num_classes = len(class_names) if class_names else 8
+        trainer.VERSION = YOLOXTrainer.VERSION
+    elif is_fasterrcnn:
         from fasterrcnn_trainer import FasterRCNNTrainer
 
         trainer = FasterRCNNTrainer.__new__(FasterRCNNTrainer)
@@ -147,15 +161,43 @@ def main():
         trainer.class_names = class_names
         trainer.num_classes = len(class_names) if class_names else 8
         trainer.VERSION = FasterRCNNTrainer.VERSION
+    else:
+        trainer = _EvalTrainer.__new__(_EvalTrainer)
+        trainer.config = config
+        trainer.model_config = config.get("model", {})
+        trainer.training_config = config.get("training", {})
+        trainer.data_config = config.get("data", {})
+        trainer.checkpoint_config = config.get("checkpoint", {})
+        trainer.misc_config = config.get("misc", {})
+        trainer.log_dir = log_dir
+        trainer.logger = logger
+        trainer.class_names = class_names
+        trainer.num_classes = len(class_names)
+        trainer.VERSION = version
+
+    logger.info(f"实验目录: {log_dir}")
+    logger.info(f"推理设备: {trainer.misc_config.get('device', 'cpu')}")
+    if is_yolox:
+        logger.info(
+            f"后端: YOLOX ({model_name})  |  {trainer.num_classes} 类: "
+            f"{', '.join(class_names) or '(未从 registry 解析)'}"
+        )
+        logger.info(
+            "评估权重: weights/best_ckpt.pth；若无则尝试 weights/last_epoch_ckpt.pth、"
+            "日志目录下同名文件"
+        )
+    elif is_fasterrcnn:
         logger.info(
             f"后端: Faster R-CNN ({model_name})  |  {trainer.num_classes} 类: "
             f"{', '.join(class_names) or '(未从 registry 解析)'}"
         )
+        logger.info(f"权重: {log_dir / 'weights' / 'best.pt'}")
     else:
         logger.info(
             f"YOLO版本: v{version}  |  共 {len(class_names)} 类: "
             f"{', '.join(class_names) or '从模型读取'}"
         )
+        logger.info(f"权重: {log_dir / 'weights' / 'best.pt'}")
 
     metrics = trainer._evaluate_kitti_scale_after_training(model=None)
 

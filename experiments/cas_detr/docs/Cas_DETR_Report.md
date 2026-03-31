@@ -44,7 +44,7 @@ flowchart TB
     PROJ[PerLevel_1x1_to_hidden_dim]
     subgraph enc_branch [When_use_encoder_idx_and_num_layers_gt_0]
       CAT[Concat_selected_level_tokens]
-      PRUNE[TokenLevelPruner_LinearImportance_topk]
+      PRUNE[TokenLevelPruner_topk_Linear_or_CAIP]
       PE[Gather_sin_cos_pos_embed]
       TE[TransformerEncoder_MHA_plus_FFN]
       SCAT[Scatter_to_full_grid_per_level]
@@ -72,6 +72,7 @@ flowchart TB
 
   IMG --> BB --> PROJ
   PROJ --> CAT --> PRUNE --> PE --> TE --> SCAT
+  %% CAT 前可对多尺度 token 加 level_embed；PRUNE 可选用 CAIP 或 Linear 打分
   SCAT --> FPNPAN
   FPNPAN --> DPROJ --> ENCOUT --> TDEC
   TDEC --> SA --> CA --> MOE
@@ -95,31 +96,76 @@ flowchart TB
 #### 2.2.2 Token Pruning (可学习 Token 剪枝)
 
 **设计思想**：
-- 通过可学习的重要性预测器（`LinearImportancePredictor`）评估每个 token 的重要性
-- 按 `token_keep_ratio` 保留 top 比例 token，减少进入 `TransformerEncoder` 的计算量
+- 对每个拼接后的空间 token 给出重要性分数，再按有效保留比例做 **top-k**，减少进入 `TransformerEncoder` 的计算量
+- **未启用 CAIP** 时，分数由 `LinearImportancePredictor`（两层 Linear + GELU）产生，见 [`token_level_pruning.py`](../src/zoo/rtdetr/token_level_pruning.py)
+- **启用 CAIP** 时，分数与可选的动态保留比例由 `CAIPPredictor` 产生，见 **§2.2.4**
+- 配置项 `token_keep_ratio` 经 `HybridEncoder` 传入 `TokenLevelPruner` 作为基准 `keep_ratio`；CAIP 打开时还会在基准之上做动态调节（见 §2.2.4）
 - 剪枝后再将 encoder 输出 **scatter** 回完整网格，供后续 FPN/PAN 使用
 
-**技术细节**（与 [`token_level_pruning.py`](../src/zoo/rtdetr/token_level_pruning.py) 一致）：
-- **保留比例**: 由配置 `token_keep_ratio` 控制（如 0.5、0.7）
-- **重要性预测器**: 两层 Linear（隐藏维默认 128）+ GELU
-- **最小 Token 数**: `HybridEncoder` 中 `min_tokens` 取较小安全值（防止空张量）
-- **可选 CASS**: 启用时由 GT 框生成软监督损失（`cass_loss`），权重见训练配置
+**技术细节**（[`token_level_pruning.py`](../src/zoo/rtdetr/token_level_pruning.py)）：
+- **保留比例**: 由配置 `token_keep_ratio` 等形成 `keep_ratio`（可为每层统一或按层字典，见 `HybridEncoder`）
+- **最小 Token 数**: `min_tokens` 防止空张量
+- **可选 CASS**: 启用时由 GT 框生成软监督（`cass_loss`），权重见训练配置
 
 **剪枝流程**（在 `HybridEncoder.forward` 中）：
-1. 将 `use_encoder_idx` 指定层级的特征展平并 **拼接** 为长序列
-2. **重要性评估** → **top-k 保留** → gather 位置编码
+1. 将 `use_encoder_idx` 指定层级的特征投影、展平；若存在多尺度 **level embedding**（§2.2.3），先加到各层 token 上，再 **拼接** 为长序列
+2. **重要性评估**（Linear 或 CAIP）→ **top-k 保留** → gather 位置编码
 3. **TransformerEncoder** 仅在保留 token 上计算
 4. 将结果 scatter 回全长序列，再按层拆回特征图，最后 **FPN/PAN**
 
 **优势**：
-1. **自适应剪枝**: 可学习的预测器能够适应不同场景
-2. **计算减少**: 减少30-50%的tokens，显著降低计算量
-3. **性能保持**: 通过重要性引导，保留关键信息
+1. **自适应剪枝**: 可学习打分能适应不同场景
+2. **计算减少**: 保留比例小于 1 时显著降低 Encoder 侧序列长度
+3. **性能保持**: 重要性引导保留关键空间位置
 
-#### 2.2.3 Encoder 内模块顺序与“双稀疏”含义
+#### 2.2.3 多尺度 level embedding（可学习层级向量）
 
-1. **顺序（与代码一致）**: Token 剪枝发生在 **TransformerEncoder 之前**（先减 token，再自注意力与 FFN），编码后再 scatter 回全图。
-2. **双稀疏**: **Encoder** 通过剪枝减少 token；**Decoder** 通过 MoE FFN 稀疏激活专家（二者在不同阶段，由 `CaS_DETRRTDETR` 统一训练）。
+进入 **TransformerEncoder 之前**，若 `len(use_encoder_idx) > 1`（例如配置里同时选用 backbone 上两个尺度，材料中常口语称为 **S4 / S5** 等），`HybridEncoder` 会注册可学习参数 **`level_embed`**：
+
+- **形状**: `(num_levels, hidden_dim)`，其中 `num_levels = len(use_encoder_idx)`
+- **仅单层进 Encoder**（`len(use_encoder_idx) ≤ 1`）时 **不** 创建 `level_embed`
+- **用法**: 对每个 `idx_level, enc_ind in enumerate(use_encoder_idx)`，将 `proj_feats[enc_ind]` 展平为 `[B, H*W, C]` 后，加上 `level_embed[idx_level]`（按 `[1,1,C]` 广播），再与其它尺度按 **同一顺序** 拼接。`enc_ind` 为 backbone 输出下标，顺序以 YAML 中 `encoder.use_encoder_idx` 为准。
+
+该向量让不同尺度的 token 在语义上可区分，与 sin-cos 位置编码互补；参数量随尺度数线性增加，每项 `hidden_dim` 维。
+
+**代码位置**: [`hybrid_encoder.py`](../src/zoo/rtdetr/hybrid_encoder.py) 中 `self.level_embed` 与 `forward` 里 `feat_flat + self.level_embed[idx_level].view(1, 1, -1)`。
+
+#### 2.2.4 CAIP（Context-Aware Importance Predictor）
+
+**开关**: `model.cas_detr.use_caip: true`，且 `ablation.enable_cas_predictor` 为真（剪枝总开关）。典型完整示例见 [`configs/caip_cas_detr6_r18.yaml`](../configs/caip_cas_detr6_r18.yaml)。
+
+**作用概述**：
+
+1. **替换剪枝打分来源**: `TokenLevelPruner` 若收到 `external_scores`（来自 CAIP），则 **不再** 调用内部 `LinearImportancePredictor`，直接用 CAIP 输出的 per-token logits 做 top-k（仍可与 CASS 等损失对接）。
+2. **场景复杂度标量 `scene_complexity`**: 由全局分支产生，用于 **动态保留比例**（Encoder 侧）与 **Decoder MoE 的动态 top-k**（见下）。
+
+**结构**（[`CAIPPredictor`](../src/zoo/rtdetr/hybrid_encoder.py)）：
+
+- **局部支路**: `Linear → GELU → Dropout` 得到 `[B, N, hidden]`，与线性重要性基线同型。
+- **全局支路**: 对 token 维做均值（GAP），经 `Conv1d`（等价 1×1）与激活，得到通道权重；`pre_sigmoid` 的均值标量记为 **`scene_complexity`**（训练中为带梯度的标量张量）。
+- **融合**: 全局权重与局部特征按通道相乘，再线性压成每 token 一个 logit，即 **`importance_scores`**，形状 `[B, N]`。
+
+**动态保留比例**（`HybridEncoder.forward`）：令 `base_ratio = shared_token_pruner.keep_ratio`（来自 `token_keep_ratio`），`complexity_norm = sigmoid(scene_complexity)`，则
+
+`dynamic_keep_ratio = base_ratio + (1 - base_ratio) * complexity_norm * caip_complexity_alpha`，
+
+并限制在 `[base_ratio, 1.0]`。复杂度越高，保留比例越接近 1（多留 token）。
+
+**Decoder 侧传递**（[`train.py`](../train.py)）：从 `encoder_info['scene_complexity']` 传入 `RTDETRTransformerv2.forward(..., scene_complexity=...)`。当 **Decoder MoE** 开启时，在 [`rtdetrv2_decoder.py`](../src/zoo/rtdetr/rtdetrv2_decoder.py) 中根据 `caip_complexity_beta` 计算 **`dynamic_top_k`**，在 `moe_top_k` 与 `num_experts` 之间随场景复杂度调节每步激活专家数。
+
+**常用配置键**（均在 `model.cas_detr` 下）：
+
+| 键 | 含义 |
+|----|------|
+| `use_caip` | 是否启用 CAIP |
+| `caip_reduction_ratio` | 全局支路通道压缩比（参与 Conv1d 中间维） |
+| `caip_complexity_alpha` | 对 **动态 token 保留比例** 的敏感度，范围约 0–1 |
+| `caip_complexity_beta` | 对 **Decoder MoE 动态 top-k** 的敏感度 |
+
+#### 2.2.5 Encoder 内模块顺序与“双稀疏”含义
+
+1. **顺序（与代码一致）**: 多尺度时先对各层展平 token **加 `level_embed`**，再拼接；再经 **Token 剪枝**（Linear 或 CAIP 分数 + 动态或静态保留比例），然后 **TransformerEncoder**，最后 scatter 回全图。
+2. **双稀疏**: **Encoder** 通过剪枝减少 token；**Decoder** 通过 MoE FFN 稀疏激活专家（二者在不同阶段，由 `CaS_DETRRTDETR` 统一训练）。启用 CAIP 时 Decoder 还可使用随 **`scene_complexity`** 变化的 **动态 top-k**。
 3. **损失**: 检测主损失 +（可选）Decoder 负载均衡 +（可选）CASS。
 
 ### 2.3 Decoder层：Expert MoE
@@ -193,7 +239,8 @@ CaS_DETR的损失函数包含多个组件：
 - **RT-DETR**: 标准Transformer参数
 - **CaS_DETR 额外参数**:
   - Decoder MoE: 多组 FFN 专家参数（推理时按 top-k 激活）
-  - Token Pruning: 轻量级 `LinearImportancePredictor`
+  - Token Pruning: 轻量级 `LinearImportancePredictor`；若启用 **CAIP**，另有 `CAIPPredictor` 的全局与局部支路参数
+  - 多尺度 Encoder: **`level_embed`** `(num_levels, hidden_dim)`，仅当 `len(use_encoder_idx) > 1` 时存在
 
 **实际参数量**：
 - CaS_DETR的参数量略高于RT-DETR（约10-20%）
@@ -422,6 +469,21 @@ training:
   decoder_moe_balance_weight: 0.01
 ```
 
+**CAIP + 双尺度 Encoder**（与 [`configs/caip_cas_detr6_r18.yaml`](../configs/caip_cas_detr6_r18.yaml) 一致，节选）:
+```yaml
+  encoder:
+    use_encoder_idx: [1, 2]
+    num_encoder_layers: 1
+  cas_detr:
+    token_keep_ratio: 0.5
+    use_caip: true
+    caip_reduction_ratio: 4
+    caip_complexity_alpha: 0.3
+    caip_complexity_beta: 0.3
+```
+
+`use_encoder_idx` 为两个下标时会创建 **`level_embed`**；`use_caip` 为真时使用 **CAIP** 打分并传递 **`scene_complexity`** 至 Decoder MoE。
+
 ### 7.2 训练策略
 
 1. **学习率调度**:
@@ -438,12 +500,15 @@ training:
 ### 7.3 实现要点
 
 1. **HybridEncoder + Token Pruning**:
-   - `TokenLevelPruner`、拼接层级、`TransformerEncoder`、scatter、FPN/PAN
+   - 多尺度时 **`level_embed`** 加在拼接前；`TokenLevelPruner`（Linear 或 CAIP 外部分数）、`TransformerEncoder`、scatter、FPN/PAN
 
-2. **Decoder MoE**:
-   - `TransformerDecoderLayer` 中 `MoELayer` 替换标准 FFN；`moe_load_balance_loss` 在 `train.py` 中加权
+2. **CAIP（可选）**:
+   - `CAIPPredictor` 输出 `importance_scores` 与 `scene_complexity`；`train.py` 将 `scene_complexity` 传入 Decoder
 
-3. **CASS**:
+3. **Decoder MoE**:
+   - `TransformerDecoderLayer` 中 `MoELayer` 替换标准 FFN；`moe_load_balance_loss` 在 `train.py` 中加权；CAIP 打开时可使用 **动态 `dynamic_top_k`**
+
+4. **CASS**:
    - 在 `use_cass` 时由 `train.py` 调用 `compute_cass_loss_from_info`
 
 ---
