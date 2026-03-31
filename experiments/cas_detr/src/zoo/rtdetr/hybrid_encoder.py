@@ -644,23 +644,37 @@ class HybridEncoder(nn.Module):
                     encoder_info['kept_tokens_level_enc_indices'] = list(
                         self.use_encoder_idx
                     )
+                    # Backbone stage labels: feat index 1 -> S4, 2 -> S5, same as train.py level_names
+                    level_display_names = [
+                        f"S{int(enc_ind) + 3}" for enc_ind in self.use_encoder_idx
+                    ]
+                    encoder_info['level_display_names'] = level_display_names
+                    num_kept_total = int(
+                        prune_info.get('num_kept_tokens', kept_indices.shape[1])
+                    )
+                    num_input_total = int(
+                        prune_info.get('num_tokens', src_flatten_total.shape[1])
+                    )
+                    did_prune = num_kept_total < num_input_total
                     log_every = max(
-                        1, int(os.environ.get("CAS_LOG_PRUNE_LEVEL_EVERY", "100"))
+                        1, int(os.environ.get("CAS_LOG_PRUNE_LEVEL_EVERY", "1"))
                     )
                     self._prune_level_dist_log_counter = getattr(
                         self, "_prune_level_dist_log_counter", 0
                     ) + 1
-                    if self._prune_level_dist_log_counter % log_every == 1:
+                    if did_prune and (
+                        self._prune_level_dist_log_counter % log_every == 1
+                    ):
                         parts = ", ".join(
-                            f"enc[{enc}]={c}/{lv} ({100.0 * c / max(lv, 1):.1f}% of level tokens)"
-                            for enc, c, lv in zip(
-                                self.use_encoder_idx, kept_per_level, level_sizes
+                            f"{name} tokens kept={c}/{lv} ({100.0 * c / max(lv, 1):.1f}%)"
+                            for name, c, lv in zip(
+                                level_display_names, kept_per_level, level_sizes
                             )
                         )
                         _LOGGER.info(
-                            "[TokenPruning] batch_0 kept=%d input=%d | %s",
-                            kept_indices.shape[1],
-                            src_flatten_total.shape[1],
+                            "[TokenPruning] batch_0 total kept=%d/%d | %s",
+                            num_kept_total,
+                            num_input_total,
                             parts,
                         )
 

@@ -1,4 +1,4 @@
-# CAIP CaS-DETR6 · UA-DETRAC · keep=0.5
+# CAIP CaS-DETR6 · UA-DETRAC · keep=0.3
 # CAIP: Context-Aware Importance Predictor with dynamic pruning + dynamic MoE routing
 model:
   num_experts: 6
@@ -24,7 +24,7 @@ model:
   decoder_hidden_dim: 256
   num_queries: 300
   cas_detr:
-    token_keep_ratio: 0.5
+    token_keep_ratio: 0.3
     use_cass: true
     cass_loss_weight: 0.05
     cass_expansion_ratio: 0.8

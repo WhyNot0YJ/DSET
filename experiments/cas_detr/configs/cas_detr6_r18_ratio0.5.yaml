@@ -1,4 +1,4 @@
-# CaS-DETR6 · DAIR-V2X · keep=0.5
+# CaS-DETR6 · DAIR-V2X · keep=0.3
 model:
   num_experts: 6
   top_k: 3
@@ -23,7 +23,7 @@ model:
   decoder_hidden_dim: 256
   num_queries: 300
   cas_detr:
-    token_keep_ratio: 0.5
+    token_keep_ratio: 0.3
     use_cass: true
     cass_loss_weight: 0.05
     cass_expansion_ratio: 0.8
@@ -64,7 +64,7 @@ data:
   data_root: /root/autodl-fs/datasets/DAIR-V2X
 augmentation:
   target_size: 640
-  stop_epoch: 50
+  stop_epoch: 71
   scales:
     - 576
     - 608
