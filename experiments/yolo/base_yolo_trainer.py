@@ -406,6 +406,26 @@ class BaseYOLOTrainer(ABC):
     # Post-training KITTI / multi-scale evaluation
     # ------------------------------------------------------------------
 
+    def _labels_meta_split_dir(self, root: Path, split: str) -> Path:
+        """``root/labels_meta/{split}``；若为空且配置了 ``data.coco_data_root``，则尝试该根下的同名路径。"""
+        primary = root / 'labels_meta' / split
+        if primary.is_dir() and any(primary.glob('*.json')):
+            return primary
+        cr = self.data_config.get('coco_data_root')
+        if not cr:
+            return primary
+        alt = Path(str(cr)).expanduser().resolve() / 'labels_meta' / split
+        if alt.resolve() == primary.resolve():
+            return primary
+        if alt.is_dir() and any(alt.glob('*.json')):
+            self.logger.info(
+                "KITTI/scale 使用 data.coco_data_root 下的 labels_meta/%s: %s",
+                split,
+                alt,
+            )
+            return alt
+        return primary
+
     def _resolve_kitti_eval_splits(
         self, data_cfg: dict, root: Path
     ) -> List[Tuple[str, Path, Path]]:
@@ -420,14 +440,14 @@ class BaseYOLOTrainer(ABC):
         val_img_dir = (
             Path(val_rel) if Path(val_rel).is_absolute() else root / val_rel
         )
-        lm_val = root / 'labels_meta' / 'val'
+        lm_val = self._labels_meta_split_dir(root, 'val')
         if lm_val.is_dir() and any(lm_val.glob('*.json')):
             out.append(('val', val_img_dir, lm_val))
 
         test_rel = str(data_cfg.get('test', '')).strip()
         if eval_test and test_rel:
             test_dir = Path(test_rel) if Path(test_rel).is_absolute() else root / test_rel
-            lm_test = root / 'labels_meta' / 'test'
+            lm_test = self._labels_meta_split_dir(root, 'test')
             if (
                 test_dir.is_dir()
                 and lm_test.is_dir()
@@ -525,8 +545,13 @@ class BaseYOLOTrainer(ABC):
 
         splits = self._resolve_kitti_eval_splits(data_cfg, root)
         if not splits:
+            cr = self.data_config.get('coco_data_root')
+            cr_res = Path(str(cr)).expanduser().resolve() if cr else None
             self.logger.warning(
-                '未找到可用的 KITTI/scale 评估划分（需 labels_meta/val 或 labels_meta/test 且含 JSON）'
+                '未找到可用的 KITTI/scale 评估划分：在 YAML path 对应 root=%s 与 data.coco_data_root=%s '
+                '下均未找到含 JSON 的 labels_meta/val 或 labels_meta/test',
+                root,
+                cr_res,
             )
             return {}
 

@@ -64,7 +64,7 @@ class YOLOXTrainer(BaseYOLOTrainer):
         exp.eval_interval = 1
         exp.print_interval = min(50, max(10, exp.max_epoch))
         exp.save_history_ckpt = False
-        exp.output_dir = str(self.log_dir.parent)
+        exp.output_dir = str(self.log_dir.parent.resolve())
         exp.test_conf = 0.01
         if hasattr(exp, "warmup_epochs"):
             exp.warmup_epochs = min(exp.warmup_epochs, max(1, exp.max_epoch // 10))
