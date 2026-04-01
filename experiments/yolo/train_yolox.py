@@ -128,12 +128,29 @@ def _infer_dataset_log_subdir(config: dict) -> Optional[str]:
     return None
 
 
+def _yolox_run_dir_prefix(config: dict) -> str:
+    """根据 ``model.model_name`` 得到日志目录下实验文件夹名前缀，例如 yolox_m 对应 ``yolo_yolox_m_``。"""
+    ver = "yolox"
+    mc = config.get("model") or {}
+    mn = mc.get("model_name") or f"yolo{ver}n"
+    mn = str(mn)
+    if mn.endswith(".pt"):
+        mn = mn[:-3]
+    inner = mn.replace(f"yolo{ver}", f"v{ver}")
+    return f"yolo_{inner}_"
+
+
+def _ckpt_path_matches_yolox_run_prefix(ckpt_path: Path, run_prefix: str) -> bool:
+    return any(seg.startswith(run_prefix) for seg in ckpt_path.parts)
+
+
 def _find_latest_yolox_ckpt(
     yolo_root: Path, log_base: str, config: dict
 ) -> Optional[str]:
     """
     在 ``{yolo_root}/{log_base}/{dataset_subdir}/`` 下按修改时间选最新 ``latest_ckpt.pth``，
     避免 DAIR 与 UA-DETRAC 等不同数据集的实验互相误选。
+    仅保留实验目录名以当前 ``model.model_name`` 对应前缀开头的 checkpoint，避免 yolox_s 与 yolox_m 混用。
     若能从 ``data_yaml`` 推断子目录则只搜该子目录；否则搜整个 ``log_base``。
     """
     base = (yolo_root / log_base).resolve()
@@ -149,7 +166,18 @@ def _find_latest_yolox_ckpt(
     if not cks:
         return None
     uniq = {p.resolve(): p for p in cks}
-    best = max(uniq.values(), key=lambda p: p.stat().st_mtime)
+    run_prefix = _yolox_run_dir_prefix(config)
+    matched = [
+        p for p in uniq.values() if _ckpt_path_matches_yolox_run_prefix(p, run_prefix)
+    ]
+    if not matched:
+        print(
+            f"⚠️ 在 {search_root} 下存在 latest_ckpt.pth，但没有与当前 model.model_name "
+            f"对应的实验目录前缀 {run_prefix!r}，请用 --resume_from_checkpoint 指定与当前配置同结构的权重。",
+            flush=True,
+        )
+        return None
+    best = max(matched, key=lambda p: p.stat().st_mtime)
     return str(best)
 
 
