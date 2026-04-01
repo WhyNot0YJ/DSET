@@ -2621,12 +2621,6 @@ class CaS_DETRTrainer:
                 gt_boxes_moderate = int(_dc.get("moderate", 0))
                 gt_boxes_hard = int(_dc.get("hard", 0))
                 gt_boxes_ignore = int(_dc.get("ignore", 0))
-
-            gt_area_counts = coco_area_bucket_counts_from_xywh_annotations(targets)
-            gt_boxes_small = int(gt_area_counts.get("small", 0))
-            gt_boxes_medium = int(gt_area_counts.get("medium", 0))
-            gt_boxes_large = int(gt_area_counts.get("large", 0))
-            gt_boxes_total = gt_boxes_small + gt_boxes_medium + gt_boxes_large
             
             result = {
                 'mAP_0.5': coco_eval.stats[1],
@@ -2644,10 +2638,6 @@ class CaS_DETRTrainer:
                 'AP_easy': difficulty_metrics['AP_easy'],
                 'AP_moderate': difficulty_metrics['AP_moderate'],
                 'AP_hard': difficulty_metrics['AP_hard'],
-                'gt_boxes_total': gt_boxes_total,
-                'gt_boxes_small': gt_boxes_small,
-                'gt_boxes_medium': gt_boxes_medium,
-                'gt_boxes_large': gt_boxes_large,
             }
             if compute_difficulty:
                 result['gt_boxes_easy'] = gt_boxes_easy

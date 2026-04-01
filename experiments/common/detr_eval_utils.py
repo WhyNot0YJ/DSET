@@ -108,15 +108,6 @@ def log_detr_eval_summary(
             int(m["gt_boxes_ignore"]),
         )
 
-    if "gt_boxes_small" in m:
-        logger.info(
-            "    COCO 面积桶 GT 框数: total=%d small=%d medium=%d large=%d（与本次评估 GT 一致）",
-            int(m.get("gt_boxes_total", 0)),
-            int(m.get("gt_boxes_small", 0)),
-            int(m.get("gt_boxes_medium", 0)),
-            int(m.get("gt_boxes_large", 0)),
-        )
-
 
 def write_detr_eval_csv(
     log_dir: Path,
