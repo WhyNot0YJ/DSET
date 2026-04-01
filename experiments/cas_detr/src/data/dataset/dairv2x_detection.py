@@ -58,7 +58,7 @@ class DAIRV2XDetection(DetDataset):
         'normalize_std': [0.229, 0.224, 0.225],
         'photometric_distort_p': 0.5,
         'zoom_out_enabled': True,
-        'iou_crop_p': 0.8,
+        'iou_crop_p': 0.0,
         'horizontal_flip_p': 0.5,
         # letterbox 填充：与 configs 中 augmentation 统一为 114（COCO/YOLO 常用灰边）
         'letterbox_fill': 114,

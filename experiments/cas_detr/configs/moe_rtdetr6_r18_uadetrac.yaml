@@ -84,7 +84,7 @@ augmentation:
     - 0.224
     - 0.225
   photometric_distort_p: 0.5
-  zoom_out_enabled: true
+  zoom_out_enabled: false
   iou_crop_p: 0.5
   horizontal_flip_p: 0.5
   letterbox_fill: 114
