@@ -785,12 +785,12 @@ class TokenLevelPruner(nn.Module):
             focal_weight = alpha * torch.pow(1.0 - p_t, gamma)
         
         bce_weight = focal_weight if loss_weight is None else focal_weight * loss_weight
-        loss = F.binary_cross_entropy_with_logits(
+        bce = F.binary_cross_entropy_with_logits(
             pred_scores,
             target_mask,
-            weight=bce_weight,
-            reduction='none'
+            reduction='none',
         )
+        loss = bce * bce_weight
         
         if reduction == 'mean':
             return loss.mean()
@@ -850,12 +850,12 @@ class TokenLevelPruner(nn.Module):
         if loss_weight is not None:
             vfl_weight = vfl_weight * loss_weight
 
-        loss = F.binary_cross_entropy_with_logits(
+        bce = F.binary_cross_entropy_with_logits(
             pred_scores,
             target_mask,
-            weight=vfl_weight,
-            reduction='none'
+            reduction='none',
         )
+        loss = bce * vfl_weight
         
         if reduction == 'mean':
             return loss.mean()
