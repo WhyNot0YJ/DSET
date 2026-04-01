@@ -19,7 +19,7 @@ export OMP_NUM_THREADS=1
 #   ./run_batch_experiments.sh --rt-detr                       # 只运行 RT-DETR（DAIR + UA-DETRAC，共 2 个配置）
 #   ./run_batch_experiments.sh --dairv2x --rt-detr             # 同上但只跑 DAIR-V2X（1 个 RT-DETR 配置）
 #   ./run_batch_experiments.sh --moe-rtdetr                    # 只运行MOE-RTDETR实验（2个配置）
-#   ./run_batch_experiments.sh --cas_detr                      # 只运行CaS_DETR实验（6个配置）
+#   ./run_batch_experiments.sh --cas_detr                      # 只运行CaS_DETR实验（8个配置）
 #   ./run_batch_experiments.sh --yolov5                        # 只运行YOLOv5实验
 #   ./run_batch_experiments.sh --yolov8                        # 只运行YOLOv8实验
 #   ./run_batch_experiments.sh --yolov12                       # 只运行YOLOv12实验
@@ -247,6 +247,8 @@ declare -A CaS_DETR_CONFIGS=(
     ["cas_detr6-r18-0.5-uadetrac"]="cas_detr/configs/cas_detr6_r18_ratio0.5_uadetrac.yaml"
     ["caip-cas_detr6-r18-dairv2x"]="cas_detr/configs/caip_cas_detr6_r18.yaml"
     ["caip-cas_detr6-r18-uadetrac"]="cas_detr/configs/caip_cas_detr6_r18_uadetrac.yaml"
+    ["caip-cas_detr6-r18-dairv2x-k0.5-smallw1"]="cas_detr/configs/caip_cas_detr6_r18_ratio0.5_smallw1.yaml"
+    ["caip-cas_detr6-r18-dairv2x-k0.5-smallw1p5"]="cas_detr/configs/caip_cas_detr6_r18_ratio0.5_smallw1p5.yaml"
     ["caip-cas_detr6-r18-dairv2x-smallw1"]="cas_detr/configs/caip_cas_detr6_r18_smallw1.yaml"
     ["caip-cas_detr6-r18-uadetrac-smallw1"]="cas_detr/configs/caip_cas_detr6_r18_uadetrac_smallw1.yaml"
 )
@@ -902,7 +904,7 @@ parse_arguments() {
         echo "  ./run_batch_experiments.sh --test                          # 测试模式：所有配置各跑2个epoch"
         echo "  ./run_batch_experiments.sh --rt-detr                       # 只运行 RT-DETR（DAIR + UA-DETRAC）"
         echo "  ./run_batch_experiments.sh --moe-rtdetr                    # 只运行MOE-RTDETR（2个）"
-        echo "  ./run_batch_experiments.sh --cas_detr                      # 只运行CaS_DETR（6个）"
+        echo "  ./run_batch_experiments.sh --cas_detr                      # 只运行CaS_DETR（8个）"
         echo "  ./run_batch_experiments.sh --yolov5                        # 只运行YOLOv5"
         echo "  ./run_batch_experiments.sh --yolov8                        # 只运行YOLOv8"
         echo "  ./run_batch_experiments.sh --yolov12                       # 只运行YOLOv12"
