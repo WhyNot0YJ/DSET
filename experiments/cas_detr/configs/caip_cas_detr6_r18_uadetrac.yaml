@@ -44,7 +44,7 @@ training:
   batch_size: 24
   warmup_epochs: 3
   pretrained_lr: 1e-5
-  new_lr: 5e-5
+  new_lr: 3e-5
   eta_min: 1e-6
   weight_decay: 0.0001
   ema_decay: 0.9999
@@ -72,7 +72,7 @@ data:
     - others
 augmentation:
   target_size: 640
-  stop_epoch: 71
+  stop_epoch: 50
   scales:
     - 576
     - 608
