@@ -83,11 +83,17 @@ class BaseCollateFunction(object):
         raise NotImplementedError('')
 
 
-def generate_scales(base_size, base_size_repeat):
-    scale_repeat = (base_size - int(base_size * 0.75 / 32) * 32) // 32
-    scales = [int(base_size * 0.75 / 32) * 32 + i * 32 for i in range(scale_repeat)]
+def generate_scales(base_size, base_size_repeat, low_ratio=0.75, high_ratio=1.25):
+    """Side lengths in pixels, multiples of 32; from low_ratio*base to base, then repeat base, then down to high_ratio*base."""
+    low = int(base_size * low_ratio / 32) * 32
+    high_end = int(base_size * high_ratio / 32) * 32
+    low = min(low, base_size)
+    high_end = max(high_end, base_size)
+    scale_repeat = (base_size - low) // 32
+    scales = [low + i * 32 for i in range(scale_repeat)]
     scales += [base_size] * base_size_repeat
-    scales += [int(base_size * 1.25 / 32) * 32 - i * 32 for i in range(scale_repeat)]
+    scale_repeat_high = (high_end - base_size) // 32
+    scales += [high_end - i * 32 for i in range(scale_repeat_high)]
     return scales
 
 
@@ -102,11 +108,18 @@ class BatchImageCollateFunction(BaseCollateFunction):
         mixup_prob=0.0,
         mixup_epochs=[0, 0],
         data_vis=False,
-        vis_save='./vis_dataset/'
+        vis_save='./vis_dataset/',
+        scale_low_ratio=None,
+        scale_high_ratio=None,
     ) -> None:
         super().__init__()
         self.base_size = base_size
-        self.scales = generate_scales(base_size, base_size_repeat) if base_size_repeat is not None else None
+        if base_size_repeat is not None:
+            lr = 0.75 if scale_low_ratio is None else float(scale_low_ratio)
+            hr = 1.25 if scale_high_ratio is None else float(scale_high_ratio)
+            self.scales = generate_scales(base_size, base_size_repeat, low_ratio=lr, high_ratio=hr)
+        else:
+            self.scales = None
         self.stop_epoch = stop_epoch if stop_epoch is not None else 100000000
         self.ema_restart_decay = ema_restart_decay
         # FIXME Mixup
