@@ -9,6 +9,7 @@ Copyright (c) 2023 lyuwenyu. All Rights Reserved.
 import os
 import sys
 import torch
+from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
@@ -29,6 +30,27 @@ if debug:
     torch.Tensor.__repr__ = custom_repr
 
 
+def _resolve_tuning_checkpoint(cfg):
+    """``tuning`` 可为 yaml 或 ``-t``；相对路径相对 D-FINE 目录解析。缺文件则放弃整网微调。"""
+    t = getattr(cfg, "tuning", None)
+    if not t:
+        return
+    root = Path(__file__).resolve().parent
+    p = Path(t)
+    if not p.is_absolute():
+        p = (root / t).resolve()
+    p = str(p)
+    if os.path.isfile(p):
+        cfg.tuning = p
+        if getattr(cfg, "yaml_cfg", None) is not None:
+            cfg.yaml_cfg["tuning"] = p
+    else:
+        print(f"[WARN] tuning checkpoint not found: {p}, use HGNet stage1 only.")
+        cfg.tuning = None
+        if getattr(cfg, "yaml_cfg", None) is not None:
+            cfg.yaml_cfg.pop("tuning", None)
+
+
 def safe_get_rank():
     if torch.distributed.is_available() and torch.distributed.is_initialized():
         return torch.distributed.get_rank()
@@ -39,10 +61,6 @@ def safe_get_rank():
 def main(args) -> None:
     """main"""
     dist_utils.setup_distributed(args.print_rank, args.print_method, seed=args.seed)
-
-    assert not all(
-        [args.tuning, args.resume]
-    ), "Only support from_scrach or resume or tuning at one time"
 
     update_dict = yaml_utils.parse_cli(args.update)
     update_dict.update(
@@ -58,8 +76,16 @@ def main(args) -> None:
     )
 
     cfg = YAMLConfig(args.config, **update_dict)
+    _resolve_tuning_checkpoint(cfg)
 
-    if args.resume or args.tuning:
+    if args.resume and getattr(cfg, "tuning", None):
+        raise RuntimeError("Use either resume or tuning, not both.")
+
+    assert not all(
+        [args.tuning, args.resume]
+    ), "Only support from_scrach or resume or tuning at one time"
+
+    if args.resume or getattr(cfg, "tuning", None):
         if "HGNetv2" in cfg.yaml_cfg:
             cfg.yaml_cfg["HGNetv2"]["pretrained"] = False
 

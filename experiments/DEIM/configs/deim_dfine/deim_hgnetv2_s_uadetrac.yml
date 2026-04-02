@@ -4,6 +4,8 @@ __include__: [
 
 output_dir: ./outputs/deim_hgnetv2_s_uadetrac
 
+tuning: pretrained/deim_dfine_hgnetv2_s_coco_120e.pth
+
 num_classes: 4
 remap_mscoco_category: False
 

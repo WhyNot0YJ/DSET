@@ -1118,18 +1118,17 @@ run_single_experiment() {
     cd "$WORK_DIR"
     set +e  # 临时允许错误
     
-    # DEIM / D-FINE: 使用框架自带 train.py -c <yml> -t <pretrained>
+    # DEIM / D-FINE: train.py -c <yml>；整网微调路径默认写在 yaml 的 tuning；可用 DEIM_TUNING_CKPT / DFINE_TUNING_CKPT 覆盖
     if [[ "$WORK_DIR" == "DEIM" ]] || [[ "$WORK_DIR" == "D-FINE" ]]; then
         local fw_flag="deim"
         [[ "$WORK_DIR" == "D-FINE" ]] && fw_flag="dfine"
         local yml_rel="${config_path#${WORK_DIR}/}"  # e.g. configs/deim_dfine/deim_hgnetv2_s_dairv2x.yml
 
-        # 预训练权重路径（COCO pretrained -> fine-tune 到目标数据集）
         local pretrained_arg=""
-        if [[ "$WORK_DIR" == "DEIM" ]] && [ -f "pretrained/deim_dfine_hgnetv2_s_coco_120e.pth" ]; then
-            pretrained_arg="-t pretrained/deim_dfine_hgnetv2_s_coco_120e.pth"
-        elif [[ "$WORK_DIR" == "D-FINE" ]] && [ -f "pretrained/dfine_s_coco.pth" ]; then
-            pretrained_arg="-t pretrained/dfine_s_coco.pth"
+        if [[ "$WORK_DIR" == "DEIM" ]] && [[ -n "${DEIM_TUNING_CKPT:-}" ]]; then
+            pretrained_arg="-t ${DEIM_TUNING_CKPT}"
+        elif [[ "$WORK_DIR" == "D-FINE" ]] && [[ -n "${DFINE_TUNING_CKPT:-}" ]]; then
+            pretrained_arg="-t ${DFINE_TUNING_CKPT}"
         fi
 
         if [ "$TEST_MODE" = true ]; then

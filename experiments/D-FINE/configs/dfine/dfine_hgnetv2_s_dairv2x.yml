@@ -4,6 +4,8 @@ __include__: [
 
 output_dir: ./output/dfine_hgnetv2_s_dairv2x
 
+tuning: pretrained/dfine_s_coco.pth
+
 num_classes: 8
 remap_mscoco_category: False
 
