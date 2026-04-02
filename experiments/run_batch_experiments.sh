@@ -232,6 +232,7 @@ declare -A RT_DETR_CONFIGS=(
     ["rt-detr-r18-dairv2x"]="cas_detr/configs/rtdetr_r18.yaml"
     ["rt-detr-r18-q100-dairv2x"]="cas_detr/configs/rtdetr_r18_q100.yaml"
     ["rt-detr-r18-uadetrac"]="cas_detr/configs/rtdetr_r18_uadetrac.yaml"
+    ["rt-detr-r18-q100-uadetrac"]="cas_detr/configs/rtdetr_r18_q100_uadetrac.yaml"
 )
 
 declare -a CORE_EXPERIMENTS=(
