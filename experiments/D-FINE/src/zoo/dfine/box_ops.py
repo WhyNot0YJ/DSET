@@ -42,6 +42,22 @@ def box_iou(boxes1: Tensor, boxes2: Tensor):
     return iou, union
 
 
+def paired_box_iou_xyxy(boxes1: Tensor, boxes2: Tensor) -> Tensor:
+    """Per-row IoU for aligned boxes [N,4] xyxy. Returns [N].
+
+    Same as ``torch.diag(box_iou(boxes1, boxes2)[0])`` without O(N²) memory.
+    """
+    if boxes1.numel() == 0:
+        return boxes1.new_zeros((0,))
+    assert boxes1.shape == boxes2.shape and boxes1.dim() == 2 and boxes1.shape[-1] == 4
+    lt = torch.max(boxes1[:, :2], boxes2[:, :2])
+    rb = torch.min(boxes1[:, 2:], boxes2[:, 2:])
+    wh = (rb - lt).clamp(min=0)
+    inter = wh[:, 0] * wh[:, 1]
+    union = box_area(boxes1) + box_area(boxes2) - inter
+    return inter / union
+
+
 def generalized_box_iou(boxes1, boxes2):
     """
     Generalized IoU from https://giou.stanford.edu/
@@ -64,6 +80,31 @@ def generalized_box_iou(boxes1, boxes2):
     area = wh[:, :, 0] * wh[:, :, 1]
 
     return iou - (area - union) / area
+
+
+def paired_generalized_box_iou_xyxy(boxes1: Tensor, boxes2: Tensor) -> Tensor:
+    """Per-row generalized IoU for aligned [N,4] xyxy. Returns [N].
+
+    Same as ``torch.diag(generalized_box_iou(boxes1, boxes2))`` without O(N²) memory.
+    """
+    if boxes1.numel() == 0:
+        return boxes1.new_zeros((0,))
+    assert boxes1.shape == boxes2.shape and boxes1.dim() == 2 and boxes1.shape[-1] == 4
+    assert (boxes1[:, 2:] >= boxes1[:, :2]).all()
+    assert (boxes2[:, 2:] >= boxes2[:, :2]).all()
+    lt = torch.max(boxes1[:, :2], boxes2[:, :2])
+    rb = torch.min(boxes1[:, 2:], boxes2[:, 2:])
+    wh = (rb - lt).clamp(min=0)
+    inter = wh[:, 0] * wh[:, 1]
+    area1 = box_area(boxes1)
+    area2 = box_area(boxes2)
+    union = area1 + area2 - inter
+    iou = inter / union
+    lt_c = torch.min(boxes1[:, :2], boxes2[:, :2])
+    rb_c = torch.max(boxes1[:, 2:], boxes2[:, 2:])
+    wh_c = (rb_c - lt_c).clamp(min=0)
+    c_area = wh_c[:, 0] * wh_c[:, 1]
+    return iou - (c_area - union) / c_area
 
 
 def masks_to_boxes(masks):
