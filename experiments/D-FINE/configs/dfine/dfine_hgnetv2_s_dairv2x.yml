@@ -12,6 +12,7 @@ remap_mscoco_category: False
 epochs: 100
 
 train_dataloader:
+  total_batch_size: 24
   dataset:
     img_folder: /root/autodl-fs/datasets/DAIR-V2X
     ann_file: /root/autodl-fs/datasets/DAIR-V2X/annotations/instances_train.json

@@ -2201,9 +2201,13 @@ class CaS_DETRTrainer:
             self.logger.warning(f"  ⚠ 验证时Token Pruning未生效 (pruning_ratio=0.0)! 请检查keep_ratio配置或EMA模型epoch设置")
         
         # COCO 评估：image_id_to_size 为各图原图像素 (width, height)，与 _collect_predictions 的 xywh 一致
-        mAP_metrics = self._compute_map_metrics(all_predictions, all_targets, 
-                                              image_id_to_size=image_id_to_size,
-                                              print_per_category=False)
+        mAP_metrics = self._compute_map_metrics(
+            all_predictions,
+            all_targets,
+            image_id_to_size=image_id_to_size,
+            print_per_category=False,
+            print_coco_summary=True,
+        )
         
         return {
             'total_loss': avg_loss,
@@ -2471,6 +2475,7 @@ class CaS_DETRTrainer:
                              image_id_to_size: Dict[int, Tuple[int, int]] = None,
                              img_h: int = 640, img_w: int = 640,
                              print_per_category: bool = False,
+                             print_coco_summary: bool = False,
                              compute_difficulty: bool = False) -> Dict[str, float]:
         """计算mAP指标。
         
@@ -2482,6 +2487,7 @@ class CaS_DETRTrainer:
             img_h: 无 per-image 记录时的默认高度（兜底，多为末次 batch 输入高）
             img_w: 无 per-image 记录时的默认宽度（兜底）
             print_per_category: 是否打印每个类别的详细mAP（默认False，只在best_model时打印）
+            print_coco_summary: 是否打印 pycocotools 的 IoU metric bbox 全表（与 validate 一致时 True）
         """
         try:
             if len(predictions) == 0:
@@ -2584,19 +2590,16 @@ class CaS_DETRTrainer:
                 sys.stdout = old_stdout
             
             coco_eval = COCOeval(coco_gt_obj, coco_dt, 'bbox')
-            # 如果print_per_category=True（保存best_model时），输出COCO详细评估表格；否则抑制输出
-            if print_per_category:
-                # 只抑制中间过程输出，保留summary表格
+            # print_per_category 或 print_coco_summary：保留 pycocotools summarize 全表；其余情况全部抑制
+            if print_per_category or print_coco_summary:
                 sys.stdout = StringIO()
                 try:
                     coco_eval.evaluate()
                     coco_eval.accumulate()
                 finally:
                     sys.stdout = old_stdout
-                # 输出summary表格
                 coco_eval.summarize()
             else:
-                # 完全抑制输出
                 sys.stdout = StringIO()
                 try:
                     coco_eval.evaluate()
