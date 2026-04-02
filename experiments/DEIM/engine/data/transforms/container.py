@@ -54,6 +54,19 @@ class Compose(T.Compose):
         self.global_samples = 0
         self.policy = policy
 
+    @staticmethod
+    def _apply_transform(transform, sample):
+        """Torchvision v2 检测变换需要 ``(image, target)``；``Mosaic`` 需要 ``(img, target, dataset)``。"""
+        if isinstance(sample, tuple) and len(sample) == 3:
+            if type(transform).__name__ == "Mosaic":
+                return transform(sample)
+            img, tgt, ds = sample
+            out = transform(img, tgt)
+            if isinstance(out, tuple) and len(out) == 2:
+                return (out[0], out[1], ds)
+            return out
+        return transform(sample)
+
     def forward(self, *inputs: Any) -> Any:
         return self.get_forward(self.policy['name'])(*inputs)
 
@@ -68,7 +81,7 @@ class Compose(T.Compose):
     def default_forward(self, *inputs: Any) -> Any:
         sample = inputs if len(inputs) > 1 else inputs[0]
         for transform in self.transforms:
-            sample = transform(sample)
+            sample = self._apply_transform(transform, sample)
         return sample
 
     def stop_epoch_forward(self, *inputs: Any):
@@ -97,13 +110,13 @@ class Compose(T.Compose):
                     elif (type(transform).__name__ == 'RandomZoomOut' or type(transform).__name__ == 'RandomIoUCrop') and with_mosaic:      
                         pass
                     else:
-                        sample = transform(sample)
+                        sample = self._apply_transform(transform, sample)
         else:   # the default data scheduler
             for transform in self.transforms:
                 if type(transform).__name__ in policy_ops and cur_epoch >= policy_epoch:
                     pass
                 else:
-                    sample = transform(sample)
+                    sample = self._apply_transform(transform, sample)
 
         return sample
 
@@ -120,7 +133,7 @@ class Compose(T.Compose):
             if type(transform).__name__ in policy_ops and self.global_samples >= policy_sample:
                 pass
             else:
-                sample = transform(sample)
+                sample = self._apply_transform(transform, sample)
 
         self.global_samples += 1
 

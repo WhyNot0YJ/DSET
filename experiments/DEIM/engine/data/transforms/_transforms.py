@@ -118,14 +118,26 @@ class ConvertBoxes(T.Transform):
 class ConvertPILImage(T.Transform):
     _transformed_types = (
         PIL.Image.Image,
+        Image,
     )
+
     def __init__(self, dtype='float32', scale=True) -> None:
         super().__init__()
         self.dtype = dtype
         self.scale = scale
 
+    def transform(self, inpt: Any, params: Dict[str, Any]) -> Any:
+        return self._transform(inpt, params)
+
     def _transform(self, inpt: Any, params: Dict[str, Any]) -> Any:
-        inpt = F.pil_to_tensor(inpt)
+        if isinstance(inpt, PIL.Image.Image):
+            inpt = F.pil_to_tensor(inpt)
+        elif isinstance(inpt, Image):
+            inpt = inpt.clone()
+        else:
+            raise TypeError(
+                f"ConvertPILImage expects PIL.Image or tv_tensors.Image, got {type(inpt)}"
+            )
         if self.dtype == 'float32':
             inpt = inpt.float()
 
