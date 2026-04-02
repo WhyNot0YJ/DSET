@@ -1,5 +1,5 @@
-# CAIP CaS-DETR6 · DAIR-V2X · keep=0.5 · cass_small_weight_alpha=1.0
-# 与 caip_cas_detr6_r18.yaml 相同，仅 token_keep_ratio 调整为 0.5，并关闭小目标额外加权
+# CAIP CaS-DETR6 · DAIR-V2X · keep=0.5
+# 与 caip_cas_detr6_r18.yaml 相同，仅 token_keep_ratio 调整为 0.5
 # CAIP: Context-Aware Importance Predictor with dynamic pruning + dynamic MoE routing
 model:
   num_experts: 6
@@ -34,7 +34,6 @@ model:
     cass_loss_type: vfl
     cass_focal_alpha: 2.0
     cass_focal_beta: 4.0
-    cass_small_weight_alpha: 1.0
     # CAIP settings
     use_caip: true
     caip_reduction_ratio: 4

@@ -296,7 +296,6 @@ class HybridEncoder(nn.Module):
                  cass_loss_type='vfl',  # 'focal' or 'vfl'
                  cass_focal_alpha=0.75,
                  cass_focal_beta=2.0,
-                 cass_small_weight_alpha=2.0,
                  # CAIP (Context-Aware Importance Predictor) 参数
                  use_caip=False,
                  caip_reduction_ratio=4,
@@ -315,7 +314,6 @@ class HybridEncoder(nn.Module):
             cass_loss_type: Loss type ('focal' for Focal Loss, 'vfl' for Varifocal Loss)
             cass_focal_alpha: Focal/VFL alpha parameter (positive sample weight)
             cass_focal_beta: Focal/VFL beta/gamma parameter (hard example mining strength)
-            cass_small_weight_alpha: Extra weight multiplier for small-object tokens
             use_caip: Whether to use CAIP (global context branch for importance scoring)
             caip_reduction_ratio: Channel reduction ratio in the CAIP global path
             caip_complexity_alpha: Sensitivity for dynamic keep-ratio adjustment (0–1)
@@ -353,7 +351,6 @@ class HybridEncoder(nn.Module):
         self.cass_loss_type = cass_loss_type
         self.cass_focal_alpha = cass_focal_alpha
         self.cass_focal_beta = cass_focal_beta
-        self.cass_small_weight_alpha = cass_small_weight_alpha
         
         self.use_token_pruning = enable_cas_predictor
         self.use_token_level_pruning = enable_cas_predictor
@@ -403,7 +400,6 @@ class HybridEncoder(nn.Module):
                 cass_loss_type=cass_loss_type,
                 cass_focal_alpha=cass_focal_alpha,
                 cass_focal_beta=cass_focal_beta,
-                cass_small_weight_alpha=cass_small_weight_alpha
             )
         else:
             self.shared_token_pruner = None

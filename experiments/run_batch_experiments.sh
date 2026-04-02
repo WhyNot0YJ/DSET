@@ -247,10 +247,7 @@ declare -A CaS_DETR_CONFIGS=(
     ["cas_detr6-r18-0.5-uadetrac"]="cas_detr/configs/cas_detr6_r18_ratio0.5_uadetrac.yaml"
     ["caip-cas_detr6-r18-dairv2x"]="cas_detr/configs/caip_cas_detr6_r18.yaml"
     ["caip-cas_detr6-r18-uadetrac"]="cas_detr/configs/caip_cas_detr6_r18_uadetrac.yaml"
-    ["caip-cas_detr6-r18-dairv2x-k0.5-smallw1"]="cas_detr/configs/caip_cas_detr6_r18_ratio0.5_smallw1.yaml"
-    ["caip-cas_detr6-r18-dairv2x-k0.5-smallw1p5"]="cas_detr/configs/caip_cas_detr6_r18_ratio0.5_smallw1p5.yaml"
-    ["caip-cas_detr6-r18-dairv2x-smallw1"]="cas_detr/configs/caip_cas_detr6_r18_smallw1.yaml"
-    ["caip-cas_detr6-r18-uadetrac-smallw1"]="cas_detr/configs/caip_cas_detr6_r18_uadetrac_smallw1.yaml"
+    ["caip-cas_detr6-r18-dairv2x-k0.5"]="cas_detr/configs/caip_cas_detr6_r18_ratio0.5.yaml"
 )
 
 declare -A YOLOV5_CONFIGS=(
