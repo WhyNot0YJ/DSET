@@ -12,7 +12,7 @@ remap_mscoco_category: False
 epochs: 100
 
 train_dataloader:
-  total_batch_size: 24
+  total_batch_size: 16
   dataset:
     img_folder: /root/autodl-fs/datasets/UA-DETRAC_COCO/train
     ann_file: /root/autodl-fs/datasets/UA-DETRAC_COCO/annotations/instances_train.json
