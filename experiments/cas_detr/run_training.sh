@@ -5,7 +5,7 @@
 export CUDA_VISIBLE_DEVICES=0
 
 # 训练配置（默认 cas_detr6 R18）
-CONFIG="${1:-configs/cas_detr6_r18_ratio0.5.yaml}"
+CONFIG="${1:-configs/cas_detr6_r18_ratio0.3.yaml}"
 
 # 检查是否有 --resume 参数（支持自动查找或指定路径）
 RESUME_CHECKPOINT=""
@@ -74,11 +74,11 @@ echo "配置文件: $CONFIG"
 echo "=========================================="
 echo ""
 echo "提示: 可以通过参数指定其他配置，例如："
-echo "  ./run_training.sh configs/cas_detr6_r18_ratio0.5.yaml"
+echo "  ./run_training.sh configs/cas_detr6_r18_ratio0.3.yaml"
 echo "  ./run_training.sh configs/cas_detr4_r18.yaml"
-echo "  ./run_training.sh configs/cas_detr6_r18_ratio0.5.yaml --resume  # 自动从最新检查点恢复"
-echo "  ./run_training.sh configs/cas_detr6_r18_ratio0.5.yaml --resume logs/xxx/latest_checkpoint.pth  # 指定检查点路径"
-echo "  ./run_training.sh configs/cas_detr6_r18_ratio0.5.yaml --resume=logs/xxx/latest_checkpoint.pth  # 另一种指定方式"
+echo "  ./run_training.sh configs/cas_detr6_r18_ratio0.3.yaml --resume  # 自动从最新检查点恢复"
+echo "  ./run_training.sh configs/cas_detr6_r18_ratio0.3.yaml --resume logs/xxx/latest_checkpoint.pth  # 指定检查点路径"
+echo "  ./run_training.sh configs/cas_detr6_r18_ratio0.3.yaml --resume=logs/xxx/latest_checkpoint.pth  # 另一种指定方式"
 echo ""
 echo "=========================================="
 

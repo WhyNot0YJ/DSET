@@ -148,17 +148,17 @@ The current training objective is a combination of:
 
 ## 4. Current config files
 
-The current checked-in CaS-DETR configs use token keep ratio **0.5** only (all use **S5-only** into the hybrid encoder, `use_encoder_idx: [2]`):
+CaS-DETR and CAIP CaS-DETR configs in this repo use **`token_keep_ratio: 0.3`** for pruning. The hybrid encoder uses **`use_encoder_idx: [1, 2]`** on PResNet-style backbones unless a config overrides it.
 
-- `experiments/cas_detr/configs/cas_detr6_r18_ratio0.5.yaml` — DAIR-V2X
-- `experiments/cas_detr/configs/cas_detr6_r18_ratio0.5_uadetrac.yaml` — UA-DETRAC
-- `experiments/cas_detr/configs/cas_detr6_r18_ratio0.5_640.yaml` — DAIR-V2X, multi-scale disabled (640 only)
+- `experiments/cas_detr/configs/cas_detr6_r18_ratio0.3.yaml` — DAIR-V2X, **`token_keep_ratio: 0.3`**
+- `experiments/cas_detr/configs/cas_detr6_r18_ratio0.3_uadetrac.yaml` — UA-DETRAC, same as above
+- `experiments/cas_detr/configs/caip_cas_detr6_r18.yaml` / `caip_cas_detr6_r18_uadetrac.yaml` — CAIP + CaS, **`token_keep_ratio: 0.3`**
 
-RT-DETR and MoE-RT-DETR use the same S5-only encoder setting in `rtdetr_r18.yaml`, `moe_rtdetr6_r18.yaml`, and UA-DETRAC counterparts.
+RT-DETR and MoE-RT-DETR baseline configs use **`token_keep_ratio: 1.0`** with pruning disabled, see `rtdetr_r18.yaml`, `moe_rtdetr6_r18.yaml`, and UA-DETRAC counterparts.
 
-Their meanings:
+Filename tags:
 
-- `ratio0.5`: token keep ratio 0.5
+- `ratio0.3` in CaS yaml names: matches **`token_keep_ratio` 0.3**
 - `uadetrac`: UA-DETRAC dataset variant
 
 ## 5. Current default experiment behavior

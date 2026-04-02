@@ -120,9 +120,9 @@ class CAIPPredictor(nn.Module):
     """Context-Aware Importance Predictor (CAIP).
 
     Enhances token pruning robustness by fusing a lightweight global context
-    branch with the existing local Linear scorer and exposes a scalar
-    ``scene_complexity`` signal that drives downstream dynamic pruning and
-    dynamic MoE expert routing (CSR).
+    branch with the existing local Linear scorer and exposes a
+    ``scene_complexity`` scalar for dynamic token keep-ratio in the encoder;
+    decoder MoE is not driven by this signal.
 
     Paths
     -----
@@ -265,6 +265,36 @@ class TransformerEncoder(nn.Module):
         return output
 
 
+class DetailBranch(nn.Module):
+    """Lightweight detail enhancement for high-resolution features.
+
+    Depthwise-separable conv + channel attention (SE), applied to the
+    finest FPN level to preserve small-object cues that token pruning may lose.
+    """
+
+    def __init__(self, channels: int, reduction: int = 4):
+        super().__init__()
+        self.dw_conv = nn.Conv2d(channels, channels, 3, 1, 1, groups=channels, bias=False)
+        self.dw_bn = nn.BatchNorm2d(channels)
+        self.pw_conv = nn.Conv2d(channels, channels, 1, bias=False)
+        self.pw_bn = nn.BatchNorm2d(channels)
+        self.act = nn.SiLU(inplace=True)
+
+        mid = max(channels // reduction, 16)
+        self.se_fc1 = nn.Conv2d(channels, mid, 1)
+        self.se_fc2 = nn.Conv2d(mid, channels, 1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        residual = x
+        out = self.act(self.dw_bn(self.dw_conv(x)))
+        out = self.act(self.pw_bn(self.pw_conv(out)))
+        # SE channel attention
+        w = F.adaptive_avg_pool2d(out, 1)
+        w = self.se_fc2(F.relu(self.se_fc1(w), inplace=True)).sigmoid()
+        out = out * w
+        return out + residual
+
+
 @register()
 class HybridEncoder(nn.Module):
 
@@ -300,8 +330,9 @@ class HybridEncoder(nn.Module):
                  use_caip=False,
                  caip_reduction_ratio=4,
                  caip_complexity_alpha=0.3,
-                 caip_complexity_beta=0.3,
-                 **kwargs):  # **kwargs for backward compatibility (accepts but ignores token_pruning_warmup_epochs)
+                 # High-resolution detail branch
+                 use_detail_branch=False,
+                 **kwargs):  # token_pruning_warmup_epochs, caip_complexity_beta 等旧键忽略
         """
         Args:
             token_keep_ratio: Patch retention ratio (0.5-0.7)
@@ -317,7 +348,6 @@ class HybridEncoder(nn.Module):
             use_caip: Whether to use CAIP (global context branch for importance scoring)
             caip_reduction_ratio: Channel reduction ratio in the CAIP global path
             caip_complexity_alpha: Sensitivity for dynamic keep-ratio adjustment (0–1)
-            caip_complexity_beta: Sensitivity for dynamic MoE top-k adjustment (0–1)
         """
         super().__init__()
         self.in_channels = in_channels
@@ -358,7 +388,6 @@ class HybridEncoder(nn.Module):
         # CAIP parameters
         self.use_caip = use_caip and enable_cas_predictor
         self.caip_complexity_alpha = caip_complexity_alpha
-        self.caip_complexity_beta = caip_complexity_beta
         
         self.input_proj = nn.ModuleList()
         for in_channel in in_channels:
@@ -449,6 +478,10 @@ class HybridEncoder(nn.Module):
             self.pan_blocks.append(
                 CSPRepLayer(hidden_dim * 2, hidden_dim, round(3 * depth_mult), act=act, expansion=expansion)
             )
+        
+        # Detail branch: lightweight enhancement on the finest FPN level (P3)
+        self.use_detail_branch = use_detail_branch
+        self.detail_branch = DetailBranch(hidden_dim) if use_detail_branch else None
     
     def _calculate_min_tokens_for_layer(self) -> int:
         """
@@ -869,6 +902,9 @@ class HybridEncoder(nn.Module):
             downsample_feat = self.downsample_convs[idx](feat_low)
             out = self.pan_blocks[idx](torch.concat([downsample_feat, feat_height], dim=1))
             outs.append(out)
+
+        if self.detail_branch is not None:
+            outs[0] = self.detail_branch(outs[0])
 
         if return_encoder_info:
             return outs, encoder_info

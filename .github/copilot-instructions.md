@@ -64,7 +64,7 @@ Naming convention: `cas_detr{num_experts}_r{18|34}_ratio{keep_ratio}.yaml`
 ```bash
 # Train CaS_DETR (default config or specify)
 ./experiments/cas_detr/run_training.sh
-./experiments/cas_detr/run_training.sh configs/cas_detr6_r18_ratio0.5.yaml
+./experiments/cas_detr/run_training.sh configs/cas_detr6_r18_ratio0.3.yaml
 
 # Resume training
 ./experiments/cas_detr/run_training.sh configs/cas_detr6_r34.yaml --resume AUTO

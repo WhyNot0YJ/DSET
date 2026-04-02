@@ -10,7 +10,7 @@ CaS_DETR Pruning Curve Benchmark Script
 使用方法 (Usage):
     测试单个模型：
         python benchmark_pruning_curve.py \
-            --config experiments/cas_detr/configs/cas_detr6_r18_ratio0.5.yaml \
+            --config experiments/cas_detr/configs/cas_detr6_r18_ratio0.3.yaml \
             --checkpoint experiments/cas_detr/logs/cas_detr6_r18_20251209_155547/best_model.pth \
             --name "CaS_DETR_r18_0.5" \
             --output pruning_tradeoff.png
@@ -35,7 +35,7 @@ CaS_DETR Pruning Curve Benchmark Script
 运行示例 (Example):
     # 1. 测试单个模型
     python benchmark_pruning_curve.py \
-        --config experiments/cas_detr/configs/cas_detr6_r18_ratio0.5.yaml \
+        --config experiments/cas_detr/configs/cas_detr6_r18_ratio0.3.yaml \
         --checkpoint experiments/cas_detr/logs/cas_detr6_r18_20251209_155547/best_model.pth \
         --name "CaS_DETR_r18_0.5"
     
@@ -43,7 +43,7 @@ CaS_DETR Pruning Curve Benchmark Script
     # 首先创建 JSON 配置文件（例如 models.json）：
     # {
     #   "CaS_DETR_r18_0.5": {
-    #     "config": "experiments/cas_detr/configs/cas_detr6_r18_ratio0.5.yaml",
+    #     "config": "experiments/cas_detr/configs/cas_detr6_r18_ratio0.3.yaml",
     #     "checkpoint": "experiments/cas_detr/logs/cas_detr6_r18_20251209_155547/best_model.pth"
     #   }
     # }

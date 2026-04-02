@@ -70,8 +70,7 @@ class MoELayer(nn.Module):
         
         Args:
             x: [B, N, C] Token features
-            dynamic_top_k: Optional override for the number of activated experts
-                           (driven by CAIP scene_complexity).
+            dynamic_top_k: Optional override for activated experts; ``None`` uses fixed ``top_k``.
         Returns:
             output: [B, N, C]
         """

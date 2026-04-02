@@ -219,7 +219,10 @@ class CaS_DETRRTDETR(nn.Module):
                 use_caip: bool = False,
                 caip_reduction_ratio: int = 4,
                 caip_complexity_alpha: float = 0.3,
-                caip_complexity_beta: float = 0.3):
+                # Small-object query reserve
+                small_obj_reserve_ratio: float = 0.0,
+                # High-resolution detail branch
+                use_detail_branch: bool = False):
         """Initialize CaS_DETR RT-DETR model.
         
         Args:
@@ -289,7 +292,12 @@ class CaS_DETRRTDETR(nn.Module):
         self.use_caip = use_caip and self.enable_cas_predictor
         self.caip_reduction_ratio = caip_reduction_ratio
         self.caip_complexity_alpha = caip_complexity_alpha
-        self.caip_complexity_beta = caip_complexity_beta
+        
+        # Small-object query reserve: fraction of queries reserved from finest feature level
+        self.small_obj_reserve_ratio = small_obj_reserve_ratio
+        
+        # High-resolution detail branch on P3
+        self.use_detail_branch = use_detail_branch
         
         # MoE和Token Pruning权重配置
         if decoder_moe_balance_weight is not None:
@@ -324,7 +332,7 @@ class CaS_DETRRTDETR(nn.Module):
             num_experts=self.num_experts,
             moe_top_k=top_k,
             moe_noise_std=self.moe_noise_std,
-            caip_complexity_beta=self.caip_complexity_beta
+            small_obj_reserve_ratio=self.small_obj_reserve_ratio,
         )
 
         if self.enable_decoder_moe:
@@ -375,7 +383,7 @@ class CaS_DETRRTDETR(nn.Module):
             use_caip=self.use_caip,
             caip_reduction_ratio=self.caip_reduction_ratio,
             caip_complexity_alpha=self.caip_complexity_alpha,
-            caip_complexity_beta=self.caip_complexity_beta,
+            use_detail_branch=self.use_detail_branch,
         )
     
     def _build_detr_criterion(self) -> RTDETRCriterionv2:
@@ -447,9 +455,7 @@ class CaS_DETRRTDETR(nn.Module):
         
         encoder_features, encoder_info = self.encoder(backbone_features, return_encoder_info=True)
         
-        # CAIP: propagate scene_complexity to decoder for dynamic MoE routing
-        scene_complexity = encoder_info.get('scene_complexity', None) if encoder_info else None
-        decoder_output = self.decoder(encoder_features, targets, scene_complexity=scene_complexity)
+        decoder_output = self.decoder(encoder_features, targets)
         
         # 构建输出字典
         output = {
@@ -869,7 +875,13 @@ class CaS_DETRTrainer:
         use_caip = cas_detr_config.get('use_caip', False)
         caip_reduction_ratio = cas_detr_config.get('caip_reduction_ratio', 4)
         caip_complexity_alpha = cas_detr_config.get('caip_complexity_alpha', 0.3)
-        caip_complexity_beta = cas_detr_config.get('caip_complexity_beta', 0.3)
+        # caip_complexity_beta in YAML is legacy; CAIP only drives encoder pruning, not decoder MoE top_k.
+        
+        # Small-object query reserve
+        small_obj_reserve_ratio = cas_detr_config.get('small_obj_reserve_ratio', 0.0)
+        
+        # High-resolution detail branch
+        use_detail_branch = cas_detr_config.get('use_detail_branch', False)
         
         # 从配置文件读取MoE权重
         decoder_moe_balance_weight = self.config.get('training', {}).get('decoder_moe_balance_weight', None)
@@ -910,7 +922,8 @@ class CaS_DETRTrainer:
             use_caip=use_caip,
             caip_reduction_ratio=caip_reduction_ratio,
             caip_complexity_alpha=caip_complexity_alpha,
-            caip_complexity_beta=caip_complexity_beta,
+            small_obj_reserve_ratio=small_obj_reserve_ratio,
+            use_detail_branch=use_detail_branch,
         )
         
         # [修复] 移除 _create_model 内部的加载逻辑，统一在 CaS_DETRTrainer.__init__ 中处理
@@ -2200,7 +2213,11 @@ class CaS_DETRTrainer:
             'mAP_s': mAP_metrics.get('mAP_s', 0.0),
             'mAP_m': mAP_metrics.get('mAP_m', 0.0),
             'mAP_l': mAP_metrics.get('mAP_l', 0.0),
-            'val_token_pruning_ratio': avg_val_pruning_ratio  # 添加验证时的剪枝比例
+            'AR_small': mAP_metrics.get('AR_small', 0.0),
+            'AR_medium': mAP_metrics.get('AR_medium', 0.0),
+            'AR_large': mAP_metrics.get('AR_large', 0.0),
+            'AR_100': mAP_metrics.get('AR_100', 0.0),
+            'val_token_pruning_ratio': avg_val_pruning_ratio,
         }
     
     @staticmethod
@@ -2481,6 +2498,10 @@ class CaS_DETRTrainer:
                     'AP_small_50': 0.0,
                     'AP_medium_50': 0.0,
                     'AP_large_50': 0.0,
+                    'AR_small': 0.0,
+                    'AR_medium': 0.0,
+                    'AR_large': 0.0,
+                    'AR_100': 0.0,
                     'AP_easy': 0.0,
                     'AP_moderate': 0.0,
                     'AP_hard': 0.0
@@ -2615,19 +2636,25 @@ class CaS_DETRTrainer:
                 gt_boxes_hard = int(_dc.get("hard", 0))
                 gt_boxes_ignore = int(_dc.get("ignore", 0))
             
+            _s = coco_eval.stats
+            _n = len(_s)
             result = {
-                'mAP_0.5': coco_eval.stats[1],
-                'mAP_0.75': coco_eval.stats[2],
-                'mAP_0.5_0.95': coco_eval.stats[0],
-                'mAP_s': coco_eval.stats[3] if len(coco_eval.stats) > 3 else 0.0,  # Small objects
-                'mAP_m': coco_eval.stats[4] if len(coco_eval.stats) > 4 else 0.0,  # Medium objects
-                'mAP_l': coco_eval.stats[5] if len(coco_eval.stats) > 5 else 0.0,  # Large objects
-                'AP_small': coco_eval.stats[3] if len(coco_eval.stats) > 3 else 0.0,
-                'AP_medium': coco_eval.stats[4] if len(coco_eval.stats) > 4 else 0.0,
-                'AP_large': coco_eval.stats[5] if len(coco_eval.stats) > 5 else 0.0,
+                'mAP_0.5': _s[1],
+                'mAP_0.75': _s[2],
+                'mAP_0.5_0.95': _s[0],
+                'mAP_s': _s[3] if _n > 3 else 0.0,
+                'mAP_m': _s[4] if _n > 4 else 0.0,
+                'mAP_l': _s[5] if _n > 5 else 0.0,
+                'AP_small': _s[3] if _n > 3 else 0.0,
+                'AP_medium': _s[4] if _n > 4 else 0.0,
+                'AP_large': _s[5] if _n > 5 else 0.0,
                 'AP_small_50': s50,
                 'AP_medium_50': m50,
                 'AP_large_50': l50,
+                'AR_small': _s[8] if _n > 8 else 0.0,
+                'AR_medium': _s[9] if _n > 9 else 0.0,
+                'AR_large': _s[10] if _n > 10 else 0.0,
+                'AR_100': _s[7] if _n > 7 else 0.0,
                 'AP_easy': difficulty_metrics['AP_easy'],
                 'AP_moderate': difficulty_metrics['AP_moderate'],
                 'AP_hard': difficulty_metrics['AP_hard'],
@@ -2659,6 +2686,10 @@ class CaS_DETRTrainer:
                 'AP_small_50': 0.0,
                 'AP_medium_50': 0.0,
                 'AP_large_50': 0.0,
+                'AR_small': 0.0,
+                'AR_medium': 0.0,
+                'AR_large': 0.0,
+                'AR_100': 0.0,
                 'AP_easy': 0.0,
                 'AP_moderate': 0.0,
                 'AP_hard': 0.0

@@ -359,7 +359,7 @@ class RTDETRTransformerv2(nn.Module):
                  moe_top_k=2,
                  moe_noise_std=0.1,
                  router_init_std=0.02,
-                 caip_complexity_beta=0.3): 
+                 small_obj_reserve_ratio=0.0):
         super().__init__()
         assert len(feat_channels) <= num_levels
         assert len(feat_strides) == len(feat_channels)
@@ -377,14 +377,14 @@ class RTDETRTransformerv2(nn.Module):
         self.num_layers = num_layers
         self.eval_spatial_size = eval_spatial_size
         self.aux_loss = aux_loss
+        self.small_obj_reserve_ratio = small_obj_reserve_ratio
         
         # MoE Config
         self.use_moe = use_moe
         self.num_experts = num_experts
         self.moe_top_k = moe_top_k
         self.moe_noise_std = moe_noise_std
-        self.router_init_std = router_init_std # [新增]
-        self.caip_complexity_beta = caip_complexity_beta
+        self.router_init_std = router_init_std
 
         assert query_select_method in ('default', 'one2many', 'agnostic'), ''
         assert cross_attn_method in ('default', 'discrete'), ''
@@ -568,7 +568,7 @@ class RTDETRTransformerv2(nn.Module):
 
         enc_topk_bboxes_list, enc_topk_logits_list = [], []
         enc_topk_memory, enc_topk_logits, enc_topk_bbox_unact = \
-            self._select_topk(output_memory, enc_outputs_logits, enc_outputs_coord_unact, self.num_queries)
+            self._select_topk(output_memory, enc_outputs_logits, enc_outputs_coord_unact, self.num_queries, spatial_shapes)
             
         if self.training:
             enc_topk_bboxes = F.sigmoid(enc_topk_bbox_unact)
@@ -591,45 +591,77 @@ class RTDETRTransformerv2(nn.Module):
         
         return content, enc_topk_bbox_unact, enc_topk_bboxes_list, enc_topk_logits_list
 
-    def _select_topk(self, memory: torch.Tensor, outputs_logits: torch.Tensor, outputs_coords_unact: torch.Tensor, topk: int):
-        if self.query_select_method == 'default':
-            _, topk_ind = torch.topk(outputs_logits.max(-1).values, topk, dim=-1)
+    def _select_topk(self, memory: torch.Tensor, outputs_logits: torch.Tensor,
+                      outputs_coords_unact: torch.Tensor, topk: int,
+                      spatial_shapes=None):
+        reserve = int(topk * self.small_obj_reserve_ratio) if self.small_obj_reserve_ratio > 0 else 0
+        need_level_reserve = reserve > 0 and spatial_shapes is not None and len(spatial_shapes) > 1
 
+        if need_level_reserve:
+            topk_ind = self._level_aware_topk(outputs_logits, topk, reserve, spatial_shapes)
+        elif self.query_select_method == 'default':
+            _, topk_ind = torch.topk(outputs_logits.max(-1).values, topk, dim=-1)
         elif self.query_select_method == 'one2many':
             _, topk_ind = torch.topk(outputs_logits.flatten(1), topk, dim=-1)
             topk_ind = topk_ind // self.num_classes
-
         elif self.query_select_method == 'agnostic':
             _, topk_ind = torch.topk(outputs_logits.squeeze(-1), topk, dim=-1)
-        
+
         topk_ind: torch.Tensor
 
-        topk_coords = outputs_coords_unact.gather(dim=1, \
-            index=topk_ind.unsqueeze(-1).repeat(1, 1, outputs_coords_unact.shape[-1]))
-        
-        topk_logits = outputs_logits.gather(dim=1, \
-            index=topk_ind.unsqueeze(-1).repeat(1, 1, outputs_logits.shape[-1]))
-        
-        topk_memory = memory.gather(dim=1, \
-            index=topk_ind.unsqueeze(-1).repeat(1, 1, memory.shape[-1]))
+        topk_coords = outputs_coords_unact.gather(
+            dim=1, index=topk_ind.unsqueeze(-1).repeat(1, 1, outputs_coords_unact.shape[-1]))
+        topk_logits = outputs_logits.gather(
+            dim=1, index=topk_ind.unsqueeze(-1).repeat(1, 1, outputs_logits.shape[-1]))
+        topk_memory = memory.gather(
+            dim=1, index=topk_ind.unsqueeze(-1).repeat(1, 1, memory.shape[-1]))
 
         return topk_memory, topk_logits, topk_coords
 
+    def _level_aware_topk(self, outputs_logits: torch.Tensor, topk: int,
+                          reserve: int, spatial_shapes) -> torch.Tensor:
+        """Select topk queries while reserving *reserve* from the finest level (level 0)."""
+        level_sizes = [h * w for h, w in spatial_shapes]
+        level0_end = level_sizes[0]
+
+        if self.query_select_method == 'default':
+            scores = outputs_logits.max(-1).values          # [B, L]
+        elif self.query_select_method == 'one2many':
+            scores = outputs_logits.flatten(1)
+        elif self.query_select_method == 'agnostic':
+            scores = outputs_logits.squeeze(-1)
+        else:
+            scores = outputs_logits.max(-1).values
+
+        B = scores.shape[0]
+        device = scores.device
+
+        level0_scores = scores[:, :level0_end]
+        actual_reserve = min(reserve, level0_end)
+        _, lvl0_topk = torch.topk(level0_scores, actual_reserve, dim=-1)  # [B, reserve]
+
+        mask = torch.zeros(B, scores.shape[1], dtype=torch.bool, device=device)
+        mask.scatter_(1, lvl0_topk, True)
+        remaining_scores = scores.masked_fill(mask, float('-inf'))
+        remaining_k = topk - actual_reserve
+        _, rest_topk = torch.topk(remaining_scores, remaining_k, dim=-1)
+
+        topk_ind = torch.cat([lvl0_topk, rest_topk], dim=-1)
+
+        if self.query_select_method == 'one2many':
+            topk_ind = topk_ind // self.num_classes
+
+        return topk_ind
+
 
     def forward(self, feats, targets=None, scene_complexity=None):
+        """scene_complexity is ignored; CAIP only affects encoder pruning. MoE uses fixed ``moe_top_k``."""
+
         # [修复] 共享层模式下，每个 Batch 开始前清空 MoE 记录
         if self.use_moe:
             for layer in self.decoder.layers:
                 if hasattr(layer, 'decoder_moe_layer') and hasattr(layer.decoder_moe_layer, 'reset_cache'):
                     layer.decoder_moe_layer.reset_cache()
-
-        # CAIP dynamic routing: compute dynamic_top_k from scene_complexity
-        dynamic_top_k = None
-        if scene_complexity is not None and self.use_moe:
-            complexity_norm = torch.sigmoid(scene_complexity).item()
-            beta = self.caip_complexity_beta
-            dynamic_top_k = int(self.moe_top_k + (self.num_experts - self.moe_top_k) * complexity_norm * beta)
-            dynamic_top_k = max(1, min(dynamic_top_k, self.num_experts))
 
         # input projection and embedding
         memory, spatial_shapes = self._get_encoder_input(feats)
@@ -660,7 +692,7 @@ class RTDETRTransformerv2(nn.Module):
             self.dec_score_head,
             self.query_pos_head,
             attn_mask=attn_mask,
-            dynamic_top_k=dynamic_top_k)
+            dynamic_top_k=None)
 
         if self.training and dn_meta is not None:
             dn_out_bboxes, out_bboxes = torch.split(out_bboxes, dn_meta['dn_num_split'], dim=2)

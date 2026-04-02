@@ -230,13 +230,11 @@ apply_model_size_filter_to_configs() {
 # 定义所有可用的实验配置
 declare -A RT_DETR_CONFIGS=(
     ["rt-detr-r18-dairv2x"]="cas_detr/configs/rtdetr_r18.yaml"
-    ["rt-detr-r18-q100-dairv2x"]="cas_detr/configs/rtdetr_r18_q100.yaml"
     ["rt-detr-r18-uadetrac"]="cas_detr/configs/rtdetr_r18_uadetrac.yaml"
-    ["rt-detr-r18-q100-uadetrac"]="cas_detr/configs/rtdetr_r18_q100_uadetrac.yaml"
 )
 
 declare -a CORE_EXPERIMENTS=(
-    "cas_detr/configs/cas_detr6_r18_ratio0.5.yaml"
+    "cas_detr/configs/cas_detr6_r18_ratio0.3.yaml"
 )
 
 declare -A MOE_RTDETR_CONFIGS=(
@@ -245,11 +243,17 @@ declare -A MOE_RTDETR_CONFIGS=(
 )
 
 declare -A CaS_DETR_CONFIGS=(
-    ["cas_detr6-r18-0.5-dairv2x"]="cas_detr/configs/cas_detr6_r18_ratio0.5.yaml"
-    ["cas_detr6-r18-0.5-uadetrac"]="cas_detr/configs/cas_detr6_r18_ratio0.5_uadetrac.yaml"
+    ["cas_detr6-r18-0.3-dairv2x"]="cas_detr/configs/cas_detr6_r18_ratio0.3.yaml"
+    ["cas_detr6-r18-0.3-uadetrac"]="cas_detr/configs/cas_detr6_r18_ratio0.3_uadetrac.yaml"
     ["caip-cas_detr6-r18-dairv2x"]="cas_detr/configs/caip_cas_detr6_r18.yaml"
     ["caip-cas_detr6-r18-uadetrac"]="cas_detr/configs/caip_cas_detr6_r18_uadetrac.yaml"
-    ["caip-cas_detr6-r18-dairv2x-k0.5"]="cas_detr/configs/caip_cas_detr6_r18_ratio0.5.yaml"
+    # Small-object enhancement experiments
+    ["caip-sqr-r18-dairv2x"]="cas_detr/configs/caip_cas_detr6_r18_sqr.yaml"
+    ["caip-sqr-r18-uadetrac"]="cas_detr/configs/caip_cas_detr6_r18_sqr_uadetrac.yaml"
+    ["caip-detail-r18-dairv2x"]="cas_detr/configs/caip_cas_detr6_r18_detail.yaml"
+    ["caip-detail-r18-uadetrac"]="cas_detr/configs/caip_cas_detr6_r18_detail_uadetrac.yaml"
+    ["caip-sqr-detail-r18-dairv2x"]="cas_detr/configs/caip_cas_detr6_r18_sqr_detail.yaml"
+    ["caip-sqr-detail-r18-uadetrac"]="cas_detr/configs/caip_cas_detr6_r18_sqr_detail_uadetrac.yaml"
 )
 
 declare -A YOLOV5_CONFIGS=(
@@ -637,6 +641,7 @@ parse_arguments() {
     local has_rt_detr=false
     local has_moe_rtdetr=false
     local has_cas_detr=false
+    local has_small_obj=false
     local has_yolov5=false
     local has_yolov8=false
     local has_yolov12=false
@@ -658,6 +663,9 @@ parse_arguments() {
                 ;;
             --cas_detr)
                 has_cas_detr=true
+                ;;
+            --small-obj)
+                has_small_obj=true
                 ;;
             --yolov5)
                 has_yolov5=true
@@ -687,12 +695,13 @@ parse_arguments() {
     done
     
     # 如果指定了实验类型，只运行指定的类型（支持多个）
-    if [ "$has_rt_detr" = true ] || [ "$has_moe_rtdetr" = true ] || [ "$has_cas_detr" = true ] || [ "$has_yolov5" = true ] || [ "$has_yolov8" = true ] || [ "$has_yolov12" = true ] || [ "$has_yolox" = true ] || [ "$has_fasterrcnn" = true ] || [ "$has_deformable_detr" = true ]; then
+    if [ "$has_rt_detr" = true ] || [ "$has_moe_rtdetr" = true ] || [ "$has_cas_detr" = true ] || [ "$has_small_obj" = true ] || [ "$has_yolov5" = true ] || [ "$has_yolov8" = true ] || [ "$has_yolov12" = true ] || [ "$has_yolox" = true ] || [ "$has_fasterrcnn" = true ] || [ "$has_deformable_detr" = true ]; then
         # 显示将要运行的类型
         local selected_types=()
         [ "$has_rt_detr" = true ] && selected_types+=("RT-DETR")
         [ "$has_moe_rtdetr" = true ] && selected_types+=("MOE-RTDETR")
         [ "$has_cas_detr" = true ] && selected_types+=("CaS_DETR")
+        [ "$has_small_obj" = true ] && selected_types+=("SmallObj")
         [ "$has_yolov5" = true ] && selected_types+=("YOLOv5")
         [ "$has_yolov8" = true ] && selected_types+=("YOLOv8")
         [ "$has_yolov12" = true ] && selected_types+=("YOLOv12")
@@ -729,6 +738,18 @@ parse_arguments() {
             for key in $(printf '%s\n' "${!CaS_DETR_CONFIGS[@]}" | sort); do
                 local p="${CaS_DETR_CONFIGS[$key]}"
                 if filter_config "$p"; then
+                    CONFIGS_TO_RUN+=("$p")
+                fi
+            done
+        fi
+
+        if [ "$has_small_obj" = true ]; then
+            local _small_obj_keys=("caip-sqr-r18-dairv2x" "caip-sqr-r18-uadetrac"
+                                   "caip-detail-r18-dairv2x" "caip-detail-r18-uadetrac"
+                                   "caip-sqr-detail-r18-dairv2x" "caip-sqr-detail-r18-uadetrac")
+            for key in "${_small_obj_keys[@]}"; do
+                local p="${CaS_DETR_CONFIGS[$key]}"
+                if [ -n "$p" ] && filter_config "$p"; then
                     CONFIGS_TO_RUN+=("$p")
                 fi
             done
@@ -930,7 +951,7 @@ parse_arguments() {
         echo "  ./run_batch_experiments.sh --s                             # 只运行所有 s 规模 YOLO / YOLOX"
         echo "  ./run_batch_experiments.sh --m                             # 只运行所有 m 规模 YOLO / YOLOX"
         echo "  ./run_batch_experiments.sh --k0.3                          # 只运行 Keep Ratio 0.3 (Fast)"
-        echo "  ./run_batch_experiments.sh --k0.5                          # 只运行 Keep Ratio 0.5 (Best/Default)"
+        echo "  ./run_batch_experiments.sh --k0.5                          # 只跑路径名含 ratio0.5 的配置"
         echo "  ./run_batch_experiments.sh --k0.7                          # 只运行 Keep Ratio 0.7"
         echo "  ./run_batch_experiments.sh --k0.9                          # 只运行 Keep Ratio 0.9 (Slow)"
         echo "  ./run_batch_experiments.sh --core                          # 只运行核心实验（CaS_DETR R18 DAIR）"

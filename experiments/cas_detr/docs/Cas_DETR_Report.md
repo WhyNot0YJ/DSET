@@ -448,7 +448,7 @@ CaS_DETR的损失函数包含多个组件：
 
 ### 7.1 关键配置参数
 
-**典型配置**（与 [`configs/cas_detr6_r18_ratio0.5.yaml`](../configs/cas_detr6_r18_ratio0.5.yaml) 等一致，示例）:
+**典型配置**（与 [`configs/cas_detr6_r18_ratio0.3.yaml`](../configs/cas_detr6_r18_ratio0.3.yaml) 等一致，示例）:
 ```yaml
 model:
   num_experts: 6
