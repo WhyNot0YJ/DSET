@@ -1,10 +1,9 @@
 """Copyright(c) 2023 lyuwenyu. All Rights Reserved.
+Modifications Copyright (c) 2024 The DEIM Authors. All Rights Reserved.
 """
 
-import logging
-import math
-import os
-import copy
+import math 
+import copy 
 import functools
 from collections import OrderedDict
 
@@ -12,19 +11,16 @@ import torch
 import torch.nn as nn 
 import torch.nn.functional as F 
 import torch.nn.init as init 
-import torch.utils.checkpoint as cp
 from typing import List
 
 from .denoising import get_contrastive_denoising_training_group
-from .utils import deformable_attention_core_func_v2, get_activation, inverse_sigmoid
-from .utils import bias_init_with_prob
-from .moe_components import MoELayer, compute_moe_balance_loss
+from .utils import bias_init_with_prob, get_activation, inverse_sigmoid
+from .utils import deformable_attention_core_func_v2
 
-from ...core import register
+from ..core import register
 
 __all__ = ['RTDETRTransformerv2']
 
-_LOGGER = logging.getLogger(__name__)
 
 class MLP(nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim, num_layers, act='relu'):
@@ -49,6 +45,7 @@ class MSDeformableAttention(nn.Module):
         num_points=4, 
         method='default',
         offset_scale=0.5,
+        value_shape='default',
     ):
         """Multi-Scale Deformable Attention
         """
@@ -80,7 +77,8 @@ class MSDeformableAttention(nn.Module):
         self.value_proj = nn.Linear(embed_dim, embed_dim)
         self.output_proj = nn.Linear(embed_dim, embed_dim)
 
-        self.ms_deformable_attn_core = functools.partial(deformable_attention_core_func_v2, method=self.method) 
+        self.ms_deformable_attn_core = functools.partial(deformable_attention_core_func_v2, 
+                                                    method=self.method, value_shape=value_shape) 
 
         self._reset_parameters()
 
@@ -175,11 +173,8 @@ class TransformerDecoderLayer(nn.Module):
                  n_levels=4,
                  n_points=4,
                  cross_attn_method='default',
-                 use_moe=False,
-                 num_experts=6,
-                 moe_top_k=2,
-                 moe_noise_std=0.1,
-                 router_init_std=0.02):
+                 value_shape='default',
+                 ):
         super(TransformerDecoderLayer, self).__init__()
 
         # self attention
@@ -188,48 +183,29 @@ class TransformerDecoderLayer(nn.Module):
         self.norm1 = nn.LayerNorm(d_model)
 
         # cross attention
-        self.cross_attn = MSDeformableAttention(d_model, n_head, n_levels, n_points, method=cross_attn_method)
+        self.cross_attn = MSDeformableAttention(d_model, n_head, n_levels, n_points, method=cross_attn_method, value_shape=value_shape)
         self.dropout2 = nn.Dropout(dropout)
         self.norm2 = nn.LayerNorm(d_model)
 
-        # ffn (Supports Decoder MoE Layer)
-        self.use_moe = use_moe
-        if use_moe:
-            # Use Decoder MoE Layer
-            self.decoder_moe_layer = MoELayer(
-                d_model=d_model,
-                dim_feedforward=dim_feedforward,
-                num_experts=num_experts,
-                top_k=moe_top_k,
-                dropout=dropout,
-                activation=activation,
-                noise_std=moe_noise_std,
-                router_init_std=router_init_std
-            )
-        else:
-            # Standard FFN
-            self.linear1 = nn.Linear(d_model, dim_feedforward)
-            self.activation = get_activation(activation)
-            self.dropout3 = nn.Dropout(dropout)
-            self.linear2 = nn.Linear(dim_feedforward, d_model)
-            self._reset_parameters()
-        
+        # ffn
+        self.linear1 = nn.Linear(d_model, dim_feedforward)
+        self.activation = get_activation(activation)
+        self.dropout3 = nn.Dropout(dropout)
+        self.linear2 = nn.Linear(dim_feedforward, d_model)
         self.dropout4 = nn.Dropout(dropout)
         self.norm3 = nn.LayerNorm(d_model)
+        
+        self._reset_parameters()
 
     def _reset_parameters(self):
-        if hasattr(self, 'linear1'):
-            init.xavier_uniform_(self.linear1.weight)
-            init.xavier_uniform_(self.linear2.weight)
+        init.xavier_uniform_(self.linear1.weight)
+        init.xavier_uniform_(self.linear2.weight)
 
     def with_pos_embed(self, tensor, pos):
         return tensor if pos is None else tensor + pos
 
-    def forward_ffn(self, tgt, dynamic_top_k=None):
-        if self.use_moe:
-            return self.decoder_moe_layer(tgt, dynamic_top_k=dynamic_top_k)
-        else:
-            return self.linear2(self.dropout3(self.activation(self.linear1(tgt))))
+    def forward_ffn(self, tgt):
+        return self.linear2(self.dropout3(self.activation(self.linear1(tgt))))
 
     def forward(self,
                 target,
@@ -238,8 +214,7 @@ class TransformerDecoderLayer(nn.Module):
                 memory_spatial_shapes,
                 attn_mask=None,
                 memory_mask=None,
-                query_pos_embed=None,
-                dynamic_top_k=None):
+                query_pos_embed=None):
         # self attention
         q = k = self.with_pos_embed(target, query_pos_embed)
 
@@ -258,7 +233,7 @@ class TransformerDecoderLayer(nn.Module):
         target = self.norm2(target)
 
         # ffn
-        target2 = self.forward_ffn(target, dynamic_top_k=dynamic_top_k)
+        target2 = self.forward_ffn(target)
         target = target + self.dropout4(target2)
         target = self.norm3(target)
 
@@ -282,8 +257,7 @@ class TransformerDecoder(nn.Module):
                 score_head,
                 query_pos_head,
                 attn_mask=None,
-                memory_mask=None,
-                dynamic_top_k=None):
+                memory_mask=None):
         dec_out_bboxes = []
         dec_out_logits = []
         ref_points_detach = F.sigmoid(ref_points_unact)
@@ -293,22 +267,7 @@ class TransformerDecoder(nn.Module):
             ref_points_input = ref_points_detach.unsqueeze(2)
             query_pos_embed = query_pos_head(ref_points_detach)
 
-            if self.training:
-                # [HSP 核心修改] 为 Decoder 开启梯度检查点以节省显存
-                output = cp.checkpoint(
-                    layer, 
-                    output, 
-                    ref_points_input, 
-                    memory, 
-                    memory_spatial_shapes, 
-                    attn_mask, 
-                    memory_mask, 
-                    query_pos_embed,
-                    dynamic_top_k,
-                    use_reentrant=False
-                )
-            else:
-                output = layer(output, ref_points_input, memory, memory_spatial_shapes, attn_mask, memory_mask, query_pos_embed, dynamic_top_k=dynamic_top_k)
+            output = layer(output, ref_points_input, memory, memory_spatial_shapes, attn_mask, memory_mask, query_pos_embed)
 
             inter_ref_bbox = F.sigmoid(bbox_head[i](output) + inverse_sigmoid(ref_points_detach))
 
@@ -357,12 +316,10 @@ class RTDETRTransformerv2(nn.Module):
                  aux_loss=True, 
                  cross_attn_method='default', 
                  query_select_method='default',
-                 use_moe=False,
-                 num_experts=6,
-                 moe_top_k=2,
-                 moe_noise_std=0.1,
-                 router_init_std=0.02,
-                 small_obj_reserve_ratio=0.0):
+                 value_shape='reshape',
+                 mlp_act='relu',
+                 query_pos_method='default',
+                 ):
         super().__init__()
         assert len(feat_channels) <= num_levels
         assert len(feat_strides) == len(feat_channels)
@@ -380,15 +337,6 @@ class RTDETRTransformerv2(nn.Module):
         self.num_layers = num_layers
         self.eval_spatial_size = eval_spatial_size
         self.aux_loss = aux_loss
-        self.small_obj_reserve_ratio = small_obj_reserve_ratio
-        self._query_topk_log_counter = 0
-
-        # MoE Config
-        self.use_moe = use_moe
-        self.num_experts = num_experts
-        self.moe_top_k = moe_top_k
-        self.moe_noise_std = moe_noise_std
-        self.router_init_std = router_init_std
 
         assert query_select_method in ('default', 'one2many', 'agnostic'), ''
         assert cross_attn_method in ('default', 'discrete'), ''
@@ -398,17 +346,9 @@ class RTDETRTransformerv2(nn.Module):
         # backbone feature projection
         self._build_input_proj_layer(feat_channels)
 
-        # Transformer module (Supports MoE)
-        decoder_layer = TransformerDecoderLayer(
-            hidden_dim, nhead, dim_feedforward, dropout, 
-            activation, num_levels, num_points, 
-            cross_attn_method=cross_attn_method,
-            use_moe=use_moe,
-            num_experts=num_experts,
-            moe_top_k=moe_top_k,
-            moe_noise_std=moe_noise_std,
-            router_init_std=router_init_std
-        )
+        # Transformer module
+        decoder_layer = TransformerDecoderLayer(hidden_dim, nhead, dim_feedforward, dropout, \
+            activation, num_levels, num_points, cross_attn_method=cross_attn_method, value_shape=value_shape)
         self.decoder = TransformerDecoder(hidden_dim, decoder_layer, num_layers, eval_idx)
 
         # denoising
@@ -423,7 +363,12 @@ class RTDETRTransformerv2(nn.Module):
         self.learn_query_content = learn_query_content
         if learn_query_content:
             self.tgt_embed = nn.Embedding(num_queries, hidden_dim)
-        self.query_pos_head = MLP(4, 2 * hidden_dim, hidden_dim, 2)
+
+        if query_pos_method == 'as_reg':
+            self.query_pos_head = MLP(4, hidden_dim, hidden_dim, 3, act=mlp_act)
+            print("     ### Query Position Embedding@{} ###     ".format(query_pos_method))
+        else:
+            self.query_pos_head = MLP(4, 2 * hidden_dim, hidden_dim, 2, act=mlp_act)
 
         # if num_select_queries != self.num_queries:
         #     layer = TransformerEncoderLayer(hidden_dim, nhead, dim_feedforward, activation='gelu')
@@ -439,14 +384,14 @@ class RTDETRTransformerv2(nn.Module):
         else:
             self.enc_score_head = nn.Linear(hidden_dim, num_classes)
 
-        self.enc_bbox_head = MLP(hidden_dim, hidden_dim, 4, 3)
+        self.enc_bbox_head = MLP(hidden_dim, hidden_dim, 4, 3, act=mlp_act)
 
         # decoder head
         self.dec_score_head = nn.ModuleList([
             nn.Linear(hidden_dim, num_classes) for _ in range(num_layers)
         ])
         self.dec_bbox_head = nn.ModuleList([
-            MLP(hidden_dim, hidden_dim, 4, 3) for _ in range(num_layers)
+            MLP(hidden_dim, hidden_dim, 4, 3, act=mlp_act) for _ in range(num_layers)
         ])
 
         # init encoder output anchors and valid_mask
@@ -572,7 +517,7 @@ class RTDETRTransformerv2(nn.Module):
 
         enc_topk_bboxes_list, enc_topk_logits_list = [], []
         enc_topk_memory, enc_topk_logits, enc_topk_bbox_unact = \
-            self._select_topk(output_memory, enc_outputs_logits, enc_outputs_coord_unact, self.num_queries, spatial_shapes)
+            self._select_topk(output_memory, enc_outputs_logits, enc_outputs_coord_unact, self.num_queries)
             
         if self.training:
             enc_topk_bboxes = F.sigmoid(enc_topk_bbox_unact)
@@ -595,124 +540,32 @@ class RTDETRTransformerv2(nn.Module):
         
         return content, enc_topk_bbox_unact, enc_topk_bboxes_list, enc_topk_logits_list
 
-    def _select_topk(self, memory: torch.Tensor, outputs_logits: torch.Tensor,
-                      outputs_coords_unact: torch.Tensor, topk: int,
-                      spatial_shapes=None):
-        reserve = int(topk * self.small_obj_reserve_ratio) if self.small_obj_reserve_ratio > 0 else 0
-        need_level_reserve = reserve > 0 and spatial_shapes is not None and len(spatial_shapes) > 1
-
-        if need_level_reserve:
-            topk_ind = self._level_aware_topk(outputs_logits, topk, reserve, spatial_shapes)
-        elif self.query_select_method == 'default':
+    def _select_topk(self, memory: torch.Tensor, outputs_logits: torch.Tensor, outputs_coords_unact: torch.Tensor, topk: int):
+        if self.query_select_method == 'default':
             _, topk_ind = torch.topk(outputs_logits.max(-1).values, topk, dim=-1)
+
         elif self.query_select_method == 'one2many':
             _, topk_ind = torch.topk(outputs_logits.flatten(1), topk, dim=-1)
             topk_ind = topk_ind // self.num_classes
+
         elif self.query_select_method == 'agnostic':
             _, topk_ind = torch.topk(outputs_logits.squeeze(-1), topk, dim=-1)
-
+        
         topk_ind: torch.Tensor
 
-        topk_coords = outputs_coords_unact.gather(
-            dim=1, index=topk_ind.unsqueeze(-1).repeat(1, 1, outputs_coords_unact.shape[-1]))
-        topk_logits = outputs_logits.gather(
-            dim=1, index=topk_ind.unsqueeze(-1).repeat(1, 1, outputs_logits.shape[-1]))
-        topk_memory = memory.gather(
-            dim=1, index=topk_ind.unsqueeze(-1).repeat(1, 1, memory.shape[-1]))
-
-        self._maybe_log_query_topk_level_mix(topk_ind, spatial_shapes)
+        topk_coords = outputs_coords_unact.gather(dim=1, \
+            index=topk_ind.unsqueeze(-1).repeat(1, 1, outputs_coords_unact.shape[-1]))
+        
+        topk_logits = outputs_logits.gather(dim=1, \
+            index=topk_ind.unsqueeze(-1).repeat(1, 1, outputs_logits.shape[-1]))
+        
+        topk_memory = memory.gather(dim=1, \
+            index=topk_ind.unsqueeze(-1).repeat(1, 1, memory.shape[-1]))
 
         return topk_memory, topk_logits, topk_coords
 
-    @staticmethod
-    def _mean_topk_count_per_level(topk_ind: torch.Tensor, spatial_shapes) -> List[float]:
-        """Mean number of selected indices per level, averaged over batch (sums to topk per image)."""
-        level_sizes = [h * w for h, w in spatial_shapes]
-        cum = [0]
-        for s in level_sizes:
-            cum.append(cum[-1] + s)
-        nlev = len(spatial_shapes)
-        counts = []
-        for lev in range(nlev):
-            lo = cum[lev]
-            hi = cum[lev + 1]
-            mask = (topk_ind >= lo) & (topk_ind < hi)
-            counts.append(mask.float().sum(dim=1).mean().item())
-        return counts
 
-    def _maybe_log_query_topk_level_mix(self, topk_ind: torch.Tensor, spatial_shapes) -> None:
-        """Log mean mix of encoder token indices in query top-K per pyramid level.
-
-        Set env ``CAS_LOG_QUERY_TOPK_EVERY`` to a positive step interval, e.g. ``100``.
-        ``0`` or unset disables logging. Level 0 is the finest ``spatial_shapes[0]``.
-        """
-        if spatial_shapes is None or len(spatial_shapes) <= 1:
-            return
-        every = int(os.environ.get("CAS_LOG_QUERY_TOPK_EVERY", "0"))
-        if every <= 0:
-            return
-        self._query_topk_log_counter += 1
-        if self._query_topk_log_counter % every != 0:
-            return
-        counts = self._mean_topk_count_per_level(topk_ind, spatial_shapes)
-        k = float(topk_ind.shape[1])
-        ratios = [c / k for c in counts]
-        parts = []
-        for i, (c, r) in enumerate(zip(counts, ratios)):
-            parts.append(f"L{i}={c:.1f}({100.0 * r:.1f}%)")
-        reserve = int(k * self.small_obj_reserve_ratio) if self.small_obj_reserve_ratio > 0 else 0
-        msg = (
-            f"query_topk level mix (mean over batch, K={int(k)}): "
-            + ", ".join(parts)
-            + f"; small_obj_reserve={reserve}"
-        )
-        _LOGGER.info(msg)
-
-    def _level_aware_topk(self, outputs_logits: torch.Tensor, topk: int,
-                          reserve: int, spatial_shapes) -> torch.Tensor:
-        """Select topk queries while reserving *reserve* from the finest level (level 0)."""
-        level_sizes = [h * w for h, w in spatial_shapes]
-        level0_end = level_sizes[0]
-
-        if self.query_select_method == 'default':
-            scores = outputs_logits.max(-1).values          # [B, L]
-        elif self.query_select_method == 'one2many':
-            scores = outputs_logits.flatten(1)
-        elif self.query_select_method == 'agnostic':
-            scores = outputs_logits.squeeze(-1)
-        else:
-            scores = outputs_logits.max(-1).values
-
-        B = scores.shape[0]
-        device = scores.device
-
-        level0_scores = scores[:, :level0_end]
-        actual_reserve = min(reserve, level0_end)
-        _, lvl0_topk = torch.topk(level0_scores, actual_reserve, dim=-1)  # [B, reserve]
-
-        mask = torch.zeros(B, scores.shape[1], dtype=torch.bool, device=device)
-        mask.scatter_(1, lvl0_topk, True)
-        remaining_scores = scores.masked_fill(mask, float('-inf'))
-        remaining_k = topk - actual_reserve
-        _, rest_topk = torch.topk(remaining_scores, remaining_k, dim=-1)
-
-        topk_ind = torch.cat([lvl0_topk, rest_topk], dim=-1)
-
-        if self.query_select_method == 'one2many':
-            topk_ind = topk_ind // self.num_classes
-
-        return topk_ind
-
-
-    def forward(self, feats, targets=None, scene_complexity=None):
-        """scene_complexity is ignored; CAIP only affects encoder pruning. MoE uses fixed ``moe_top_k``."""
-
-        # [修复] 共享层模式下，每个 Batch 开始前清空 MoE 记录
-        if self.use_moe:
-            for layer in self.decoder.layers:
-                if hasattr(layer, 'decoder_moe_layer') and hasattr(layer.decoder_moe_layer, 'reset_cache'):
-                    layer.decoder_moe_layer.reset_cache()
-
+    def forward(self, feats, targets=None):
         # input projection and embedding
         memory, spatial_shapes = self._get_encoder_input(feats)
         
@@ -741,8 +594,7 @@ class RTDETRTransformerv2(nn.Module):
             self.dec_bbox_head,
             self.dec_score_head,
             self.query_pos_head,
-            attn_mask=attn_mask,
-            dynamic_top_k=None)
+            attn_mask=attn_mask)
 
         if self.training and dn_meta is not None:
             dn_out_bboxes, out_bboxes = torch.split(out_bboxes, dn_meta['dn_num_split'], dim=2)
@@ -754,15 +606,10 @@ class RTDETRTransformerv2(nn.Module):
             out['aux_outputs'] = self._set_aux_loss(out_logits[:-1], out_bboxes[:-1])
             out['enc_aux_outputs'] = self._set_aux_loss(enc_topk_logits_list, enc_topk_bboxes_list)
             out['enc_meta'] = {'class_agnostic': self.query_select_method == 'agnostic'}
-        
-        # Add MoE Load Balance Loss
-        if self.use_moe and self.training:
-            moe_load_balance_loss = self.get_moe_load_balance_loss()
-            out['moe_load_balance_loss'] = moe_load_balance_loss
 
-        if self.training and dn_meta is not None:
-            out['dn_aux_outputs'] = self._set_aux_loss(dn_out_logits, dn_out_bboxes)
-            out['dn_meta'] = dn_meta
+            if dn_meta is not None:
+                out['dn_outputs'] = self._set_aux_loss(dn_out_logits, dn_out_bboxes)
+                out['dn_meta'] = dn_meta
 
         return out
 
@@ -774,21 +621,3 @@ class RTDETRTransformerv2(nn.Module):
         # as a dict having both a Tensor and a list.
         return [{'pred_logits': a, 'pred_boxes': b}
                 for a, b in zip(outputs_class, outputs_coord)]
-    
-    def get_moe_load_balance_loss(self):
-        """Get MoE load balance loss.
-        
-        Collect router logits from all decoder layers and compute loss.
-        """
-        if not self.use_moe:
-            return torch.tensor(0.0)
-        
-        router_logits_list = []
-        for layer in self.decoder.layers:
-            if hasattr(layer, 'decoder_moe_layer'):
-                ael = layer.decoder_moe_layer
-                if ael.router_logits_cache:
-                    router_logits_list.extend(ael.router_logits_cache)
-        
-        top_k = self.moe_top_k if hasattr(self, 'moe_top_k') else 2
-        return compute_moe_balance_loss(router_logits_list, self.num_experts, top_k=top_k)

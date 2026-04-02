@@ -28,6 +28,8 @@ export OMP_NUM_THREADS=1
 #   ./run_batch_experiments.sh --yolo --s                      # 仅 s 规模（两数据集全跑）
 #   ./run_batch_experiments.sh --yes --test --yolo --m --dairv2x  # 测试模式仅 DAIR 的 m 规模 YOLO 全家桶
 #   ./run_batch_experiments.sh --fasterrcnn                    # 只运行 torchvision Faster R-CNN（DAIR + UA-DETRAC）
+#   ./run_batch_experiments.sh --deim                           # 只运行 DEIM-S（DAIR + UA-DETRAC）
+#   ./run_batch_experiments.sh --dfine                          # 只运行 D-FINE-S（DAIR + UA-DETRAC）
 #   ./run_batch_experiments.sh --deformable-detr               # 只运行Deformable-DETR实验
 #   ./run_batch_experiments.sh --test --rt-detr                # 测试模式只运行RT-DETR
 #   ./run_batch_experiments.sh --test --moe-rtdetr             # 测试模式只运行MOE-RTDETR
@@ -299,6 +301,16 @@ declare -A DEFORMABLE_DETR_CONFIGS=(
     ["deformable-detr-r18"]="deformable-detr/train_deformable_r18.py"
 )
 
+declare -A DEIM_CONFIGS=(
+    ["deim-s-dairv2x"]="DEIM/configs/deim_dfine/deim_hgnetv2_s_dairv2x.yml"
+    ["deim-s-uadetrac"]="DEIM/configs/deim_dfine/deim_hgnetv2_s_uadetrac.yml"
+)
+
+declare -A DFINE_CONFIGS=(
+    ["dfine-s-dairv2x"]="D-FINE/configs/dfine/dfine_hgnetv2_s_dairv2x.yml"
+    ["dfine-s-uadetrac"]="D-FINE/configs/dfine/dfine_hgnetv2_s_uadetrac.yml"
+)
+
 # 构建全部配置列表与名称映射
 all_configs_paths=()
 declare -A NAME_TO_PATH
@@ -375,6 +387,22 @@ build_all_configs() {
         all_configs_paths+=("$p")
         local b
         b=$(basename "$p" .py)
+        NAME_TO_PATH["$key"]="$p"
+        NAME_TO_PATH["$b"]="$p"
+    done
+    for key in "${!DEIM_CONFIGS[@]}"; do
+        local p="${DEIM_CONFIGS[$key]}"
+        all_configs_paths+=("$p")
+        local b
+        b=$(basename "$p" .yml)
+        NAME_TO_PATH["$key"]="$p"
+        NAME_TO_PATH["$b"]="$p"
+    done
+    for key in "${!DFINE_CONFIGS[@]}"; do
+        local p="${DFINE_CONFIGS[$key]}"
+        all_configs_paths+=("$p")
+        local b
+        b=$(basename "$p" .yml)
         NAME_TO_PATH["$key"]="$p"
         NAME_TO_PATH["$b"]="$p"
     done
@@ -648,6 +676,8 @@ parse_arguments() {
     local has_yolox=false
     local has_fasterrcnn=false
     local has_deformable_detr=false
+    local has_deim=false
+    local has_dfine=false
     
     for arg in "$@"; do
         case "$arg" in
@@ -691,11 +721,17 @@ parse_arguments() {
             --deformable-detr)
                 has_deformable_detr=true
                 ;;
+            --deim)
+                has_deim=true
+                ;;
+            --dfine|--d-fine)
+                has_dfine=true
+                ;;
         esac
     done
     
     # 如果指定了实验类型，只运行指定的类型（支持多个）
-    if [ "$has_rt_detr" = true ] || [ "$has_moe_rtdetr" = true ] || [ "$has_cas_detr" = true ] || [ "$has_small_obj" = true ] || [ "$has_yolov5" = true ] || [ "$has_yolov8" = true ] || [ "$has_yolov12" = true ] || [ "$has_yolox" = true ] || [ "$has_fasterrcnn" = true ] || [ "$has_deformable_detr" = true ]; then
+    if [ "$has_rt_detr" = true ] || [ "$has_moe_rtdetr" = true ] || [ "$has_cas_detr" = true ] || [ "$has_small_obj" = true ] || [ "$has_yolov5" = true ] || [ "$has_yolov8" = true ] || [ "$has_yolov12" = true ] || [ "$has_yolox" = true ] || [ "$has_fasterrcnn" = true ] || [ "$has_deformable_detr" = true ] || [ "$has_deim" = true ] || [ "$has_dfine" = true ]; then
         # 显示将要运行的类型
         local selected_types=()
         [ "$has_rt_detr" = true ] && selected_types+=("RT-DETR")
@@ -708,6 +744,8 @@ parse_arguments() {
         [ "$has_yolox" = true ] && selected_types+=("YOLOX")
         [ "$has_fasterrcnn" = true ] && selected_types+=("FasterRCNN")
         [ "$has_deformable_detr" = true ] && selected_types+=("Deformable-DETR")
+        [ "$has_deim" = true ] && selected_types+=("DEIM")
+        [ "$has_dfine" = true ] && selected_types+=("D-FINE")
         local types_str=$(IFS='+'; echo "${selected_types[*]}")
         if [ "$has_test" = true ]; then
             log_info "测试模式：运行指定实验类型（按字典序排序）: $types_str"
@@ -798,6 +836,20 @@ parse_arguments() {
                 if filter_config "$p"; then
                     CONFIGS_TO_RUN+=("$p")
                 fi
+            done
+        fi
+
+        if [ "$has_deim" = true ]; then
+            for key in $(printf '%s\n' "${!DEIM_CONFIGS[@]}" | sort); do
+                local p="${DEIM_CONFIGS[$key]}"
+                CONFIGS_TO_RUN+=("$p")
+            done
+        fi
+
+        if [ "$has_dfine" = true ]; then
+            for key in $(printf '%s\n' "${!DFINE_CONFIGS[@]}" | sort); do
+                local p="${DFINE_CONFIGS[$key]}"
+                CONFIGS_TO_RUN+=("$p")
             done
         fi
     elif [ $# -eq 0 ]; then
@@ -933,6 +985,8 @@ parse_arguments() {
         echo "  ./run_batch_experiments.sh --yolo --s                      # 仅 s 规模（两数据集）"
         echo "  ./run_batch_experiments.sh --yolo --n --dairv2x            # 仅 DAIR 的 n 规模"
         echo "  ./run_batch_experiments.sh --fasterrcnn                    # 只运行 torchvision Faster R-CNN"
+        echo "  ./run_batch_experiments.sh --deim                           # 只运行 DEIM-S（DAIR + UA-DETRAC）"
+        echo "  ./run_batch_experiments.sh --dfine                          # 只运行 D-FINE-S（DAIR + UA-DETRAC）"
         echo "  ./run_batch_experiments.sh --deformable-detr               # 只运行Deformable-DETR"
         echo "  ./run_batch_experiments.sh --test --rt-detr                # 测试模式只运行RT-DETR"
         echo "  ./run_batch_experiments.sh --test --moe-rtdetr             # 测试模式只运行MOE-RTDETR"
@@ -1031,6 +1085,12 @@ run_single_experiment() {
         TRAIN_SCRIPT="yolo/train_fasterrcnn.py"
         WORK_DIR="yolo"
         YOLO_VERSION=""
+    elif [[ "$config_path" == DEIM/* ]]; then
+        TRAIN_SCRIPT="train.py"
+        WORK_DIR="DEIM"
+    elif [[ "$config_path" == D-FINE/* ]]; then
+        TRAIN_SCRIPT="train.py"
+        WORK_DIR="D-FINE"
     elif [[ "$exp_dir" == *"cas_detr"* ]]; then
         TRAIN_SCRIPT="cas_detr/train.py"
         WORK_DIR="cas_detr"
@@ -1058,8 +1118,42 @@ run_single_experiment() {
     cd "$WORK_DIR"
     set +e  # 临时允许错误
     
+    # DEIM / D-FINE: 使用框架自带 train.py -c <yml> -t <pretrained>
+    if [[ "$WORK_DIR" == "DEIM" ]] || [[ "$WORK_DIR" == "D-FINE" ]]; then
+        local fw_flag="deim"
+        [[ "$WORK_DIR" == "D-FINE" ]] && fw_flag="dfine"
+        local yml_rel="${config_path#${WORK_DIR}/}"  # e.g. configs/deim_dfine/deim_hgnetv2_s_dairv2x.yml
+
+        # 预训练权重路径（COCO pretrained -> fine-tune 到目标数据集）
+        local pretrained_arg=""
+        if [[ "$WORK_DIR" == "DEIM" ]] && [ -f "pretrained/deim_dfine_hgnetv2_s_coco_120e.pth" ]; then
+            pretrained_arg="-t pretrained/deim_dfine_hgnetv2_s_coco_120e.pth"
+        elif [[ "$WORK_DIR" == "D-FINE" ]] && [ -f "pretrained/dfine_s_coco.pth" ]; then
+            pretrained_arg="-t pretrained/dfine_s_coco.pth"
+        fi
+
+        if [ "$TEST_MODE" = true ]; then
+            "$PYTHON_BIN" train.py -c "$yml_rel" $pretrained_arg --test-only 2>&1 || true
+            log_warning "DEIM/D-FINE test-only: 跳过完整训练，仅验证配置可加载"
+        else
+            "$PYTHON_BIN" train.py -c "$yml_rel" $pretrained_arg
+        fi
+        local train_exit=$?
+
+        # 训练成功后，运行 CaS 兼容评估
+        if [ $train_exit -eq 0 ] && [ "$TEST_MODE" != true ]; then
+            cd "$original_dir"
+            log_info "运行 CaS 兼容评估: $config_path"
+            "$PYTHON_BIN" common/eval_deim_dfine.py \
+                --framework "$fw_flag" \
+                --config "$config_path" \
+                --model-name "$exp_name" \
+                --device cuda 2>&1 || log_warning "CaS 评估失败（不影响训练结果）"
+            cd "$WORK_DIR"
+        fi
+
     # Deformable-DETR 使用 Python 脚本，不需要 --config 参数
-    if [[ "$exp_dir" == *"deformable-detr"* ]]; then
+    elif [[ "$exp_dir" == *"deformable-detr"* ]]; then
         # 如果是测试模式，传递 --epochs 2 参数
         if [ "$TEST_MODE" = true ]; then
             "$PYTHON_BIN" train_deformable_r18.py --epochs 2
@@ -1089,7 +1183,12 @@ run_single_experiment() {
         "$PYTHON_BIN" train.py --config "../$config_path"
     fi
     
-    local exit_code=$?
+    # DEIM/D-FINE 在 if 分支内已有 train_exit；其余分支用 $?
+    if [[ "$WORK_DIR" == "DEIM" ]] || [[ "$WORK_DIR" == "D-FINE" ]]; then
+        local exit_code=${train_exit:-$?}
+    else
+        local exit_code=$?
+    fi
     set -e
     cd "$original_dir"
     
@@ -1128,6 +1227,8 @@ generate_report() {
     echo -e "${BLUE}提示: 实验结果（包括mAP等指标）已保存在各训练脚本生成的日志目录中${NC}"
     echo -e "${BLUE}      - 统一 DETR 消融日志: cas_detr/logs/${NC}"
     echo -e "${BLUE}      - YOLO统一日志: yolo/logs/${NC}"
+    echo -e "${BLUE}      - DEIM日志: DEIM/outputs/${NC}"
+    echo -e "${BLUE}      - D-FINE日志: D-FINE/output/${NC}"
     echo -e "${BLUE}      - Deformable-DETR日志: deformable-detr/work_dirs/${NC}"
 }
 
