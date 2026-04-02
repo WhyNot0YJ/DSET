@@ -230,6 +230,7 @@ apply_model_size_filter_to_configs() {
 # 定义所有可用的实验配置
 declare -A RT_DETR_CONFIGS=(
     ["rt-detr-r18-dairv2x"]="cas_detr/configs/rtdetr_r18.yaml"
+    ["rt-detr-r18-q100-dairv2x"]="cas_detr/configs/rtdetr_r18_q100.yaml"
     ["rt-detr-r18-uadetrac"]="cas_detr/configs/rtdetr_r18_uadetrac.yaml"
 )
 
