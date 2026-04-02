@@ -13,7 +13,7 @@ no_aug_epoch: 9
 
 train_dataloader:
   dataset:
-    img_folder: /root/autodl-fs/datasets/DAIR-V2X/train
+    img_folder: /root/autodl-fs/datasets/DAIR-V2X
     ann_file: /root/autodl-fs/datasets/DAIR-V2X/annotations/instances_train.json
     transforms:
       policy:
@@ -24,5 +24,5 @@ train_dataloader:
 
 val_dataloader:
   dataset:
-    img_folder: /root/autodl-fs/datasets/DAIR-V2X/val
+    img_folder: /root/autodl-fs/datasets/DAIR-V2X
     ann_file: /root/autodl-fs/datasets/DAIR-V2X/annotations/instances_val.json
