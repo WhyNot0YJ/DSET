@@ -15,9 +15,9 @@ train_dataloader:
     ann_file: /root/autodl-fs/datasets/UA-DETRAC_COCO/annotations/instances_train.json
     transforms:
       policy:
-        epoch: 80
+        epoch: 88
   collate_fn:
-    stop_epoch: 80
+    stop_epoch: 88
 
 val_dataloader:
   dataset:

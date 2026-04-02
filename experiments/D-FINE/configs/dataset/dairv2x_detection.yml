@@ -1,5 +1,7 @@
 task: detection
 
+epochs: 100
+
 evaluator:
   type: CocoEvaluator
   iou_types: ['bbox']

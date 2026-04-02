@@ -8,8 +8,8 @@ num_classes: 4
 remap_mscoco_category: False
 
 epoches: 100
-flat_epoch: 42
-no_aug_epoch: 10
+flat_epoch: 48
+no_aug_epoch: 9
 
 train_dataloader:
   dataset:
@@ -17,10 +17,10 @@ train_dataloader:
     ann_file: /root/autodl-fs/datasets/UA-DETRAC_COCO/annotations/instances_train.json
     transforms:
       policy:
-        epoch: [4, 42, 80]
+        epoch: [4, 48, 88]
   collate_fn:
-    mixup_epochs: [4, 42]
-    stop_epoch: 80
+    mixup_epochs: [4, 48]
+    stop_epoch: 88
 
 val_dataloader:
   dataset:
