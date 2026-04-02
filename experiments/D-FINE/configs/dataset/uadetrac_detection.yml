@@ -9,6 +9,10 @@ evaluator:
 num_classes: 4
 remap_mscoco_category: False
 
+vis_after_train: true
+vis_num_images: 8
+vis_score_thr: 0.35
+
 train_dataloader:
   type: DataLoader
   dataset:

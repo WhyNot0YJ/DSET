@@ -15,6 +15,25 @@ import torch
 from ..misc import dist_utils, stats
 
 from ._solver import BaseSolver
+
+
+def _load_train_end_vis():
+    import importlib.util
+    from pathlib import Path
+
+    p = Path(__file__).resolve().parents[3] / "common" / "train_end_inference_vis.py"
+    if not p.is_file():
+        return None, None
+    try:
+        spec = importlib.util.spec_from_file_location("train_end_inference_vis", p)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod.cfg_dict_for_vis, mod.maybe_run_train_end_vis
+    except Exception:
+        return None, None
+
+
+_cfg_dict_for_vis, _maybe_run_train_end_vis = _load_train_end_vis()
 from .det_engine import train_one_epoch, evaluate
 from ..optim.lr_scheduler import FlatCosineLRScheduler
 
@@ -181,6 +200,16 @@ class DetSolver(BaseSolver):
         total_time_str = str(datetime.timedelta(seconds=int(total_time)))
         print('Training time {}'.format(total_time_str))
 
+        if _maybe_run_train_end_vis is not None:
+            _maybe_run_train_end_vis(
+                dist_utils.is_main_process(),
+                self.ema.module if self.ema else self.model,
+                self.postprocessor,
+                self.val_dataloader,
+                self.device,
+                self.output_dir,
+                _cfg_dict_for_vis(self.cfg),
+            )
 
     def val(self, ):
         self.eval()
