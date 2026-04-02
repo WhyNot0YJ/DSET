@@ -12,6 +12,7 @@ remap_mscoco_category: False
 epoches: 100
 flat_epoch: 48
 no_aug_epoch: 9
+warmup_iter: 500
 
 train_dataloader:
   dataset:
