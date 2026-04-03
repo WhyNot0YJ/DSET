@@ -64,8 +64,13 @@ def _build_override_dict(args) -> dict:
     update_dict.update(cli_updates)
 
     if args.data_root:
-        update_dict.setdefault("train_dataloader", {}).setdefault("dataset", {})["data_root"] = args.data_root
-        update_dict.setdefault("val_dataloader", {}).setdefault("dataset", {})["data_root"] = args.data_root
+        tr_ds = update_dict.setdefault("train_dataloader", {}).setdefault("dataset", {})
+        va_ds = update_dict.setdefault("val_dataloader", {}).setdefault("dataset", {})
+        tr_ds["data_root"] = args.data_root
+        va_ds["data_root"] = args.data_root
+        if getattr(args, "dataset", None) == "dairv2x":
+            tr_ds["img_folder"] = args.data_root
+            va_ds["img_folder"] = args.data_root
 
     return update_dict
 

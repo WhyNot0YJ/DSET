@@ -1,7 +1,7 @@
 task: detection
 
 evaluator:
-  type: CocoEvaluator
+  type: CocoEvaluatorTrainLabelMapping
   iou_types: ['bbox']
 
 # 与 COCO 预训练 (80 类) 混用时：-t 加载时分类头形状不匹配，不会载入（见 Load model.state_dict unmatched）

@@ -14,7 +14,7 @@ Research project benchmarking object detection models on the **DAIR-V2X** (车�
   - `src/data/dataset/dairv2x_detection.py` — DAIR-V2X dataset loader (COCO format)
   - `configs/` — YAML configs named `cas_detr{experts}_r{backbone}_ratio{ratio}.yaml`
   - `train.py` — `CaS_DETRTrainer` class: full training/validation pipeline with EMA, AMP, early stopping
-- `experiments/moe-rtdetr/`, `experiments/rt-detr/` — RT-DETR baselines (MoE-only and vanilla)
+- `experiments/moe-rtdetr/`, `experiments/RT-DETR/rtdetrv2_pytorch/` — RT-DETR v2 baseline via `train_adapter`; upstream v1 copy removed from this repo
 - `experiments/deformable-detr/`, `experiments/yolov8/`, `experiments/yolov10/` — Comparison models
 - `experiments/analysis/` — Benchmarking, Pareto plots, report generation
 - `dair2coco.py` — Converts DAIR-V2X raw annotations to COCO JSON format

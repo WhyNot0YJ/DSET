@@ -1,7 +1,7 @@
 task: detection
 
 evaluator:
-  type: CocoEvaluator
+  type: CocoEvaluatorTrainLabelMapping
   iou_types: ['bbox']
 
 # 与 COCO 预训练 (80 类) 混用时：-t 加载时分类头形状不匹配，不会载入（见 Load model.state_dict unmatched）
@@ -13,6 +13,7 @@ train_dataloader:
   dataset:
     type: AutoCocoDetection
     data_root: /root/autodl-fs/datasets/DAIR-V2X
+    img_folder: /root/autodl-fs/datasets/DAIR-V2X
     split: train
     return_masks: False
     # 不显式写 transforms，以保留 base 配置里官方 include/dataloader.yml 的增强流水线
@@ -27,6 +28,7 @@ val_dataloader:
   dataset:
     type: AutoCocoDetection
     data_root: /root/autodl-fs/datasets/DAIR-V2X
+    img_folder: /root/autodl-fs/datasets/DAIR-V2X
     split: val
     return_masks: False
   shuffle: False

@@ -2,6 +2,7 @@
 train_dataloader: 
   dataset: 
     transforms:
+      type: Compose
       ops:
         - {type: RandomPhotometricDistort, p: 0.5}
         - {type: RandomZoomOut, fill: 0}
@@ -30,6 +31,7 @@ train_dataloader:
 val_dataloader:
   dataset: 
     transforms:
+      type: Compose
       ops: 
         - {type: Resize, size: [640, 640]}
         - {type: ConvertPILImage, dtype: 'float32', scale: True}   
