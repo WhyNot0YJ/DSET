@@ -47,6 +47,26 @@ logging.basicConfig(
 LOG = logging.getLogger(__name__)
 
 
+def _resolve_resume_path(resume: Optional[str]) -> Optional[str]:
+    """Resolve checkpoint path before ``os.chdir`` into DEIM or D-FINE.
+
+    Relative paths such as ``DEIM/outputs/...`` are interpreted from ``experiments/``,
+    not from the framework subdirectory after ``chdir``.
+    """
+    if not resume:
+        return resume
+    p = Path(resume)
+    if p.is_absolute():
+        return str(p)
+    cand = (EXPERIMENTS_DIR / resume).resolve()
+    if cand.is_file():
+        return str(cand)
+    cand = (Path.cwd() / resume).resolve()
+    if cand.is_file():
+        return str(cand)
+    return str((EXPERIMENTS_DIR / resume).resolve())
+
+
 # ---------------------------------------------------------------------------
 # Framework helpers
 # ---------------------------------------------------------------------------
@@ -362,6 +382,10 @@ def main():
 
     LOG.info("Framework: %s | Config: %s | Dataset: %s", args.framework, config_path, dataset_name)
 
+    if args.resume:
+        args.resume = _resolve_resume_path(args.resume)
+        LOG.info("Resolved --resume to %s", args.resume)
+
     # Setup framework
     if args.framework == "deim":
         solver, cfg, saved_cwd = _setup_deim(config_path, args.resume or "")
@@ -379,6 +403,8 @@ def main():
             sys.exit(1)
         LOG.info("Auto-detected checkpoint: %s", ckpt)
         resume_path = ckpt
+    if resume_path:
+        resume_path = _resolve_resume_path(resume_path) or resume_path
     cfg.resume = resume_path
 
     solver.eval()
