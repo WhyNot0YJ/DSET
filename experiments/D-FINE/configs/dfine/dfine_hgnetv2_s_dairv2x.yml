@@ -9,6 +9,10 @@ tuning: pretrained/dfine_s_coco.pth
 num_classes: 8
 remap_mscoco_category: False
 
+evaluator:
+  type: CocoEvaluatorTrainLabelMapping
+  iou_types: ['bbox']
+
 epochs: 100
 
 train_dataloader:

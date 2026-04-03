@@ -9,6 +9,10 @@ tuning: pretrained/deim_dfine_hgnetv2_s_coco_120e.pth
 num_classes: 8
 remap_mscoco_category: False
 
+evaluator:
+  type: CocoEvaluatorTrainLabelMapping
+  iou_types: ['bbox']
+
 epoches: 100
 flat_epoch: 48
 no_aug_epoch: 12
