@@ -368,14 +368,20 @@ def main():
     else:
         solver, cfg, saved_cwd = _setup_dfine(config_path, args.resume or "")
 
-    # Auto-find checkpoint if not given
-    if not args.resume:
+    # Resolve checkpoint, then solver.eval(): runs _setup() so solver has model/ema and loads weights.
+    # Without eval(), DetSolver never runs BaseSolver._setup(), so attributes like solver.ema do not exist.
+    resume_path = args.resume
+    if not resume_path:
         output_dir = cfg.yaml_cfg.get("output_dir", "./outputs")
         ckpt = _find_best_checkpoint(output_dir)
         if ckpt is None:
             LOG.error("No checkpoint found in %s. Use --resume to specify.", output_dir)
             sys.exit(1)
         LOG.info("Auto-detected checkpoint: %s", ckpt)
+        resume_path = ckpt
+    cfg.resume = resume_path
+
+    solver.eval()
 
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     model = solver.ema.module if solver.ema else solver.model
