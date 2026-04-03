@@ -167,4 +167,5 @@ cython_debug/
 *.onnx
 test.py
 rtdetrv2_pytorch/output/
+rtdetrv2_pytorch/outputs/
 rtdetrv2_pytorch/dataset/
