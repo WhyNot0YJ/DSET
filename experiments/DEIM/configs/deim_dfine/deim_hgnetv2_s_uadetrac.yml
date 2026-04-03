@@ -1,13 +1,11 @@
 __include__: [
   './deim_hgnetv2_s_coco.yml',
+  '../dataset/uadetrac_detection.yml',
 ]
 
 output_dir: ./outputs/deim_hgnetv2_s_uadetrac
 
 tuning: pretrained/deim_dfine_hgnetv2_s_coco_120e.pth
-
-num_classes: 4
-remap_mscoco_category: False
 
 epoches: 100
 flat_epoch: 48
@@ -18,8 +16,6 @@ train_dataloader:
   total_batch_size: 16
   num_workers: 8
   dataset:
-    img_folder: /root/autodl-fs/datasets/UA-DETRAC_COCO/train
-    ann_file: /root/autodl-fs/datasets/UA-DETRAC_COCO/annotations/instances_train.json
     transforms:
       policy:
         epoch: [4, 48, 88]
@@ -31,6 +27,3 @@ train_dataloader:
 
 val_dataloader:
   num_workers: 8
-  dataset:
-    img_folder: /root/autodl-fs/datasets/UA-DETRAC_COCO/val
-    ann_file: /root/autodl-fs/datasets/UA-DETRAC_COCO/annotations/instances_val.json
