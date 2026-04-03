@@ -25,8 +25,8 @@ train_dataloader:
   collate_fn:
     mixup_epochs: [4, 48]
     stop_epoch: 88
-    scale_low_ratio: 0.9
-    scale_high_ratio: 1.1
+    scale_low_ratio: 0.75
+    scale_high_ratio: 1.25
 
 val_dataloader:
   dataset:
