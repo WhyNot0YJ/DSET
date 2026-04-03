@@ -20,9 +20,6 @@ train_dataloader:
     img_folder: /root/autodl-fs/datasets/UA-DETRAC_COCO/train
     ann_file: /root/autodl-fs/datasets/UA-DETRAC_COCO/annotations/instances_train.json
     return_masks: False
-    transforms:
-      type: Compose
-      ops: ~
   shuffle: True
   num_workers: 4
   drop_last: True
@@ -36,9 +33,6 @@ val_dataloader:
     img_folder: /root/autodl-fs/datasets/UA-DETRAC_COCO/val
     ann_file: /root/autodl-fs/datasets/UA-DETRAC_COCO/annotations/instances_val.json
     return_masks: False
-    transforms:
-      type: Compose
-      ops: ~
   shuffle: False
   num_workers: 4
   drop_last: False
