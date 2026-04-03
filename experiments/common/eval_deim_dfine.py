@@ -19,6 +19,7 @@ import argparse
 import logging
 from pathlib import Path
 from collections import Counter
+from copy import deepcopy
 from typing import Any, Dict, List, Optional, Tuple
 
 import torch
@@ -99,6 +100,57 @@ def _dataset_label2category_map(data_loader):
         if ds is None:
             break
     return None
+
+
+def _resolve_test_ann_file(ann_file: str) -> Optional[str]:
+    """Infer test annotation path from the configured val annotation path."""
+    if not ann_file:
+        return None
+    ann_path = Path(ann_file)
+    candidates = []
+    name = ann_path.name
+    if "instances_val" in name:
+        candidates.append(ann_path.with_name(name.replace("instances_val", "instances_test")))
+    if "instances_train" in name:
+        candidates.append(ann_path.with_name(name.replace("instances_train", "instances_test")))
+    if name != "instances_test.json":
+        candidates.append(ann_path.with_name("instances_test.json"))
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    return None
+
+
+def _resolve_test_img_folder(img_folder: str) -> str:
+    """Infer test image folder while keeping dataset roots that already contain all images."""
+    if not img_folder:
+        return img_folder
+    img_path = Path(img_folder)
+    if img_path.name in {"val", "train"}:
+        test_dir = img_path.with_name("test")
+        if test_dir.exists():
+            return str(test_dir)
+    return img_folder
+
+
+def _build_test_dataloader(cfg) -> Tuple[Optional[Any], Optional[str]]:
+    """Build an eval-only test dataloader by cloning val_dataloader config."""
+    val_cfg = cfg.yaml_cfg.get("val_dataloader", {})
+    dataset_cfg = val_cfg.get("dataset", {})
+    test_ann = _resolve_test_ann_file(dataset_cfg.get("ann_file", ""))
+    if not test_ann:
+        return None, None
+
+    test_loader_cfg = deepcopy(val_cfg)
+    test_loader_cfg["dataset"] = deepcopy(dataset_cfg)
+    test_loader_cfg["dataset"]["ann_file"] = test_ann
+    test_loader_cfg["dataset"]["img_folder"] = _resolve_test_img_folder(
+        test_loader_cfg["dataset"].get("img_folder", "")
+    )
+
+    cfg.yaml_cfg["test_dataloader"] = test_loader_cfg
+    loader = cfg.build_dataloader("test_dataloader")
+    return loader, test_ann
 
 
 @torch.no_grad()
@@ -247,14 +299,14 @@ def compute_cas_metrics(
 # Summary printing (mirrors log_detr_eval_summary)
 # ---------------------------------------------------------------------------
 
-def print_summary(model_name: str, dataset_name: str, metrics: Dict[str, Any]):
+def print_summary(model_name: str, dataset_name: str, split_name: str, metrics: Dict[str, Any]):
     m = metrics
     LOG.info(
-        "  %s [%s]  mAP50=%.4f  mAP75=%.4f  mAP=%.4f\n"
+        "  %s [%s/%s]  mAP50=%.4f  mAP75=%.4f  mAP=%.4f\n"
         "    E/M/H@0.5: %.4f/%.4f/%.4f  |  "
         "S/M/L@0.5: %.4f/%.4f/%.4f  |  "
         "S/M/L@0.5:0.95: %.4f/%.4f/%.4f",
-        model_name, dataset_name,
+        model_name, dataset_name, split_name,
         m.get("mAP_0.5", 0), m.get("mAP_0.75", 0), m.get("mAP_0.5_0.95", 0),
         m.get("AP_easy", 0), m.get("AP_moderate", 0), m.get("AP_hard", 0),
         m.get("AP_small_50", 0), m.get("AP_medium_50", 0), m.get("AP_large_50", 0),
@@ -290,6 +342,8 @@ def main():
     parser.add_argument("--output-csv", default=None,
                         help="CSV path (default: <output_dir>/eval_metrics.csv)")
     parser.add_argument("--device", default="cuda")
+    parser.add_argument("--splits", default="val,test",
+                        help="Comma-separated eval splits to run (default: val,test)")
     args = parser.parse_args()
 
     config_path = str(Path(args.config).resolve())
@@ -330,46 +384,64 @@ def main():
 
     yaml_cfg = getattr(cfg, "yaml_cfg", {}) or {}
     remap_mscoco = bool(yaml_cfg.get("remap_mscoco_category", False))
-    l2c = _dataset_label2category_map(solver.val_dataloader)
-
-    LOG.info("Running inference on val set ...")
-    preds = collect_predictions(
-        model,
-        solver.postprocessor,
-        solver.val_dataloader,
-        device,
-        remap_mscoco_category=remap_mscoco,
-        label2category=l2c,
-    )
-    LOG.info("Collected %d predictions", len(preds))
-
-    # Determine annotation file from config
-    val_cfg = cfg.yaml_cfg.get("val_dataloader", {}).get("dataset", {})
-    ann_file = val_cfg.get("ann_file", "")
-    if not ann_file or not Path(ann_file).exists():
-        LOG.error("Cannot find val annotation file: %s", ann_file)
-        sys.exit(1)
-
-    LOG.info("Computing CaS-compatible metrics from %s ...", ann_file)
-    metrics, class_names = compute_cas_metrics(ann_file, preds, dataset_name)
-
-    print_summary(model_name, dataset_name, metrics)
 
     # Write CSV
     output_dir = Path(cfg.yaml_cfg.get("output_dir", "./outputs"))
     csv_path = Path(args.output_csv) if args.output_csv else output_dir / "eval_metrics.csv"
     csv_path.parent.mkdir(parents=True, exist_ok=True)
+    split_names = [s.strip() for s in args.splits.split(",") if s.strip()]
+    append_csv = csv_path.exists()
+    wrote_any = False
 
-    write_eval_csv(
-        csv_path,
-        model=model_name,
-        dataset=dataset_name,
-        eval_split="val",
-        metrics=metrics,
-        class_names=class_names,
-        append=csv_path.exists(),
-    )
-    LOG.info("Wrote %s", csv_path)
+    for split_name in split_names:
+        if split_name == "val":
+            data_loader = solver.val_dataloader
+            split_cfg = cfg.yaml_cfg.get("val_dataloader", {}).get("dataset", {})
+            ann_file = split_cfg.get("ann_file", "")
+        elif split_name == "test":
+            data_loader, ann_file = _build_test_dataloader(cfg)
+            if data_loader is None or not ann_file:
+                LOG.info("No test split found for config, skipping test evaluation.")
+                continue
+        else:
+            LOG.warning("Unknown split '%s', skipping.", split_name)
+            continue
+
+        if not ann_file or not Path(ann_file).exists():
+            LOG.warning("Cannot find %s annotation file: %s, skipping.", split_name, ann_file)
+            continue
+
+        l2c = _dataset_label2category_map(data_loader)
+        LOG.info("Running inference on %s set ...", split_name)
+        preds = collect_predictions(
+            model,
+            solver.postprocessor,
+            data_loader,
+            device,
+            remap_mscoco_category=remap_mscoco,
+            label2category=l2c,
+        )
+        LOG.info("Collected %d predictions for %s", len(preds), split_name)
+        LOG.info("Computing CaS-compatible metrics from %s ...", ann_file)
+        metrics, class_names = compute_cas_metrics(ann_file, preds, dataset_name)
+        print_summary(model_name, dataset_name, split_name, metrics)
+
+        write_eval_csv(
+            csv_path,
+            model=model_name,
+            dataset=dataset_name,
+            eval_split=split_name,
+            metrics=metrics,
+            class_names=class_names,
+            append=append_csv,
+        )
+        append_csv = True
+        wrote_any = True
+
+    if wrote_any:
+        LOG.info("Wrote %s", csv_path)
+    else:
+        LOG.warning("No eval split was written to CSV.")
 
     os.chdir(saved_cwd)
 
