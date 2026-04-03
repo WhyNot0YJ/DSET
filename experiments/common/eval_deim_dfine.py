@@ -88,8 +88,29 @@ def _setup_dfine(config_path: str, resume: str):
 # Inference
 # ---------------------------------------------------------------------------
 
+def _dataset_label2category_map(data_loader):
+    """Walk wrappers (e.g. Subset) to find CocoDetection.label2category."""
+    ds = data_loader.dataset
+    for _ in range(8):
+        m = getattr(ds, "label2category", None)
+        if m is not None:
+            return m
+        ds = getattr(ds, "dataset", None)
+        if ds is None:
+            break
+    return None
+
+
 @torch.no_grad()
-def collect_predictions(model, postprocessor, data_loader, device) -> List[Dict]:
+def collect_predictions(
+    model,
+    postprocessor,
+    data_loader,
+    device,
+    *,
+    remap_mscoco_category: bool = False,
+    label2category=None,
+) -> List[Dict]:
     """Run inference and return predictions in COCO detection format."""
     model.eval()
     all_preds: List[Dict] = []
@@ -103,7 +124,7 @@ def collect_predictions(model, postprocessor, data_loader, device) -> List[Dict]
         results = postprocessor(outputs, orig_sizes)
 
         for target, result in zip(targets, results):
-            img_id = target["image_id"].item()
+            img_id = int(target["image_id"].flatten()[0].item())
             boxes = result["boxes"].cpu()
             scores = result["scores"].cpu()
             labels = result["labels"].cpu()
@@ -114,9 +135,19 @@ def collect_predictions(model, postprocessor, data_loader, device) -> List[Dict]
             xywh[:, 3] -= xywh[:, 1]
 
             for j in range(len(scores)):
+                lid = int(labels[j].item())
+                # PostProcessor with remap_mscoco_category=True already emits COCO category ids.
+                # Otherwise labels are train indices 0..N-1 — map via dataset (same as CocoEvaluatorTrainLabelMapping / CaS +1 for contiguous 1..N).
+                if remap_mscoco_category:
+                    cat_id = lid
+                elif label2category is not None:
+                    cat_id = int(label2category[lid])
+                else:
+                    cat_id = lid
+
                 all_preds.append({
                     "image_id": img_id,
-                    "category_id": labels[j].item(),
+                    "category_id": cat_id,
                     "bbox": xywh[j].tolist(),
                     "score": scores[j].item(),
                 })
@@ -297,8 +328,19 @@ def main():
     model.to(device)
     model.eval()
 
+    yaml_cfg = getattr(cfg, "yaml_cfg", {}) or {}
+    remap_mscoco = bool(yaml_cfg.get("remap_mscoco_category", False))
+    l2c = _dataset_label2category_map(solver.val_dataloader)
+
     LOG.info("Running inference on val set ...")
-    preds = collect_predictions(model, solver.postprocessor, solver.val_dataloader, device)
+    preds = collect_predictions(
+        model,
+        solver.postprocessor,
+        solver.val_dataloader,
+        device,
+        remap_mscoco_category=remap_mscoco,
+        label2category=l2c,
+    )
     LOG.info("Collected %d predictions", len(preds))
 
     # Determine annotation file from config

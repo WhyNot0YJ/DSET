@@ -1,7 +1,7 @@
 task: detection
 
 evaluator:
-  type: CocoEvaluator
+  type: CocoEvaluatorTrainLabelMapping
   iou_types: ['bbox']
 
 num_classes: 8

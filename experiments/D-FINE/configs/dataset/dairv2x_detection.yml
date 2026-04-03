@@ -3,7 +3,7 @@ task: detection
 epochs: 100
 
 evaluator:
-  type: CocoEvaluator
+  type: CocoEvaluatorTrainLabelMapping
   iou_types: ['bbox']
 
 num_classes: 8
