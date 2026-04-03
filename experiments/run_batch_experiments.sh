@@ -16,8 +16,11 @@ export OMP_NUM_THREADS=1
 # 使用方法：
 #   ./run_batch_experiments.sh                                 # 运行所有实验（完整epochs）
 #   ./run_batch_experiments.sh --test                          # 测试模式：运行所有配置，每个只跑2个epoch
-#   ./run_batch_experiments.sh --rt-detr                       # 只运行 RT-DETR（DAIR + UA-DETRAC，共 2 个配置）
-#   ./run_batch_experiments.sh --dairv2x --rt-detr             # 同上但只跑 DAIR-V2X（1 个 RT-DETR 配置）
+#   ./run_batch_experiments.sh --rt-detr                       # 官方 RT-DETR v1（rtdetr_pytorch，共 2 个）
+#   ./run_batch_experiments.sh --rtdetrv2                      # 官方 RT-DETR v2（rtdetrv2_pytorch + train_adapter.py，默认 --cas-eval）
+#   DAIRV2X_DATA_ROOT=/path UADETRAC_DATA_ROOT=/path ./run_batch_experiments.sh --yes --rtdetrv2
+#   RTDETR_TUNING_CKPT=/path/to.pth ./run_batch_experiments.sh --yes --rt-detr
+#   ./run_batch_experiments.sh --dairv2x --rt-detr             # 同上但只跑 DAIR-V2X（1 个官方 RT-DETR v1 配置）
 #   ./run_batch_experiments.sh --moe-rtdetr                    # 只运行MOE-RTDETR实验（2个配置）
 #   ./run_batch_experiments.sh --cas_detr                      # 只运行CaS_DETR实验（8个配置）
 #   ./run_batch_experiments.sh --yolov5                        # 只运行YOLOv5实验
@@ -31,7 +34,8 @@ export OMP_NUM_THREADS=1
 #   ./run_batch_experiments.sh --deim                           # 只运行 DEIM-S（DAIR + UA-DETRAC）
 #   ./run_batch_experiments.sh --dfine                          # 只运行 D-FINE-S（DAIR + UA-DETRAC）
 #   ./run_batch_experiments.sh --deformable-detr               # 只运行Deformable-DETR实验
-#   ./run_batch_experiments.sh --test --rt-detr                # 测试模式只运行RT-DETR
+#   ./run_batch_experiments.sh --test --rt-detr                # 测试模式只运行官方 RT-DETR v1
+#   ./run_batch_experiments.sh --test --rtdetrv2               # 测试模式只跑官方 RT-DETRv2（2 epoch + cas-eval）
 #   ./run_batch_experiments.sh --test --moe-rtdetr             # 测试模式只运行MOE-RTDETR
 #   ./run_batch_experiments.sh --test --cas_detr                   # 测试模式只运行CaS_DETR
 #   ./run_batch_experiments.sh --test --yolov5                 # 测试模式只运行YOLOv5
@@ -182,6 +186,10 @@ _path_allowed_by_model_size_scope() {
     local want_m="$4"
     local base
     base=$(basename "$path")
+    # 仅 YOLO / YOLOX 的 yaml 受 --n/--s/--m 筛选；其它（如 RT-DETRv2、CaS）不受规模开关影响
+    if [[ "$base" != yolov* ]] && [[ "$base" != yolox* ]]; then
+        return 0
+    fi
 
     if [[ "$base" =~ ^yolov(5|8|12)n_.*\.yaml$ ]]; then
         [ "$want_n" = true ] && return 0 || return 1
@@ -231,8 +239,18 @@ apply_model_size_filter_to_configs() {
 
 # 定义所有可用的实验配置
 declare -A RT_DETR_CONFIGS=(
-    ["rt-detr-r18-dairv2x"]="cas_detr/configs/rtdetr_r18.yaml"
-    ["rt-detr-r18-uadetrac"]="cas_detr/configs/rtdetr_r18_uadetrac.yaml"
+    ["rt-detr-r18-dairv2x"]="RT-DETR/rtdetr_pytorch/configs/rtdetr/rtdetr_r18vd_100e_dairv2x.yml"
+    ["rt-detr-r18-uadetrac"]="RT-DETR/rtdetr_pytorch/configs/rtdetr/rtdetr_r18vd_100e_uadetrac.yml"
+)
+
+# 官方 RT-DETR v2（RT-DETR/rtdetrv2_pytorch/tools/train_adapter.py），训练后 CaS 风格评估见 --cas-eval。
+# 路径格式：<yml 相对 experiments 的路径>@<dairv2x|uadetrac>；数据根可通过环境变量覆盖：
+#   DAIRV2X_DATA_ROOT / UADETRAC_DATA_ROOT
+# 整网 COCO 等预训练权重：RTDETR_TUNING_CKPT=/path/to.pth（或 train_adapter 的 -t）
+# 关闭训练后 CaS 评估：RTDETRV2_CAS_EVAL=0
+declare -A RTDETRV2_ADAPTER_CONFIGS=(
+    ["rtdetrv2-r18-dairv2x"]="RT-DETR/rtdetrv2_pytorch/configs/rtdetrv2/rtdetrv2_r18vd_100e_dairv2x.yml@dairv2x"
+    ["rtdetrv2-r18-uadetrac"]="RT-DETR/rtdetrv2_pytorch/configs/rtdetrv2/rtdetrv2_r18vd_100e_uadetrac.yml@uadetrac"
 )
 
 declare -a CORE_EXPERIMENTS=(
@@ -318,19 +336,34 @@ declare -A NAME_TO_PATH
 build_all_configs() {
     all_configs_paths=()
     NAME_TO_PATH=()
+    local _config_stem
     for key in "${!RT_DETR_CONFIGS[@]}"; do
         local p="${RT_DETR_CONFIGS[$key]}"
         all_configs_paths+=("$p")
         local b
-        b=$(basename "$p" .yaml)
+        _config_stem=$(basename "$p")
+        b="${_config_stem%.yaml}"
+        b="${b%.yml}"
         NAME_TO_PATH["$key"]="$p"
+        NAME_TO_PATH["$b"]="$p"
+    done
+    for key in "${!RTDETRV2_ADAPTER_CONFIGS[@]}"; do
+        local p="${RTDETRV2_ADAPTER_CONFIGS[$key]}"
+        all_configs_paths+=("$p")
+        NAME_TO_PATH["$key"]="$p"
+        local b
+        _config_stem=$(basename "${p%%@*}")
+        b="${_config_stem%.yaml}"
+        b="${b%.yml}"
         NAME_TO_PATH["$b"]="$p"
     done
     for key in "${!MOE_RTDETR_CONFIGS[@]}"; do
         local p="${MOE_RTDETR_CONFIGS[$key]}"
         all_configs_paths+=("$p")
         local b
-        b=$(basename "$p" .yaml)
+        _config_stem=$(basename "$p")
+        b="${_config_stem%.yaml}"
+        b="${b%.yml}"
         NAME_TO_PATH["$key"]="$p"
         NAME_TO_PATH["$b"]="$p"
     done
@@ -338,7 +371,9 @@ build_all_configs() {
         local p="${CaS_DETR_CONFIGS[$key]}"
         all_configs_paths+=("$p")
         local b
-        b=$(basename "$p" .yaml)
+        _config_stem=$(basename "$p")
+        b="${_config_stem%.yaml}"
+        b="${b%.yml}"
         NAME_TO_PATH["$key"]="$p"
         NAME_TO_PATH["$b"]="$p"
     done
@@ -346,7 +381,9 @@ build_all_configs() {
         local p="${YOLOV5_CONFIGS[$key]}"
         all_configs_paths+=("$p")
         local b
-        b=$(basename "$p" .yaml)
+        _config_stem=$(basename "$p")
+        b="${_config_stem%.yaml}"
+        b="${b%.yml}"
         NAME_TO_PATH["$key"]="$p"
         NAME_TO_PATH["$b"]="$p"
     done
@@ -354,7 +391,9 @@ build_all_configs() {
         local p="${YOLOV8_CONFIGS[$key]}"
         all_configs_paths+=("$p")
         local b
-        b=$(basename "$p" .yaml)
+        _config_stem=$(basename "$p")
+        b="${_config_stem%.yaml}"
+        b="${b%.yml}"
         NAME_TO_PATH["$key"]="$p"
         NAME_TO_PATH["$b"]="$p"
     done
@@ -362,7 +401,9 @@ build_all_configs() {
         local p="${YOLOV12_CONFIGS[$key]}"
         all_configs_paths+=("$p")
         local b
-        b=$(basename "$p" .yaml)
+        _config_stem=$(basename "$p")
+        b="${_config_stem%.yaml}"
+        b="${b%.yml}"
         NAME_TO_PATH["$key"]="$p"
         NAME_TO_PATH["$b"]="$p"
     done
@@ -370,7 +411,9 @@ build_all_configs() {
         local p="${YOLOX_CONFIGS[$key]}"
         all_configs_paths+=("$p")
         local b
-        b=$(basename "$p" .yaml)
+        _config_stem=$(basename "$p")
+        b="${_config_stem%.yaml}"
+        b="${b%.yml}"
         NAME_TO_PATH["$key"]="$p"
         NAME_TO_PATH["$b"]="$p"
     done
@@ -378,7 +421,9 @@ build_all_configs() {
         local p="${FASTER_RCNN_CONFIGS[$key]}"
         all_configs_paths+=("$p")
         local b
-        b=$(basename "$p" .yaml)
+        _config_stem=$(basename "$p")
+        b="${_config_stem%.yaml}"
+        b="${b%.yml}"
         NAME_TO_PATH["$key"]="$p"
         NAME_TO_PATH["$b"]="$p"
     done
@@ -394,7 +439,9 @@ build_all_configs() {
         local p="${DEIM_CONFIGS[$key]}"
         all_configs_paths+=("$p")
         local b
-        b=$(basename "$p" .yml)
+        _config_stem=$(basename "$p")
+        b="${_config_stem%.yaml}"
+        b="${b%.yml}"
         NAME_TO_PATH["$key"]="$p"
         NAME_TO_PATH["$b"]="$p"
     done
@@ -402,7 +449,9 @@ build_all_configs() {
         local p="${DFINE_CONFIGS[$key]}"
         all_configs_paths+=("$p")
         local b
-        b=$(basename "$p" .yml)
+        _config_stem=$(basename "$p")
+        b="${_config_stem%.yaml}"
+        b="${b%.yml}"
         NAME_TO_PATH["$key"]="$p"
         NAME_TO_PATH["$b"]="$p"
     done
@@ -667,6 +716,7 @@ parse_arguments() {
     
     # 收集所有指定的实验类型（支持多个参数叠加）
     local has_rt_detr=false
+    local has_rtdetrv2=false
     local has_moe_rtdetr=false
     local has_cas_detr=false
     local has_small_obj=false
@@ -683,6 +733,9 @@ parse_arguments() {
         case "$arg" in
             --rt-detr|--rtdetr)
                 has_rt_detr=true
+                ;;
+            --rtdetrv2|--rt-detr-v2)
+                has_rtdetrv2=true
                 ;;
             --rt-detr-finetune)
                 log_warning "--rt-detr-finetune 已移除，请使用 --rt-detr"
@@ -731,10 +784,11 @@ parse_arguments() {
     done
     
     # 如果指定了实验类型，只运行指定的类型（支持多个）
-    if [ "$has_rt_detr" = true ] || [ "$has_moe_rtdetr" = true ] || [ "$has_cas_detr" = true ] || [ "$has_small_obj" = true ] || [ "$has_yolov5" = true ] || [ "$has_yolov8" = true ] || [ "$has_yolov12" = true ] || [ "$has_yolox" = true ] || [ "$has_fasterrcnn" = true ] || [ "$has_deformable_detr" = true ] || [ "$has_deim" = true ] || [ "$has_dfine" = true ]; then
+    if [ "$has_rt_detr" = true ] || [ "$has_rtdetrv2" = true ] || [ "$has_moe_rtdetr" = true ] || [ "$has_cas_detr" = true ] || [ "$has_small_obj" = true ] || [ "$has_yolov5" = true ] || [ "$has_yolov8" = true ] || [ "$has_yolov12" = true ] || [ "$has_yolox" = true ] || [ "$has_fasterrcnn" = true ] || [ "$has_deformable_detr" = true ] || [ "$has_deim" = true ] || [ "$has_dfine" = true ]; then
         # 显示将要运行的类型
         local selected_types=()
-        [ "$has_rt_detr" = true ] && selected_types+=("RT-DETR")
+        [ "$has_rt_detr" = true ] && selected_types+=("RT-DETRv1")
+        [ "$has_rtdetrv2" = true ] && selected_types+=("RT-DETRv2+train_adapter")
         [ "$has_moe_rtdetr" = true ] && selected_types+=("MOE-RTDETR")
         [ "$has_cas_detr" = true ] && selected_types+=("CaS_DETR")
         [ "$has_small_obj" = true ] && selected_types+=("SmallObj")
@@ -757,6 +811,15 @@ parse_arguments() {
         if [ "$has_rt_detr" = true ]; then
             for key in $(printf '%s\n' "${!RT_DETR_CONFIGS[@]}" | sort); do
                 local p="${RT_DETR_CONFIGS[$key]}"
+                if filter_config "$p"; then
+                    CONFIGS_TO_RUN+=("$p")
+                fi
+            done
+        fi
+
+        if [ "$has_rtdetrv2" = true ]; then
+            for key in $(printf '%s\n' "${!RTDETRV2_ADAPTER_CONFIGS[@]}" | sort); do
+                local p="${RTDETRV2_ADAPTER_CONFIGS[$key]}"
                 if filter_config "$p"; then
                     CONFIGS_TO_RUN+=("$p")
                 fi
@@ -974,7 +1037,8 @@ parse_arguments() {
         echo "使用方法："
         echo "  ./run_batch_experiments.sh                                 # 运行所有实验（完整epochs）"
         echo "  ./run_batch_experiments.sh --test                          # 测试模式：所有配置各跑2个epoch"
-        echo "  ./run_batch_experiments.sh --rt-detr                       # 只运行 RT-DETR（DAIR + UA-DETRAC）"
+        echo "  ./run_batch_experiments.sh --rt-detr                       # 官方 RT-DETR v1（rtdetr_pytorch）"
+        echo "  ./run_batch_experiments.sh --rtdetrv2                      # 官方 rtdetrv2_pytorch + train_adapter（默认 --cas-eval）"
         echo "  ./run_batch_experiments.sh --moe-rtdetr                    # 只运行MOE-RTDETR（2个）"
         echo "  ./run_batch_experiments.sh --cas_detr                      # 只运行CaS_DETR（8个）"
         echo "  ./run_batch_experiments.sh --yolov5                        # 只运行YOLOv5"
@@ -1010,7 +1074,7 @@ parse_arguments() {
         echo "  ./run_batch_experiments.sh --k0.9                          # 只运行 Keep Ratio 0.9 (Slow)"
         echo "  ./run_batch_experiments.sh --core                          # 只运行核心实验（CaS_DETR R18 DAIR）"
         echo "  ./run_batch_experiments.sh --custom cfg1.yaml cfg2.yaml    # 指定配置文件路径"
-        echo "  ./run_batch_experiments.sh --keys rt-detr-r18 moe6-r18     # 通过键名选择"
+        echo "  ./run_batch_experiments.sh --keys rt-detr-r18-dairv2x moe6-r18-dairv2x   # 通过键名选择"
         echo "  ./run_batch_experiments.sh --dairv2x                       # 数据集筛：仅 DAIR-V2X（可叠 --rt-detr 等）"
         echo "  ./run_batch_experiments.sh --uadetrac                      # 数据集筛：仅 UA-DETRAC"
         echo "  ./run_batch_experiments.sh --dataset dairv2x --rt-detr      # 推荐：数据集 + 实验类型（顺序任意；--rtdetr 同 --rt-detr）"
@@ -1032,15 +1096,140 @@ parse_arguments() {
 
 # 运行单个实验
 run_single_experiment() {
-    local config_path=$1
+    local config_path_raw=$1
     local dataset_name="${2:-}"
-    local exp_name=$(basename "$config_path" .yaml)
+    local config_path="$config_path_raw"
+    local rtdetr_adapter_dataset=""
+    if [[ "$config_path_raw" == *"@"* ]]; then
+        config_path="${config_path_raw%%@*}"
+        rtdetr_adapter_dataset="${config_path_raw#*@}"
+    fi
+    local exp_name
+    exp_name=$(basename "$config_path")
+    exp_name="${exp_name%.*}"
     local exp_display="$exp_name"
     if [ -n "$dataset_name" ]; then
         exp_display="${exp_name}@${dataset_name}"
     fi
     local exp_dir=$(dirname "$config_path")
     
+    # 检查配置文件是否存在（Deformable-DETR 使用 Python 脚本；路径相对 experiments 根目录）
+    if [ ! -f "$SCRIPT_DIR/$config_path" ]; then
+        if [[ "$config_path" == *.py ]]; then
+            log_error "训练脚本不存在: $config_path"
+        else
+            log_error "配置文件不存在: $SCRIPT_DIR/$config_path"
+        fi
+        SKIPPED_EXPERIMENTS=$((SKIPPED_EXPERIMENTS + 1))
+        return 1
+    fi
+
+    # 官方 RT-DETR v2：rtdetrv2_pytorch/tools/train_adapter.py（默认 --cas-eval，与 CaS 评估对齐）
+    if [[ -n "$rtdetr_adapter_dataset" ]] && [[ "$config_path" == RT-DETR/rtdetrv2_pytorch/* ]]; then
+        TOTAL_EXPERIMENTS=$((TOTAL_EXPERIMENTS + 1))
+        echo ""
+        echo -e "${PURPLE}========================================${NC}"
+        echo -e "${PURPLE}实验 [$TOTAL_EXPERIMENTS/$TOTAL_PLANNED_RUNS]: ${exp_name}@${rtdetr_adapter_dataset} (RT-DETRv2 train_adapter)${NC}"
+        echo -e "${PURPLE}========================================${NC}"
+        log_info "RT-DETR v2 / train_adapter: $config_path_raw"
+        local start_time=$(date +%s)
+        if command -v python3 &> /dev/null; then
+            python3 -c "import torch; torch.cuda.empty_cache()" 2>/dev/null || true
+            sleep 1
+        fi
+        local original_dir=$(pwd)
+        cd "$SCRIPT_DIR/RT-DETR/rtdetrv2_pytorch"
+        set +e
+        local yml_rel="${config_path#RT-DETR/rtdetrv2_pytorch/}"
+        local out_tag="batch_${exp_name}_${rtdetr_adapter_dataset}"
+        local adapter_cmd=(
+            "$PYTHON_BIN" tools/train_adapter.py
+            -c "$yml_rel"
+            --dataset "$rtdetr_adapter_dataset"
+            --output-dir "outputs/${out_tag}"
+            --experiment-name "${exp_name}_${rtdetr_adapter_dataset}"
+        )
+        if [ "${RTDETRV2_CAS_EVAL:-1}" != "0" ]; then
+            adapter_cmd+=(--cas-eval)
+        fi
+        if [ -n "${DAIRV2X_DATA_ROOT:-}" ] && [ "$rtdetr_adapter_dataset" = "dairv2x" ]; then
+            adapter_cmd+=(--data-root "${DAIRV2X_DATA_ROOT}")
+        fi
+        if [ -n "${UADETRAC_DATA_ROOT:-}" ] && [ "$rtdetr_adapter_dataset" = "uadetrac" ]; then
+            adapter_cmd+=(--data-root "${UADETRAC_DATA_ROOT}")
+        fi
+        if [ "$TEST_MODE" = true ]; then
+            adapter_cmd+=(-u epoches=2)
+        fi
+        "${adapter_cmd[@]}"
+        local exit_code=$?
+        set -e
+        cd "$original_dir"
+        if command -v python3 &> /dev/null; then
+            python3 -c "import torch; torch.cuda.empty_cache(); import gc; gc.collect()" 2>/dev/null || true
+            sleep 2
+        fi
+        local end_time=$(date +%s)
+        local duration=$((end_time - start_time))
+        local duration_formatted=$(printf '%02d:%02d:%02d' $((duration/3600)) $((duration%3600/60)) $((duration%60)))
+        if [ $exit_code -eq 0 ]; then
+            log_success "✓ RT-DETRv2 完成: ${exp_name}@${rtdetr_adapter_dataset} (耗时: $duration_formatted)"
+            SUCCESSFUL_EXPERIMENTS=$((SUCCESSFUL_EXPERIMENTS + 1))
+        else
+            log_error "✗ RT-DETRv2 | ${exp_name}@${rtdetr_adapter_dataset} 失败 (退出码: $exit_code, 耗时: $duration_formatted)"
+            FAILED_EXPERIMENTS=$((FAILED_EXPERIMENTS + 1))
+        fi
+        return $exit_code
+    fi
+
+    # 官方 RT-DETR v1：rtdetr_pytorch/tools/train.py
+    if [[ "$config_path" == RT-DETR/rtdetr_pytorch/* ]]; then
+        TOTAL_EXPERIMENTS=$((TOTAL_EXPERIMENTS + 1))
+        echo ""
+        echo -e "${PURPLE}========================================${NC}"
+        echo -e "${PURPLE}实验 [$TOTAL_EXPERIMENTS/$TOTAL_PLANNED_RUNS]: ${exp_display} (RT-DETR v1)${NC}"
+        echo -e "${PURPLE}========================================${NC}"
+        log_info "RT-DETR v1: $config_path"
+        local start_time=$(date +%s)
+        if command -v python3 &> /dev/null; then
+            python3 -c "import torch; torch.cuda.empty_cache()" 2>/dev/null || true
+            sleep 1
+        fi
+        local original_dir=$(pwd)
+        cd "$SCRIPT_DIR/RT-DETR/rtdetr_pytorch"
+        set +e
+        local yml_rel="${config_path#RT-DETR/rtdetr_pytorch/}"
+        local v1_cmd=(
+            "$PYTHON_BIN" tools/train.py
+            -c "$yml_rel"
+        )
+        if [ -n "${RTDETR_TUNING_CKPT:-}" ]; then
+            v1_cmd+=(-t "${RTDETR_TUNING_CKPT}")
+        fi
+        if [ "$TEST_MODE" = true ]; then
+            v1_cmd+=(-u epoches=2)
+        fi
+        "${v1_cmd[@]}"
+        local exit_code=$?
+        set -e
+        cd "$original_dir"
+        if command -v python3 &> /dev/null; then
+            python3 -c "import torch; torch.cuda.empty_cache(); import gc; gc.collect()" 2>/dev/null || true
+            sleep 2
+        fi
+        local end_time=$(date +%s)
+        local duration=$((end_time - start_time))
+        local duration_formatted=$(printf '%02d:%02d:%02d' $((duration/3600)) $((duration%3600/60)) $((duration%60)))
+        if [ $exit_code -eq 0 ]; then
+            log_success "✓ RT-DETR v1 完成: ${exp_display} (耗时: $duration_formatted)"
+            SUCCESSFUL_EXPERIMENTS=$((SUCCESSFUL_EXPERIMENTS + 1))
+        else
+            log_error "✗ RT-DETR v1 | ${exp_display} 失败 (退出码: $exit_code, 耗时: $duration_formatted)"
+            FAILED_EXPERIMENTS=$((FAILED_EXPERIMENTS + 1))
+        fi
+        return $exit_code
+    fi
+
     TOTAL_EXPERIMENTS=$((TOTAL_EXPERIMENTS + 1))
     
     echo ""
@@ -1050,17 +1239,6 @@ run_single_experiment() {
     log_info "开始实验: $config_path"
     if [ -n "$dataset_name" ]; then
         log_info "数据集: $dataset_name"
-    fi
-    
-    # 检查配置文件是否存在（Deformable-DETR 使用 Python 脚本）
-    if [ ! -f "$config_path" ]; then
-        if [[ "$config_path" == *.py ]]; then
-            log_error "训练脚本不存在: $config_path"
-        else
-            log_error "配置文件不存在: $config_path"
-        fi
-        SKIPPED_EXPERIMENTS=$((SKIPPED_EXPERIMENTS + 1))
-        return 1
     fi
     
     # 确定训练脚本路径
@@ -1229,6 +1407,8 @@ generate_report() {
     echo -e "${BLUE}      - DEIM日志: DEIM/outputs/${NC}"
     echo -e "${BLUE}      - D-FINE日志: D-FINE/output/${NC}"
     echo -e "${BLUE}      - Deformable-DETR日志: deformable-detr/work_dirs/${NC}"
+    echo -e "${BLUE}      - RT-DETR v1: RT-DETR/rtdetr_pytorch/output/${NC}"
+    echo -e "${BLUE}      - RT-DETR v2（train_adapter + --cas-eval）: RT-DETR/rtdetrv2_pytorch/outputs/batch_*/${NC}"
 }
 
 calculate_total_planned_runs() {
@@ -1237,6 +1417,8 @@ calculate_total_planned_runs() {
 
 # 主函数
 main() {
+    cd "$SCRIPT_DIR" || { log_error "无法切换到脚本目录: $SCRIPT_DIR"; exit 1; }
+
     echo -e "${CYAN}"
     echo "╔════════════════════════════════════════════╗"
     echo "║     RT-DETR 批量实验运行系统              ║"
