@@ -13,6 +13,7 @@ epochs: 100
 
 train_dataloader:
   total_batch_size: 16
+  num_workers: 8
   dataset:
     img_folder: /root/autodl-fs/datasets/DAIR-V2X
     ann_file: /root/autodl-fs/datasets/DAIR-V2X/annotations/instances_train.json
@@ -25,6 +26,7 @@ train_dataloader:
     scale_high_ratio: 1.25
 
 val_dataloader:
+  num_workers: 8
   dataset:
     img_folder: /root/autodl-fs/datasets/DAIR-V2X
     ann_file: /root/autodl-fs/datasets/DAIR-V2X/annotations/instances_val.json
