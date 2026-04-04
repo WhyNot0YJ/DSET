@@ -21,8 +21,7 @@ export OMP_NUM_THREADS=1
 #   DAIRV2X_DATA_ROOT=/path UADETRAC_DATA_ROOT=/path ./run_batch_experiments.sh --yes --rtdetrv2
 #   RTDETR_TUNING_CKPT=/path/to.pth ./run_batch_experiments.sh --yes --rtdetrv2
 #   ./run_batch_experiments.sh --dairv2x --rtdetrv2          # 仅 DAIR-V2X 的 RT-DETR v2
-#   ./run_batch_experiments.sh --moe-rtdetr                    # 只运行MOE-RTDETR实验（2个配置）
-#   ./run_batch_experiments.sh --cas_detr                      # 只运行CaS_DETR实验（8个配置）
+#   ./run_batch_experiments.sh --cas_detr                      # 只运行新的 CaS-DETR 第一阶段消融实验（5个配置）
 #   ./run_batch_experiments.sh --yolov5                        # 只运行YOLOv5实验
 #   ./run_batch_experiments.sh --yolov8                        # 只运行YOLOv8实验
 #   ./run_batch_experiments.sh --yolov12                       # 只运行YOLOv12实验
@@ -36,8 +35,7 @@ export OMP_NUM_THREADS=1
 #   ./run_batch_experiments.sh --deformable-detr               # 只运行Deformable-DETR实验
 #   ./run_batch_experiments.sh --test --rt-detr                # 测试模式只跑 RT-DETR v2，等价 --rtdetrv2
 #   ./run_batch_experiments.sh --test --rtdetrv2               # 测试模式只跑官方 RT-DETRv2（2 epoch + cas-eval）
-#   ./run_batch_experiments.sh --test --moe-rtdetr             # 测试模式只运行MOE-RTDETR
-#   ./run_batch_experiments.sh --test --cas_detr                   # 测试模式只运行CaS_DETR
+#   ./run_batch_experiments.sh --test --cas_detr               # 测试模式只运行新的 CaS-DETR 第一阶段消融实验
 #   ./run_batch_experiments.sh --test --yolov5                 # 测试模式只运行YOLOv5
 #   ./run_batch_experiments.sh --test --yolov8                 # 测试模式只运行YOLOv8
 #   ./run_batch_experiments.sh --test --yolov12                # 测试模式只运行YOLOv12
@@ -62,7 +60,7 @@ export OMP_NUM_THREADS=1
 # CaS_DETR / RT-DETR / MOE：输入为 letterbox 到 target_size（见各 YAML 中 augmentation.resize.letterbox_fill，一般 114）。
 # 一键非交互（跳过确认）示例：
 #   ./run_batch_experiments.sh --yes --cas_detr
-#   ./run_batch_experiments.sh --yes --test --rtdetrv2 --moe-rtdetr --cas_detr
+#   ./run_batch_experiments.sh --yes --test --rtdetrv2 --cas_detr
 ################################################################################
 
 set -e  # 遇到错误时不退出（我们会手动处理）
@@ -248,26 +246,15 @@ declare -A RTDETRV2_ADAPTER_CONFIGS=(
 )
 
 declare -a CORE_EXPERIMENTS=(
-    "cas_detr/configs/cas_detr6_r18_ratio0.3.yaml"
-)
-
-declare -A MOE_RTDETR_CONFIGS=(
-    ["moe6-r18-dairv2x"]="cas_detr/configs/moe_rtdetr6_r18.yaml"
-    ["moe6-r18-uadetrac"]="cas_detr/configs/moe_rtdetr6_r18_uadetrac.yaml"
+    "CaS-DETR/configs/dataset/ablation/cas_deim_cass_only_keep07_hgnetv2_s_dairv2x.yml"
 )
 
 declare -A CaS_DETR_CONFIGS=(
-    ["cas_detr6-r18-0.3-dairv2x"]="cas_detr/configs/cas_detr6_r18_ratio0.3.yaml"
-    ["cas_detr6-r18-0.3-uadetrac"]="cas_detr/configs/cas_detr6_r18_ratio0.3_uadetrac.yaml"
-    ["caip-cas_detr6-r18-dairv2x"]="cas_detr/configs/caip_cas_detr6_r18.yaml"
-    ["caip-cas_detr6-r18-uadetrac"]="cas_detr/configs/caip_cas_detr6_r18_uadetrac.yaml"
-    # Small-object enhancement experiments
-    ["caip-sqr-r18-dairv2x"]="cas_detr/configs/caip_cas_detr6_r18_sqr.yaml"
-    ["caip-sqr-r18-uadetrac"]="cas_detr/configs/caip_cas_detr6_r18_sqr_uadetrac.yaml"
-    ["caip-detail-r18-dairv2x"]="cas_detr/configs/caip_cas_detr6_r18_detail.yaml"
-    ["caip-detail-r18-uadetrac"]="cas_detr/configs/caip_cas_detr6_r18_detail_uadetrac.yaml"
-    ["caip-sqr-detail-r18-dairv2x"]="cas_detr/configs/caip_cas_detr6_r18_sqr_detail.yaml"
-    ["caip-sqr-detail-r18-uadetrac"]="cas_detr/configs/caip_cas_detr6_r18_sqr_detail_uadetrac.yaml"
+    ["casdeim-moe-only-dairv2x"]="CaS-DETR/configs/dataset/ablation/cas_deim_moe_only_hgnetv2_s_dairv2x.yml"
+    ["casdeim-cass-only-keep07-dairv2x"]="CaS-DETR/configs/dataset/ablation/cas_deim_cass_only_keep07_hgnetv2_s_dairv2x.yml"
+    ["casdeim-cass-only-keep05-dairv2x"]="CaS-DETR/configs/dataset/ablation/cas_deim_cass_only_keep05_hgnetv2_s_dairv2x.yml"
+    ["casdeim-moe-cass-keep07-dairv2x"]="CaS-DETR/configs/dataset/ablation/cas_deim_moe_cass_keep07_hgnetv2_s_dairv2x.yml"
+    ["casdeim-moe-cass-keep05-dairv2x"]="CaS-DETR/configs/dataset/ablation/cas_deim_moe_cass_keep05_hgnetv2_s_dairv2x.yml"
 )
 
 declare -A YOLOV5_CONFIGS=(
@@ -339,16 +326,6 @@ build_all_configs() {
         _config_stem=$(basename "${p%%@*}")
         b="${_config_stem%.yaml}"
         b="${b%.yml}"
-        NAME_TO_PATH["$b"]="$p"
-    done
-    for key in "${!MOE_RTDETR_CONFIGS[@]}"; do
-        local p="${MOE_RTDETR_CONFIGS[$key]}"
-        all_configs_paths+=("$p")
-        local b
-        _config_stem=$(basename "$p")
-        b="${_config_stem%.yaml}"
-        b="${b%.yml}"
-        NAME_TO_PATH["$key"]="$p"
         NAME_TO_PATH["$b"]="$p"
     done
     for key in "${!CaS_DETR_CONFIGS[@]}"; do
@@ -516,10 +493,8 @@ parse_arguments() {
     local has_n=false
     local has_s=false
     local has_m=false
-    local has_k03=false
     local has_k05=false
     local has_k07=false
-    local has_k09=false
     local filtered_args=()
     
     local idx=0
@@ -569,11 +544,6 @@ parse_arguments() {
             idx=$((idx + 1))
             continue
         fi
-        if [ "$arg" == "--k0.3" ]; then
-            has_k03=true
-            idx=$((idx + 1))
-            continue
-        fi
         if [ "$arg" == "--k0.5" ]; then
             has_k05=true
             idx=$((idx + 1))
@@ -581,11 +551,6 @@ parse_arguments() {
         fi
         if [ "$arg" == "--k0.7" ]; then
             has_k07=true
-            idx=$((idx + 1))
-            continue
-        fi
-        if [ "$arg" == "--k0.9" ]; then
-            has_k09=true
             idx=$((idx + 1))
             continue
         fi
@@ -634,12 +599,10 @@ parse_arguments() {
         log_info "Backbone过滤: $backbone_filter"
     fi
 
-    if [ "$has_k03" = true ] || [ "$has_k05" = true ] || [ "$has_k07" = true ] || [ "$has_k09" = true ]; then
+    if [ "$has_k05" = true ] || [ "$has_k07" = true ]; then
         local selected_ratios=()
-        [ "$has_k03" = true ] && selected_ratios+=("Ratio 0.3")
         [ "$has_k05" = true ] && selected_ratios+=("Ratio 0.5")
         [ "$has_k07" = true ] && selected_ratios+=("Ratio 0.7")
-        [ "$has_k09" = true ] && selected_ratios+=("Ratio 0.9")
         local ratio_filter=$(IFS='+'; echo "${selected_ratios[*]}")
         log_info "Ratio过滤: $ratio_filter"
     fi
@@ -660,19 +623,13 @@ parse_arguments() {
             if [ "$match_backbone" = false ]; then return 1; fi
         fi
         
-        # 2. Ratio Filter (k0.3 / k0.5 / k0.7 / k0.9)
-        if [ "$has_k03" = true ] || [ "$has_k05" = true ] || [ "$has_k07" = true ] || [ "$has_k09" = true ]; then
+        # 2. Ratio Filter (k0.5 / k0.7)
+        if [ "$has_k05" = true ] || [ "$has_k07" = true ]; then
             local match_ratio=false
-            if [ "$has_k03" = true ] && [[ "$config_path" == *"ratio0.3"* ]]; then
+            if [ "$has_k05" = true ] && ([[ "$config_path" == *"ratio0.5"* ]] || [[ "$config_path" == *"keep05"* ]]); then
                 match_ratio=true
             fi
-            if [ "$has_k05" = true ] && [[ "$config_path" == *"ratio0.5"* ]]; then
-                match_ratio=true
-            fi
-            if [ "$has_k07" = true ] && [[ "$config_path" == *"ratio0.7"* ]]; then
-                match_ratio=true
-            fi
-            if [ "$has_k09" = true ] && [[ "$config_path" == *"ratio0.9"* ]]; then
+            if [ "$has_k07" = true ] && ([[ "$config_path" == *"ratio0.7"* ]] || [[ "$config_path" == *"keep07"* ]]); then
                 match_ratio=true
             fi
             if [ "$match_ratio" = false ]; then return 1; fi
@@ -700,9 +657,7 @@ parse_arguments() {
     
     # 收集所有指定的实验类型（支持多个参数叠加）
     local has_rtdetrv2=false
-    local has_moe_rtdetr=false
     local has_cas_detr=false
-    local has_small_obj=false
     local has_yolov5=false
     local has_yolov8=false
     local has_yolov12=false
@@ -721,14 +676,8 @@ parse_arguments() {
                 log_warning "--rt-detr-finetune 已移除，请使用 --rtdetrv2"
                 has_rtdetrv2=true
                 ;;
-            --moe-rtdetr)
-                has_moe_rtdetr=true
-                ;;
             --cas_detr)
                 has_cas_detr=true
-                ;;
-            --small-obj)
-                has_small_obj=true
                 ;;
             --yolov5)
                 has_yolov5=true
@@ -764,13 +713,11 @@ parse_arguments() {
     done
     
     # 如果指定了实验类型，只运行指定的类型（支持多个）
-    if [ "$has_rtdetrv2" = true ] || [ "$has_moe_rtdetr" = true ] || [ "$has_cas_detr" = true ] || [ "$has_small_obj" = true ] || [ "$has_yolov5" = true ] || [ "$has_yolov8" = true ] || [ "$has_yolov12" = true ] || [ "$has_yolox" = true ] || [ "$has_fasterrcnn" = true ] || [ "$has_deformable_detr" = true ] || [ "$has_deim" = true ] || [ "$has_dfine" = true ]; then
+    if [ "$has_rtdetrv2" = true ] || [ "$has_cas_detr" = true ] || [ "$has_yolov5" = true ] || [ "$has_yolov8" = true ] || [ "$has_yolov12" = true ] || [ "$has_yolox" = true ] || [ "$has_fasterrcnn" = true ] || [ "$has_deformable_detr" = true ] || [ "$has_deim" = true ] || [ "$has_dfine" = true ]; then
         # 显示将要运行的类型
         local selected_types=()
         [ "$has_rtdetrv2" = true ] && selected_types+=("RT-DETRv2+train_adapter")
-        [ "$has_moe_rtdetr" = true ] && selected_types+=("MOE-RTDETR")
         [ "$has_cas_detr" = true ] && selected_types+=("CaS_DETR")
-        [ "$has_small_obj" = true ] && selected_types+=("SmallObj")
         [ "$has_yolov5" = true ] && selected_types+=("YOLOv5")
         [ "$has_yolov8" = true ] && selected_types+=("YOLOv8")
         [ "$has_yolov12" = true ] && selected_types+=("YOLOv12")
@@ -796,15 +743,6 @@ parse_arguments() {
             done
         fi
         
-        if [ "$has_moe_rtdetr" = true ]; then
-            for key in $(printf '%s\n' "${!MOE_RTDETR_CONFIGS[@]}" | sort); do
-                local p="${MOE_RTDETR_CONFIGS[$key]}"
-                if filter_config "$p"; then
-                    CONFIGS_TO_RUN+=("$p")
-                fi
-            done
-        fi
-        
         if [ "$has_cas_detr" = true ]; then
             for key in $(printf '%s\n' "${!CaS_DETR_CONFIGS[@]}" | sort); do
                 local p="${CaS_DETR_CONFIGS[$key]}"
@@ -814,18 +752,6 @@ parse_arguments() {
             done
         fi
 
-        if [ "$has_small_obj" = true ]; then
-            local _small_obj_keys=("caip-sqr-r18-dairv2x" "caip-sqr-r18-uadetrac"
-                                   "caip-detail-r18-dairv2x" "caip-detail-r18-uadetrac"
-                                   "caip-sqr-detail-r18-dairv2x" "caip-sqr-detail-r18-uadetrac")
-            for key in "${_small_obj_keys[@]}"; do
-                local p="${CaS_DETR_CONFIGS[$key]}"
-                if [ -n "$p" ] && filter_config "$p"; then
-                    CONFIGS_TO_RUN+=("$p")
-                fi
-            done
-        fi
-        
         if [ "$has_yolov5" = true ]; then
             for key in $(printf '%s\n' "${!YOLOV5_CONFIGS[@]}" | sort); do
                 local p="${YOLOV5_CONFIGS[$key]}"
@@ -899,14 +825,7 @@ parse_arguments() {
                 CONFIGS_TO_RUN+=("$p")
             fi
         done
-        # MOE-RTDETR实验（按字典序：moe4→moe6→moe8）
-        for key in $(printf '%s\n' "${!MOE_RTDETR_CONFIGS[@]}" | sort); do
-            local p="${MOE_RTDETR_CONFIGS[$key]}"
-            if filter_config "$p"; then
-                CONFIGS_TO_RUN+=("$p")
-            fi
-        done
-        # CaS_DETR实验（按字典序：cas_detr4→cas_detr48→cas_detr6）
+        # CaS-DETR 第一阶段实验（按字典序）
         for key in $(printf '%s\n' "${!CaS_DETR_CONFIGS[@]}" | sort); do
             local p="${CaS_DETR_CONFIGS[$key]}"
             if filter_config "$p"; then
@@ -1009,8 +928,7 @@ parse_arguments() {
         echo "  ./run_batch_experiments.sh --test                          # 测试模式：所有配置各跑2个epoch"
         echo "  ./run_batch_experiments.sh --rt-detr                       # 与 --rtdetrv2 相同，仅 RT-DETR v2"
         echo "  ./run_batch_experiments.sh --rtdetrv2                      # 官方 rtdetrv2_pytorch + train_adapter（默认 --cas-eval）"
-        echo "  ./run_batch_experiments.sh --moe-rtdetr                    # 只运行MOE-RTDETR（2个）"
-        echo "  ./run_batch_experiments.sh --cas_detr                      # 只运行CaS_DETR（8个）"
+        echo "  ./run_batch_experiments.sh --cas_detr                      # 只运行新的 CaS-DETR 第一阶段消融（5个）"
         echo "  ./run_batch_experiments.sh --yolov5                        # 只运行YOLOv5"
         echo "  ./run_batch_experiments.sh --yolov8                        # 只运行YOLOv8"
         echo "  ./run_batch_experiments.sh --yolov12                       # 只运行YOLOv12"
@@ -1023,38 +941,35 @@ parse_arguments() {
         echo "  ./run_batch_experiments.sh --dfine                          # 只运行 D-FINE-S（DAIR + UA-DETRAC）"
         echo "  ./run_batch_experiments.sh --deformable-detr               # 只运行Deformable-DETR"
         echo "  ./run_batch_experiments.sh --test --rt-detr                # 测试模式只跑 RT-DETR v2"
-        echo "  ./run_batch_experiments.sh --test --moe-rtdetr             # 测试模式只运行MOE-RTDETR"
-        echo "  ./run_batch_experiments.sh --test --cas_detr                   # 测试模式只运行CaS_DETR"
+        echo "  ./run_batch_experiments.sh --test --cas_detr               # 测试模式只运行 CaS-DETR"
         echo "  ./run_batch_experiments.sh --test --yolov5                 # 测试模式只运行YOLOv5"
         echo "  ./run_batch_experiments.sh --test --yolov8                 # 测试模式只运行YOLOv8"
         echo "  ./run_batch_experiments.sh --test --yolov12                # 测试模式只运行YOLOv12"
         echo "  ./run_batch_experiments.sh --test --yolox                  # 测试模式只运行 YOLOX"
         echo "  ./run_batch_experiments.sh --test --fasterrcnn             # 测试模式只运行 Faster R-CNN"
         echo "  ./run_batch_experiments.sh --test --deformable-detr        # 测试模式只运行Deformable-DETR"
-        echo "  ./run_batch_experiments.sh --rtdetrv2 --moe-rtdetr --cas_detr   # 运行多个实验类型（可叠加）"
+        echo "  ./run_batch_experiments.sh --rtdetrv2 --cas_detr               # 运行多个实验类型（可叠加）"
         echo "  ./run_batch_experiments.sh --test --rtdetrv2 --cas_detr          # 测试模式运行多个类型"
         echo "  ./run_batch_experiments.sh --r18                           # 只运行R18"
         echo "  ./run_batch_experiments.sh --r18                           # 只运行R18"
         echo "  ./run_batch_experiments.sh --n                             # 只运行所有 n 规模 YOLO（v5/v8/v12）"
         echo "  ./run_batch_experiments.sh --s                             # 只运行所有 s 规模 YOLO / YOLOX"
         echo "  ./run_batch_experiments.sh --m                             # 只运行所有 m 规模 YOLO / YOLOX"
-        echo "  ./run_batch_experiments.sh --k0.3                          # 只运行 Keep Ratio 0.3 (Fast)"
         echo "  ./run_batch_experiments.sh --k0.5                          # 只跑路径名含 ratio0.5 的配置"
         echo "  ./run_batch_experiments.sh --k0.7                          # 只运行 Keep Ratio 0.7"
-        echo "  ./run_batch_experiments.sh --k0.9                          # 只运行 Keep Ratio 0.9 (Slow)"
-        echo "  ./run_batch_experiments.sh --core                          # 只运行核心实验（CaS_DETR R18 DAIR）"
+        echo "  ./run_batch_experiments.sh --core                          # 只运行核心实验（CaS-DETR moe+cass, DAIR）"
         echo "  ./run_batch_experiments.sh --custom cfg1.yaml cfg2.yaml    # 指定配置文件路径"
-        echo "  ./run_batch_experiments.sh --keys rtdetrv2-r18-dairv2x moe6-r18-dairv2x   # 通过键名选择"
+        echo "  ./run_batch_experiments.sh --keys rtdetrv2-r18-dairv2x casdeim-moe-only-dairv2x   # 通过键名选择"
         echo "  ./run_batch_experiments.sh --dairv2x                       # 数据集筛：仅 DAIR-V2X（可叠 --rtdetrv2 等）"
         echo "  ./run_batch_experiments.sh --uadetrac                      # 数据集筛：仅 UA-DETRAC"
         echo "  ./run_batch_experiments.sh --dataset dairv2x --rtdetrv2     # 推荐：数据集 + 实验类型（顺序任意；--rt-detr 同 --rtdetrv2）"
         echo "  ./run_batch_experiments.sh --dataset dairv2x,uadetrac       # 同传 --dairv2x --uadetrac（不筛）"
         echo "  ./run_batch_experiments.sh --select                        # 交互式选择"
         echo "  ./run_batch_experiments.sh --rerun-failed [LOG_DIR]        # 重跑失败实验"
-        echo "  ./run_batch_experiments.sh --yes --cas_detr                 # 非交互一键跑 CaS_DETR"
+        echo "  ./run_batch_experiments.sh --yes --cas_detr                 # 非交互一键跑 CaS-DETR"
         echo "  ./run_batch_experiments.sh --dairv2x --rtdetrv2             # 仅 DAIR-V2X 的 RT-DETR v2"
         echo "  ./run_batch_experiments.sh --dataset dairv2x --rtdetr       # 同上（--dataset 写法）"
-        echo "  ./run_batch_experiments.sh --uadetrac --cas_detr            # 仅 UA-DETRAC 的 CaS_DETR"
+        echo "  ./run_batch_experiments.sh --dairv2x --cas_detr             # 仅 DAIR-V2X 的 CaS-DETR 第一阶段消融"
         echo "  ./run_batch_experiments.sh --yolo --s                      # 同上（推荐简写）"
         echo "  ./run_batch_experiments.sh --yolov5 --yolov8 --yolov12 --yolox --s  # 跑所有 s 规模 YOLO / YOLOX"
         exit 1
@@ -1191,16 +1106,16 @@ run_single_experiment() {
     elif [[ "$config_path" == D-FINE/* ]]; then
         TRAIN_SCRIPT="train.py"
         WORK_DIR="D-FINE"
-    elif [[ "$exp_dir" == *"cas_detr"* ]]; then
-        TRAIN_SCRIPT="cas_detr/train.py"
-        WORK_DIR="cas_detr"
+    elif [[ "$config_path" == CaS-DETR/* ]]; then
+        TRAIN_SCRIPT="train.py"
+        WORK_DIR="CaS-DETR"
     elif [[ "$exp_dir" == *"deformable-detr"* ]]; then
         # Deformable-DETR 使用 Python 脚本而不是 YAML 配置
         TRAIN_SCRIPT="deformable-detr/train_deformable_r18.py"
         WORK_DIR="deformable-detr"
     else
-        TRAIN_SCRIPT="cas_detr/train.py"
-        WORK_DIR="cas_detr"
+        TRAIN_SCRIPT="train.py"
+        WORK_DIR="CaS-DETR"
     fi
     
     # 记录开始时间
@@ -1218,14 +1133,17 @@ run_single_experiment() {
     cd "$WORK_DIR"
     set +e  # 临时允许错误
     
-    # DEIM / D-FINE: train.py -c <yml>；整网微调路径默认写在 yaml 的 tuning；可用 DEIM_TUNING_CKPT / DFINE_TUNING_CKPT 覆盖
-    if [[ "$WORK_DIR" == "DEIM" ]] || [[ "$WORK_DIR" == "D-FINE" ]]; then
+    # DEIM / CaS-DETR / D-FINE: train.py -c <yml>；整网微调路径默认写在 yaml 的 tuning
+    if [[ "$WORK_DIR" == "DEIM" ]] || [[ "$WORK_DIR" == "CaS-DETR" ]] || [[ "$WORK_DIR" == "D-FINE" ]]; then
         local fw_flag="deim"
+        [[ "$WORK_DIR" == "CaS-DETR" ]] && fw_flag="casdeim"
         [[ "$WORK_DIR" == "D-FINE" ]] && fw_flag="dfine"
         local yml_rel="${config_path#${WORK_DIR}/}"  # e.g. configs/deim_dfine/deim_hgnetv2_s_dairv2x.yml
 
         local pretrained_arg=""
         if [[ "$WORK_DIR" == "DEIM" ]] && [[ -n "${DEIM_TUNING_CKPT:-}" ]]; then
+            pretrained_arg="-t ${DEIM_TUNING_CKPT}"
+        elif [[ "$WORK_DIR" == "CaS-DETR" ]] && [[ -n "${DEIM_TUNING_CKPT:-}" ]]; then
             pretrained_arg="-t ${DEIM_TUNING_CKPT}"
         elif [[ "$WORK_DIR" == "D-FINE" ]] && [[ -n "${DFINE_TUNING_CKPT:-}" ]]; then
             pretrained_arg="-t ${DFINE_TUNING_CKPT}"
@@ -1233,7 +1151,7 @@ run_single_experiment() {
 
         if [ "$TEST_MODE" = true ]; then
             "$PYTHON_BIN" train.py -c "$yml_rel" $pretrained_arg --test-only 2>&1 || true
-            log_warning "DEIM/D-FINE test-only: 跳过完整训练，仅验证配置可加载"
+            log_warning "DEIM/CaS-DETR/D-FINE test-only: 跳过完整训练，仅验证配置可加载"
         else
             "$PYTHON_BIN" train.py -c "$yml_rel" $pretrained_arg
         fi
@@ -1282,8 +1200,8 @@ run_single_experiment() {
         "$PYTHON_BIN" train.py --config "../$config_path"
     fi
     
-    # DEIM/D-FINE 在 if 分支内已有 train_exit；其余分支用 $?
-    if [[ "$WORK_DIR" == "DEIM" ]] || [[ "$WORK_DIR" == "D-FINE" ]]; then
+    # DEIM/CaS-DETR/D-FINE 在 if 分支内已有 train_exit；其余分支用 $?
+    if [[ "$WORK_DIR" == "DEIM" ]] || [[ "$WORK_DIR" == "CaS-DETR" ]] || [[ "$WORK_DIR" == "D-FINE" ]]; then
         local exit_code=${train_exit:-$?}
     else
         local exit_code=$?
@@ -1324,7 +1242,7 @@ generate_report() {
     echo -e "${GREEN}成功: $SUCCESSFUL_EXPERIMENTS${NC} | ${RED}失败: $FAILED_EXPERIMENTS${NC} | ${YELLOW}跳过: $SKIPPED_EXPERIMENTS${NC}"
     echo ""
     echo -e "${BLUE}提示: 实验结果（包括mAP等指标）已保存在各训练脚本生成的日志目录中${NC}"
-    echo -e "${BLUE}      - 统一 DETR 消融日志: cas_detr/logs/${NC}"
+    echo -e "${BLUE}      - CaS-DETR 消融日志: CaS-DETR/outputs/ablation/${NC}"
     echo -e "${BLUE}      - YOLO统一日志: yolo/logs/${NC}"
     echo -e "${BLUE}      - DEIM日志: DEIM/outputs/${NC}"
     echo -e "${BLUE}      - D-FINE日志: D-FINE/output/${NC}"

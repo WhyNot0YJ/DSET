@@ -170,7 +170,7 @@ def extract_per_category_ap_from_coco_eval(
     """
     从 ``COCOeval.accumulate()`` 后的 ``precision[T,R,K,A,M]`` 提取每类 AP@0.5 与 AP@0.5:0.95。
 
-    与 ``cas_detr/train.py`` 原 ``_extract_per_category_ap_from_eval`` 逻辑一致，供 DETR / YOLO 共用。
+    Extract per-category AP@0.5 and AP@0.5:0.95 from ``COCOeval`` for shared DETR / YOLO reporting.
     """
     per_cat_50 = {str(cat["name"]): 0.0 for cat in categories}
     per_cat_5095 = {str(cat["name"]): 0.0 for cat in categories}

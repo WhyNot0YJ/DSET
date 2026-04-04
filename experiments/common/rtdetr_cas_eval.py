@@ -34,7 +34,7 @@ def cxcywh_to_xywh_orig(
     letterbox_pad: Optional[torch.Tensor] = None,
     letterbox_scale: Optional[torch.Tensor] = None,
 ) -> np.ndarray:
-    """与 ``cas_detr/train.py`` 中 ``_cxcywh_to_xywh_orig`` 一致（GT 为归一化 cxcywh）。"""
+    """Convert normalized ``cxcywh`` GT boxes back to original-image ``xywh``."""
     if boxes.numel() == 0:
         return np.zeros((0, 4), dtype=np.float64)
 

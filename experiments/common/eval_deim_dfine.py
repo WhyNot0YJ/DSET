@@ -75,8 +75,8 @@ def _resolve_resume_path(resume: Optional[str]) -> Optional[str]:
 # Framework helpers
 # ---------------------------------------------------------------------------
 
-def _setup_deim(config_path: str, resume: str):
-    fw_dir = EXPERIMENTS_DIR / "DEIM"
+def _setup_deim(config_path: str, resume: str, framework_dir: str = "DEIM"):
+    fw_dir = EXPERIMENTS_DIR / framework_dir
     sys.path.insert(0, str(fw_dir))
     saved_cwd = os.getcwd()
     os.chdir(fw_dir)
@@ -350,9 +350,9 @@ def _find_best_checkpoint(output_dir: str) -> Optional[str]:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="CaS-compatible eval for DEIM / D-FINE")
-    parser.add_argument("--framework", required=True, choices=["deim", "dfine"],
-                        help="Which framework (deim or dfine)")
+    parser = argparse.ArgumentParser(description="CaS-compatible eval for DEIM / CaS-DETR / D-FINE")
+    parser.add_argument("--framework", required=True, choices=["deim", "casdeim", "dfine"],
+                        help="Which framework (deim, casdeim or dfine)")
     parser.add_argument("--config", required=True, help="Path to experiment YAML config")
     parser.add_argument("--resume", default=None,
                         help="Checkpoint path. If omitted, auto-detect from output_dir in config.")
@@ -389,7 +389,9 @@ def main():
 
     # Setup framework
     if args.framework == "deim":
-        solver, cfg, saved_cwd = _setup_deim(config_path, args.resume or "")
+        solver, cfg, saved_cwd = _setup_deim(config_path, args.resume or "", framework_dir="DEIM")
+    elif args.framework == "casdeim":
+        solver, cfg, saved_cwd = _setup_deim(config_path, args.resume or "", framework_dir="CaS-DETR")
     else:
         solver, cfg, saved_cwd = _setup_dfine(config_path, args.resume or "")
 

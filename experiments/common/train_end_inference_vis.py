@@ -1,5 +1,5 @@
 """
-训练结束后在验证集上导出「预测 | GT」对比图，绘制方式与 ``cas_detr/batch_inference.py`` 一致
+训练结束后在验证集上导出「预测 | GT」对比图，使用统一的 BGR 可视化样式
 （BGR、OpenCV、可选 DAIR camera JSON GT 第三列）。
 
 在实验 yaml 中设置 ``vis_after_train: true`` 或 ``train_end_vis: { enable: true }`` 开启。
@@ -7,7 +7,8 @@
 
 from __future__ import annotations
 
-import sys
+import json
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -16,7 +17,7 @@ import numpy as np
 import torch
 import torchvision
 
-# --- BGR 调色板：与 cas_detr/batch_inference 中 8 类顺序兼容，更多类则循环使用 ---
+# --- BGR 调色板：默认按 8 类顺序定义，更多类则循环使用 ---
 DEFAULT_COLORS_BGR: List[Tuple[int, int, int]] = [
     (255, 0, 0),
     (0, 255, 0),
@@ -134,6 +135,74 @@ def _colors(n: int) -> List[Tuple[int, int, int]]:
     return out
 
 
+def _get_gt_annotation_path(image_path: Path) -> Optional[Path]:
+    """Infer DAIR-style camera annotation path from image path."""
+    try:
+        if image_path.parent.name == "image":
+            data_root = image_path.parent.parent
+            for cand in (
+                data_root / "annotations" / "camera" / f"{image_path.stem}.json",
+                data_root / "infrastructure-side" / "annotations" / "camera" / f"{image_path.stem}.json",
+            ):
+                if cand.exists():
+                    return cand
+        json_path = image_path.with_suffix(".json")
+        if json_path.exists():
+            return json_path
+    except Exception:
+        return None
+    return None
+
+
+def _load_dair_gt_boxes(json_path: Path, class_names: Sequence[str]) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Load DAIR-V2X camera JSON boxes into draw-ready arrays."""
+    with json_path.open(encoding="utf-8") as fh:
+        data = json.load(fh)
+
+    if not isinstance(data, list):
+        return (
+            np.zeros((0,), dtype=np.int64),
+            np.zeros((0, 4), dtype=np.float32),
+            np.zeros((0,), dtype=np.float32),
+        )
+
+    name_to_id = {name: i for i, name in enumerate(class_names)}
+    merge_map = {"Barrowlist": "Cyclist"}
+    ignore_classes = {
+        "PedestrianIgnore",
+        "CarIgnore",
+        "OtherIgnore",
+        "Unknown_movable",
+        "Unknown_unmovable",
+    }
+
+    labels: List[int] = []
+    boxes: List[List[float]] = []
+    scores: List[float] = []
+    for ann in data:
+        if "type" not in ann or "2d_box" not in ann:
+            continue
+        cat_name = merge_map.get(ann["type"], ann["type"])
+        if cat_name in ignore_classes or cat_name not in name_to_id:
+            continue
+        box_2d = ann["2d_box"]
+        x1 = float(box_2d.get("xmin", 0.0))
+        y1 = float(box_2d.get("ymin", 0.0))
+        x2 = float(box_2d.get("xmax", 0.0))
+        y2 = float(box_2d.get("ymax", 0.0))
+        if x2 <= x1 or y2 <= y1:
+            continue
+        labels.append(name_to_id[cat_name])
+        boxes.append([x1, y1, x2, y2])
+        scores.append(1.0)
+
+    return (
+        np.asarray(labels, dtype=np.int64),
+        np.asarray(boxes, dtype=np.float32),
+        np.asarray(scores, dtype=np.float32),
+    )
+
+
 def _vis_params(yaml_cfg: Dict[str, Any]) -> Tuple[bool, int, float]:
     nested = yaml_cfg.get("train_end_vis")
     if isinstance(nested, dict):
@@ -153,22 +222,20 @@ def _try_dair_json_panel(
     class_names: Sequence[str],
     bgr: np.ndarray,
 ) -> Optional[np.ndarray]:
-    cas_root = Path(__file__).resolve().parent.parent / "cas_detr"
-    if not cas_root.is_dir():
+    jp = _get_gt_annotation_path(Path(image_path))
+    if jp is None:
         return None
-    if str(cas_root) not in sys.path:
-        sys.path.insert(0, str(cas_root))
-    try:
-        from batch_inference import draw_boxes, get_gt_annotation_path, load_gt_boxes
-    except Exception:
-        return None
-    jp = get_gt_annotation_path(Path(image_path))
-    if not jp:
-        return None
-    gt_labels, gt_boxes, gt_scores = load_gt_boxes(jp, list(class_names))
+    gt_labels, gt_boxes, gt_scores = _load_dair_gt_boxes(jp, list(class_names))
     if len(gt_labels) == 0:
         return None
-    panel = draw_boxes(bgr.copy(), gt_labels, gt_boxes, gt_scores, list(class_names), None)
+    panel = draw_boxes_bgr(
+        bgr.copy(),
+        gt_labels,
+        gt_boxes,
+        gt_scores,
+        list(class_names),
+        _colors(len(class_names)),
+    )
     cv2.putText(
         panel,
         "DAIR JSON GT",

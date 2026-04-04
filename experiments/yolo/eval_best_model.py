@@ -83,7 +83,7 @@ def main():
         print(
             "ERROR: 该 config 来自 CaS_DETR / DETR 实验（含 model.cas_detr 或 backbone=presnet）。\n"
             "  weights/best.pt 不是 Ultralytics YOLO 权重，eval_best_model.py 无法加载。\n"
-            "  请改用 experiments/cas_detr 下的评估；Ultralytics 评估请使用 experiments/yolo 下的实验目录"
+            "  请改用 `experiments/CaS-DETR` 或对应 DETR 实验目录下的评估；Ultralytics 评估请使用 experiments/yolo 下的实验目录"
             "（config 中含 data.data_yaml，且 weights/best.pt 为 YOLO 训练产出）。"
         )
         sys.exit(1)

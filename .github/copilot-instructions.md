@@ -2,92 +2,68 @@
 
 ## Project Overview
 
-Research project benchmarking object detection models on the **DAIR-V2X** (车路协同) dataset. The core contribution is **CaS_DETR (Dual-Sparse Expert Transformer)** — an RT-DETR variant that combines **token pruning** (discard background patches) and **Mixture-of-Experts** (route tokens to expert subsets) for efficient detection.
+This repository benchmarks object detection models on **DAIR-V2X** and related datasets. The current sparse DETR path is **CaS-on-DEIM**, implemented under `experiments/CaS-DETR/`, which ports token pruning, decoder MoE, and CASS supervision into the DEIM codebase while keeping DEIM training structure.
 
 **8 detection classes**: Car, Truck, Van, Bus, Pedestrian, Cyclist, Motorcyclist, Trafficcone.
 
 ## Repository Layout
 
-- `experiments/cas_detr/` — **Primary CaS_DETR implementation** (model, training, inference)
-  - `src/zoo/rtdetr/` — Core architecture: `hybrid_encoder.py`, `moe_components.py`, `token_level_pruning.py`, `rtdetrv2_decoder.py`
-  - `src/nn/backbone/` — Backbones (PResNet, HGNetv2, CSPResNet)
-  - `src/data/dataset/dairv2x_detection.py` — DAIR-V2X dataset loader (COCO format)
-  - `configs/` — YAML configs named `cas_detr{experts}_r{backbone}_ratio{ratio}.yaml`
-  - `train.py` — `CaS_DETRTrainer` class: full training/validation pipeline with EMA, AMP, early stopping
-- `experiments/moe-rtdetr/`, `experiments/RT-DETR/rtdetrv2_pytorch/` — RT-DETR v2 baseline via `train_adapter`; upstream v1 copy removed from this repo
-- `experiments/deformable-detr/`, `experiments/yolov8/`, `experiments/yolov10/` — Comparison models
-- `experiments/analysis/` — Benchmarking, Pareto plots, report generation
-- `dair2coco.py` — Converts DAIR-V2X raw annotations to COCO JSON format
-- `logs/` — Timestamped experiment outputs: `cas_detr6_r18_YYYYMMDD_HHMMSS/`
+- `experiments/CaS-DETR/` — primary CaS-on-DEIM implementation
+  - `engine/deim/` — sparse encoder, decoder MoE, and CASS wiring
+  - `configs/base/` — shared defaults such as `cas_deim.yml`
+  - `configs/deim_dfine/` — dataset-specific DEIM-style configs
+  - `configs/dataset/ablation/` — current stage-1 ablation configs
+  - `train.py` — DEIM-style training entrypoint
+- `experiments/DEIM/`, `experiments/D-FINE/` — upstream-style DETR baselines
+- `experiments/RT-DETR/rtdetrv2_pytorch/` — RT-DETR v2 baseline via `train_adapter`
+- `experiments/deformable-detr/`, `experiments/yolo/` — comparison models
+- `experiments/common/` — shared evaluation and visualization helpers
 
 ## Key Architecture Patterns
 
-### Dual-Sparse Pipeline (in `hybrid_encoder.py`)
-```
-Backbone features [P3, P4, P5]
-  → TokenLevelPruner on P5 (keep top K% by importance score)
-  → Shared MoE Transformer Encoder (single MoELayer instance reused across layers)
-  → CCFF cross-scale FPN fusion
-  → MoE Decoder (deformable cross-attention + MoE FFN per layer)
-  → Detection heads
-```
+### Sparse Encoder
 
-### MoE Implementation (`moe_components.py`)
-- **Vectorized**: loops over experts (not tokens) using `torch.where()` + `index_add_()` — no Python loops over tokens.
-- Router produces top-K expert assignments; balance loss prevents expert collapse (Switch Transformer style).
+- `HybridEncoder` supports token pruning through `shared_token_pruner`
+- pruning is currently used for semantic filtering, not aggressive full multi-level sparsification
+- `use_caip` and `use_cass` remain configurable
 
-### Token Pruning (`token_level_pruning.py`)
-- `LinearImportancePredictor` scores each token; top-K% kept.
-- **CASS (Context-Aware Soft Supervision)**: generates soft importance targets from GT bboxes with Gaussian/linear decay, trained via Varifocal Loss.
+### Decoder MoE
 
-### Loss Composition
-```
-L_total = L_detection(VFL + 5·L1_bbox + 2·GIoU)
-        + λ_decoder · L_moe_balance
-        + λ_encoder · L_moe_balance
-        + λ_cass · L_cass
-```
-MoE balance loss has configurable warmup epochs (`moe_balance_warmup_epochs`).
+- `DFINETransformer` replaces decoder FFN with `MoELayer` when enabled
+- load-balance loss is attached through `DEIMCriterion`
+
+### CASS Supervision
+
+- token-importance supervision is implemented in `token_level_pruning.py`
+- the current default CASS loss type is `vfl`
 
 ## Configuration Conventions
 
-YAML configs live in `experiments/cas_detr/configs/`. Key tunable parameters:
-- `cas_detr.token_keep_ratio`: {0.3, 0.5, 0.7, 0.9} — pruning aggressiveness
-- `model.num_experts` / `encoder_moe_top_k` — MoE width and routing
-- `training.early_stopping_patience`: 20 epochs default
-- `data.data_root`: points to DAIR-V2X dataset (default `/root/autodl-fs/datasets/DAIR-V2X`)
+YAML configs live in `experiments/CaS-DETR/configs/`. Important fields:
 
-Naming convention: `cas_detr{num_experts}_r{18|34}_ratio{keep_ratio}.yaml`
+- `HybridEncoder.token_keep_ratio`
+- `HybridEncoder.use_caip`
+- `HybridEncoder.use_cass`
+- `DFINETransformer.use_moe`
+- `DFINETransformer.num_experts`
+- `DFINETransformer.moe_top_k`
+- `DEIMCriterion.cass_loss_weight`
+- `DEIMCriterion.decoder_moe_balance_weight`
+
+Current stage-1 ablations are under `experiments/CaS-DETR/configs/dataset/ablation/` and focus on DAIR-V2X.
 
 ## Common Workflows
 
 ```bash
-# Train CaS_DETR (default config or specify)
-./experiments/cas_detr/run_training.sh
-./experiments/cas_detr/run_training.sh configs/cas_detr6_r18_ratio0.3.yaml
-
-# Resume training
-./experiments/cas_detr/run_training.sh configs/cas_detr6_r34.yaml --resume AUTO
-
-# Batch experiments (all model variants)
 ./experiments/run_batch_experiments.sh
-./experiments/run_batch_experiments.sh --test       # Quick 2-epoch test
-./experiments/run_batch_experiments.sh --cas_detr --r18  # Only CaS_DETR R18 variants
-
-# Inference
-./experiments/cas_detr/run_inference.sh --config configs/cas_detr6_r18.yaml \
-  --checkpoint logs/best_model.pth --conf 0.5
-
-# Benchmarking & analysis
-python experiments/analysis/generate_benchmark_table.py --model_type cas_detr
-python experiments/analysis/plot_efficiency_pareto.py
+./experiments/run_batch_experiments.sh --test
+./experiments/run_batch_experiments.sh --cas_detr
+./experiments/run_batch_experiments.sh --cas_detr --k0.7
+./experiments/run_batch_experiments.sh --dairv2x --cas_detr
 ```
 
-## Coding Conventions
+## Coding Notes
 
-- **Checkpoints**: `logs/{experiment}/best_model.pth` and `latest_checkpoint.pth`; training history in `training_history.csv`
-- **Box format**: internally normalized `(cx, cy, w, h)` ∈ [0,1], converted to `(x1, y1, x2, y2)` for processing
-- **Backbone channel dims**: S3=128, S4=256, S5=512 (PResNet); configs specify `in_channels: [128, 256, 512]`
-- **Evaluation**: pycocotools COCOeval (mAP@0.5, @0.75, @0.5:0.95); validation runs with pruning disabled (all tokens kept)
-- **Dependencies**: PyTorch ≥2.5, torchvision ≥0.20, `faster-coco-eval`, `pycocotools`, `thop` for FLOPs
-- **Reproducibility**: `experiments/seed_utils.py` for deterministic seeding across experiments
+- Prefer the `experiments/CaS-DETR/` tree for any new CaS-related work
+- Do not reintroduce dependencies on the removed legacy `experiments/cas_detr/` directory
+- Shared helpers in `experiments/common/` should stay framework-agnostic when possible

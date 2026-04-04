@@ -1,0 +1,38 @@
+task: detection
+
+evaluator:
+  type: CocoEvaluatorTrainLabelMapping
+  iou_types: ['bbox']
+
+num_classes: 8
+remap_mscoco_category: False
+
+vis_after_train: true
+vis_num_images: 8
+vis_score_thr: 0.35
+
+train_dataloader:
+  type: DataLoader
+  dataset:
+    type: CocoDetection
+    img_folder: /root/autodl-fs/datasets/DAIR-V2X
+    ann_file: /root/autodl-fs/datasets/DAIR-V2X/annotations/instances_train.json
+    return_masks: False
+  shuffle: True
+  num_workers: 4
+  drop_last: True
+  collate_fn:
+    type: BatchImageCollateFunction
+
+val_dataloader:
+  type: DataLoader
+  dataset:
+    type: CocoDetection
+    img_folder: /root/autodl-fs/datasets/DAIR-V2X
+    ann_file: /root/autodl-fs/datasets/DAIR-V2X/annotations/instances_val.json
+    return_masks: False
+  shuffle: False
+  num_workers: 4
+  drop_last: False
+  collate_fn:
+    type: BatchImageCollateFunction

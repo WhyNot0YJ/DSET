@@ -1,0 +1,26 @@
+HybridEncoder:
+  enable_cas_predictor: True
+  token_keep_ratio: 0.3
+  use_caip: True
+  use_cass: True
+  cass_expansion_ratio: 0.8
+  cass_min_size: 1.0
+  cass_decay_type: gaussian
+  use_subpixel_offset: True
+  cass_loss_type: vfl
+  cass_focal_alpha: 2.0
+  cass_focal_beta: 4.0
+  caip_reduction_ratio: 4
+  caip_complexity_alpha: 0.3
+
+DFINETransformer:
+  use_moe: True
+  num_experts: 6
+  moe_top_k: 3
+  moe_noise_std: 0.1
+  router_init_std: 0.02
+
+DEIMCriterion:
+  decoder_moe_balance_weight: 0.01
+  moe_balance_warmup_epochs: 0
+  cass_loss_weight: 0.05

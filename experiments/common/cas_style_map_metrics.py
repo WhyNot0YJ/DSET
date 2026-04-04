@@ -1,6 +1,5 @@
 """
-与 ``cas_detr/train.py`` 中 ``_compute_map_metrics`` / ``_compute_difficulty_aps`` 等价的纯函数实现，
-供 RT-DETR 等独立训练入口复用，避免复制 CaS_DETR 训练器类。
+Provide shared COCO-style mAP and KITTI difficulty metrics for DETR-family trainers.
 """
 
 from __future__ import annotations

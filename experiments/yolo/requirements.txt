@@ -23,6 +23,7 @@ tensorboard
 
 # Scientific Computing
 pandas
+polars
 scipy
 numpy
 
