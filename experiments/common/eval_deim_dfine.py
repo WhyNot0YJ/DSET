@@ -193,7 +193,10 @@ def collect_predictions(
 
     for samples, targets in data_loader:
         samples = samples.to(device)
-        targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
+        targets = [
+            {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in t.items()}
+            for t in targets
+        ]
 
         outputs = model(samples)
         orig_sizes = torch.stack([t["orig_size"] for t in targets], dim=0)
