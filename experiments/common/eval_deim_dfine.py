@@ -10,6 +10,9 @@ Usage (from experiments/ directory):
       --resume DEIM/outputs/deim_hgnetv2_s_dairv2x/best_stg2.pth \\
       --model-name deim_hgnetv2_s \\
       --dataset-name DAIR-V2X
+
+After loading weights, runs ``run_detr_benchmark`` for GFLOPs, Params, FPS, and latency,
+then val and optional test metrics and ``eval_metrics.csv``.
 """
 
 import os
@@ -38,6 +41,7 @@ from common.det_eval_metrics import (
     run_coco_bbox_eval,
     write_eval_csv,
 )
+from common.detr_eval_utils import log_detr_eval_summary, run_detr_benchmark
 
 logging.basicConfig(
     level=logging.INFO,
@@ -315,23 +319,17 @@ def compute_cas_metrics(
     return metrics, class_names
 
 
-# ---------------------------------------------------------------------------
-# Summary printing (mirrors log_detr_eval_summary)
-# ---------------------------------------------------------------------------
-
-def print_summary(model_name: str, dataset_name: str, split_name: str, metrics: Dict[str, Any]):
-    m = metrics
-    LOG.info(
-        "  %s [%s/%s]  mAP50=%.4f  mAP75=%.4f  mAP=%.4f\n"
-        "    E/M/H@0.5: %.4f/%.4f/%.4f  |  "
-        "S/M/L@0.5: %.4f/%.4f/%.4f  |  "
-        "S/M/L@0.5:0.95: %.4f/%.4f/%.4f",
-        model_name, dataset_name, split_name,
-        m.get("mAP_0.5", 0), m.get("mAP_0.75", 0), m.get("mAP_0.5_0.95", 0),
-        m.get("AP_easy", 0), m.get("AP_moderate", 0), m.get("AP_hard", 0),
-        m.get("AP_small_50", 0), m.get("AP_medium_50", 0), m.get("AP_large_50", 0),
-        m.get("AP_small", 0), m.get("AP_medium", 0), m.get("AP_large", 0),
-    )
+def _config_stub_for_benchmark(yaml_cfg: Dict[str, Any], config_path: str) -> Dict[str, Any]:
+    """Minimal config dict for ``run_detr_benchmark`` / ``model_display_name``."""
+    ds = yaml_cfg.get("train_dataloader", {}).get("dataset", {})
+    return {
+        "data": {
+            "data_root": str(ds.get("data_root", "")),
+            "dataset_class": str(ds.get("type", "")),
+        },
+        "model": {},
+        "_config_path": config_path,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -417,6 +415,9 @@ def main():
     yaml_cfg = getattr(cfg, "yaml_cfg", {}) or {}
     remap_mscoco = bool(yaml_cfg.get("remap_mscoco_category", False))
 
+    cfg_stub = _config_stub_for_benchmark(yaml_cfg, config_path)
+    bench_dict = run_detr_benchmark(model, cfg_stub, args.framework, device, LOG)
+
     # Write CSV
     output_dir = Path(cfg.yaml_cfg.get("output_dir", "./outputs"))
     csv_path = Path(args.output_csv) if args.output_csv else output_dir / "eval_metrics.csv"
@@ -456,7 +457,7 @@ def main():
         LOG.info("Collected %d predictions for %s", len(preds), split_name)
         LOG.info("Computing CaS-compatible metrics from %s ...", ann_file)
         metrics, class_names = compute_cas_metrics(ann_file, preds, dataset_name)
-        print_summary(model_name, dataset_name, split_name, metrics)
+        log_detr_eval_summary(LOG, split_name, metrics, bench_dict)
 
         write_eval_csv(
             csv_path,
@@ -466,6 +467,7 @@ def main():
             metrics=metrics,
             class_names=class_names,
             append=append_csv,
+            benchmark=bench_dict,
         )
         append_csv = True
         wrote_any = True
