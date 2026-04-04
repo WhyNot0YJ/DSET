@@ -5,10 +5,6 @@ model:
 
 training:
   epochs: 100
-  batch_size: 32
-  imgsz: 640
-  seed: 666
-  deterministic: false
 
 data:
   data_yaml: "/root/autodl-fs/datasets/DAIR-V2X_YOLO/dairv2x.yaml"
@@ -16,8 +12,3 @@ data:
 
 checkpoint:
   log_dir: "logs"
-
-misc:
-  device: "cuda"
-  num_workers: 16
-  prefetch_factor: 4

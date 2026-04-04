@@ -128,12 +128,12 @@ def _pred_cat_id_from_label(lab: int, dataset) -> int:
 
 def _gt_cat_id_from_tensor(lab: int, dataset) -> int:
     """
-    ``CocoDetection`` 在 ``remap_mscoco_category=False`` 时 ``labels`` 已为 ``category_id``；
-    为 ``True`` 时为连续下标，需经 ``label2category`` 映射。
+    将 GT ``labels`` 张量中的类别下标 0..C-1 映射为 COCO ``category_id``。
+
+    ``rtdetrv2_pytorch`` 的 ``CocoDetection`` 在 ``remap_mscoco_category=False`` 时仍用
+    ``category2label`` 把标注写成连续下标，与预测侧 ``_pred_cat_id_from_label`` 须一致。
     """
-    if getattr(dataset, "remap_mscoco_category", False) and hasattr(dataset, "label2category"):
-        return int(dataset.label2category.get(int(lab), int(lab) + 1))
-    return int(lab)
+    return _pred_cat_id_from_label(int(lab), dataset)
 
 
 def collect_rtdetr_predictions_and_targets(
@@ -286,10 +286,19 @@ def load_best_checkpoint_for_eval(solver, ck_path: Path, device: torch.device) -
     from src.misc import dist_utils
 
     state = torch.load(ck_path, map_location=device, weights_only=False)
-    if solver.ema is not None and state.get("ema") is not None:
+    ck_resolved = str(Path(ck_path).resolve())
+    if solver.ema is not None and state.get("ema"):
         solver.ema.load_state_dict(state["ema"])
+        logger.info("CaS 评估已加载 checkpoint: %s（ema）", ck_resolved)
     elif "model" in state:
-        dist_utils.de_parallel(solver.model).load_state_dict(state["model"])
+        m = dist_utils.de_parallel(solver.model)
+        m.load_state_dict(state["model"])
+        logger.info("CaS 评估已加载 checkpoint: %s（model）", ck_resolved)
+        if solver.ema is not None:
+            solver.ema.module.load_state_dict(m.state_dict())
+            logger.info(
+                "checkpoint 无 ema 键，已将 model 权重同步到 EMA；推理与训练期 val 一致使用 ema.module"
+            )
     else:
         raise RuntimeError(f"无法从 {ck_path} 解析 model/ema 权重")
 
@@ -329,17 +338,28 @@ def run_rtdetr_cas_style_eval_after_fit(
     base_config_path: Path,
     *,
     experiment_name: str = "rtdetr",
+    checkpoint_path: Optional[Path] = None,
 ) -> None:
-    """训练 ``fit()`` 结束后调用：打印与 CaS 一致的摘要并写 ``eval_metrics.csv``。"""
+    """
+    在已有权重上跑 CaS 风格 val，可选 test，并写 ``eval_metrics.csv``。
+
+    训练结束或 ``--test-only --cas-eval`` 时调用。未指定 ``checkpoint_path`` 时从
+    ``output_dir`` 下取 ``best.pth``，否则 ``last.pth``。
+    """
     from src.misc import dist_utils
 
     if not dist_utils.is_main_process():
         return
 
     out = Path(cfg.output_dir)
-    ck = out / "best.pth" if (out / "best.pth").is_file() else out / "last.pth"
+    if checkpoint_path is not None and Path(checkpoint_path).is_file():
+        ck = Path(checkpoint_path)
+    else:
+        ck = out / "best.pth" if (out / "best.pth").is_file() else out / "last.pth"
     if not ck.is_file():
-        logger.warning("未找到 best.pth / last.pth，跳过 CaS 风格评估")
+        logger.warning(
+            "未找到权重：请设置 checkpoint_path 或在 output_dir 放置 best.pth / last.pth，跳过 CaS 风格评估"
+        )
         return
 
     device = solver.device
@@ -400,6 +420,7 @@ def run_rtdetr_cas_style_eval_after_fit(
         metrics,
         class_names,
         bench_dict,
+        aggregate_at_parent=False,
     )
     logger.info("✓ best_model [val] 评估完成 → %s", csv_path)
 
@@ -440,5 +461,6 @@ def run_rtdetr_cas_style_eval_after_fit(
         metrics_t,
         class_names,
         bench_dict,
+        aggregate_at_parent=False,
     )
     logger.info("✓ best_model [test] 评估完成 → %s", csv_path_t)

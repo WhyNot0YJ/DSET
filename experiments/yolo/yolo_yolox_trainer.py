@@ -19,7 +19,7 @@ if str(_experiments_root) not in sys.path:
 _yolo_dir = Path(__file__).resolve().parent
 _yolox_root = _yolo_dir / "external" / "YOLOX"
 
-from base_yolo_trainer import BaseYOLOTrainer
+from base_yolo_trainer import DEFAULT_TRAIN_BATCH, BaseYOLOTrainer
 from yolox_predict import YOLOXEvalPredictor, load_yolox_for_eval
 
 
@@ -54,13 +54,15 @@ class YOLOXTrainer(BaseYOLOTrainer):
 
         exp = get_exp(exp_file=str(self._resolve_yolox_exp_file()))
         exp.data_dir = self._coco_data_root()
-        imgsz = int(self.training_config.get("imgsz", 640))
-        exp.input_size = (imgsz, imgsz)
-        exp.test_size = (imgsz, imgsz)
+        if "imgsz" in self.training_config:
+            imgsz = int(self.training_config["imgsz"])
+            exp.input_size = (imgsz, imgsz)
+            exp.test_size = (imgsz, imgsz)
         if self.class_names:
             exp.num_classes = len(self.class_names)
-        exp.data_num_workers = int(self.misc_config.get("num_workers", 4))
-        exp.max_epoch = int(self.training_config.get("epochs", 300))
+        if "num_workers" in self.misc_config:
+            exp.data_num_workers = int(self.misc_config["num_workers"])
+        exp.max_epoch = int(self.training_config["epochs"])
         exp.eval_interval = 1
         exp.print_interval = min(50, max(10, exp.max_epoch))
         exp.save_history_ckpt = False
@@ -76,7 +78,7 @@ class YOLOXTrainer(BaseYOLOTrainer):
         if pretrained and str(pretrained).endswith((".pth", ".pt")) and Path(pretrained).exists():
             ckpt = str(pretrained)
 
-        max_ep = int(self.training_config.get("epochs", 100))
+        max_ep = int(self.training_config["epochs"])
         if epochs_override is not None:
             max_ep = int(epochs_override)
         exp.max_epoch = max_ep
@@ -96,7 +98,11 @@ class YOLOXTrainer(BaseYOLOTrainer):
             name=None,
             dist_backend="nccl",
             dist_url=None,
-            batch_size=int(self.training_config.get("batch_size", 16)),
+            batch_size=int(
+                self.training_config["batch_size"]
+                if "batch_size" in self.training_config
+                else DEFAULT_TRAIN_BATCH
+            ),
             devices=devices,
             exp_file=str(self._resolve_yolox_exp_file()),
             resume=resume,

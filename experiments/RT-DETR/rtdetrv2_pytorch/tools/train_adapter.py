@@ -118,7 +118,25 @@ def main(args) -> None:
 
         solver = TASKS[cfg.yaml_cfg['task']](cfg)
         if args.test_only:
-            solver.val()
+            if getattr(args, "cas_eval", False):
+                logging.basicConfig(
+                    level=logging.INFO,
+                    format="%(message)s",
+                    force=True,
+                )
+                from common.rtdetr_cas_eval import run_rtdetr_cas_style_eval_after_fit
+
+                solver.eval()
+                ck = Path(args.resume).resolve() if args.resume else None
+                run_rtdetr_cas_style_eval_after_fit(
+                    solver,
+                    cfg,
+                    Path(args.config).resolve(),
+                    experiment_name=args.experiment_name,
+                    checkpoint_path=ck,
+                )
+            else:
+                solver.val()
         else:
             solver.fit()
             if getattr(args, "cas_eval", False):
@@ -163,12 +181,20 @@ if __name__ == '__main__':
     parser.add_argument('--use-amp', action='store_true', help='auto mixed precision training')
     parser.add_argument('--output-dir', type=str, help='output directory')
     parser.add_argument('--summary-dir', type=str, help='tensorboard summary')
-    parser.add_argument('--test-only', action='store_true', default=False)
+    parser.add_argument(
+        '--test-only',
+        action='store_true',
+        default=False,
+        help='仅验证：默认跑 COCO 风格 val；若同时传 --cas-eval 则只跑 CaS 风格评估不写 COCO eval.pth',
+    )
     parser.add_argument(
         '--cas-eval',
         action='store_true',
         default=False,
-        help='训练结束后运行与 CaS_DETR 一致的 val/test 指标（mAP、E/M/H、S/M/L）并写入 eval_metrics.csv',
+        help=(
+            '训练结束后写 CaS 风格 val/test 指标；或与 --test-only 联用表示只跑该项评估。'
+            '权重优先 -r，否则 output_dir 下 best.pth 或 last.pth'
+        ),
     )
     parser.add_argument(
         '--experiment-name',

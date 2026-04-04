@@ -59,6 +59,9 @@ from common.det_eval_metrics import (
 
 from yolo_validator_utils import MetricsLogger
 
+# Ultralytics ``cfg/default.yaml``：未指定 batch 时为 16
+DEFAULT_TRAIN_BATCH = 16
+
 
 class BaseYOLOTrainer(ABC):
     """所有YOLO训练器的基类"""
@@ -175,7 +178,7 @@ class BaseYOLOTrainer(ABC):
         """验证配置文件"""
         required_keys = {
             'model': ['model_name'],
-            'training': ['epochs', 'batch_size'],
+            'training': ['epochs'],
             'data': ['data_yaml']
         }
         
@@ -285,7 +288,7 @@ class BaseYOLOTrainer(ABC):
             return
 
         idx = resolve_cuda_device_index(str(device_str))
-        orig_bs = int(self.training_config.get('batch_size', 16))
+        orig_bs = int(self.training_config.get('batch_size', DEFAULT_TRAIN_BATCH))
         orig_nw = int(self.misc_config.get('num_workers', 2))
         orig_pf = int(self.misc_config.get('prefetch_factor', 1))
 
@@ -304,43 +307,27 @@ class BaseYOLOTrainer(ABC):
 
     def _build_train_kwargs(self) -> Dict:
         """
-        构建YOLO训练参数
-        
-        Returns:
-            训练参数字典
+        构建传给 ``model.train()`` 的参数：仅包含 YAML 中已写的项，以及输出目录所需的
+        ``data`` / ``project`` / ``name``；其余由 Ultralytics 默认配置补齐。
         """
-        train_kwargs = {
+        train_kwargs: Dict = {
             'data': self._resolve_data_yaml(),
-            'epochs': self.training_config.get('epochs', 100),
-            'batch': self.training_config.get('batch_size', 16),
-            'imgsz': self.training_config.get('imgsz', 640),
-            'device': self.misc_config.get('device', 'cuda'),
-            'workers': self.misc_config.get('num_workers', 8),
             'project': str(self.log_dir.parent),
             'name': self.log_dir.name,
-            'exist_ok': True,
-            'plots': True,
-            'save': True,
-            'save_period': self.training_config.get('save_period', 10),
-            'val': True,
-            'verbose': True,
         }
-        
-        # 优化器和学习率参数
-        optim_params = ['optimizer', 'lr0', 'lrf', 'momentum', 'weight_decay', 
-                       'warmup_epochs', 'warmup_momentum', 'warmup_bias_lr', 'cos_lr']
-        for param in optim_params:
-            if param in self.training_config:
-                train_kwargs[param] = self.training_config[param]
-        
-        # 其他训练参数
-        other_params = ['seed', 'deterministic', 'patience', 'max_det']
-        for param in other_params:
-            if param in self.training_config:
-                train_kwargs[param] = self.training_config[param]
-        
+        for k, v in self.training_config.items():
+            if k == 'batch_size':
+                train_kwargs['batch'] = v
+            else:
+                train_kwargs[k] = v
+        if 'device' in self.misc_config:
+            train_kwargs['device'] = self.misc_config['device']
+        if 'num_workers' in self.misc_config:
+            train_kwargs['workers'] = self.misc_config['num_workers']
+        if 'exist_ok' in self.checkpoint_config:
+            train_kwargs['exist_ok'] = self.checkpoint_config['exist_ok']
         return train_kwargs
-    
+
     def _log_training_config(self, train_kwargs: Dict):
         """记录训练配置信息"""
         self.logger.info("=" * 80)
@@ -348,14 +335,20 @@ class BaseYOLOTrainer(ABC):
         self.logger.info("=" * 80)
         self.logger.info("📝 训练配置:")
         self.logger.info(f"  数据集路径: {train_kwargs['data']}")
-        self.logger.info(f"  训练轮数: {train_kwargs['epochs']}")
-        self.logger.info(f"  批次大小: {train_kwargs['batch']}")
-        self.logger.info(f"  优化器: {self.training_config.get('optimizer', 'auto')}")
-        self.logger.info(f"  初始学习率: {self.training_config.get('lr0', 0.01)}")
-        self.logger.info(f"  Weight decay: {self.training_config.get('weight_decay', 0.0001)}")
+        if 'epochs' in train_kwargs:
+            self.logger.info(f"  训练轮数: {train_kwargs['epochs']}")
+        if 'batch' in train_kwargs:
+            self.logger.info(f"  批次大小: {train_kwargs['batch']}")
+        for k in ('optimizer', 'lr0', 'weight_decay', 'imgsz'):
+            if k in self.training_config:
+                self.logger.info(f"  {k}: {self.training_config[k]}")
         self.logger.info(f"  输出目录: {self.log_dir}")
         if self.model_config.get('pretrained_weights'):
             self.logger.info(f"  预训练权重: {self.model_config['pretrained_weights']}")
+        if 'seed' in train_kwargs:
+            self.logger.info(f"  随机种子 seed: {train_kwargs['seed']}")
+        if 'deterministic' in train_kwargs:
+            self.logger.info(f"  deterministic: {train_kwargs['deterministic']}")
         self.logger.info("=" * 80)
     
     def start_training(self, resume_checkpoint: Optional[str] = None, 

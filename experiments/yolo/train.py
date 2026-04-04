@@ -82,6 +82,7 @@ def main():
     parser.add_argument("--resume_from_checkpoint", type=str, default=None, help="从指定检查点恢复")
     parser.add_argument("--resume", action="store_true", help="自动从最新检查点恢复")
     parser.add_argument("--epochs", type=int, default=None, help="覆盖配置中的epochs")
+    parser.add_argument("--seed", type=int, default=None, help="覆盖 training.seed，传给 Ultralytics train")
     args = parser.parse_args()
 
     version = normalize_version(args.version)
@@ -117,6 +118,10 @@ def main():
         if latest_checkpoint:
             args.resume_from_checkpoint = latest_checkpoint
             print(f"📦 找到最新检查点: {latest_checkpoint}")
+
+    if args.seed is not None:
+        config.setdefault("training", {})["seed"] = args.seed
+        print(f"🎲 覆盖 seed: {args.seed}")
 
     trainer = build_trainer(
         version=version,

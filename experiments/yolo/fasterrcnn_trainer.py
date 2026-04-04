@@ -28,7 +28,7 @@ _yolo_dir = Path(__file__).resolve().parent
 if str(_yolo_dir) not in sys.path:
     sys.path.insert(0, str(_yolo_dir))
 
-from base_yolo_trainer import BaseYOLOTrainer
+from base_yolo_trainer import DEFAULT_TRAIN_BATCH, BaseYOLOTrainer
 from fasterrcnn_dataset import (
     YOLOFormatDetectionDataset,
     RandomHorizontalFlipDetection,
@@ -136,7 +136,11 @@ class FasterRCNNTrainer(BaseYOLOTrainer):
         model.to(device)
 
         epochs = epochs_override or self.training_config.get("epochs", 100)
-        batch_size = self.training_config.get("batch_size", 4)
+        batch_size = int(
+            self.training_config["batch_size"]
+            if "batch_size" in self.training_config
+            else DEFAULT_TRAIN_BATCH
+        )
         num_workers = self.misc_config.get("num_workers", 2)
         data_yaml = self._resolve_data_yaml()
 

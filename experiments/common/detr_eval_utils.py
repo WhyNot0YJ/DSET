@@ -117,9 +117,14 @@ def write_detr_eval_csv(
     metrics: Dict[str, Any],
     class_names: List[str],
     bench_dict: Optional[Dict[str, float]] = None,
+    *,
+    aggregate_at_parent: bool = True,
 ) -> Path:
     """写入汇总 eval_metrics.csv（含 benchmark 列）。返回 CSV 路径。"""
-    summary_csv = log_dir.parent / "eval_metrics.csv"
+    if aggregate_at_parent:
+        summary_csv = log_dir.parent / "eval_metrics.csv"
+    else:
+        summary_csv = log_dir / "eval_metrics.csv"
     write_eval_csv(
         summary_csv,
         model=model_display_name(config, experiment_name),
