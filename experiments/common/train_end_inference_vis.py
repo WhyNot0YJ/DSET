@@ -217,6 +217,57 @@ def _vis_params(yaml_cfg: Dict[str, Any]) -> Tuple[bool, int, float]:
     return enable, num, thr
 
 
+def _cass_importance_vis_params(
+    yaml_cfg: Dict[str, Any],
+) -> Tuple[bool, int, int, str, int, float]:
+    cfg = yaml_cfg.get("cass_importance_vis")
+    if not isinstance(cfg, dict):
+        return False, 10, 8, "vis_cass_importance", -1, 0.55
+    enable = bool(cfg.get("enable", False))
+    interval = max(1, int(cfg.get("interval", 10)))
+    num_images = max(1, int(cfg.get("num_images", 8)))
+    output_dir = str(cfg.get("output_dir", "vis_cass_importance"))
+    level_index = int(cfg.get("level_index", -1))
+    overlay_alpha = float(cfg.get("overlay_alpha", 0.55))
+    overlay_alpha = min(max(overlay_alpha, 0.0), 1.0)
+    return enable, interval, num_images, output_dir, level_index, overlay_alpha
+
+
+def _extract_encoder_info(outputs: Any) -> Optional[Dict[str, Any]]:
+    if isinstance(outputs, dict):
+        return outputs.get("encoder_info")
+    if isinstance(outputs, (list, tuple)) and outputs:
+        return getattr(outputs[0], "encoder_info", None)
+    return None
+
+
+def _build_importance_overlay(
+    bgr: np.ndarray,
+    score_map: np.ndarray,
+    alpha: float,
+    title: str,
+) -> np.ndarray:
+    score_map = np.asarray(score_map, dtype=np.float32)
+    smin = float(score_map.min())
+    smax = float(score_map.max())
+    if smax - smin > 1e-6:
+        norm = (score_map - smin) / (smax - smin)
+    else:
+        norm = np.zeros_like(score_map, dtype=np.float32)
+    heat = cv2.applyColorMap(np.clip(norm * 255.0, 0, 255).astype(np.uint8), cv2.COLORMAP_JET)
+    overlay = cv2.addWeighted(bgr, 1.0 - alpha, heat, alpha, 0.0)
+    cv2.putText(
+        overlay,
+        title,
+        (10, 30),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        1,
+        (255, 255, 255),
+        2,
+    )
+    return overlay
+
+
 def _try_dair_json_panel(
     image_path: Path,
     class_names: Sequence[str],
@@ -341,6 +392,80 @@ def run_train_end_inference_vis(
     print(f"[train_end_vis] wrote {saved} image(s) under {out_dir}")
 
 
+def run_epoch_cass_importance_vis(
+    module: torch.nn.Module,
+    val_dataloader: Any,
+    device: torch.device,
+    output_dir: Path,
+    yaml_cfg: Dict[str, Any],
+    epoch: int,
+) -> None:
+    enable, _, num_images, vis_dir_cfg, level_index, overlay_alpha = _cass_importance_vis_params(yaml_cfg)
+    if not enable or num_images <= 0:
+        return
+
+    vis_dir = Path(vis_dir_cfg)
+    if not vis_dir.is_absolute():
+        vis_dir = Path(output_dir) / vis_dir
+    vis_dir.mkdir(parents=True, exist_ok=True)
+
+    m = module.module if hasattr(module, "module") else module
+    m.eval()
+    saved = 0
+    epoch_tag = epoch + 1
+
+    for samples, targets in val_dataloader:
+        samples = samples.to(device)
+        with torch.no_grad():
+            outputs = m(samples)
+        encoder_info = _extract_encoder_info(outputs)
+        if not encoder_info:
+            continue
+
+        importance_scores_list = encoder_info.get("importance_scores_list") or []
+        feat_shapes_list = encoder_info.get("feat_shapes_list") or []
+        if not importance_scores_list or not feat_shapes_list:
+            continue
+
+        use_idx = level_index if level_index >= 0 else len(importance_scores_list) - 1
+        if use_idx < 0 or use_idx >= len(importance_scores_list):
+            continue
+
+        logits = importance_scores_list[use_idx]
+        feat_shape = feat_shapes_list[use_idx]
+        if logits is None or feat_shape is None:
+            continue
+
+        h, w = feat_shape
+        probs = torch.sigmoid(logits.detach()).reshape(logits.shape[0], h, w).cpu().numpy()
+
+        for i in range(probs.shape[0]):
+            if saved >= num_images:
+                break
+            tgt = targets[i]
+            image_id = int(tgt["image_id"].item())
+            path_str = _resolve_image_path(val_dataloader.dataset, tgt, image_id)
+            bgr = cv2.imread(path_str)
+            if bgr is None:
+                continue
+
+            upsampled = cv2.resize(probs[i], (bgr.shape[1], bgr.shape[0]), interpolation=cv2.INTER_LINEAR)
+            overlay = _build_importance_overlay(
+                bgr.copy(),
+                upsampled,
+                overlay_alpha,
+                f"Importance Heatmap E{epoch_tag}",
+            )
+            panel = cv2.hconcat([bgr, overlay])
+            cv2.imwrite(str(vis_dir / f"epoch_{epoch_tag:03d}_sample_{saved:03d}_id{image_id}.jpg"), panel)
+            saved += 1
+
+        if saved >= num_images:
+            break
+
+    print(f"[cass_importance_vis] wrote {saved} image(s) for epoch {epoch_tag} under {vis_dir}")
+
+
 def cfg_dict_for_vis(cfg: Any) -> Dict[str, Any]:
     """Merge ``yaml_cfg`` with top-level runtime keys so CLI 覆盖的 vis_* 生效。"""
     d: Dict[str, Any] = {}
@@ -353,6 +478,7 @@ def cfg_dict_for_vis(cfg: Any) -> Dict[str, Any]:
         "vis_class_names",
         "num_classes",
         "train_end_vis",
+        "cass_importance_vis",
     ):
         if hasattr(cfg, k):
             v = getattr(cfg, k, None)
@@ -393,3 +519,30 @@ def maybe_run_train_end_vis(
         )
     except Exception as e:
         print(f"[train_end_vis] failed: {e}")
+
+
+def maybe_run_epoch_cass_importance_vis(
+    dist_is_main: bool,
+    module: torch.nn.Module,
+    val_dataloader: Any,
+    device: torch.device,
+    output_dir: Any,
+    yaml_cfg: Dict[str, Any],
+    epoch: int,
+) -> None:
+    if not dist_is_main or output_dir is None:
+        return
+    enable, interval, _, _, _, _ = _cass_importance_vis_params(yaml_cfg)
+    if not enable or (epoch + 1) % interval != 0:
+        return
+    try:
+        run_epoch_cass_importance_vis(
+            module,
+            val_dataloader,
+            device,
+            Path(output_dir),
+            yaml_cfg,
+            epoch,
+        )
+    except Exception as e:
+        print(f"[cass_importance_vis] failed: {e}")

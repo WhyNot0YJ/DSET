@@ -24,3 +24,11 @@ DEIMCriterion:
   decoder_moe_balance_weight: 0.01
   moe_balance_warmup_epochs: 0
   cass_loss_weight: 0.05
+
+cass_importance_vis:
+  enable: true
+  interval: 5
+  num_images: 8
+  output_dir: vis_cass_importance
+  level_index: -1
+  overlay_alpha: 0.55

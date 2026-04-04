@@ -28,12 +28,12 @@ def _load_train_end_vis():
         spec = importlib.util.spec_from_file_location("train_end_inference_vis", p)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        return mod.cfg_dict_for_vis, mod.maybe_run_train_end_vis
+        return mod.cfg_dict_for_vis, mod.maybe_run_train_end_vis, mod.maybe_run_epoch_cass_importance_vis
     except Exception:
-        return None, None
+        return None, None, None
 
 
-_cfg_dict_for_vis, _maybe_run_train_end_vis = _load_train_end_vis()
+_cfg_dict_for_vis, _maybe_run_train_end_vis, _maybe_run_epoch_cass_importance_vis = _load_train_end_vis()
 from .det_engine import train_one_epoch, evaluate
 from ..optim.lr_scheduler import FlatCosineLRScheduler
 
@@ -195,6 +195,17 @@ class DetSolver(BaseSolver):
                         for name in filenames:
                             torch.save(coco_evaluator.coco_eval["bbox"].eval,
                                     self.output_dir / "eval" / name)
+
+            if _maybe_run_epoch_cass_importance_vis is not None:
+                _maybe_run_epoch_cass_importance_vis(
+                    dist_utils.is_main_process(),
+                    self.ema.module if self.ema else self.model,
+                    self.val_dataloader,
+                    self.device,
+                    self.output_dir,
+                    _cfg_dict_for_vis(self.cfg),
+                    epoch,
+                )
 
         total_time = time.time() - start_time
         total_time_str = str(datetime.timedelta(seconds=int(total_time)))
