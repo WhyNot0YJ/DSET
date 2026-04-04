@@ -21,7 +21,7 @@ export OMP_NUM_THREADS=1
 #   DAIRV2X_DATA_ROOT=/path UADETRAC_DATA_ROOT=/path ./run_batch_experiments.sh --yes --rtdetrv2
 #   RTDETR_TUNING_CKPT=/path/to.pth ./run_batch_experiments.sh --yes --rtdetrv2
 #   ./run_batch_experiments.sh --dairv2x --rtdetrv2          # 仅 DAIR-V2X 的 RT-DETR v2
-#   ./run_batch_experiments.sh --cas_detr                      # 只运行新的 CaS-DETR 第一阶段消融实验（5个配置）
+#   ./run_batch_experiments.sh --cas_detr                      # 只运行新的 CaS-DETR 第一阶段消融实验（6个配置）
 #   ./run_batch_experiments.sh --yolov5                        # 只运行YOLOv5实验
 #   ./run_batch_experiments.sh --yolov8                        # 只运行YOLOv8实验
 #   ./run_batch_experiments.sh --yolov12                       # 只运行YOLOv12实验
@@ -250,6 +250,7 @@ declare -a CORE_EXPERIMENTS=(
 )
 
 declare -A CaS_DETR_CONFIGS=(
+    ["casdeim-all-off-dairv2x"]="CaS-DETR/configs/dataset/ablation/cas_deim_all_off_hgnetv2_s_dairv2x.yml"
     ["casdeim-moe-only-dairv2x"]="CaS-DETR/configs/dataset/ablation/cas_deim_moe_only_hgnetv2_s_dairv2x.yml"
     ["casdeim-cass-only-keep07-dairv2x"]="CaS-DETR/configs/dataset/ablation/cas_deim_cass_only_keep07_hgnetv2_s_dairv2x.yml"
     ["casdeim-cass-only-keep05-dairv2x"]="CaS-DETR/configs/dataset/ablation/cas_deim_cass_only_keep05_hgnetv2_s_dairv2x.yml"
@@ -928,7 +929,7 @@ parse_arguments() {
         echo "  ./run_batch_experiments.sh --test                          # 测试模式：所有配置各跑2个epoch"
         echo "  ./run_batch_experiments.sh --rt-detr                       # 与 --rtdetrv2 相同，仅 RT-DETR v2"
         echo "  ./run_batch_experiments.sh --rtdetrv2                      # 官方 rtdetrv2_pytorch + train_adapter（默认 --cas-eval）"
-        echo "  ./run_batch_experiments.sh --cas_detr                      # 只运行新的 CaS-DETR 第一阶段消融（5个）"
+        echo "  ./run_batch_experiments.sh --cas_detr                      # 只运行新的 CaS-DETR 第一阶段消融（6个）"
         echo "  ./run_batch_experiments.sh --yolov5                        # 只运行YOLOv5"
         echo "  ./run_batch_experiments.sh --yolov8                        # 只运行YOLOv8"
         echo "  ./run_batch_experiments.sh --yolov12                       # 只运行YOLOv12"
