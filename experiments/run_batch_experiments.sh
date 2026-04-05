@@ -21,7 +21,7 @@ export OMP_NUM_THREADS=1
 #   DAIRV2X_DATA_ROOT=/path UADETRAC_DATA_ROOT=/path ./run_batch_experiments.sh --yes --rtdetrv2
 #   RTDETR_TUNING_CKPT=/path/to.pth ./run_batch_experiments.sh --yes --rtdetrv2
 #   ./run_batch_experiments.sh --dairv2x --rtdetrv2          # 仅 DAIR-V2X 的 RT-DETR v2
-#   ./run_batch_experiments.sh --cas_detr                      # 只运行新的 CaS-DETR 第一阶段消融实验（6个配置）
+#   ./run_batch_experiments.sh --cas_detr                      # 只运行新的 CaS-DETR 第一阶段消融实验（DAIR 与 UA 各 6 个，共 12 个配置）
 #   ./run_batch_experiments.sh --yolov5                        # 只运行YOLOv5实验
 #   ./run_batch_experiments.sh --yolov8                        # 只运行YOLOv8实验
 #   ./run_batch_experiments.sh --yolov12                       # 只运行YOLOv12实验
@@ -35,7 +35,7 @@ export OMP_NUM_THREADS=1
 #   ./run_batch_experiments.sh --deformable-detr               # 只运行Deformable-DETR实验
 #   ./run_batch_experiments.sh --test --rt-detr                # 测试模式只跑 RT-DETR v2，等价 --rtdetrv2
 #   ./run_batch_experiments.sh --test --rtdetrv2               # 测试模式只跑官方 RT-DETRv2（2 epoch + cas-eval）
-#   ./run_batch_experiments.sh --test --cas_detr               # 测试模式只运行新的 CaS-DETR 第一阶段消融实验
+#   ./run_batch_experiments.sh --test --cas_detr               # 测试模式只运行新的 CaS-DETR 第一阶段消融实验（12 个配置）
 #   ./run_batch_experiments.sh --test --yolov5                 # 测试模式只运行YOLOv5
 #   ./run_batch_experiments.sh --test --yolov8                 # 测试模式只运行YOLOv8
 #   ./run_batch_experiments.sh --test --yolov12                # 测试模式只运行YOLOv12
@@ -256,6 +256,12 @@ declare -A CaS_DETR_CONFIGS=(
     ["casdeim-cass-only-keep05-dairv2x"]="CaS-DETR/configs/dataset/ablation/cas_deim_cass_only_keep05_hgnetv2_s_dairv2x.yml"
     ["casdeim-moe-cass-keep07-dairv2x"]="CaS-DETR/configs/dataset/ablation/cas_deim_moe_cass_keep07_hgnetv2_s_dairv2x.yml"
     ["casdeim-moe-cass-keep05-dairv2x"]="CaS-DETR/configs/dataset/ablation/cas_deim_moe_cass_keep05_hgnetv2_s_dairv2x.yml"
+    ["casdeim-all-off-uadetrac"]="CaS-DETR/configs/dataset/ablation/cas_deim_all_off_hgnetv2_s_uadetrac.yml"
+    ["casdeim-moe-only-uadetrac"]="CaS-DETR/configs/dataset/ablation/cas_deim_moe_only_hgnetv2_s_uadetrac.yml"
+    ["casdeim-cass-only-keep07-uadetrac"]="CaS-DETR/configs/dataset/ablation/cas_deim_cass_only_keep07_hgnetv2_s_uadetrac.yml"
+    ["casdeim-cass-only-keep05-uadetrac"]="CaS-DETR/configs/dataset/ablation/cas_deim_cass_only_keep05_hgnetv2_s_uadetrac.yml"
+    ["casdeim-moe-cass-keep07-uadetrac"]="CaS-DETR/configs/dataset/ablation/cas_deim_moe_cass_keep07_hgnetv2_s_uadetrac.yml"
+    ["casdeim-moe-cass-keep05-uadetrac"]="CaS-DETR/configs/dataset/ablation/cas_deim_moe_cass_keep05_hgnetv2_s_uadetrac.yml"
 )
 
 declare -A YOLOV5_CONFIGS=(
@@ -929,7 +935,7 @@ parse_arguments() {
         echo "  ./run_batch_experiments.sh --test                          # 测试模式：所有配置各跑2个epoch"
         echo "  ./run_batch_experiments.sh --rt-detr                       # 与 --rtdetrv2 相同，仅 RT-DETR v2"
         echo "  ./run_batch_experiments.sh --rtdetrv2                      # 官方 rtdetrv2_pytorch + train_adapter（默认 --cas-eval）"
-        echo "  ./run_batch_experiments.sh --cas_detr                      # 只运行新的 CaS-DETR 第一阶段消融（6个）"
+        echo "  ./run_batch_experiments.sh --cas_detr                      # 只运行新的 CaS-DETR 第一阶段消融（DAIR 与 UA 各 6 个，共 12 个）"
         echo "  ./run_batch_experiments.sh --yolov5                        # 只运行YOLOv5"
         echo "  ./run_batch_experiments.sh --yolov8                        # 只运行YOLOv8"
         echo "  ./run_batch_experiments.sh --yolov12                       # 只运行YOLOv12"
@@ -970,7 +976,8 @@ parse_arguments() {
         echo "  ./run_batch_experiments.sh --yes --cas_detr                 # 非交互一键跑 CaS-DETR"
         echo "  ./run_batch_experiments.sh --dairv2x --rtdetrv2             # 仅 DAIR-V2X 的 RT-DETR v2"
         echo "  ./run_batch_experiments.sh --dataset dairv2x --rtdetr       # 同上（--dataset 写法）"
-        echo "  ./run_batch_experiments.sh --dairv2x --cas_detr             # 仅 DAIR-V2X 的 CaS-DETR 第一阶段消融"
+        echo "  ./run_batch_experiments.sh --dairv2x --cas_detr             # 仅 DAIR-V2X 的 CaS-DETR 第一阶段消融（6 个）"
+        echo "  ./run_batch_experiments.sh --uadetrac --cas_detr            # 仅 UA-DETRAC 的 CaS-DETR 第一阶段消融（6 个）"
         echo "  ./run_batch_experiments.sh --yolo --s                      # 同上（推荐简写）"
         echo "  ./run_batch_experiments.sh --yolov5 --yolov8 --yolov12 --yolox --s  # 跑所有 s 规模 YOLO / YOLOX"
         exit 1

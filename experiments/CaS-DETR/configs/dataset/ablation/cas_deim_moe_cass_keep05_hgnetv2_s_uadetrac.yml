@@ -1,0 +1,12 @@
+__include__: [
+  '../../deim_dfine/deim_hgnetv2_s_uadetrac.yml',
+  '../../base/cas_deim.yml'
+]
+
+output_dir: ./outputs/ablation/cas_deim_moe_cass_keep05_hgnetv2_s_uadetrac
+
+HybridEncoder:
+  enable_cas_predictor: True
+  token_keep_ratio: 0.5
+  use_caip: False
+  use_cass: True
