@@ -6,7 +6,7 @@ postprocessor: PostProcessor
 
 use_focal_loss: True
 eval_spatial_size: [640, 640] # h w
-checkpoint_freq: 4    # save freq
+checkpoint_freq: 20    # save freq
 
 DEIM:
   backbone: HGNetv2
