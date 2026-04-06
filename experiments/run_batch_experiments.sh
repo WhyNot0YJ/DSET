@@ -262,6 +262,9 @@ declare -A CaS_DETR_CONFIGS=(
     ["casdeim-cass-only-keep05-uadetrac"]="CaS-DETR/configs/dataset/ablation/cas_deim_cass_only_keep05_hgnetv2_s_uadetrac.yml"
     ["casdeim-moe-cass-keep07-uadetrac"]="CaS-DETR/configs/dataset/ablation/cas_deim_moe_cass_keep07_hgnetv2_s_uadetrac.yml"
     ["casdeim-moe-cass-keep05-uadetrac"]="CaS-DETR/configs/dataset/ablation/cas_deim_moe_cass_keep05_hgnetv2_s_uadetrac.yml"
+    ["casdeim-moe3-only-uadetrac"]="CaS-DETR/configs/dataset/ablation/cas_deim_moe3_only_hgnetv2_s_uadetrac.yml"
+    ["casdeim-moe3-cass-keep07-uadetrac"]="CaS-DETR/configs/dataset/ablation/cas_deim_moe3_cass_keep07_hgnetv2_s_uadetrac.yml"
+    ["casdeim-moe3-cass-keep05-uadetrac"]="CaS-DETR/configs/dataset/ablation/cas_deim_moe3_cass_keep05_hgnetv2_s_uadetrac.yml"
 )
 
 declare -A YOLOV5_CONFIGS=(
