@@ -87,6 +87,15 @@ class DetSolver(BaseSolver):
             if dist_utils.is_dist_available_and_initialized():
                 self.train_dataloader.sampler.set_epoch(epoch)
 
+            # Let model/encoder adjust epoch-dependent behavior (e.g., CAIP warmup scheduling)
+            try:
+                m = self.model.module if hasattr(self.model, "module") else self.model
+                enc = getattr(m, "encoder", None)
+                if enc is not None and hasattr(enc, "set_epoch"):
+                    enc.set_epoch(int(epoch))
+            except Exception:
+                pass
+
             if epoch == self.train_dataloader.collate_fn.stop_epoch:
                 self.load_resume_state(str(self.output_dir / 'best_stg1.pth'))
                 self.ema.decay = self.train_dataloader.collate_fn.ema_restart_decay
