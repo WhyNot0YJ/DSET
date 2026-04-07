@@ -47,6 +47,24 @@ logging.basicConfig(
 )
 LOG = logging.getLogger(__name__)
 
+def _unwrap_module(m: Any) -> Any:
+    return m.module if hasattr(m, "module") else m
+
+
+def _set_prune_in_eval(model: Any, enabled: bool) -> Dict[str, Any]:
+    """Enable/disable token pruning during eval by toggling TokenLevelPruner.prune_in_eval.
+
+    Returns a dict for restoring original values.
+    """
+    base = _unwrap_module(model)
+    enc = getattr(base, "encoder", None)
+    pruner = getattr(enc, "shared_token_pruner", None) if enc is not None else None
+    if pruner is None or not hasattr(pruner, "prune_in_eval"):
+        return {"found": False}
+    prev = bool(getattr(pruner, "prune_in_eval"))
+    setattr(pruner, "prune_in_eval", bool(enabled))
+    return {"found": True, "prev": prev}
+
 
 def _resolve_resume_path(resume: Optional[str]) -> Optional[str]:
     """Resolve checkpoint path before ``os.chdir`` into DEIM or D-FINE.
@@ -172,6 +190,43 @@ def _build_test_dataloader(cfg) -> Tuple[Optional[Any], Optional[str]]:
     cfg.yaml_cfg["test_dataloader"] = test_loader_cfg
     loader = cfg.build_dataloader("test_dataloader")
     return loader, test_ann
+
+
+def _dataset_image_root_hint(data_loader) -> str:
+    ds = getattr(data_loader, "dataset", None)
+    for _ in range(8):
+        if ds is None:
+            break
+        for attr in ("img_folder", "root"):
+            v = getattr(ds, attr, None)
+            if isinstance(v, str) and v:
+                return v
+        ds = getattr(ds, "dataset", None)
+    return ""
+
+
+def _safe_len(obj) -> int:
+    try:
+        return int(len(obj))
+    except Exception:
+        return -1
+
+
+def _log_split_context(split_name: str, data_loader: Any, ann_file: str) -> None:
+    ds_len = _safe_len(getattr(data_loader, "dataset", None))
+    dl_len = _safe_len(data_loader)
+    img_root = _dataset_image_root_hint(data_loader)
+    l2c = _dataset_label2category_map(data_loader)
+    LOG.info(
+        "[split=%s] ann_file=%s | ann_exists=%s | dataset_len=%s | dataloader_len=%s | img_root=%s | has_label2category=%s",
+        split_name,
+        ann_file,
+        bool(ann_file and Path(ann_file).exists()),
+        ds_len,
+        dl_len,
+        img_root or "(unknown)",
+        l2c is not None,
+    )
 
 
 @torch.no_grad()
@@ -333,6 +388,11 @@ def main():
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--splits", default="val,test",
                         help="Comma-separated eval splits to run (default: val,test)")
+    parser.add_argument(
+        "--disable-pruning",
+        action="store_true",
+        help="Disable token pruning during evaluation (sets TokenLevelPruner.prune_in_eval=False).",
+    )
     args = parser.parse_args()
 
     config_path = str(Path(args.config).resolve())
@@ -385,6 +445,14 @@ def main():
     model.to(device)
     model.eval()
 
+    restore_pruning: Dict[str, Any] = {"found": False}
+    if args.disable_pruning:
+        restore_pruning = _set_prune_in_eval(model, enabled=False)
+        if restore_pruning.get("found"):
+            LOG.info("Disabled token pruning in eval (prune_in_eval: %s -> False)", restore_pruning.get("prev"))
+        else:
+            LOG.info("Requested --disable-pruning, but no TokenLevelPruner found on model.encoder.shared_token_pruner")
+
     yaml_cfg = getattr(cfg, "yaml_cfg", {}) or {}
     remap_mscoco = bool(yaml_cfg.get("remap_mscoco_category", False))
 
@@ -405,6 +473,12 @@ def main():
             split_cfg = cfg.yaml_cfg.get("val_dataloader", {}).get("dataset", {})
             ann_file = split_cfg.get("ann_file", "")
         elif split_name == "test":
+            val_cfg = cfg.yaml_cfg.get("val_dataloader", {}).get("dataset", {})
+            LOG.info(
+                "[test] inferring from val: ann_file=%s | img_folder=%s",
+                val_cfg.get("ann_file", ""),
+                val_cfg.get("img_folder", ""),
+            )
             data_loader, ann_file = _build_test_dataloader(cfg)
             if data_loader is None or not ann_file:
                 LOG.info("No test split found for config, skipping test evaluation.")
@@ -413,6 +487,7 @@ def main():
             LOG.warning("Unknown split '%s', skipping.", split_name)
             continue
 
+        _log_split_context(split_name, data_loader, ann_file)
         if not ann_file or not Path(ann_file).exists():
             LOG.warning("Cannot find %s annotation file: %s, skipping.", split_name, ann_file)
             continue
@@ -449,6 +524,9 @@ def main():
         LOG.info("Wrote %s", csv_path)
     else:
         LOG.warning("No eval split was written to CSV.")
+
+    if restore_pruning.get("found"):
+        _set_prune_in_eval(model, enabled=bool(restore_pruning.get("prev")))
 
     os.chdir(saved_cwd)
 
