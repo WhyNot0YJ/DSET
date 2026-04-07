@@ -66,6 +66,18 @@ def _set_prune_in_eval(model: Any, enabled: bool) -> Dict[str, Any]:
     return {"found": True, "prev": prev}
 
 
+def _set_encoder_epoch(model: Any, epoch: int) -> bool:
+    """Sync epoch-dependent encoder behavior (e.g. CAIP warmup scheduling)."""
+    base = _unwrap_module(model)
+    enc = getattr(base, "encoder", None)
+    if enc is None or not hasattr(enc, "set_epoch"):
+        return False
+    try:
+        enc.set_epoch(int(epoch))
+        return True
+    except Exception:
+        return False
+
 def _resolve_resume_path(resume: Optional[str]) -> Optional[str]:
     """Resolve checkpoint path before ``os.chdir`` into DEIM or D-FINE.
 
@@ -393,6 +405,12 @@ def main():
         action="store_true",
         help="Disable token pruning during evaluation (sets TokenLevelPruner.prune_in_eval=False).",
     )
+    parser.add_argument(
+        "--epoch",
+        default=None,
+        type=int,
+        help="Encoder epoch for epoch-dependent behaviors (default: checkpoint last_epoch).",
+    )
     args = parser.parse_args()
 
     config_path = str(Path(args.config).resolve())
@@ -444,6 +462,13 @@ def main():
     model = solver.ema.module if solver.ema else solver.model
     model.to(device)
     model.eval()
+
+    # Ensure CAIP / encoder epoch-dependent scheduling matches training epoch.
+    enc_epoch = int(args.epoch) if args.epoch is not None else int(getattr(solver, "last_epoch", 0))
+    if _set_encoder_epoch(model, enc_epoch):
+        LOG.info("Synced encoder epoch for eval: %s", enc_epoch)
+    else:
+        LOG.info("Encoder has no set_epoch(); skip epoch sync (requested=%s).", enc_epoch)
 
     restore_pruning: Dict[str, Any] = {"found": False}
     if args.disable_pruning:
