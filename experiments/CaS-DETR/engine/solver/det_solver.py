@@ -89,10 +89,15 @@ class DetSolver(BaseSolver):
 
             # Let model/encoder adjust epoch-dependent behavior (e.g., CAIP warmup scheduling)
             try:
-                m = self.model.module if hasattr(self.model, "module") else self.model
-                enc = getattr(m, "encoder", None)
-                if enc is not None and hasattr(enc, "set_epoch"):
-                    enc.set_epoch(int(epoch))
+                modules = []
+                modules.append(self.model.module if hasattr(self.model, "module") else self.model)
+                if self.ema is not None and getattr(self.ema, "module", None) is not None:
+                    modules.append(self.ema.module.module if hasattr(self.ema.module, "module") else self.ema.module)
+
+                for m in modules:
+                    enc = getattr(m, "encoder", None)
+                    if enc is not None and hasattr(enc, "set_epoch"):
+                        enc.set_epoch(int(epoch))
             except Exception:
                 pass
 

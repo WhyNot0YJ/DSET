@@ -77,7 +77,7 @@ def log_detr_eval_summary(
     metrics: Dict[str, Any],
     bench_dict: Optional[Dict[str, float]] = None,
 ) -> None:
-    """打印标准化 DETR 评估摘要（mAP + E/M/H + S/M/L + benchmark）。"""
+    """打印标准化 DETR 评估摘要（mAP + COCO 面积档 S/M/L + benchmark）。"""
     m = metrics
     bench_line = format_bench_inline(bench_dict)
     logger.info(
@@ -85,10 +85,6 @@ def log_detr_eval_summary(
         f"mAP50={m.get('mAP_0.5', 0):.4f}  "
         f"mAP75={m.get('mAP_0.75', 0):.4f}  "
         f"mAP={m.get('mAP_0.5_0.95', 0):.4f}\n"
-        f"    E/M/H@0.5: "
-        f"{m.get('AP_easy', 0):.4f}/"
-        f"{m.get('AP_moderate', 0):.4f}/"
-        f"{m.get('AP_hard', 0):.4f}  |  "
         f"S/M/L@0.5: "
         f"{m.get('AP_small_50', 0):.4f}/"
         f"{m.get('AP_medium_50', 0):.4f}/"
@@ -99,14 +95,6 @@ def log_detr_eval_summary(
         f"{m.get('AP_large', 0):.4f}"
         f"{bench_line}"
     )
-    if "gt_boxes_easy" in m:
-        logger.info(
-            "    KITTI GT 框数: easy=%d moderate=%d hard=%d ignore=%d（与本次评估 GT 一致）",
-            int(m["gt_boxes_easy"]),
-            int(m["gt_boxes_moderate"]),
-            int(m["gt_boxes_hard"]),
-            int(m["gt_boxes_ignore"]),
-        )
 
 
 def write_detr_eval_csv(

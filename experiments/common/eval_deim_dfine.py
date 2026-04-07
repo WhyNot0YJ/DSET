@@ -21,7 +21,6 @@ import json
 import argparse
 import logging
 from pathlib import Path
-from collections import Counter
 from copy import deepcopy
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -33,8 +32,6 @@ EXPERIMENTS_DIR = SCRIPT_DIR.parent
 sys.path.insert(0, str(EXPERIMENTS_DIR))
 
 from common.det_eval_metrics import (
-    kitti_difficulty_from_coco_ann,
-    coco_gt_with_difficulty_iscrowd,
     coco_ap_at_iou50_all,
     coco_area_ap_at_iou50,
     extract_per_category_ap_from_coco_eval,
@@ -250,30 +247,6 @@ def _is_dair_dataset(dataset_name: str) -> bool:
     return "dair" in low or "dairv2x" in low
 
 
-def _compute_difficulty_aps(
-    coco_gt: Dict[str, Any],
-    predictions: List[Dict],
-    dair_categorical: bool,
-) -> Dict[str, float]:
-    """KITTI-style E/M/H AP@0.5 (same logic as CaS_DETR)."""
-    anns = coco_gt.get("annotations", [])
-    if not anns:
-        return {"AP_easy": 0.0, "AP_moderate": 0.0, "AP_hard": 0.0}
-
-    difficulties = [
-        kitti_difficulty_from_coco_ann(a, dair_categorical_trunc=dair_categorical)
-        for a in anns
-    ]
-
-    result = {}
-    for level in ("easy", "moderate", "hard"):
-        gt_mod = coco_gt_with_difficulty_iscrowd(coco_gt, difficulties, level)
-        ce = run_coco_bbox_eval(gt_mod, predictions)
-        result[f"AP_{level}"] = coco_ap_at_iou50_all(ce)
-
-    return result
-
-
 def compute_cas_metrics(
     ann_file: str,
     predictions: List[Dict],
@@ -290,7 +263,6 @@ def compute_cas_metrics(
             "mAP_0.5", "mAP_0.75", "mAP_0.5_0.95",
             "AP_small", "AP_medium", "AP_large",
             "AP_small_50", "AP_medium_50", "AP_large_50",
-            "AP_easy", "AP_moderate", "AP_hard",
         ]}
         return empty, class_names
 
@@ -314,10 +286,6 @@ def compute_cas_metrics(
         metrics[f"AP50_{name}"] = v
     for name, v in per5095.items():
         metrics[f"AP5095_{name}"] = v
-
-    dair_cat = _is_dair_dataset(dataset_name)
-    diff = _compute_difficulty_aps(coco_gt, predictions, dair_categorical=dair_cat)
-    metrics.update(diff)
 
     return metrics, class_names
 

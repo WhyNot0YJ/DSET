@@ -1,9 +1,6 @@
 """
 DETR / YOLO 共用的 KITTI 难度与 COCO 评估辅助。
 
-- 难度分档：``kitti_difficulty_from_coco_ann`` / ``normalize_truncation``（DAIR 截断映射与 DETR 一致）。
-- AP_easy / moderate / hard：DETR 与 YOLO 均为「三次 COCOeval + 非本档 iscrowd=1」，
-  再取 ``coco_ap_at_iou50_all``（stats[1]，AP@0.5）；勿用 stats[0] 与 KITTI 难度表对比。
 - AP_small/medium/large @0.5：``coco_area_ap_at_iou50``；@0.5:0.95 可用 stats[3:6]。
 """
 
@@ -12,7 +9,7 @@ from __future__ import annotations
 import csv
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -32,102 +29,6 @@ PYCOCOTOOLS_AVAILABLE: bool = COCO is not None
 # 与 yolo_validator_utils.MultiScaleMetricsCalculator 一致
 SMALL_AREA_THRESHOLD = 32 * 32
 MEDIUM_AREA_THRESHOLD = 96 * 96
-MIN_HEIGHT = 25
-
-
-def normalize_truncation(tr: float, *, dair_categorical: bool = False) -> float:
-    """
-    将数据集里的截断字段映射为 KITTI 风格比例 [0, 1]，供难度阈值比较。
-
-    DAIR-V2X：truncated_state ∈ {0,1,2} 为类别，非连续比例。
-    UA-DETRAC 等：连续比例，裁剪到 [0, 1]。
-    """
-    tr = float(tr)
-    if dair_categorical:
-        k = int(round(tr))
-        if k == 0:
-            return 0.0
-        if k == 1:
-            return 0.20
-        if k == 2:
-            return 0.40
-        return max(0.0, min(1.0, tr))
-    return max(0.0, min(1.0, tr))
-
-
-def _normalize_occlusion_level(occlusion: float) -> int:
-    try:
-        value = float(occlusion)
-    except (TypeError, ValueError):
-        return 3
-    if value < 0:
-        return 3
-    if value >= 1.0:
-        return int(round(value))
-    if value <= 0.15:
-        return 0
-    if value <= 0.50:
-        return 1
-    if value <= 0.80:
-        return 2
-    return 3
-
-
-def kitti_difficulty_label(
-    height_px: float,
-    occluded_raw: float,
-    truncated_raw: float,
-    *,
-    dair_categorical_trunc: bool,
-) -> str:
-    """
-    返回 'easy' | 'moderate' | 'hard' | 'ignore'（与 YOLO 侧 KITTI 分档一致）。
-    """
-    if height_px < MIN_HEIGHT:
-        return "ignore"
-
-    tr = normalize_truncation(truncated_raw, dair_categorical=dair_categorical_trunc)
-    occ_level = _normalize_occlusion_level(float(occluded_raw))
-
-    if height_px >= 40 and occ_level == 0 and tr <= 0.15:
-        return "easy"
-    if height_px >= 25 and occ_level <= 1 and tr <= 0.30:
-        return "moderate"
-    if height_px >= 25 and occ_level <= 2 and tr <= 0.50:
-        return "hard"
-    return "ignore"
-
-
-def kitti_difficulty_from_coco_ann(
-    ann: Dict[str, Any],
-    *,
-    dair_categorical_trunc: bool,
-) -> str:
-    """从 COCO 风格 ann dict（含 bbox xywh、occluded_state、truncated_state）计算难度。"""
-    bbox = ann.get("bbox", [0, 0, 0, 0])
-    h = float(ann.get("bbox_height", bbox[3] if len(bbox) > 3 else 0.0))
-    occ = float(ann.get("occluded_state", 0))
-    tr = float(ann.get("truncated_state", 0))
-    return kitti_difficulty_label(h, occ, tr, dair_categorical_trunc=dair_categorical_trunc)
-
-
-def coco_gt_with_difficulty_iscrowd(
-    coco_gt: Dict[str, Any],
-    ann_difficulties: Sequence[str],
-    target_level: str,
-) -> Dict[str, Any]:
-    """
-    与 DETR ``_compute_difficulty_aps`` 一致：仅 ``target_level``（easy|moderate|hard）档 GT 为
-    ``iscrowd=0``，其余难度（含 ignore）为 ``iscrowd=1``，再交给 ``COCOeval``。
-    """
-    anns: List[Dict[str, Any]] = []
-    for ann, lev in zip(coco_gt["annotations"], ann_difficulties):
-        a = dict(ann)
-        a["iscrowd"] = 1 if lev != target_level else 0
-        anns.append(a)
-    return {**coco_gt, "annotations": anns}
-
-
 def coco_ap_at_iou50_all(coco_eval) -> float:
     """
     主 AP@IoU=0.50（COCOeval.stats[1]）。
@@ -307,9 +208,6 @@ EVAL_CSV_FIELDS: List[str] = [
     "mAP_50",
     "mAP_75",
     "mAP_5095",
-    "AP_easy",
-    "AP_moderate",
-    "AP_hard",
     "AP_small_50",
     "AP_medium_50",
     "AP_large_50",
@@ -351,9 +249,6 @@ def write_eval_csv(
         "mAP_50": "mAP_0.5",
         "mAP_75": "mAP_0.75",
         "mAP_5095": "mAP_0.5_0.95",
-        "AP_easy": "AP_easy",
-        "AP_moderate": "AP_moderate",
-        "AP_hard": "AP_hard",
         "AP_small_50": "AP_small_50",
         "AP_medium_50": "AP_medium_50",
         "AP_large_50": "AP_large_50",

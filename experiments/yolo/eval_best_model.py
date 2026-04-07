@@ -207,18 +207,6 @@ def main():
         logger.info(f"  mAP@0.5 全类:      {metrics.get('mAP_50_all', 0):.4f}")
         logger.info(f"  mAP@0.5:0.95 全类: {metrics.get('mAP_5095_all', 0):.4f}")
         logger.info(
-            f"  KITTI E/M/H: {metrics.get('mAP_easy',0):.4f} / "
-            f"{metrics.get('mAP_moderate',0):.4f} / {metrics.get('mAP_hard',0):.4f}"
-        )
-        if 'gt_boxes_easy' in metrics:
-            logger.info(
-                "  KITTI GT 框数: easy=%d  moderate=%d  hard=%d  ignore=%d",
-                int(metrics.get('gt_boxes_easy', 0)),
-                int(metrics.get('gt_boxes_moderate', 0)),
-                int(metrics.get('gt_boxes_hard', 0)),
-                int(metrics.get('gt_boxes_ignore', 0)),
-            )
-        logger.info(
             f"  COCO 面积档 @0.5 S/M/L:   {metrics.get('mAP_small',0):.4f} / "
             f"{metrics.get('mAP_medium',0):.4f} / {metrics.get('mAP_large',0):.4f}"
         )

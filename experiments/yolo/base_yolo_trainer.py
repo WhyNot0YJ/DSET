@@ -50,10 +50,8 @@ from common.det_eval_metrics import (
     coco_ap_at_iou50_all,
     coco_area_ap_at_iou50,
     coco_area_bucket_counts_from_xywh_annotations,
-    coco_gt_with_difficulty_iscrowd,
     extract_per_category_ap_from_coco_eval,
     format_area_bucket_counts,
-    kitti_difficulty_from_coco_ann,
     run_coco_bbox_eval,
 )
 
@@ -511,11 +509,6 @@ class BaseYOLOTrainer(ABC):
         with data_yaml_path.open(encoding='utf-8') as fh:
             data_cfg = yaml.safe_load(fh) or {}
 
-        # DAIR-V2X: truncated_state is axis category {0,1,2}; UA-DETRAC: continuous ratio
-        dair_categorical = 'DAIR-V2X' in str(data_yaml_path) or 'dairv2x' in str(
-            data_yaml_path
-        ).lower()
-
         # Resolve dataset root from the optional 'path' field in data.yaml
         root = data_yaml_path.parent.resolve()
         path_field = str(data_cfg.get('path', '')).strip()
@@ -585,7 +578,6 @@ class BaseYOLOTrainer(ABC):
         fieldnames = [
             'model', 'dataset', 'eval_split',
             'mAP_50_all', 'mAP_5095_all',
-            'mAP_easy', 'mAP_moderate', 'mAP_hard',
             'mAP_small', 'mAP_medium', 'mAP_large',
             'mAP_small_5095', 'mAP_medium_5095', 'mAP_large_5095',
             *BENCHMARK_EVAL_METRIC_KEYS,
@@ -631,10 +623,9 @@ class BaseYOLOTrainer(ABC):
                 debug_gt_annotations: List[Dict[str, Any]] = []
                 debug_pred_annotations: List[Dict[str, Any]] = []
                 debug_image_ids: set[int] = set()
-                # COCOeval（与 DETR 同：kitti_difficulty_from_coco_ann + iscrowd 三档 / 全类 mAP / S/M/L / 每类 AP）
+                # COCOeval：全类 mAP / S/M/L / 每类 AP
                 img_sizes: Dict[int, Tuple[int, int]] = {}
                 coco_annotations: List[Dict[str, Any]] = []
-                ann_difficulties: List[str] = []
                 coco_predictions: List[Dict[str, Any]] = []
                 ann_id = 0
 
@@ -682,17 +673,6 @@ class BaseYOLOTrainer(ABC):
                             if w_px <= 0 or h_px <= 0:
                                 continue
 
-                            occ = float(entry.get('occluded_state', 0))
-                            tr_raw = float(entry.get('truncated_state', 0))
-                            level = kitti_difficulty_from_coco_ann(
-                                {
-                                    "bbox": [float(px1), float(py1), float(w_px), float(h_px)],
-                                    "occluded_state": occ,
-                                    "truncated_state": tr_raw,
-                                },
-                                dair_categorical_trunc=dair_categorical,
-                            )
-                            ann_difficulties.append(level)
                             ann_id += 1
                             coco_annotations.append(
                                 {
@@ -760,32 +740,7 @@ class BaseYOLOTrainer(ABC):
                     len(coco_predictions),
                 )
 
-                _diff_cnt = Counter(ann_difficulties)
-                _ne = int(_diff_cnt.get("easy", 0))
-                _nm = int(_diff_cnt.get("moderate", 0))
-                _nh = int(_diff_cnt.get("hard", 0))
-                _ni = int(_diff_cnt.get("ignore", 0))
-                _ngt = _ne + _nm + _nh + _ni
-                if _ngt != len(coco_annotations):
-                    self.logger.warning(
-                        "[%s] KITTI 难度计数与 GT 条数不一致: %s vs %d",
-                        eval_split,
-                        _ngt,
-                        len(coco_annotations),
-                    )
-                self.logger.info(
-                    "[%s] KITTI GT 难度框数: easy=%d  moderate=%d  hard=%d  "
-                    "ignore=%d  (合计=%d，与本次 COCO GT 条数一致)",
-                    eval_split,
-                    _ne,
-                    _nm,
-                    _nh,
-                    _ni,
-                    _ngt,
-                )
-
-                # ── 5. AP：KITTI E/M/H（与 DETR ``_compute_difficulty_aps`` 同：三次 COCOeval + iscrowd）
-                #        + 全类 mAP / S/M/L / 每类 AP（一次 COCOeval，全 GT iscrowd=0）
+                # ── 5. AP：全类 mAP / S/M/L / 每类 AP（一次 COCOeval，全 GT iscrowd=0）
                 metrics: Dict[str, Any] = {}
 
                 categories_coco = [
@@ -803,13 +758,6 @@ class BaseYOLOTrainer(ABC):
                     'categories': categories_coco,
                     'annotations': coco_annotations,
                 }
-
-                for k in ('easy', 'moderate', 'hard'):
-                    gt_k = coco_gt_with_difficulty_iscrowd(
-                        coco_gt, ann_difficulties, k
-                    )
-                    ev_k = run_coco_bbox_eval(gt_k, coco_predictions)
-                    metrics[f'mAP_{k}'] = coco_ap_at_iou50_all(ev_k)
 
                 coco_eval = run_coco_bbox_eval(coco_gt, coco_predictions)
                 per_cls_50: List[float] = []
@@ -879,17 +827,8 @@ class BaseYOLOTrainer(ABC):
                         metrics[f'AP5095_{nm}'] = per_cat_5095.get(nm, 0.0)
 
                 metrics['eval_split'] = eval_split
-                metrics['gt_boxes_easy'] = _ne
-                metrics['gt_boxes_moderate'] = _nm
-                metrics['gt_boxes_hard'] = _nh
-                metrics['gt_boxes_ignore'] = _ni
                 merge_benchmark_dict_into_metrics(metrics, bench_dict)
 
-                self.logger.info(
-                    f"🎯 [{eval_split}] KITTI@0.5  E/M/H = "
-                    f"{metrics['mAP_easy']:.4f} / {metrics['mAP_moderate']:.4f} / "
-                    f"{metrics['mAP_hard']:.4f}"
-                )
                 self.logger.info(
                     f"📐 [{eval_split}] S/M/L  "
                     f"@0.5: {metrics['mAP_small']:.4f} / {metrics['mAP_medium']:.4f} / "

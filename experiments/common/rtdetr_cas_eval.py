@@ -1,5 +1,5 @@
 """
-RT-DETR（``rtdetrv2_pytorch``）训练结束后，输出与 CaS_DETR 一致的 val/test 指标（mAP、E/M/H、S/M/L）与 CSV。
+RT-DETR（``rtdetrv2_pytorch``）训练结束后，输出 CaS 风格的 val/test 指标（mAP、S/M/L）与 CSV。
 
 使用前将 ``experiments`` 目录加入 ``sys.path``（``train_adapter.py`` 已处理）。
 """
@@ -261,14 +261,6 @@ def categories_from_dataset(dataset) -> List[Dict[str, Any]]:
     return list(dataset.categories)
 
 
-def infer_dair_categorical_trunc(dataset) -> bool:
-    name = getattr(dataset, "__class__", type(dataset)).__name__
-    if name == "DAIRV2XDetection":
-        return True
-    root = str(getattr(dataset, "data_root", "")).lower()
-    return "dair" in root and "v2x" in root
-
-
 def config_stub_for_csv(yaml_cfg: Dict[str, Any], base_config_path: Path) -> Dict[str, Any]:
     ds = yaml_cfg.get("train_dataloader", {}).get("dataset", {})
     return {
@@ -382,7 +374,6 @@ def run_rtdetr_cas_style_eval_after_fit(
 
     val_loader = solver.val_dataloader
     val_ds = val_loader.dataset
-    dair_cat = infer_dair_categorical_trunc(val_ds)
     cats = categories_from_dataset(val_ds)
 
     preds, gts, id2sz, ih, iw = collect_rtdetr_predictions_and_targets(
@@ -407,8 +398,6 @@ def run_rtdetr_cas_style_eval_after_fit(
         img_h=ih,
         img_w=iw,
         print_per_category=True,
-        compute_difficulty=True,
-        dair_categorical_trunc=dair_cat,
     )
 
     log_detr_eval_summary(logger, "val", metrics, bench_dict)
@@ -449,8 +438,6 @@ def run_rtdetr_cas_style_eval_after_fit(
         img_h=ih_t,
         img_w=iw_t,
         print_per_category=True,
-        compute_difficulty=True,
-        dair_categorical_trunc=dair_cat,
     )
     log_detr_eval_summary(logger, "test", metrics_t, bench_dict)
     csv_path_t = write_detr_eval_csv(

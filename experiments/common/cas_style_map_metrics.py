@@ -4,10 +4,8 @@ Provide shared COCO-style mAP and KITTI difficulty metrics for DETR-family train
 
 from __future__ import annotations
 
-import copy
 import os
 import sys
-from collections import Counter
 from io import StringIO
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -20,7 +18,6 @@ from common.det_eval_metrics import (
     coco_ap_at_iou50_all,
     coco_area_ap_at_iou50,
     extract_per_category_ap_from_coco_eval,
-    kitti_difficulty_from_coco_ann,
 )
 
 
@@ -81,55 +78,6 @@ def _run_coco_eval(
     return coco_eval
 
 
-def _compute_difficulty_aps(
-    predictions: List[Dict[str, Any]],
-    targets: List[Dict[str, Any]],
-    categories: List[Dict[str, Any]],
-    img_h: int,
-    img_w: int,
-    image_id_to_size: Optional[Dict[int, Tuple[int, int]]],
-    dair_categorical_trunc: bool,
-) -> Dict[str, float]:
-    easy_targets: List[Dict[str, Any]] = []
-    moderate_targets: List[Dict[str, Any]] = []
-    hard_targets: List[Dict[str, Any]] = []
-
-    for target in targets:
-        level = kitti_difficulty_from_coco_ann(
-            target, dair_categorical_trunc=dair_categorical_trunc
-        )
-        t_easy = copy.deepcopy(target)
-        if level != "easy":
-            t_easy["iscrowd"] = 1
-        easy_targets.append(t_easy)
-
-        t_mod = copy.deepcopy(target)
-        if level != "moderate":
-            t_mod["iscrowd"] = 1
-        moderate_targets.append(t_mod)
-
-        t_hard = copy.deepcopy(target)
-        if level != "hard":
-            t_hard["iscrowd"] = 1
-        hard_targets.append(t_hard)
-
-    easy_eval = _run_coco_eval(
-        predictions, easy_targets, categories, img_h, img_w, image_id_to_size=image_id_to_size
-    )
-    moderate_eval = _run_coco_eval(
-        predictions, moderate_targets, categories, img_h, img_w, image_id_to_size=image_id_to_size
-    )
-    hard_eval = _run_coco_eval(
-        predictions, hard_targets, categories, img_h, img_w, image_id_to_size=image_id_to_size
-    )
-
-    return {
-        "AP_easy": coco_ap_at_iou50_all(easy_eval),
-        "AP_moderate": coco_ap_at_iou50_all(moderate_eval),
-        "AP_hard": coco_ap_at_iou50_all(hard_eval),
-    }
-
-
 def compute_cas_style_map_metrics(
     predictions: List[Dict[str, Any]],
     targets: List[Dict[str, Any]],
@@ -139,11 +87,9 @@ def compute_cas_style_map_metrics(
     img_h: int = 640,
     img_w: int = 640,
     print_per_category: bool = False,
-    compute_difficulty: bool = False,
-    dair_categorical_trunc: bool = False,
 ) -> Dict[str, Any]:
     """
-    与 CaS_DETR ``_compute_map_metrics`` 返回字段一致（含 E/M/H、S/M/L @0.5 与 @0.5:0.95）。
+    计算共享的 COCO-style mAP 指标（含全局与 COCO 面积档 small/medium/large 的 @0.5 与 @0.5:0.95）。
     """
     if len(predictions) == 0 or len(targets) == 0:
         return {
@@ -163,9 +109,6 @@ def compute_cas_style_map_metrics(
             "AR_medium": 0.0,
             "AR_large": 0.0,
             "AR_100": 0.0,
-            "AP_easy": 0.0,
-            "AP_moderate": 0.0,
-            "AP_hard": 0.0,
         }
 
     per_cat_50: Dict[str, float] = {}
@@ -186,35 +129,6 @@ def compute_cas_style_map_metrics(
                 coco_eval, categories
             )
 
-        difficulty_metrics = {
-            "AP_easy": 0.0,
-            "AP_moderate": 0.0,
-            "AP_hard": 0.0,
-        }
-        if compute_difficulty:
-            difficulty_metrics = _compute_difficulty_aps(
-                predictions,
-                targets,
-                categories,
-                img_h,
-                img_w,
-                image_id_to_size,
-                dair_categorical_trunc,
-            )
-
-        gt_boxes_easy = gt_boxes_moderate = gt_boxes_hard = gt_boxes_ignore = 0
-        if compute_difficulty:
-            dc = Counter()
-            for t in targets:
-                lev = kitti_difficulty_from_coco_ann(
-                    t, dair_categorical_trunc=dair_categorical_trunc
-                )
-                dc[lev] += 1
-            gt_boxes_easy = int(dc.get("easy", 0))
-            gt_boxes_moderate = int(dc.get("moderate", 0))
-            gt_boxes_hard = int(dc.get("hard", 0))
-            gt_boxes_ignore = int(dc.get("ignore", 0))
-
         _s = coco_eval.stats
         _n = len(_s)
         result: Dict[str, Any] = {
@@ -234,15 +148,7 @@ def compute_cas_style_map_metrics(
             "AR_medium": float(_s[9]) if _n > 9 else 0.0,
             "AR_large": float(_s[10]) if _n > 10 else 0.0,
             "AR_100": float(_s[7]) if _n > 7 else 0.0,
-            "AP_easy": float(difficulty_metrics["AP_easy"]),
-            "AP_moderate": float(difficulty_metrics["AP_moderate"]),
-            "AP_hard": float(difficulty_metrics["AP_hard"]),
         }
-        if compute_difficulty:
-            result["gt_boxes_easy"] = gt_boxes_easy
-            result["gt_boxes_moderate"] = gt_boxes_moderate
-            result["gt_boxes_hard"] = gt_boxes_hard
-            result["gt_boxes_ignore"] = gt_boxes_ignore
 
         for cat_name in per_cat_5095.keys():
             result[f"AP50_{cat_name}"] = per_cat_50.get(cat_name, 0.0)
@@ -269,7 +175,4 @@ def compute_cas_style_map_metrics(
             "AR_medium": 0.0,
             "AR_large": 0.0,
             "AR_100": 0.0,
-            "AP_easy": 0.0,
-            "AP_moderate": 0.0,
-            "AP_hard": 0.0,
         }
