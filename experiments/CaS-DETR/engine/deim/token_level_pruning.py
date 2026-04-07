@@ -111,7 +111,7 @@ class TokenLevelPruner(nn.Module):
                 spatial_shape: Optional[Tuple[int, int]],
                 return_indices: bool = False,
                 external_scores: Optional[torch.Tensor] = None,
-                dynamic_keep_ratio: Optional[float] = None,
+                dynamic_keep_ratio: Optional[torch.Tensor] = None,
                 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], dict]:
         """
         Args:
@@ -120,7 +120,9 @@ class TokenLevelPruner(nn.Module):
             return_indices: 是否返回保留索引
             external_scores: [B, N] 可选的外部重要性分数（来自 CAIP），
                              提供时跳过内部 importance_predictor
-            dynamic_keep_ratio: 可选的动态保留比例（来自 CAIP scene_complexity），
+            dynamic_keep_ratio: 可选的动态保留比例（来自 CAIP scene_complexity）。
+                                - 标量：整个 batch 共用一个 keep_ratio
+                                - Tensor [B]：每张图一个 keep_ratio
                                 提供时覆盖 self.keep_ratio
         
         Returns:
@@ -146,7 +148,10 @@ class TokenLevelPruner(nn.Module):
         effective_keep_ratio = dynamic_keep_ratio if dynamic_keep_ratio is not None else self.keep_ratio
 
         # Pruning is enabled if effective ratio < 1.0 (no warmup)
-        should_prune = (effective_keep_ratio < 1.0) and (self.training or self.prune_in_eval)
+        if isinstance(effective_keep_ratio, torch.Tensor):
+            should_prune = bool((effective_keep_ratio < 1.0).any().item()) and (self.training or self.prune_in_eval)
+        else:
+            should_prune = (effective_keep_ratio < 1.0) and (self.training or self.prune_in_eval)
         
         # If pruning is disabled (keep_ratio >= 1.0), return all tokens
         if not should_prune:
@@ -181,38 +186,81 @@ class TokenLevelPruner(nn.Module):
         
         # Get keep ratio and calculate number of tokens to keep
         current_keep_ratio = dynamic_keep_ratio if dynamic_keep_ratio is not None else self.get_current_keep_ratio()
-        num_keep_tokens_by_ratio = int(num_tokens * current_keep_ratio)
-        num_keep_tokens = min(max(self.min_tokens, num_keep_tokens_by_ratio), num_tokens)
-        
-        # 选择top-k tokens
-        _, top_token_indices = torch.topk(token_importance_scores, num_keep_tokens, dim=-1)
-        top_token_indices_sorted, _ = torch.sort(top_token_indices, dim=-1)
-        
-        # 收集保留的tokens
-        batch_indices = torch.arange(batch_size, device=tokens.device).unsqueeze(1).expand(-1, num_keep_tokens)
-        pruned_tokens = tokens[batch_indices, top_token_indices_sorted]
-        
+
+        # Case 1: scalar ratio (same for all images)
+        if not isinstance(current_keep_ratio, torch.Tensor):
+            num_keep_tokens_by_ratio = int(num_tokens * float(current_keep_ratio))
+            num_keep_tokens = min(max(self.min_tokens, num_keep_tokens_by_ratio), num_tokens)
+
+            # 选择top-k tokens
+            _, top_token_indices = torch.topk(token_importance_scores, num_keep_tokens, dim=-1)
+            top_token_indices_sorted, _ = torch.sort(top_token_indices, dim=-1)
+
+            # 收集保留的tokens
+            batch_indices = torch.arange(batch_size, device=tokens.device).unsqueeze(1).expand(-1, num_keep_tokens)
+            pruned_tokens = tokens[batch_indices, top_token_indices_sorted]
+
+            if return_indices:
+                kept_indices = top_token_indices_sorted
+            else:
+                kept_indices = None
+
+            # 计算新的空间形状（近似）
+            H_pruned_approx = int((num_keep_tokens + W - 1) // W) if W > 0 else num_keep_tokens
+            W_pruned_approx = W if H_pruned_approx * W >= num_keep_tokens else num_keep_tokens
+
+            info = {
+                'pruning_ratio': 1.0 - (num_keep_tokens / num_tokens),
+                'num_kept_tokens': num_keep_tokens,
+                'num_pruned_tokens': num_tokens - num_keep_tokens,
+                'num_tokens': num_tokens,
+                'num_kept_tokens_info': num_keep_tokens,
+                'token_importance_scores': token_importance_scores,
+                'new_spatial_shape': (H_pruned_approx, W_pruned_approx) if spatial_shape is not None else (-1, -1),
+                'original_spatial_shape': (H, W) if spatial_shape is not None else (-1, -1)
+            }
+            return pruned_tokens, kept_indices, info
+
+        # Case 2: per-image ratio [B]
+        if current_keep_ratio.dim() != 1 or current_keep_ratio.shape[0] != batch_size:
+            raise ValueError(f"dynamic_keep_ratio must be scalar or [B], got {tuple(current_keep_ratio.shape)}")
+
+        ratio = current_keep_ratio.to(device=tokens.device, dtype=torch.float32).clamp(min=0.0, max=1.0)
+        num_keep = torch.floor(ratio * float(num_tokens)).to(torch.int64)  # [B]
+        num_keep = torch.clamp(num_keep, min=self.min_tokens, max=num_tokens)
+        max_keep = int(num_keep.max().item())
+
+        kept_indices_out = torch.full((batch_size, max_keep), -1, device=tokens.device, dtype=torch.long)
+        pruned_tokens_out = torch.zeros((batch_size, max_keep, channels), device=tokens.device, dtype=tokens.dtype)
+
+        # Per-sample top-k with padding. -1 indices will be treated as invalid by downstream scatter.
+        for b in range(batch_size):
+            k = int(num_keep[b].item())
+            if k <= 0:
+                continue
+            _, idx = torch.topk(token_importance_scores[b], k, dim=-1)
+            idx_sorted, _ = torch.sort(idx, dim=-1)
+            kept_indices_out[b, :k] = idx_sorted
+            pruned_tokens_out[b, :k] = tokens[b, idx_sorted]
+
         if return_indices:
-            kept_indices = top_token_indices_sorted
+            kept_indices = kept_indices_out
         else:
             kept_indices = None
-        
-        # 计算新的空间形状（近似）
-        H_pruned_approx = int((num_keep_tokens + W - 1) // W) if W > 0 else num_keep_tokens
-        W_pruned_approx = W if H_pruned_approx * W >= num_keep_tokens else num_keep_tokens
-        
+
+        avg_kept = float(num_keep.float().mean().item())
         info = {
-            'pruning_ratio': 1.0 - (num_keep_tokens / num_tokens),
-            'num_kept_tokens': num_keep_tokens,
-            'num_pruned_tokens': num_tokens - num_keep_tokens,
+            'pruning_ratio': 1.0 - (avg_kept / num_tokens),
+            'num_kept_tokens': int(avg_kept),
+            'num_pruned_tokens': int(num_tokens - avg_kept),
             'num_tokens': num_tokens,
-            'num_kept_tokens_info': num_keep_tokens,
+            'num_kept_tokens_info': num_keep,
             'token_importance_scores': token_importance_scores,
-            'new_spatial_shape': (H_pruned_approx, W_pruned_approx) if spatial_shape is not None else (-1, -1),
+            'new_spatial_shape': (-1, -1),
             'original_spatial_shape': (H, W) if spatial_shape is not None else (-1, -1)
         }
-        
-        return pruned_tokens, kept_indices, info
+
+        return pruned_tokens_out, kept_indices, info
     
     def generate_soft_target_mask(
         self,

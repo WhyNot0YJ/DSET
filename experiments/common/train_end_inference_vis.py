@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -219,10 +220,10 @@ def _vis_params(yaml_cfg: Dict[str, Any]) -> Tuple[bool, int, float]:
 
 def _cass_importance_vis_params(
     yaml_cfg: Dict[str, Any],
-) -> Tuple[bool, int, int, str, int, float]:
+) -> Tuple[bool, int, int, str, int, float, bool, int]:
     cfg = yaml_cfg.get("cass_importance_vis")
     if not isinstance(cfg, dict):
-        return False, 10, 8, "vis_cass_importance", -1, 0.55
+        return False, 10, 8, "vis_cass_importance", -1, 0.55, True, 0
     enable = bool(cfg.get("enable", False))
     interval = max(1, int(cfg.get("interval", 10)))
     num_images = max(1, int(cfg.get("num_images", 8)))
@@ -230,7 +231,9 @@ def _cass_importance_vis_params(
     level_index = int(cfg.get("level_index", -1))
     overlay_alpha = float(cfg.get("overlay_alpha", 0.55))
     overlay_alpha = min(max(overlay_alpha, 0.0), 1.0)
-    return enable, interval, num_images, output_dir, level_index, overlay_alpha
+    # Always random-sample images for visualization to avoid biasing toward the first few samples.
+    # Keep return signature for backward compatibility, but ignore any YAML overrides.
+    return enable, interval, num_images, output_dir, level_index, overlay_alpha, True, 0
 
 
 def _extract_encoder_info(outputs: Any) -> Optional[Dict[str, Any]]:
@@ -400,7 +403,7 @@ def run_epoch_cass_importance_vis(
     yaml_cfg: Dict[str, Any],
     epoch: int,
 ) -> None:
-    enable, _, num_images, vis_dir_cfg, level_index, overlay_alpha = _cass_importance_vis_params(yaml_cfg)
+    enable, _, num_images, vis_dir_cfg, level_index, overlay_alpha, random_sample, random_seed = _cass_importance_vis_params(yaml_cfg)
     if not enable or num_images <= 0:
         return
 
@@ -413,6 +416,19 @@ def run_epoch_cass_importance_vis(
     m.eval()
     saved = 0
     epoch_tag = epoch + 1
+    selected_ids: Optional[set] = None
+    if random_sample:
+        ds = _unwrap_dataset(val_dataloader.dataset)
+        ids: List[int] = []
+        try:
+            if hasattr(ds, "coco") and hasattr(ds.coco, "imgs") and isinstance(ds.coco.imgs, dict):
+                ids = [int(k) for k in ds.coco.imgs.keys()]
+        except Exception:
+            ids = []
+        if ids:
+            rng = random.Random(int(random_seed) + int(epoch_tag))
+            k = min(int(num_images), len(ids))
+            selected_ids = set(rng.sample(ids, k=k))
 
     for samples, targets in val_dataloader:
         samples = samples.to(device)
@@ -431,6 +447,18 @@ def run_epoch_cass_importance_vis(
         if use_idx < 0 or use_idx >= len(importance_scores_list):
             continue
 
+        scene_complexity = encoder_info.get("scene_complexity", None)
+        if isinstance(scene_complexity, torch.Tensor):
+            scene_complexity_norm = torch.sigmoid(scene_complexity.detach()).flatten().cpu()
+        else:
+            scene_complexity_norm = None
+
+        dynamic_keep_ratio = encoder_info.get("dynamic_keep_ratio", None)
+        if isinstance(dynamic_keep_ratio, torch.Tensor):
+            keep_ratio_vec = dynamic_keep_ratio.detach().flatten().cpu()
+        else:
+            keep_ratio_vec = None
+
         logits = importance_scores_list[use_idx]
         feat_shape = feat_shapes_list[use_idx]
         if logits is None or feat_shape is None:
@@ -444,6 +472,8 @@ def run_epoch_cass_importance_vis(
                 break
             tgt = targets[i]
             image_id = int(tgt["image_id"].item())
+            if selected_ids is not None and image_id not in selected_ids:
+                continue
             path_str = _resolve_image_path(val_dataloader.dataset, tgt, image_id)
             bgr = cv2.imread(path_str)
             if bgr is None:
@@ -457,7 +487,15 @@ def run_epoch_cass_importance_vis(
                 f"Importance Heatmap E{epoch_tag}",
             )
             panel = cv2.hconcat([bgr, overlay])
-            cv2.imwrite(str(vis_dir / f"epoch_{epoch_tag:03d}_sample_{saved:03d}_id{image_id}.jpg"), panel)
+            cx_tag = ""
+            if scene_complexity_norm is not None and i < int(scene_complexity_norm.numel()):
+                cx = float(scene_complexity_norm[i].item())
+                cx_tag = f"_cx{cx:.3f}"
+            kr_tag = ""
+            if keep_ratio_vec is not None and i < int(keep_ratio_vec.numel()):
+                kr = float(keep_ratio_vec[i].item())
+                kr_tag = f"_kr{kr:.3f}"
+            cv2.imwrite(str(vis_dir / f"epoch_{epoch_tag:03d}_sample_{saved:03d}_id{image_id}{cx_tag}{kr_tag}.jpg"), panel)
             saved += 1
 
         if saved >= num_images:
@@ -532,7 +570,7 @@ def maybe_run_epoch_cass_importance_vis(
 ) -> None:
     if not dist_is_main or output_dir is None:
         return
-    enable, interval, _, _, _, _ = _cass_importance_vis_params(yaml_cfg)
+    enable, interval, _, _, _, _, _, _ = _cass_importance_vis_params(yaml_cfg)
     if not enable or (epoch + 1) % interval != 0:
         return
     try:

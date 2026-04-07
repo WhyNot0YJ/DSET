@@ -1,0 +1,13 @@
+__include__: [
+  '../../deim_dfine/deim_hgnetv2_s_dairv2x.yml',
+  '../../base/cas_deim.yml'
+]
+
+output_dir: ./outputs/ablation/cas_deim_moe_cass_keep07_caip_hgnetv2_s_dairv2x
+
+HybridEncoder:
+  enable_cas_predictor: True
+  token_keep_ratio: 0.4
+  use_caip: True
+  caip_complexity_alpha: 1.0
+  use_cass: True
