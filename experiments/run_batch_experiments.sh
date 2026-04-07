@@ -22,7 +22,7 @@ export OMP_NUM_THREADS=1
 #   RTDETR_TUNING_CKPT=/path/to.pth ./run_batch_experiments.sh --yes --rtdetrv2
 #   ./run_batch_experiments.sh --dairv2x --rtdetrv2          # 仅 DAIR-V2X 的 RT-DETR v2
 #   ./run_batch_experiments.sh --cas_detr                      # 只运行新的 CaS-DETR 第一阶段消融实验（DAIR 与 UA 各 6 个，共 12 个配置）
-#   ./run_batch_experiments.sh --cas_caip                      # 只运行 CAIP 消融（4 个配置，UA keep05 与 DAIR keep07）
+#   ./run_batch_experiments.sh --cas_caip                      # 只运行 CAIP 消融（4 个配置）
 #   ./run_batch_experiments.sh --yolov5                        # 只运行YOLOv5实验
 #   ./run_batch_experiments.sh --yolov8                        # 只运行YOLOv8实验
 #   ./run_batch_experiments.sh --yolov12                       # 只运行YOLOv12实验
@@ -251,10 +251,10 @@ declare -a CORE_EXPERIMENTS=(
 )
 
 declare -a CAS_CAIP_EXPERIMENTS=(
-    "CaS-DETR/configs/dataset/ablation/cas_deim_moe3_cass_keep05_caip_hgnetv2_s_uadetrac.yml"
-    "CaS-DETR/configs/dataset/ablation/cas_deim_cass_only_keep05_caip_hgnetv2_s_uadetrac.yml"
-    "CaS-DETR/configs/dataset/ablation/cas_deim_moe_cass_keep07_caip_hgnetv2_s_dairv2x.yml"
-    "CaS-DETR/configs/dataset/ablation/cas_deim_cass_only_keep07_caip_hgnetv2_s_dairv2x.yml"
+    "CaS-DETR/configs/dataset/ablation/cas_deim_moe3_cass_caip_hgnetv2_s_uadetrac.yml"
+    "CaS-DETR/configs/dataset/ablation/cas_deim_cass_only_caip_hgnetv2_s_uadetrac.yml"
+    "CaS-DETR/configs/dataset/ablation/cas_deim_moe_cass_caip_hgnetv2_s_dairv2x.yml"
+    "CaS-DETR/configs/dataset/ablation/cas_deim_cass_only_caip_hgnetv2_s_dairv2x.yml"
 )
 
 declare -A CaS_DETR_CONFIGS=(
@@ -273,10 +273,10 @@ declare -A CaS_DETR_CONFIGS=(
     ["casdeim-moe3-only-uadetrac"]="CaS-DETR/configs/dataset/ablation/cas_deim_moe3_only_hgnetv2_s_uadetrac.yml"
     ["casdeim-moe3-cass-keep07-uadetrac"]="CaS-DETR/configs/dataset/ablation/cas_deim_moe3_cass_keep07_hgnetv2_s_uadetrac.yml"
     ["casdeim-moe3-cass-keep05-uadetrac"]="CaS-DETR/configs/dataset/ablation/cas_deim_moe3_cass_keep05_hgnetv2_s_uadetrac.yml"
-    ["casdeim-moe3-cass-keep05-caip-uadetrac"]="CaS-DETR/configs/dataset/ablation/cas_deim_moe3_cass_keep05_caip_hgnetv2_s_uadetrac.yml"
-    ["casdeim-cass-only-keep05-caip-uadetrac"]="CaS-DETR/configs/dataset/ablation/cas_deim_cass_only_keep05_caip_hgnetv2_s_uadetrac.yml"
-    ["casdeim-moe-cass-keep07-caip-dairv2x"]="CaS-DETR/configs/dataset/ablation/cas_deim_moe_cass_keep07_caip_hgnetv2_s_dairv2x.yml"
-    ["casdeim-cass-only-keep07-caip-dairv2x"]="CaS-DETR/configs/dataset/ablation/cas_deim_cass_only_keep07_caip_hgnetv2_s_dairv2x.yml"
+    ["casdeim-moe3-cass-caip-uadetrac"]="CaS-DETR/configs/dataset/ablation/cas_deim_moe3_cass_caip_hgnetv2_s_uadetrac.yml"
+    ["casdeim-cass-only-caip-uadetrac"]="CaS-DETR/configs/dataset/ablation/cas_deim_cass_only_caip_hgnetv2_s_uadetrac.yml"
+    ["casdeim-moe-cass-caip-dairv2x"]="CaS-DETR/configs/dataset/ablation/cas_deim_moe_cass_caip_hgnetv2_s_dairv2x.yml"
+    ["casdeim-cass-only-caip-dairv2x"]="CaS-DETR/configs/dataset/ablation/cas_deim_cass_only_caip_hgnetv2_s_dairv2x.yml"
 )
 
 declare -A YOLOV5_CONFIGS=(
@@ -982,7 +982,7 @@ parse_arguments() {
         echo "  ./run_batch_experiments.sh --rt-detr                       # 与 --rtdetrv2 相同，仅 RT-DETR v2"
         echo "  ./run_batch_experiments.sh --rtdetrv2                      # 官方 rtdetrv2_pytorch + train_adapter（默认 --cas-eval）"
         echo "  ./run_batch_experiments.sh --cas_detr                      # 只运行新的 CaS-DETR 第一阶段消融（DAIR 与 UA 各 6 个，共 12 个）"
-        echo "  ./run_batch_experiments.sh --cas_caip                      # 只运行 CAIP 消融（4 个配置，UA keep05 与 DAIR keep07）"
+        echo "  ./run_batch_experiments.sh --cas_caip                      # 只运行 CAIP 消融（4 个配置）"
         echo "  ./run_batch_experiments.sh --yolov5                        # 只运行YOLOv5"
         echo "  ./run_batch_experiments.sh --yolov8                        # 只运行YOLOv8"
         echo "  ./run_batch_experiments.sh --yolov12                       # 只运行YOLOv12"

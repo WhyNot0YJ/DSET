@@ -3,7 +3,7 @@ __include__: [
   '../../base/cas_deim.yml'
 ]
 
-output_dir: ./outputs/ablation/cas_deim_cass_only_keep07_caip_hgnetv2_s_dairv2x
+output_dir: ./outputs/ablation/cas_deim_moe_cass_caip_hgnetv2_s_dairv2x
 
 HybridEncoder:
   enable_cas_predictor: True
@@ -12,9 +12,3 @@ HybridEncoder:
   caip_complexity_alpha: 1.0
   caip_dynamic_warmup_epochs: 4
   use_cass: True
-
-DFINETransformer:
-  use_moe: False
-
-DEIMCriterion:
-  decoder_moe_balance_weight: 0.0

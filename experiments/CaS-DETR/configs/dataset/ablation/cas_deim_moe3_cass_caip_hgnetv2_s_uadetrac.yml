@@ -3,7 +3,7 @@ __include__: [
   '../../base/cas_deim.yml'
 ]
 
-output_dir: ./outputs/ablation/cas_deim_moe3_cass_keep05_caip_hgnetv2_s_uadetrac
+output_dir: ./outputs/ablation/cas_deim_moe3_cass_caip_hgnetv2_s_uadetrac
 
 HybridEncoder:
   enable_cas_predictor: True
