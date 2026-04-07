@@ -319,8 +319,7 @@ class CAIPPredictor(nn.Module):
         global_weights = torch.sigmoid(pre_sigmoid).squeeze(-1).unsqueeze(1)
 
         importance_scores = self.local_fc2(local_feat * global_weights).squeeze(-1)
-        scene_complexity = pre_sigmoid.mean(dim=(1, 2))
-        return importance_scores, scene_complexity
+        return importance_scores
 
 
 @register()
@@ -567,13 +566,13 @@ class HybridEncoder(nn.Module):
                 dynamic_keep_ratio = None
 
                 if self.caip_predictor is not None:
-                    external_scores, scene_complexity = self.caip_predictor(src_flatten)
+                    external_scores = self.caip_predictor(src_flatten)
                     base_ratio = float(self.shared_token_pruner.keep_ratio)
-                    complexity_norm = torch.sigmoid(scene_complexity.detach())
-                    dynamic_keep_ratio = base_ratio + (1.0 - base_ratio) * complexity_norm * self.caip_complexity_alpha
+                    # Complexity proxy: per-image mean token confidence.
+                    # Detach to avoid trivially inflating scores to disable pruning.
+                    mean_conf = torch.sigmoid(external_scores.detach()).mean(dim=1)  # [B]
+                    dynamic_keep_ratio = base_ratio + (1.0 - base_ratio) * mean_conf * self.caip_complexity_alpha
                     dynamic_keep_ratio = dynamic_keep_ratio.clamp(min=base_ratio, max=1.0)
-                    encoder_info['scene_complexity'] = scene_complexity
-                    encoder_info['scene_complexity_mean'] = complexity_norm.mean()
                     encoder_info['dynamic_keep_ratio'] = dynamic_keep_ratio
 
                 if self.shared_token_pruner is not None:
