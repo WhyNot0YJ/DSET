@@ -3,20 +3,18 @@ __include__: [
   '../../base/cas_deim.yml'
 ]
 
-output_dir: ./outputs/ablation/cas_deim_moe4_cass_caip_base05_a10_hgnetv2_s_dairv2x
+output_dir: ./outputs/ablation/cas_deim_cass_only_caip_base03_a10_hgnetv2_s_dairv2x
 
 HybridEncoder:
   enable_cas_predictor: True
-  token_keep_ratio: 0.5
+  token_keep_ratio: 0.3
   use_caip: True
   caip_complexity_alpha: 1.0
   caip_dynamic_warmup_epochs: 4
   use_cass: True
 
 DFINETransformer:
-  use_moe: True
-  num_experts: 4
-  moe_top_k: 2
+  use_moe: False
 
 DEIMCriterion:
-  decoder_moe_balance_weight: 0.005
+  decoder_moe_balance_weight: 0.0

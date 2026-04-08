@@ -24,6 +24,7 @@ export OMP_NUM_THREADS=1
 #   ./run_batch_experiments.sh --cas_detr                      # 只运行新的 CaS-DETR 第一阶段消融实验（仅 DAIR-V2X）
 #   ./run_batch_experiments.sh --cas_caip                      # 只运行 CAIP 消融（4 个配置）
 #   ./run_batch_experiments.sh --cas_caip_base05               # 只运行 CAIP 消融：r_base=0.5, alpha=1.0（4 个配置，DAIR+UA）
+#   ./run_batch_experiments.sh --cas_pack_moe4_base03_a10      # 打包跑：moe4(base03_a10) + ua(moe4 base03_a10) + moe4_only + cass_only_caip(base03_a10)
 #   ./run_batch_experiments.sh --yolov5                        # 只运行YOLOv5实验
 #   ./run_batch_experiments.sh --yolov8                        # 只运行YOLOv8实验
 #   ./run_batch_experiments.sh --yolov12                       # 只运行YOLOv12实验
@@ -255,6 +256,9 @@ declare -a CAS_CAIP_EXPERIMENTS=(
     "CaS-DETR/configs/dataset/ablation/cas_deim_moe3_cass_caip_hgnetv2_s_uadetrac.yml"
     "CaS-DETR/configs/dataset/ablation/cas_deim_cass_only_caip_hgnetv2_s_uadetrac.yml"
     "CaS-DETR/configs/dataset/ablation/cas_deim_moe_cass_caip_hgnetv2_s_dairv2x.yml"
+    "CaS-DETR/configs/dataset/ablation/cas_deim_moe4_cass_caip_base03_a10_hgnetv2_s_uadetrac.yml"
+    "CaS-DETR/configs/dataset/ablation/cas_deim_cass_only_caip_base03_a10_hgnetv2_s_dairv2x.yml"
+    "CaS-DETR/configs/dataset/ablation/cas_deim_moe4_cass_caip_base03_a10_hgnetv2_s_dairv2x.yml"
     "CaS-DETR/configs/dataset/ablation/cas_deim_cass_only_caip_hgnetv2_s_dairv2x.yml"
 )
 
@@ -267,14 +271,25 @@ declare -a CAS_CAIP_BASE05_EXPERIMENTS=(
     "CaS-DETR/configs/dataset/ablation/cas_deim_cass_only_caip_base05_a10_hgnetv2_s_dairv2x.yml"
 )
 
+# 快速打包：一次性跑指定的 base03_a10 / moe4 相关配置（用户常用组合）
+declare -a CAS_PACK_MOE4_BASE03_A10=(
+    "CaS-DETR/configs/dataset/ablation/cas_deim_moe4_cass_caip_base03_a10_hgnetv2_s_dairv2x.yml"
+    "CaS-DETR/configs/dataset/ablation/cas_deim_moe4_cass_caip_base03_a10_hgnetv2_s_uadetrac.yml"
+    "CaS-DETR/configs/dataset/ablation/cas_deim_moe4_only_hgnetv2_s_dairv2x.yml"
+    "CaS-DETR/configs/dataset/ablation/cas_deim_cass_only_caip_base03_a10_hgnetv2_s_dairv2x.yml"
+)
+
 declare -A CaS_DETR_CONFIGS=(
     ["casdeim-all-off-dairv2x"]="CaS-DETR/configs/dataset/ablation/cas_deim_all_off_hgnetv2_s_dairv2x.yml"
     ["casdeim-moe-only-dairv2x"]="CaS-DETR/configs/dataset/ablation/cas_deim_moe_only_hgnetv2_s_dairv2x.yml"
+    ["casdeim-moe4-only-dairv2x"]="CaS-DETR/configs/dataset/ablation/cas_deim_moe4_only_hgnetv2_s_dairv2x.yml"
     ["casdeim-cass-only-keep07-dairv2x"]="CaS-DETR/configs/dataset/ablation/cas_deim_cass_only_keep07_hgnetv2_s_dairv2x.yml"
     ["casdeim-cass-only-keep05-dairv2x"]="CaS-DETR/configs/dataset/ablation/cas_deim_cass_only_keep05_hgnetv2_s_dairv2x.yml"
     ["casdeim-moe-cass-keep07-dairv2x"]="CaS-DETR/configs/dataset/ablation/cas_deim_moe_cass_keep07_hgnetv2_s_dairv2x.yml"
     ["casdeim-moe-cass-keep05-dairv2x"]="CaS-DETR/configs/dataset/ablation/cas_deim_moe_cass_keep05_hgnetv2_s_dairv2x.yml"
     ["casdeim-moe-cass-caip-dairv2x"]="CaS-DETR/configs/dataset/ablation/cas_deim_moe_cass_caip_hgnetv2_s_dairv2x.yml"
+    ["casdeim-moe4-cass-caip-base03-a10-dairv2x"]="CaS-DETR/configs/dataset/ablation/cas_deim_moe4_cass_caip_base03_a10_hgnetv2_s_dairv2x.yml"
+    ["casdeim-cass-only-caip-base03-a10-dairv2x"]="CaS-DETR/configs/dataset/ablation/cas_deim_cass_only_caip_base03_a10_hgnetv2_s_dairv2x.yml"
     ["casdeim-cass-only-caip-dairv2x"]="CaS-DETR/configs/dataset/ablation/cas_deim_cass_only_caip_hgnetv2_s_dairv2x.yml"
 )
 
@@ -698,6 +713,7 @@ parse_arguments() {
     local has_cas_detr=false
     local has_cas_caip=false
     local has_cas_caip_base05=false
+    local has_cas_pack_moe4_base03_a10=false
     local has_yolov5=false
     local has_yolov8=false
     local has_yolov12=false
@@ -724,6 +740,9 @@ parse_arguments() {
                 ;;
             --cas_caip_base05|--cas-caip-base05|--cas_caip_base05_a10|--cas-caip-base05-a10)
                 has_cas_caip_base05=true
+                ;;
+            --cas_pack_moe4_base03_a10|--cas-pack-moe4-base03-a10)
+                has_cas_pack_moe4_base03_a10=true
                 ;;
             --yolov5)
                 has_yolov5=true
@@ -759,13 +778,14 @@ parse_arguments() {
     done
     
     # 如果指定了实验类型，只运行指定的类型（支持多个）
-    if [ "$has_rtdetrv2" = true ] || [ "$has_cas_detr" = true ] || [ "$has_cas_caip" = true ] || [ "$has_cas_caip_base05" = true ] || [ "$has_yolov5" = true ] || [ "$has_yolov8" = true ] || [ "$has_yolov12" = true ] || [ "$has_yolox" = true ] || [ "$has_fasterrcnn" = true ] || [ "$has_deformable_detr" = true ] || [ "$has_deim" = true ] || [ "$has_dfine" = true ]; then
+    if [ "$has_rtdetrv2" = true ] || [ "$has_cas_detr" = true ] || [ "$has_cas_caip" = true ] || [ "$has_cas_caip_base05" = true ] || [ "$has_cas_pack_moe4_base03_a10" = true ] || [ "$has_yolov5" = true ] || [ "$has_yolov8" = true ] || [ "$has_yolov12" = true ] || [ "$has_yolox" = true ] || [ "$has_fasterrcnn" = true ] || [ "$has_deformable_detr" = true ] || [ "$has_deim" = true ] || [ "$has_dfine" = true ]; then
         # 显示将要运行的类型
         local selected_types=()
         [ "$has_rtdetrv2" = true ] && selected_types+=("RT-DETRv2+train_adapter")
         [ "$has_cas_detr" = true ] && selected_types+=("CaS_DETR")
         [ "$has_cas_caip" = true ] && selected_types+=("CaS_DETR_CAIP")
         [ "$has_cas_caip_base05" = true ] && selected_types+=("CaS_DETR_CAIP_rbase0.5_a1.0")
+        [ "$has_cas_pack_moe4_base03_a10" = true ] && selected_types+=("CaS_DETR_PACK_moe4_base03_a10")
         [ "$has_yolov5" = true ] && selected_types+=("YOLOv5")
         [ "$has_yolov8" = true ] && selected_types+=("YOLOv8")
         [ "$has_yolov12" = true ] && selected_types+=("YOLOv12")
@@ -812,6 +832,15 @@ parse_arguments() {
         if [ "$has_cas_caip_base05" = true ]; then
             local _p
             for _p in "${CAS_CAIP_BASE05_EXPERIMENTS[@]}"; do
+                if filter_config "$_p"; then
+                    CONFIGS_TO_RUN+=("$_p")
+                fi
+            done
+        fi
+
+        if [ "$has_cas_pack_moe4_base03_a10" = true ]; then
+            local _p
+            for _p in "${CAS_PACK_MOE4_BASE03_A10[@]}"; do
                 if filter_config "$_p"; then
                     CONFIGS_TO_RUN+=("$_p")
                 fi

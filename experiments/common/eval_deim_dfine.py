@@ -51,6 +51,17 @@ def _unwrap_module(m: Any) -> Any:
     return m.module if hasattr(m, "module") else m
 
 
+def _set_caip_static_keep_eval(model: Any, enabled: bool) -> Dict[str, Any]:
+    """Toggle HybridEncoder.caip_static_keep_eval: fixed token_keep_ratio under eval, CAIP still ranks."""
+    base = _unwrap_module(model)
+    enc = getattr(base, "encoder", None)
+    if enc is None or not hasattr(enc, "caip_static_keep_eval"):
+        return {"found": False}
+    prev = bool(getattr(enc, "caip_static_keep_eval"))
+    setattr(enc, "caip_static_keep_eval", bool(enabled))
+    return {"found": True, "prev": prev}
+
+
 def _set_prune_in_eval(model: Any, enabled: bool) -> Dict[str, Any]:
     """Enable/disable token pruning during eval by toggling TokenLevelPruner.prune_in_eval.
 
@@ -406,6 +417,11 @@ def main():
         help="Disable token pruning during evaluation (sets TokenLevelPruner.prune_in_eval=False).",
     )
     parser.add_argument(
+        "--caip-static-keep-eval",
+        action="store_true",
+        help="When CAIP is on, use fixed keep ratio token_keep_ratio in eval mode; CAIP scores still rank tokens.",
+    )
+    parser.add_argument(
         "--epoch",
         default=None,
         type=int,
@@ -469,6 +485,17 @@ def main():
         LOG.info("Synced encoder epoch for eval: %s", enc_epoch)
     else:
         LOG.info("Encoder has no set_epoch(); skip epoch sync (requested=%s).", enc_epoch)
+
+    restore_static_keep: Dict[str, Any] = {"found": False}
+    if args.caip_static_keep_eval:
+        restore_static_keep = _set_caip_static_keep_eval(model, enabled=True)
+        if restore_static_keep.get("found"):
+            LOG.info(
+                "CAIP eval: fixed keep ratio token_keep_ratio (caip_static_keep_eval: %s -> True)",
+                restore_static_keep.get("prev"),
+            )
+        else:
+            LOG.info("Requested --caip-static-keep-eval, but encoder has no caip_static_keep_eval (skip).")
 
     restore_pruning: Dict[str, Any] = {"found": False}
     if args.disable_pruning:
@@ -552,6 +579,8 @@ def main():
 
     if restore_pruning.get("found"):
         _set_prune_in_eval(model, enabled=bool(restore_pruning.get("prev")))
+    if restore_static_keep.get("found"):
+        _set_caip_static_keep_eval(model, enabled=bool(restore_static_keep.get("prev")))
 
     os.chdir(saved_cwd)
 

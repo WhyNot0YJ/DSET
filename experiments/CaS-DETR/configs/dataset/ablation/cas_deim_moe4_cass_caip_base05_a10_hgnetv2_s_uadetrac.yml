@@ -17,8 +17,6 @@ DFINETransformer:
   use_moe: True
   num_experts: 4
   moe_top_k: 2
-  moe_noise_std: 0.0
-  router_init_std: 0.02
 
 DEIMCriterion:
   decoder_moe_balance_weight: 0.005

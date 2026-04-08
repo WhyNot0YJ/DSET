@@ -356,6 +356,7 @@ class HybridEncoder(nn.Module):
                  caip_reduction_ratio=4,
                  caip_complexity_alpha=0.3,
                  caip_dynamic_warmup_epochs=0,
+                 caip_static_keep_eval=False,
                  ):
         super().__init__()
         self.in_channels = in_channels
@@ -372,6 +373,7 @@ class HybridEncoder(nn.Module):
         self.use_caip = use_caip and enable_cas_predictor
         self.caip_complexity_alpha = caip_complexity_alpha
         self.caip_dynamic_warmup_epochs = int(caip_dynamic_warmup_epochs or 0)
+        self.caip_static_keep_eval = bool(caip_static_keep_eval)
         self._epoch = 0
 
         # channel projection
@@ -579,11 +581,20 @@ class HybridEncoder(nn.Module):
                         )
                         encoder_info['dynamic_keep_ratio'] = dynamic_keep_ratio
                     else:
-                        # Complexity proxy: per-image mean token confidence.
-                        # Detach to avoid trivially inflating scores to disable pruning.
-                        mean_conf = torch.sigmoid(external_scores.detach()).mean(dim=1)  # [B]
-                        dynamic_keep_ratio = base_ratio + (1.0 - base_ratio) * mean_conf * self.caip_complexity_alpha
-                        dynamic_keep_ratio = dynamic_keep_ratio.clamp(min=base_ratio, max=1.0)
+                        if self.caip_static_keep_eval and not self.training:
+                            # Eval: fixed keep fraction = token_keep_ratio; CAIP scores still rank tokens.
+                            dynamic_keep_ratio = torch.full(
+                                (src_flatten.shape[0],),
+                                base_ratio,
+                                device=src_flatten.device,
+                                dtype=torch.float32,
+                            )
+                        else:
+                            # Complexity proxy: per-image mean token confidence.
+                            # Detach to avoid trivially inflating scores to disable pruning.
+                            mean_conf = torch.sigmoid(external_scores.detach()).mean(dim=1)  # [B]
+                            dynamic_keep_ratio = base_ratio + (1.0 - base_ratio) * mean_conf * self.caip_complexity_alpha
+                            dynamic_keep_ratio = dynamic_keep_ratio.clamp(min=base_ratio, max=1.0)
                         encoder_info['dynamic_keep_ratio'] = dynamic_keep_ratio
 
                 if self.shared_token_pruner is not None:

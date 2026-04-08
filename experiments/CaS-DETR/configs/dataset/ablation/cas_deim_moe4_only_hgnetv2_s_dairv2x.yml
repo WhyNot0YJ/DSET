@@ -1,0 +1,21 @@
+__include__: [
+  '../../deim_dfine/deim_hgnetv2_s_dairv2x.yml',
+  '../../base/cas_deim.yml'
+]
+
+output_dir: ./outputs/ablation/cas_deim_moe4_only_hgnetv2_s_dairv2x
+
+HybridEncoder:
+  enable_cas_predictor: False
+  token_keep_ratio: 1.0
+  use_caip: False
+  use_cass: False
+
+DFINETransformer:
+  use_moe: True
+  num_experts: 4
+  moe_top_k: 2
+
+DEIMCriterion:
+  cass_loss_weight: 0.0
+  decoder_moe_balance_weight: 0.005
