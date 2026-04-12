@@ -55,8 +55,15 @@ def _run_single_eval(
     resume: str,
     keep_ratio: float,
     device: str,
+    extra_updates: Sequence[str],
 ) -> str:
     train_py = root_dir / "experiments" / "CaS-DETR" / "train.py"
+    update_items = [
+        "tuning=null",
+        f"HybridEncoder.token_keep_ratio={keep_ratio}",
+    ]
+    update_items.extend(list(extra_updates))
+
     cmd = [
         sys.executable,
         str(train_py),
@@ -70,8 +77,7 @@ def _run_single_eval(
         "--device",
         device,
         "-u",
-        "tuning=null",
-        f"HybridEncoder.token_keep_ratio={keep_ratio}",
+        *update_items,
     ]
     print(f"[benchmark] keep_ratio={keep_ratio:.2f}")
     proc = subprocess.run(
@@ -95,6 +101,7 @@ def benchmark_curve(
     ratios: Sequence[float],
     device: str,
     metric_index: int,
+    extra_updates: Sequence[str],
     dry_run: bool = False,
     dry_bias: float = 0.0,
 ) -> List[float]:
@@ -106,7 +113,9 @@ def benchmark_curve(
             y = 0.60 + 0.09 * (1.0 - (1.0 - r) ** 2) + float(dry_bias)
             metrics.append(float(min(max(y, 0.0), 1.0)))
         else:
-            out = _run_single_eval(root_dir, config, resume, float(ratio), device)
+            out = _run_single_eval(
+                root_dir, config, resume, float(ratio), device, extra_updates
+            )
             ap_values = _parse_coco_ap_values(out)
             if not ap_values:
                 raise RuntimeError("Could not parse COCO AP values from evaluation output.")
@@ -219,6 +228,15 @@ def main() -> None:
     parser.add_argument("--metric_index", type=int, default=0)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--dry_run", action="store_true", help="Generate synthetic benchmark values without running eval.")
+    parser.add_argument(
+        "--extra_update",
+        nargs="+",
+        default=[
+            "HybridEncoder.caip_dynamic_warmup_epochs=0",
+            "HybridEncoder.caip_static_keep_eval=True",
+        ],
+        help="Extra -u overrides passed to train.py to make sweep effective in eval.",
+    )
     args = parser.parse_args()
 
     root_dir = Path(__file__).resolve().parents[2]
@@ -253,6 +271,7 @@ def main() -> None:
             ratios=ratios,
             device=args.device,
             metric_index=args.metric_index,
+            extra_updates=args.extra_update,
             dry_run=args.dry_run,
             dry_bias=0.0,
         )
@@ -263,6 +282,7 @@ def main() -> None:
             ratios=ratios,
             device=args.device,
             metric_index=args.metric_index,
+            extra_updates=args.extra_update,
             dry_run=args.dry_run,
             dry_bias=0.01,
         )
