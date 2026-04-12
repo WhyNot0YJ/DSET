@@ -10,6 +10,7 @@ same as tools/inference/torch_inf.py stretch resize.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import sys
 from pathlib import Path
@@ -31,10 +32,16 @@ for p in (_project_root, _cas_detr_root):
 
 from engine.core import YAMLConfig  # noqa: E402
 
-from experiments.common.train_end_inference_vis import (  # noqa: E402
-    DEFAULT_COLORS_BGR,
-    draw_boxes_bgr,
-)
+# Load train_end_inference_vis by file path so we do not import experiments.common
+# package, whose __init__ pulls in optional `common.*` modules.
+_train_end_vis_path = _project_root / "experiments" / "common" / "train_end_inference_vis.py"
+_spec = importlib.util.spec_from_file_location("_train_end_inference_vis", _train_end_vis_path)
+if _spec is None or _spec.loader is None:
+    raise ImportError(f"Cannot load module from {_train_end_vis_path}")
+_train_end_vis = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_train_end_vis)
+DEFAULT_COLORS_BGR = _train_end_vis.DEFAULT_COLORS_BGR
+draw_boxes_bgr = _train_end_vis.draw_boxes_bgr
 
 INPUT_SIZE = 640
 
