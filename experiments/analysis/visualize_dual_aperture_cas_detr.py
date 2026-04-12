@@ -369,7 +369,7 @@ def run_qualitative_4x4_grid(
 
     col_titles = [
         "Original Image",
-        r"$S_5$ Coarse Heatmap",
+        "Importance Map $S_5$",
         r"$S_5$ Token Mask",
         r"$S_5$ Token Mask + Prediction",
     ]
