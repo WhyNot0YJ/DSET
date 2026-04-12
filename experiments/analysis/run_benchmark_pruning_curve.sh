@@ -19,7 +19,7 @@ MODE="${MODE:-plot}"                     # plot | benchmark | both
 EVAL_SPLIT="${EVAL_SPLIT:-test}"         # val | test
 DEVICE="${DEVICE:-cuda}"
 METRIC_INDEX="${METRIC_INDEX:-0}"        # 0 => mAP@[0.5:0.95]
-METRIC_INDICES="${METRIC_INDICES:-0 3}"  # 0 => mAP, 3 => mAP_S
+METRIC_INDICES="${METRIC_INDICES:-0 1 3}"  # 0 mAP@[0.5:0.95], 1 mAP50, 3 AP_S small
 OVERWRITE="${OVERWRITE:-0}"              # 1 to replace existing curve keys
 DRY_RUN="${DRY_RUN:-0}"                  # 1 to generate synthetic benchmark data
 ENABLE_MODEL_B="${ENABLE_MODEL_B:-0}"    # 0 => only model A (DAIR), 1 => include model B (UA)
@@ -31,14 +31,24 @@ INFERENCE_RATIOS="${INFERENCE_RATIOS:-0.0 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9 1.
 # Model A (DAIR)
 CONFIG_A="${CONFIG_A:-experiments/CaS-DETR/configs/dataset/ablation/cas_deim_moe4_cass_caip_base03_a10_hgnetv2_s_dairv2x.yml}"
 RESUME_A="${RESUME_A:-experiments/CaS-DETR/outputs/ablation/cas_deim_moe4_cass_caip_base03_a10_hgnetv2_s_dairv2x/best_stg2.pth}"
-CURVE_NAME_A="${CURVE_NAME_A:-CaS_DETR_dair}"
-CURVE_A_1="${CURVE_A_1:-Overall (mAP)}"
-CURVE_A_2="${CURVE_A_2:-Small (AP_S)}"
 
 # Model B (UA)
 CONFIG_B="${CONFIG_B:-experiments/CaS-DETR/configs/dataset/ablation/cas_deim_moe4_cass_caip_base05_a10_hgnetv2_s_uadetrac.yml}"
 RESUME_B="${RESUME_B:-experiments/CaS-DETR/outputs/ablation/base05_a10/cas_deim_moe4_cass_caip_base05_a10_hgnetv2_s_uadetrac/best_stg2.pth}"
-CURVE_NAME_B="${CURVE_NAME_B:-CaS_DETR_ua}"
+
+# Legend keys: order matches METRIC_INDICES default 0 1 3.
+if [[ "$ENABLE_MODEL_B" == "1" ]]; then
+  CURVE_A_1="${CURVE_A_1:-Overall (mAP) - DAIR}"
+  CURVE_A_2="${CURVE_A_2:-mAP50 - DAIR}"
+  CURVE_A_3="${CURVE_A_3:-Small (AP_S) - DAIR}"
+else
+  CURVE_A_1="${CURVE_A_1:-Overall (mAP)}"
+  CURVE_A_2="${CURVE_A_2:-mAP50}"
+  CURVE_A_3="${CURVE_A_3:-Small (AP_S)}"
+fi
+CURVE_B_1="${CURVE_B_1:-Overall (mAP) - UA}"
+CURVE_B_2="${CURVE_B_2:-mAP50 - UA}"
+CURVE_B_3="${CURVE_B_3:-Small (AP_S) - UA}"
 
 # Test split overrides for val_dataloader (used when EVAL_SPLIT=test):
 # DAIR uses shared img root + instances_test.json
@@ -58,9 +68,12 @@ CMD=(
   --eval_split "$EVAL_SPLIT"
   --metric_index "$METRIC_INDEX"
   --metric_indices $METRIC_INDICES
-  --curve_names_a "$CURVE_A_1" "$CURVE_A_2"
-  --curve_name_a "$CURVE_NAME_A"
+  --curve_names_a "$CURVE_A_1" "$CURVE_A_2" "$CURVE_A_3"
 )
+
+if [[ "$ENABLE_MODEL_B" == "1" ]]; then
+  CMD+=(--curve_names_b "$CURVE_B_1" "$CURVE_B_2" "$CURVE_B_3")
+fi
 
 if [[ "$OVERWRITE" == "1" ]]; then
   CMD+=(--overwrite)
@@ -91,7 +104,6 @@ if [[ "$MODE" == "benchmark" || "$MODE" == "both" ]]; then
     CMD+=(
       --config_b "$CONFIG_B"
       --resume_b "$RESUME_B"
-      --curve_name_b "$CURVE_NAME_B"
     )
   fi
   if [[ "$EVAL_SPLIT" == "test" ]]; then

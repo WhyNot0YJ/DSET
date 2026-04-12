@@ -6,6 +6,10 @@ Modes:
   - benchmark: run CaS-DETR eval at multiple keep ratios and write JSON
   - plot: read JSON and generate curve figure
   - both: benchmark then plot
+
+COCO bbox summarize prints six AP lines first; --metric_indices selects which appear in stdout,
+in order: 0 all @0.5:0.95, 1 all @0.5, 2 all @0.75, 3 small @0.5:0.95, 4 medium, 5 large.
+After benchmark, a markdown metric table is printed to stdout.
 """
 
 from __future__ import annotations
@@ -159,11 +163,38 @@ def _pretty_curve_name(name: str) -> str:
         "Small Object mAP (mAP_S)": r"Small ($AP_S$)",
         "Overall (mAP)": r"Overall ($mAP$)",
         "Small (AP_S)": r"Small ($AP_S$)",
+        "mAP50": r"$mAP^{50}$",
     }
     if name in alias:
         return alias[name]
     # Fallback: replace underscores for display only.
     return name.replace("_", " ")
+
+
+def _markdown_metric_table(
+    inference_ratios: Sequence[float],
+    results: Dict[str, Sequence[float]],
+) -> str:
+    """Build a GitHub-flavored markdown table: one row per keep ratio, one column per curve."""
+    if not results:
+        return ""
+    cols = list(results.keys())
+    lines: List[str] = []
+    header = "| " + " | ".join([r"$r$", *[ _pretty_curve_name(c) for c in cols]]) + " |"
+    sep = "| " + " | ".join(["---"] * (1 + len(cols))) + " |"
+    lines.append(header)
+    lines.append(sep)
+    n = len(inference_ratios)
+    for i in range(n):
+        row_vals: List[str] = [f"{float(inference_ratios[i]):.2f}"]
+        for c in cols:
+            seq = results[c]
+            if len(seq) != n:
+                row_vals.append("—")
+            else:
+                row_vals.append(f"{float(seq[i]):.4f}")
+        lines.append("| " + " | ".join(row_vals) + " |")
+    return "\n".join(lines)
 
 
 def plot_results(
@@ -244,10 +275,10 @@ def main() -> None:
     parser.add_argument("--inference_ratios", nargs="+", type=float, default=_default_ratios())
     parser.add_argument("--config_a", type=str, default=None)
     parser.add_argument("--resume_a", type=str, default=None)
-    parser.add_argument("--curve_name_a", type=str, default="CaS_DETR_dair")
+    parser.add_argument("--curve_name_a", type=str, default="A")
     parser.add_argument("--config_b", type=str, default=None)
     parser.add_argument("--resume_b", type=str, default=None)
-    parser.add_argument("--curve_name_b", type=str, default="CaS_DETR_ua")
+    parser.add_argument("--curve_name_b", type=str, default="B")
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--metric_index", type=int, default=0)
     parser.add_argument(
@@ -255,7 +286,11 @@ def main() -> None:
         nargs="+",
         type=int,
         default=None,
-        help="Multiple metric indices, e.g. 0 3 for mAP and mAP_S.",
+        help=(
+            "COCO bbox AP line indices from eval stdout, in print order: "
+            "0=mAP@[0.5:0.95] all, 1=mAP50 all, 3=AP_S@[0.5:0.95] small. "
+            "Example: 0 1 3 for mAP, mAP50, AP_S."
+        ),
     )
     parser.add_argument(
         "--curve_names_a",
@@ -371,9 +406,20 @@ def main() -> None:
                 data["results"][cname] = curves_b[int(mi)]
         _save_json(output_json, data)
         print(f"Saved benchmark JSON: {output_json}")
+        table = _markdown_metric_table(data["inference_ratios"], data["results"])
+        if table:
+            print("\nMetric table:\n")
+            print(table)
+            print()
 
     if args.mode in ("plot", "both"):
         data = _load_json(output_json)
+        if args.mode == "plot" and data.get("results"):
+            table = _markdown_metric_table(data["inference_ratios"], data["results"])
+            if table:
+                print("\nMetric table:\n")
+                print(table)
+                print()
         plot_results(
             inference_ratios=data["inference_ratios"],
             results=data["results"],
