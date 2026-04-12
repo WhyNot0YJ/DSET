@@ -367,7 +367,7 @@ def run_qualitative_4x4_grid(
         "Original Image",
         r"$S_5$ Coarse Heatmap",
         r"$S_5$ Token Mask",
-        "Prediction",
+        r"$S_5$ Token Mask + Prediction",
     ]
 
     for row, image_path_str in enumerate(image_paths):
