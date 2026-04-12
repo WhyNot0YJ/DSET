@@ -28,7 +28,7 @@ OUTPUT_PDF="${OUTPUT_PDF:-experiments/analysis/figure5_qualitative_cas_detr.pdf}
 IMG_ROW_1="${IMG_ROW_1:-/root/autodl-fs/datasets/DAIR-V2X/image/000056.jpg}"
 IMG_ROW_2="${IMG_ROW_2:-/root/autodl-fs/datasets/DAIR-V2X/image/000032.jpg}"
 IMG_ROW_3="${IMG_ROW_3:-/root/autodl-fs/datasets/UA-DETRAC_COCO/test/4254.jpg}"
-IMG_ROW_4="${IMG_ROW_4:-/root/autodl-fs/datasets/UA-DETRAC_COCO/test/6446.jpg}"
+IMG_ROW_4="${IMG_ROW_4:-/root/autodl-fs/datasets/UA-DETRAC_COCO/test/2546.jpg}"
 
 for f in "${CONFIG_A}" "${RESUME_A}" "${CONFIG_B}" "${RESUME_B}" "${IMG_ROW_1}" "${IMG_ROW_2}" "${IMG_ROW_3}" "${IMG_ROW_4}"; do
   if [[ ! -f "${f}" ]]; then
