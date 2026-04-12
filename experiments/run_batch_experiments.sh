@@ -24,8 +24,9 @@ export OMP_NUM_THREADS=1
 #   ./run_batch_experiments.sh --cas_detr                      # 只运行新的 CaS-DETR 第一阶段消融实验（仅 DAIR-V2X）
 #   ./run_batch_experiments.sh --cas_caip                      # 只运行 CAIP 消融（4 个配置）
 #   ./run_batch_experiments.sh --cas_caip_base05               # 只运行 CAIP 消融：r_base=0.5, alpha=1.0（4 个配置，DAIR+UA）
-#   ./run_batch_experiments.sh --cas_pack_moe4_base03_a10      # 打包跑：moe4(base03_a10) + ua(moe4 base03_a10) + moe4_only + cass_only_caip(base03_a10)
-#   ./run_batch_experiments.sh --cas_fixed_keep_ratio          # 固定 keep_ratio：base0.5/base0.7（仍用CAIP打分，ratio不随图变化）
+#   ./run_batch_experiments.sh --cas_pack_moe4_base03_a10      # 打包：moe4 base03_a10 双数据集 + moe4_only + cass_only_caip base03_a10（不含 keep*_fixed）
+#   ./run_batch_experiments.sh --cas_fixed_keep_ratio          # 仅 DAIR：moe4 base03_a10 + keep0.3/0.7 固定（与 pack 分开跑）
+#   ./run_batch_experiments.sh --cas_moe4_base03_a10_fixed_keep  # 同上别名
 #   ./run_batch_experiments.sh --yolov5                        # 只运行YOLOv5实验
 #   ./run_batch_experiments.sh --yolov8                        # 只运行YOLOv8实验
 #   ./run_batch_experiments.sh --yolov12                       # 只运行YOLOv12实验
@@ -51,7 +52,7 @@ export OMP_NUM_THREADS=1
 #   ./run_batch_experiments.sh --s                             # 只运行所有 s 规模 YOLO / YOLOX
 #   ./run_batch_experiments.sh --m                             # 只运行所有 m 规模 YOLO / YOLOX
 #   ./run_batch_experiments.sh --custom cfg1.yaml cfg2.yaml    # 自定义配置列表
-#   ./run_batch_experiments.sh --keys rtdetrv2-r18-dairv2x moe6-r18-dairv2x   # 使用内置键名选择
+#   ./run_batch_experiments.sh --keys rtdetrv2-r18-dairv2x casdeim-moe-only-dairv2x   # 使用内置键名选择
 #   ./run_batch_experiments.sh --dairv2x                       # 只保留 DAIR-V2X 维度（可叠 --rtdetrv2 / --cas_detr 等）
 #   ./run_batch_experiments.sh --uadetrac                     # 只保留 UA-DETRAC 维度
 #   ./run_batch_experiments.sh --dataset dairv2x --rtdetrv2    # 同上：--dataset 与 --dairv2x 等价；可与 --rtdetrv2 任意顺序组合
@@ -256,7 +257,6 @@ declare -a CORE_EXPERIMENTS=(
 declare -a CAS_CAIP_EXPERIMENTS=(
     "CaS-DETR/configs/dataset/ablation/cas_deim_moe3_cass_caip_hgnetv2_s_uadetrac.yml"
     "CaS-DETR/configs/dataset/ablation/cas_deim_cass_only_caip_hgnetv2_s_uadetrac.yml"
-    "CaS-DETR/configs/dataset/ablation/cas_deim_moe_cass_caip_hgnetv2_s_dairv2x.yml"
     "CaS-DETR/configs/dataset/ablation/cas_deim_moe4_cass_caip_base03_a10_hgnetv2_s_uadetrac.yml"
     "CaS-DETR/configs/dataset/ablation/cas_deim_cass_only_caip_base03_a10_hgnetv2_s_dairv2x.yml"
     "CaS-DETR/configs/dataset/ablation/cas_deim_moe4_cass_caip_base03_a10_hgnetv2_s_dairv2x.yml"
@@ -267,37 +267,32 @@ declare -a CAS_CAIP_BASE05_EXPERIMENTS=(
     "CaS-DETR/configs/dataset/ablation/cas_deim_moe3_cass_caip_base05_a10_hgnetv2_s_uadetrac.yml"
     "CaS-DETR/configs/dataset/ablation/cas_deim_moe4_cass_caip_base05_a10_hgnetv2_s_uadetrac.yml"
     "CaS-DETR/configs/dataset/ablation/cas_deim_cass_only_caip_base05_a10_hgnetv2_s_uadetrac.yml"
-    "CaS-DETR/configs/dataset/ablation/cas_deim_moe_cass_caip_base05_a10_hgnetv2_s_dairv2x.yml"
     "CaS-DETR/configs/dataset/ablation/cas_deim_moe4_cass_caip_base05_a10_hgnetv2_s_dairv2x.yml"
     "CaS-DETR/configs/dataset/ablation/cas_deim_cass_only_caip_base05_a10_hgnetv2_s_dairv2x.yml"
 )
 
 # 固定 keep_ratio（仍用 CAIP 打分，但 ratio 不随图变化）
 declare -a CAS_FIXED_KEEP_RATIO_EXPERIMENTS=(
-    "CaS-DETR/configs/dataset/ablation/cas_deim_moe_cass_caip_base05_a0_fixed_hgnetv2_s_dairv2x.yml"
-    "CaS-DETR/configs/dataset/ablation/cas_deim_moe_cass_caip_base07_a0_fixed_hgnetv2_s_dairv2x.yml"
+    "CaS-DETR/configs/dataset/ablation/cas_deim_moe4_cass_caip_base03_a10_keep07_fixed_hgnetv2_s_dairv2x.yml"
+    "CaS-DETR/configs/dataset/ablation/cas_deim_moe4_cass_caip_base03_a10_keep03_fixed_hgnetv2_s_dairv2x.yml"
 )
 
-# 快速打包：一次性跑指定的 base03_a10 / moe4 相关配置（用户常用组合）
+# 快速打包：base03_a10 moe4 主线（不含 keep*_fixed；固定 keep 见 CAS_FIXED_KEEP_RATIO_EXPERIMENTS）
 declare -a CAS_PACK_MOE4_BASE03_A10=(
     "CaS-DETR/configs/dataset/ablation/cas_deim_moe4_cass_caip_base03_a10_hgnetv2_s_dairv2x.yml"
     "CaS-DETR/configs/dataset/ablation/cas_deim_moe4_cass_caip_base03_a10_hgnetv2_s_uadetrac.yml"
     "CaS-DETR/configs/dataset/ablation/cas_deim_moe4_only_hgnetv2_s_dairv2x.yml"
     "CaS-DETR/configs/dataset/ablation/cas_deim_cass_only_caip_base03_a10_hgnetv2_s_dairv2x.yml"
-    "CaS-DETR/configs/dataset/ablation/cas_deim_moe_cass_caip_base05_a0_fixed_hgnetv2_s_dairv2x.yml"
-    "CaS-DETR/configs/dataset/ablation/cas_deim_moe_cass_caip_base07_a0_fixed_hgnetv2_s_dairv2x.yml"
 )
 
 declare -A CaS_DETR_CONFIGS=(
     ["casdeim-all-off-dairv2x"]="CaS-DETR/configs/dataset/ablation/cas_deim_all_off_hgnetv2_s_dairv2x.yml"
-    ["casdeim-moe-only-dairv2x"]="CaS-DETR/configs/dataset/ablation/cas_deim_moe_only_hgnetv2_s_dairv2x.yml"
     ["casdeim-moe4-only-dairv2x"]="CaS-DETR/configs/dataset/ablation/cas_deim_moe4_only_hgnetv2_s_dairv2x.yml"
     ["casdeim-cass-only-keep07-dairv2x"]="CaS-DETR/configs/dataset/ablation/cas_deim_cass_only_keep07_hgnetv2_s_dairv2x.yml"
     ["casdeim-cass-only-keep05-dairv2x"]="CaS-DETR/configs/dataset/ablation/cas_deim_cass_only_keep05_hgnetv2_s_dairv2x.yml"
-    ["casdeim-moe-cass-keep07-dairv2x"]="CaS-DETR/configs/dataset/ablation/cas_deim_moe_cass_keep07_hgnetv2_s_dairv2x.yml"
-    ["casdeim-moe-cass-keep05-dairv2x"]="CaS-DETR/configs/dataset/ablation/cas_deim_moe_cass_keep05_hgnetv2_s_dairv2x.yml"
-    ["casdeim-moe-cass-caip-dairv2x"]="CaS-DETR/configs/dataset/ablation/cas_deim_moe_cass_caip_hgnetv2_s_dairv2x.yml"
     ["casdeim-moe4-cass-caip-base03-a10-dairv2x"]="CaS-DETR/configs/dataset/ablation/cas_deim_moe4_cass_caip_base03_a10_hgnetv2_s_dairv2x.yml"
+    ["casdeim-moe4-cass-caip-base03-a10-keep07-fixed-dairv2x"]="CaS-DETR/configs/dataset/ablation/cas_deim_moe4_cass_caip_base03_a10_keep07_fixed_hgnetv2_s_dairv2x.yml"
+    ["casdeim-moe4-cass-caip-base03-a10-keep03-fixed-dairv2x"]="CaS-DETR/configs/dataset/ablation/cas_deim_moe4_cass_caip_base03_a10_keep03_fixed_hgnetv2_s_dairv2x.yml"
     ["casdeim-cass-only-caip-base03-a10-dairv2x"]="CaS-DETR/configs/dataset/ablation/cas_deim_cass_only_caip_base03_a10_hgnetv2_s_dairv2x.yml"
     ["casdeim-cass-only-caip-dairv2x"]="CaS-DETR/configs/dataset/ablation/cas_deim_cass_only_caip_hgnetv2_s_dairv2x.yml"
 )
@@ -754,7 +749,7 @@ parse_arguments() {
             --cas_pack_moe4_base03_a10|--cas-pack-moe4-base03-a10)
                 has_cas_pack_moe4_base03_a10=true
                 ;;
-            --cas_fixed_keep_ratio|--cas-fixed-keep-ratio)
+            --cas_fixed_keep_ratio|--cas-fixed-keep-ratio|--cas_moe4_base03_a10_fixed_keep|--cas-moe4-base03-a10-fixed-keep)
                 has_cas_fixed_keep_ratio=true
                 ;;
             --yolov5)
@@ -1049,6 +1044,8 @@ parse_arguments() {
         echo "  ./run_batch_experiments.sh --cas_detr                      # 只运行新的 CaS-DETR 第一阶段消融（仅 DAIR-V2X）"
         echo "  ./run_batch_experiments.sh --cas_caip                      # 只运行 CAIP 消融（4 个配置）"
         echo "  ./run_batch_experiments.sh --cas_caip_base05               # 只运行 CAIP 消融：r_base=0.5, alpha=1.0（4 个配置，DAIR+UA）"
+        echo "  ./run_batch_experiments.sh --cas_pack_moe4_base03_a10      # moe4 base03_a10 打包（不含 keep 固定分支）"
+        echo "  ./run_batch_experiments.sh --cas_fixed_keep_ratio          # 仅 DAIR：moe4 base03_a10 keep0.3、0.7 固定（独立入口）"
         echo "  ./run_batch_experiments.sh --yolov5                        # 只运行YOLOv5"
         echo "  ./run_batch_experiments.sh --yolov8                        # 只运行YOLOv8"
         echo "  ./run_batch_experiments.sh --yolov12                       # 只运行YOLOv12"

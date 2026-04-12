@@ -159,7 +159,7 @@ class TransformerDecoderLayer(nn.Module):
                  cross_attn_method='default',
                  layer_scale=None,
                  use_moe=False,
-                 num_experts=6,
+                 num_experts=4,
                  moe_top_k=2,
                  moe_noise_std=0.1,
                  router_init_std=0.02):
@@ -477,7 +477,7 @@ class DFINETransformer(nn.Module):
                  layer_scale=1,
                  mlp_act='relu',
                  use_moe=False,
-                 num_experts=6,
+                 num_experts=4,
                  moe_top_k=2,
                  moe_noise_std=0.1,
                  router_init_std=0.02,

@@ -52,27 +52,7 @@ The current first-stage ablation set is limited to **DAIR-V2X** and lives in:
 
 - `experiments/CaS-DETR/configs/dataset/ablation/`
 
-Current five configs:
-
-- `cas_deim_moe_only_hgnetv2_s_dairv2x.yml`
-- `cas_deim_cass_only_keep07_hgnetv2_s_dairv2x.yml`
-- `cas_deim_cass_only_keep05_hgnetv2_s_dairv2x.yml`
-- `cas_deim_moe_cass_keep07_hgnetv2_s_dairv2x.yml`
-- `cas_deim_moe_cass_keep05_hgnetv2_s_dairv2x.yml`
-
-Their meanings are:
-
-- `moe_only`: decoder MoE only, no pruning, no CASS
-- `cass_only_keep07`: pruning + CASS, fixed `token_keep_ratio=0.7`, no decoder MoE
-- `cass_only_keep05`: pruning + CASS, fixed `token_keep_ratio=0.5`, no decoder MoE
-- `moe_cass_keep07`: pruning + CASS + decoder MoE, fixed `token_keep_ratio=0.7`
-- `moe_cass_keep05`: pruning + CASS + decoder MoE, fixed `token_keep_ratio=0.5`
-
-For this stage:
-
-- `use_caip=False`
-- only fixed keep ratios are compared
-- `moe_only` does not prune
+Representative DAIR ablations include `cas_deim_moe4_only_*`, `cas_deim_cass_only_keep*_*`, `cas_deim_moe4_cass_caip_*`, and fixed-keep variants under `cas_deim_moe4_cass_caip_base03_a10_keep*_fixed_*`. Legacy filenames `cas_deim_moe_*` without `moe3`/`moe4` in the stem referred to the old default MoE width and have been removed.
 
 ## Default Base Config
 
@@ -86,8 +66,8 @@ Current defaults include:
 - `use_caip: True`
 - `use_cass: True`
 - `cass_loss_type: vfl`
-- `num_experts: 6`
-- `moe_top_k: 3`
+- `num_experts: 4`
+- `moe_top_k: 2`
 
 These are only base defaults. The stage-1 ablation files override them where needed.
 

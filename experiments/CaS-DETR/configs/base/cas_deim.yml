@@ -15,8 +15,8 @@ HybridEncoder:
 
 DFINETransformer:
   use_moe: True
-  num_experts: 6
-  moe_top_k: 3
+  num_experts: 4
+  moe_top_k: 2
   moe_noise_std: 0.1
   router_init_std: 0.02
 
