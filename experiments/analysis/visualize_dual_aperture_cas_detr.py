@@ -178,99 +178,6 @@ def postprocess_to_drawable(
     return labels[keep], boxes[keep], scores[keep]
 
 
-def _resolve_gt_annotation_path(
-    image_path: Path,
-    gt_path: Optional[str],
-    annotations_dir: Optional[str],
-    data_root: Optional[str],
-) -> Optional[str]:
-    stem = image_path.stem
-    if gt_path:
-        p = Path(gt_path)
-        if p.is_file():
-            return str(p)
-        if p.is_dir():
-            cand = p / f"{stem}.txt"
-            if cand.exists():
-                return str(cand)
-    if annotations_dir:
-        cand = Path(annotations_dir) / f"{stem}.txt"
-        if cand.exists():
-            return str(cand)
-    if data_root:
-        dr = Path(data_root)
-        for cand in (
-            dr / "labels" / "train" / f"{stem}.txt",
-            dr / "labels" / "val" / f"{stem}.txt",
-        ):
-            if cand.exists():
-                return str(cand)
-    return None
-
-
-def _load_yolo_annotations(
-    label_path: Path,
-    img_h: int,
-    img_w: int,
-    class_names: Sequence[str],
-) -> List[Dict[str, Any]]:
-    if not label_path.exists():
-        return []
-    lines = label_path.read_text(encoding="utf-8").strip().splitlines()
-    out: List[Dict[str, Any]] = []
-    for line in lines:
-        parts = line.split()
-        if len(parts) < 5:
-            continue
-        try:
-            cid = int(parts[0])
-            cx, cy, w, h = float(parts[1]), float(parts[2]), float(parts[3]), float(parts[4])
-        except (ValueError, IndexError):
-            continue
-        x1 = (cx - w / 2) * img_w
-        y1 = (cy - h / 2) * img_h
-        x2 = (cx + w / 2) * img_w
-        y2 = (cy + h / 2) * img_h
-        if x2 <= x1 or y2 <= y1:
-            continue
-        if cid < 0 or cid >= len(class_names):
-            continue
-        out.append(
-            {
-                "class_id": cid,
-                "class_name": class_names[cid],
-                "bbox": [x1, y1, x2, y2],
-            }
-        )
-    return out
-
-
-def draw_gt_yolo(
-    bgr: np.ndarray,
-    annotations: List[Dict[str, Any]],
-    class_names: Sequence[str],
-    colors: Sequence[Tuple[int, int, int]],
-) -> np.ndarray:
-    img = bgr.copy()
-    for ann in annotations:
-        cid = int(ann["class_id"])
-        x1, y1, x2, y2 = [int(round(v)) for v in ann["bbox"]]
-        color = colors[cid % len(colors)]
-        cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
-        name = class_names[cid] if cid < len(class_names) else str(cid)
-        cv2.putText(
-            img,
-            name,
-            (x1, max(0, y1 - 4)),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            color,
-            1,
-            cv2.LINE_AA,
-        )
-    return img
-
-
 def add_panel_text(image: np.ndarray, text: str) -> np.ndarray:
     out = image.copy()
     if not text:
@@ -290,32 +197,15 @@ def add_panel_text(image: np.ndarray, text: str) -> np.ndarray:
     return out
 
 
-def draw_prediction_gt_overlay(
+def draw_prediction_overlay(
     bgr: np.ndarray,
     labels: np.ndarray,
     boxes: np.ndarray,
     scores: np.ndarray,
     class_names: Sequence[str],
     colors: Sequence[Tuple[int, int, int]],
-    gt_annotations: Sequence[Dict[str, Any]],
 ) -> np.ndarray:
     overlay = bgr.copy()
-    if gt_annotations:
-        for ann in gt_annotations:
-            cid = int(ann["class_id"])
-            x1, y1, x2, y2 = [int(round(v)) for v in ann["bbox"]]
-            cv2.rectangle(overlay, (x1, y1), (x2, y2), (0, 255, 0), 1)
-            name = class_names[cid] if cid < len(class_names) else str(cid)
-            cv2.putText(
-                overlay,
-                f"GT {name}",
-                (x1, max(0, y1 - 4)),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.45,
-                (0, 255, 0),
-                1,
-                cv2.LINE_AA,
-            )
     overlay = draw_boxes_bgr(
         overlay,
         labels,
@@ -332,13 +222,10 @@ def process_single_scenario(
     postprocessor: torch.nn.Module,
     image_path: Path,
     device: str,
+    eval_epoch: int,
     conf_threshold: float,
     class_names: Sequence[str],
     colors: Sequence[Tuple[int, int, int]],
-    gt_path: Optional[str],
-    annotations_dir: Optional[str],
-    data_root: Optional[str],
-    draw_gt: bool,
     verbose: bool,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     orig_bgr = cv2.imread(str(image_path))
@@ -362,7 +249,7 @@ def process_single_scenario(
         hook_pruner = pruner.register_forward_hook(pruner_hook)
 
     if enc is not None and hasattr(enc, "set_epoch"):
-        enc.set_epoch(0)
+        enc.set_epoch(int(eval_epoch))
 
     with torch.no_grad():
         outputs = model(img_tensor)
@@ -423,24 +310,6 @@ def process_single_scenario(
     results = postprocessor(outputs, orig_target_sizes)
     labels, boxes, scores = postprocess_to_drawable(results, conf_threshold)
 
-    gt_annotations: List[Dict[str, Any]] = []
-    if draw_gt:
-        resolved = _resolve_gt_annotation_path(image_path, gt_path, annotations_dir, data_root)
-        if resolved and Path(resolved).exists():
-            ann_path = Path(resolved)
-            try:
-                gt_annotations = _load_yolo_annotations(ann_path, orig_h, orig_w, class_names)
-                if verbose:
-                    if gt_annotations:
-                        print(f"  GT: {len(gt_annotations)} boxes from {ann_path.name}")
-                    else:
-                        print(f"  GT file empty: {ann_path}")
-            except OSError as e:
-                if verbose:
-                    print(f"  GT load failed: {e}")
-        elif verbose:
-            print(f"  No GT label for {image_path.name}")
-
     keep_ratio = None
     dynamic_keep_ratio = encoder_info.get("dynamic_keep_ratio")
     if isinstance(dynamic_keep_ratio, torch.Tensor) and dynamic_keep_ratio.numel() > 0:
@@ -461,19 +330,18 @@ def process_single_scenario(
     stat_text = "  ".join(stat_parts)
 
     masked_panel = add_panel_text(masked_image, stat_text)
-    pred_gt_overlay = draw_prediction_gt_overlay(
-        orig_bgr.copy(),
+    pred_overlay = draw_prediction_overlay(
+        masked_image.copy(),
         labels,
         boxes,
         scores,
         class_names,
         colors,
-        gt_annotations,
     )
     if stat_text:
-        pred_gt_overlay = add_panel_text(pred_gt_overlay, stat_text)
+        pred_overlay = add_panel_text(pred_overlay, stat_text)
 
-    return orig_bgr.copy(), s5_overlay, masked_panel, pred_gt_overlay
+    return orig_bgr.copy(), s5_overlay, masked_panel, pred_overlay
 
 
 def run_qualitative_4x4_grid(
@@ -481,14 +349,11 @@ def run_qualitative_4x4_grid(
     postprocessor: torch.nn.Module,
     image_paths: Sequence[str],
     device: str,
+    eval_epoch: int,
     output_path: str,
     conf_threshold: float,
     class_names: Sequence[str],
     colors: Sequence[Tuple[int, int, int]],
-    gt_path: Optional[str],
-    annotations_dir: Optional[str],
-    data_root: Optional[str],
-    draw_gt: bool,
 ) -> None:
     import matplotlib
 
@@ -505,7 +370,7 @@ def run_qualitative_4x4_grid(
         "Original Image",
         r"$S_5$ Coarse Heatmap",
         r"$S_5$ Token Mask",
-        "Prediction + GT",
+        "Prediction",
     ]
 
     for row, image_path_str in enumerate(image_paths):
@@ -516,13 +381,10 @@ def run_qualitative_4x4_grid(
             postprocessor,
             p,
             device,
+            eval_epoch,
             conf_threshold,
             class_names,
             colors,
-            gt_path,
-            annotations_dir,
-            data_root,
-            draw_gt,
             verbose=True,
         )
         imgs = [o1, o2, o3, o4]
@@ -572,10 +434,8 @@ def main():
     parser.add_argument("--image_dir", type=str, default=".", help="Base directory for ./image/")
     parser.add_argument("--data_root", type=str, default=None, help="Fallback image search like val script")
     parser.add_argument("--device", type=str, default="cuda")
+    parser.add_argument("--eval_epoch", type=int, default=5, help="Encoder epoch for CAIP/CASS warmup logic")
     parser.add_argument("--conf_threshold", type=float, default=0.3)
-    parser.add_argument("--gt_path", type=str, default=None)
-    parser.add_argument("--annotations_dir", type=str, default=None)
-    parser.add_argument("--draw_gt", action="store_true")
     args = parser.parse_args()
 
     if args.image:
@@ -599,14 +459,11 @@ def main():
         postprocessor,
         paths[:4],
         args.device,
+        args.eval_epoch,
         args.output,
         args.conf_threshold,
         class_names,
         colors,
-        args.gt_path,
-        args.annotations_dir,
-        args.data_root,
-        args.draw_gt,
     )
 
 
