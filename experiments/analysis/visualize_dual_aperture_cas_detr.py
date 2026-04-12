@@ -179,23 +179,27 @@ def postprocess_to_drawable(
     return labels[keep], boxes[keep], scores[keep]
 
 
-def add_panel_text(image: np.ndarray, text: str) -> np.ndarray:
-    out = image.copy()
+def add_panel_badge(ax, text: str) -> None:
+    """Draw a resolution-independent badge in axes coordinates."""
     if not text:
-        return out
-    (text_w, text_h), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
-    cv2.rectangle(out, (8, 8), (20 + text_w, 18 + text_h), (0, 0, 0), -1)
-    cv2.putText(
-        out,
+        return
+    ax.text(
+        0.03,
+        0.97,
         text,
-        (14, 14 + text_h),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.6,
-        (255, 255, 255),
-        2,
-        cv2.LINE_AA,
+        transform=ax.transAxes,
+        ha="left",
+        va="top",
+        color="white",
+        fontsize=10,
+        fontfamily="serif",
+        bbox={
+            "facecolor": "black",
+            "edgecolor": "none",
+            "boxstyle": "round,pad=0.2",
+            "alpha": 0.8,
+        },
     )
-    return out
 
 
 def draw_prediction_overlay(
@@ -228,7 +232,7 @@ def process_single_scenario(
     class_names: Sequence[str],
     colors: Sequence[Tuple[int, int, int]],
     verbose: bool,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, str]:
     orig_bgr = cv2.imread(str(image_path))
     if orig_bgr is None:
         raise ValueError(f"Failed to read image: {image_path}")
@@ -330,7 +334,6 @@ def process_single_scenario(
         stat_parts.append(f"prune={prune_ratio:.2f}")
     stat_text = "  ".join(stat_parts)
 
-    masked_panel = add_panel_text(masked_image, stat_text)
     pred_overlay = draw_prediction_overlay(
         masked_image.copy(),
         labels,
@@ -339,10 +342,8 @@ def process_single_scenario(
         class_names,
         colors,
     )
-    if stat_text:
-        pred_overlay = add_panel_text(pred_overlay, stat_text)
 
-    return orig_bgr.copy(), s5_overlay, masked_panel, pred_overlay
+    return orig_bgr.copy(), s5_overlay, masked_image, pred_overlay, stat_text
 
 
 def run_qualitative_4x4_grid(
@@ -378,7 +379,7 @@ def run_qualitative_4x4_grid(
         p = Path(image_path_str)
         print(f"Processing row {row + 1}/4: {p}")
         model, postprocessor, class_names, colors, eval_epoch = row_model_bundle[row]
-        o1, o2, o3, o4 = process_single_scenario(
+        o1, o2, o3, o4, stat_text = process_single_scenario(
             model,
             postprocessor,
             p,
@@ -394,6 +395,8 @@ def run_qualitative_4x4_grid(
             ax.imshow(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
             if row == 0:
                 ax.set_title(col_titles[col], fontweight="bold", fontfamily="serif")
+            if stat_text and col in (2, 3):
+                add_panel_badge(ax, stat_text)
             ax.set_xticks([])
             ax.set_yticks([])
             ax.axis("off")
