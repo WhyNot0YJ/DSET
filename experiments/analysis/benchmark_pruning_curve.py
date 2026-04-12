@@ -16,7 +16,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, List, Sequence
 
 plt = None
 
@@ -94,24 +94,27 @@ def _run_single_eval(
     return proc.stdout + "\n" + proc.stderr
 
 
-def benchmark_curve(
+def benchmark_curve_multi(
     root_dir: Path,
     config: str,
     resume: str,
     ratios: Sequence[float],
     device: str,
-    metric_index: int,
+    metric_indices: Sequence[int],
     extra_updates: Sequence[str],
     dry_run: bool = False,
     dry_bias: float = 0.0,
-) -> List[float]:
-    metrics: List[float] = []
+) -> Dict[int, List[float]]:
+    out_metrics: Dict[int, List[float]] = {int(mi): [] for mi in metric_indices}
     for ratio in ratios:
         if dry_run:
             # Deterministic synthetic curve: rises then saturates.
             r = float(ratio)
             y = 0.60 + 0.09 * (1.0 - (1.0 - r) ** 2) + float(dry_bias)
-            metrics.append(float(min(max(y, 0.0), 1.0)))
+            y = float(min(max(y, 0.0), 1.0))
+            for mi in metric_indices:
+                # Make different metrics slightly separated in dry run.
+                out_metrics[int(mi)].append(float(min(max(y + 0.003 * int(mi), 0.0), 1.0)))
         else:
             out = _run_single_eval(
                 root_dir, config, resume, float(ratio), device, extra_updates
@@ -119,13 +122,19 @@ def benchmark_curve(
             ap_values = _parse_coco_ap_values(out)
             if not ap_values:
                 raise RuntimeError("Could not parse COCO AP values from evaluation output.")
-            if metric_index < 0 or metric_index >= len(ap_values):
-                raise IndexError(
-                    f"metric_index={metric_index} out of range; parsed {len(ap_values)} AP values."
-                )
-            metrics.append(float(ap_values[metric_index]))
-        print(f"  -> metric[{metric_index}]={metrics[-1]:.4f}")
-    return metrics
+            for mi in metric_indices:
+                if mi < 0 or mi >= len(ap_values):
+                    raise IndexError(
+                        f"metric_index={mi} out of range; parsed {len(ap_values)} AP values."
+                    )
+                out_metrics[int(mi)].append(float(ap_values[mi]))
+        print(
+            "  -> "
+            + ", ".join(
+                [f"metric[{mi}]={out_metrics[int(mi)][-1]:.4f}" for mi in metric_indices]
+            )
+        )
+    return out_metrics
 
 
 def _setup_style() -> None:
@@ -136,11 +145,25 @@ def _setup_style() -> None:
             "font.serif": ["Times New Roman", "DejaVu Serif", "Times", "serif"],
             "font.size": 12,
             "axes.labelsize": 12,
-            "axes.titlesize": 12,
             "legend.fontsize": 10,
             "figure.dpi": 150,
         }
     )
+
+
+def _pretty_curve_name(name: str) -> str:
+    alias = {
+        "mAP_50-95": r"Overall ($mAP$)",
+        "mAP_S_50-95": r"Small ($AP_S$)",
+        "Overall mAP": r"Overall ($mAP$)",
+        "Small Object mAP (mAP_S)": r"Small ($AP_S$)",
+        "Overall (mAP)": r"Overall ($mAP$)",
+        "Small (AP_S)": r"Small ($AP_S$)",
+    }
+    if name in alias:
+        return alias[name]
+    # Fallback: replace underscores for display only.
+    return name.replace("_", " ")
 
 
 def plot_results(
@@ -163,6 +186,7 @@ def plot_results(
     _setup_style()
     fig, ax = plt.subplots(figsize=(7.2, 5.0))
     markers = ["o", "s", "^", "D", "P", "X", "*", "v"]
+    colors = ["#1f77b4", "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#e377c2"]
 
     for idx, (name, vals) in enumerate(results.items()):
         if len(vals) != len(inference_ratios):
@@ -173,17 +197,17 @@ def plot_results(
             inference_ratios,
             vals,
             marker=markers[idx % len(markers)],
+            color=colors[idx % len(colors)],
             linewidth=2,
             markersize=6,
-            label=name,
+            label=_pretty_curve_name(name),
         )
 
-    ax.set_xlabel("Inference Keep Ratio")
-    ax.set_ylabel("COCO mAP (50-95)")
-    ax.set_title("Accuracy vs. Efficiency Trade-off (CaS-DETR)")
+    ax.set_xlabel(r"Token Keep Ratio $r$")
+    ax.set_ylabel("Average Precision (AP)")
     ax.grid(True, linestyle="--", alpha=0.5)
-    ax.set_xlim(min(inference_ratios), max(inference_ratios))
-    ax.legend(loc="best", framealpha=0.95)
+    ax.set_xlim(0.0, 1.0)
+    ax.legend(loc="lower right", framealpha=0.95)
     plt.tight_layout()
 
     output_plot.parent.mkdir(parents=True, exist_ok=True)
@@ -226,8 +250,28 @@ def main() -> None:
     parser.add_argument("--curve_name_b", type=str, default="CaS_DETR_ua")
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--metric_index", type=int, default=0)
+    parser.add_argument(
+        "--metric_indices",
+        nargs="+",
+        type=int,
+        default=None,
+        help="Multiple metric indices, e.g. 0 3 for mAP and mAP_S.",
+    )
+    parser.add_argument(
+        "--curve_names_a",
+        nargs="+",
+        default=None,
+        help="Optional curve names for model A, length must match metric indices.",
+    )
+    parser.add_argument(
+        "--curve_names_b",
+        nargs="+",
+        default=None,
+        help="Optional curve names for model B, length must match metric indices.",
+    )
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--dry_run", action="store_true", help="Generate synthetic benchmark values without running eval.")
+    parser.add_argument("--eval_split", choices=["val", "test"], default="val")
     parser.add_argument(
         "--extra_update",
         nargs="+",
@@ -236,6 +280,18 @@ def main() -> None:
             "HybridEncoder.caip_static_keep_eval=True",
         ],
         help="Extra -u overrides passed to train.py to make sweep effective in eval.",
+    )
+    parser.add_argument(
+        "--extra_update_a",
+        nargs="+",
+        default=[],
+        help="Model-A specific -u overrides (in addition to --extra_update).",
+    )
+    parser.add_argument(
+        "--extra_update_b",
+        nargs="+",
+        default=[],
+        help="Model-B specific -u overrides (in addition to --extra_update).",
     )
     args = parser.parse_args()
 
@@ -257,37 +313,62 @@ def main() -> None:
     if args.mode in ("benchmark", "both"):
         if not args.config_a or not args.resume_a:
             raise ValueError("--config_a and --resume_a are required for benchmark mode.")
-        if not args.config_b or not args.resume_b:
-            raise ValueError("--config_b and --resume_b are required for benchmark mode.")
+        metric_indices = list(args.metric_indices) if args.metric_indices else [int(args.metric_index)]
 
-        for key in (args.curve_name_a, args.curve_name_b):
+        curve_names_a = list(args.curve_names_a) if args.curve_names_a else [
+            f"{args.curve_name_a}_m{mi}" for mi in metric_indices
+        ]
+        if len(curve_names_a) != len(metric_indices):
+            raise ValueError("--curve_names_a length must match metric count.")
+
+        use_model_b = bool(args.config_b and args.resume_b)
+        if args.curve_names_b and (not use_model_b):
+            raise ValueError("--curve_names_b provided but model B is not configured.")
+        curve_names_b = list(args.curve_names_b) if args.curve_names_b else [
+            f"{args.curve_name_b}_m{mi}" for mi in metric_indices
+        ]
+        if use_model_b and len(curve_names_b) != len(metric_indices):
+            raise ValueError("--curve_names_b length must match metric count.")
+
+        keys_to_check = list(curve_names_a)
+        if use_model_b:
+            keys_to_check.extend(curve_names_b)
+        for key in keys_to_check:
             if (key in data["results"]) and (not args.overwrite):
                 raise ValueError(f"Curve '{key}' already exists. Use --overwrite to replace.")
 
-        curve_a = benchmark_curve(
+        updates_common = list(args.extra_update)
+        updates_a = updates_common + list(args.extra_update_a)
+        updates_b = updates_common + list(args.extra_update_b)
+
+        curves_a = benchmark_curve_multi(
             root_dir=root_dir,
             config=args.config_a,
             resume=args.resume_a,
             ratios=ratios,
             device=args.device,
-            metric_index=args.metric_index,
-            extra_updates=args.extra_update,
+            metric_indices=metric_indices,
+            extra_updates=updates_a,
             dry_run=args.dry_run,
             dry_bias=0.0,
         )
-        curve_b = benchmark_curve(
-            root_dir=root_dir,
-            config=args.config_b,
-            resume=args.resume_b,
-            ratios=ratios,
-            device=args.device,
-            metric_index=args.metric_index,
-            extra_updates=args.extra_update,
-            dry_run=args.dry_run,
-            dry_bias=0.01,
-        )
-        data["results"][args.curve_name_a] = curve_a
-        data["results"][args.curve_name_b] = curve_b
+        for mi, cname in zip(metric_indices, curve_names_a):
+            data["results"][cname] = curves_a[int(mi)]
+
+        if use_model_b:
+            curves_b = benchmark_curve_multi(
+                root_dir=root_dir,
+                config=args.config_b,
+                resume=args.resume_b,
+                ratios=ratios,
+                device=args.device,
+                metric_indices=metric_indices,
+                extra_updates=updates_b,
+                dry_run=args.dry_run,
+                dry_bias=0.01,
+            )
+            for mi, cname in zip(metric_indices, curve_names_b):
+                data["results"][cname] = curves_b[int(mi)]
         _save_json(output_json, data)
         print(f"Saved benchmark JSON: {output_json}")
 
