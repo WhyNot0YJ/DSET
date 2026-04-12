@@ -9,6 +9,8 @@ Modes:
 
 COCO bbox summarize prints six AP lines first; --metric_indices selects which appear in stdout,
 in order: 0 all @0.5:0.95, 1 all @0.5, 2 all @0.75, 3 small @0.5:0.95, 4 medium, 5 large.
+Optional --maps50 reads AP for small objects at IoU=0.50 from COCOeval precision, same as
+common.det_eval_metrics.coco_area_ap_at_iou50, via CAS_BENCH_AP_small_50= in train stdout.
 After benchmark, a markdown metric table is printed to stdout.
 """
 
@@ -16,11 +18,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Dict, List, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 
 plt = None
 
@@ -53,6 +56,14 @@ def _parse_coco_ap_values(stdout_text: str) -> List[float]:
     return [float(v) for v in values]
 
 
+def _parse_ap_small_50(stdout_text: str) -> Optional[float]:
+    """Parse ``CAS_BENCH_AP_small_50=0.xxx`` printed by CaS-DETR ``det_engine.evaluate``."""
+    m = re.search(r"CAS_BENCH_AP_small_50=([0-9]+(?:\.[0-9]+)?)", stdout_text)
+    if not m:
+        return None
+    return float(m.group(1))
+
+
 def _run_single_eval(
     root_dir: Path,
     config: str,
@@ -60,6 +71,8 @@ def _run_single_eval(
     keep_ratio: float,
     device: str,
     extra_updates: Sequence[str],
+    *,
+    print_ap_small_50: bool = False,
 ) -> str:
     train_py = root_dir / "experiments" / "CaS-DETR" / "train.py"
     update_items = [
@@ -83,6 +96,9 @@ def _run_single_eval(
         "-u",
         *update_items,
     ]
+    env = os.environ.copy()
+    if print_ap_small_50:
+        env["CAS_BENCH_PRINT_AP_SMALL_50"] = "1"
     print(f"[benchmark] keep_ratio={keep_ratio:.2f}")
     proc = subprocess.run(
         cmd,
@@ -90,6 +106,7 @@ def _run_single_eval(
         text=True,
         capture_output=True,
         check=False,
+        env=env,
     )
     if proc.returncode != 0:
         print(proc.stdout)
@@ -108,8 +125,14 @@ def benchmark_curve_multi(
     extra_updates: Sequence[str],
     dry_run: bool = False,
     dry_bias: float = 0.0,
-) -> Dict[int, List[float]]:
+    *,
+    print_ap_small_50: bool = False,
+    metric_labels: Optional[Sequence[str]] = None,
+    maps50_label: str = "mAPs50",
+) -> Tuple[Dict[int, List[float]], List[float]]:
     out_metrics: Dict[int, List[float]] = {int(mi): [] for mi in metric_indices}
+    out_maps50: List[float] = []
+    labels_ok = metric_labels is not None and len(metric_labels) == len(metric_indices)
     for ratio in ratios:
         if dry_run:
             # Deterministic synthetic curve: rises then saturates.
@@ -119,9 +142,17 @@ def benchmark_curve_multi(
             for mi in metric_indices:
                 # Make different metrics slightly separated in dry run.
                 out_metrics[int(mi)].append(float(min(max(y + 0.003 * int(mi), 0.0), 1.0)))
+            if print_ap_small_50:
+                out_maps50.append(float(min(max(y - 0.02 + dry_bias, 0.0), 1.0)))
         else:
             out = _run_single_eval(
-                root_dir, config, resume, float(ratio), device, extra_updates
+                root_dir,
+                config,
+                resume,
+                float(ratio),
+                device,
+                extra_updates,
+                print_ap_small_50=print_ap_small_50,
             )
             ap_values = _parse_coco_ap_values(out)
             if not ap_values:
@@ -132,13 +163,26 @@ def benchmark_curve_multi(
                         f"metric_index={mi} out of range; parsed {len(ap_values)} AP values."
                     )
                 out_metrics[int(mi)].append(float(ap_values[mi]))
-        print(
-            "  -> "
-            + ", ".join(
-                [f"metric[{mi}]={out_metrics[int(mi)][-1]:.4f}" for mi in metric_indices]
-            )
-        )
-    return out_metrics
+            if print_ap_small_50:
+                v = _parse_ap_small_50(out)
+                if v is None:
+                    raise RuntimeError(
+                        "Could not parse CAS_BENCH_AP_small_50 from eval output. "
+                        "Use an up-to-date CaS-DETR det_engine that prints it when "
+                        "CAS_BENCH_PRINT_AP_SMALL_50=1."
+                    )
+                out_maps50.append(float(v))
+        parts: List[str] = []
+        for j, mi in enumerate(metric_indices):
+            val = out_metrics[int(mi)][-1]
+            if labels_ok:
+                parts.append(f"{metric_labels[j]}={val:.4f}")
+            else:
+                parts.append(f"metric[{mi}]={val:.4f}")
+        if print_ap_small_50:
+            parts.append(f"{maps50_label}={out_maps50[-1]:.4f}")
+        print("  -> " + ", ".join(parts))
+    return out_metrics, out_maps50
 
 
 def _setup_style() -> None:
@@ -164,6 +208,9 @@ def _pretty_curve_name(name: str) -> str:
         "Overall (mAP)": r"Overall ($mAP$)",
         "Small (AP_S)": r"Small ($AP_S$)",
         "mAP50": r"$mAP^{50}$",
+        "mAPs50": r"$AP_S^{50}$",
+        "mAPs50 - UA": r"$AP_S^{50}$ - UA",
+        "mAPs50 - DAIR": r"$AP_S^{50}$ - DAIR",
     }
     if name in alias:
         return alias[name]
@@ -304,6 +351,23 @@ def main() -> None:
         default=None,
         help="Optional curve names for model B, length must match metric indices.",
     )
+    parser.add_argument(
+        "--maps50",
+        action="store_true",
+        help="Also record small-object AP at IoU=0.50 from COCOeval precision, same as AP_small_50 in cas_style_map_metrics.",
+    )
+    parser.add_argument(
+        "--maps50_curve_name",
+        type=str,
+        default="mAPs50",
+        help="JSON and plot legend key for model A maps50 series.",
+    )
+    parser.add_argument(
+        "--maps50_curve_name_b",
+        type=str,
+        default=None,
+        help="Legend key for model B maps50; default mAPs50 - UA when model B is enabled.",
+    )
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--dry_run", action="store_true", help="Generate synthetic benchmark values without running eval.")
     parser.add_argument("--eval_split", choices=["val", "test"], default="val")
@@ -368,6 +432,11 @@ def main() -> None:
         keys_to_check = list(curve_names_a)
         if use_model_b:
             keys_to_check.extend(curve_names_b)
+        name_maps50_b = args.maps50_curve_name_b or "mAPs50 - UA"
+        if args.maps50:
+            keys_to_check.append(args.maps50_curve_name)
+            if use_model_b:
+                keys_to_check.append(name_maps50_b)
         for key in keys_to_check:
             if (key in data["results"]) and (not args.overwrite):
                 raise ValueError(f"Curve '{key}' already exists. Use --overwrite to replace.")
@@ -376,7 +445,7 @@ def main() -> None:
         updates_a = updates_common + list(args.extra_update_a)
         updates_b = updates_common + list(args.extra_update_b)
 
-        curves_a = benchmark_curve_multi(
+        curves_a, maps50_a = benchmark_curve_multi(
             root_dir=root_dir,
             config=args.config_a,
             resume=args.resume_a,
@@ -386,12 +455,17 @@ def main() -> None:
             extra_updates=updates_a,
             dry_run=args.dry_run,
             dry_bias=0.0,
+            print_ap_small_50=args.maps50,
+            metric_labels=curve_names_a,
+            maps50_label=args.maps50_curve_name,
         )
         for mi, cname in zip(metric_indices, curve_names_a):
             data["results"][cname] = curves_a[int(mi)]
+        if args.maps50:
+            data["results"][args.maps50_curve_name] = maps50_a
 
         if use_model_b:
-            curves_b = benchmark_curve_multi(
+            curves_b, maps50_b = benchmark_curve_multi(
                 root_dir=root_dir,
                 config=args.config_b,
                 resume=args.resume_b,
@@ -401,9 +475,14 @@ def main() -> None:
                 extra_updates=updates_b,
                 dry_run=args.dry_run,
                 dry_bias=0.01,
+                print_ap_small_50=args.maps50,
+                metric_labels=curve_names_b,
+                maps50_label=name_maps50_b,
             )
             for mi, cname in zip(metric_indices, curve_names_b):
                 data["results"][cname] = curves_b[int(mi)]
+            if args.maps50:
+                data["results"][name_maps50_b] = maps50_b
         _save_json(output_json, data)
         print(f"Saved benchmark JSON: {output_json}")
         table = _markdown_metric_table(data["inference_ratios"], data["results"])

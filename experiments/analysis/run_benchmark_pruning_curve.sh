@@ -23,6 +23,7 @@ METRIC_INDICES="${METRIC_INDICES:-0 1 3}"  # 0 mAP@[0.5:0.95], 1 mAP50, 3 AP_S s
 OVERWRITE="${OVERWRITE:-0}"              # 1 to replace existing curve keys
 DRY_RUN="${DRY_RUN:-0}"                  # 1 to generate synthetic benchmark data
 ENABLE_MODEL_B="${ENABLE_MODEL_B:-0}"    # 0 => only model A (DAIR), 1 => include model B (UA)
+MAPS50="${MAPS50:-1}"                    # 1 => --maps50 small-area AP @ IoU 0.5, same as AP_small_50 in cas eval
 
 OUTPUT_JSON="${OUTPUT_JSON:-$SCRIPT_DIR/benchmark_pruning_curve_results.json}"
 OUTPUT_PLOT="${OUTPUT_PLOT:-$SCRIPT_DIR/pruning_tradeoff.pdf}"
@@ -73,6 +74,10 @@ CMD=(
 
 if [[ "$ENABLE_MODEL_B" == "1" ]]; then
   CMD+=(--curve_names_b "$CURVE_B_1" "$CURVE_B_2" "$CURVE_B_3")
+fi
+
+if [[ "$MAPS50" == "1" ]]; then
+  CMD+=(--maps50)
 fi
 
 if [[ "$OVERWRITE" == "1" ]]; then

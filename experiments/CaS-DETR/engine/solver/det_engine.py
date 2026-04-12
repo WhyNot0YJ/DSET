@@ -7,6 +7,7 @@ Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved.
 """
 
 
+import os
 import sys
 import math
 from typing import Iterable
@@ -165,6 +166,19 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
     if coco_evaluator is not None:
         coco_evaluator.accumulate()
         coco_evaluator.summarize()
+        if (
+            os.environ.get("CAS_BENCH_PRINT_AP_SMALL_50") == "1"
+            and dist_utils.is_main_process()
+        ):
+            try:
+                from common.det_eval_metrics import coco_area_ap_at_iou50
+
+                ce = coco_evaluator.coco_eval.get("bbox")
+                if ce is not None:
+                    s50, _, _ = coco_area_ap_at_iou50(ce)
+                    print(f"CAS_BENCH_AP_small_50={float(s50):.6f}", flush=True)
+            except Exception:
+                pass
 
     stats = {}
     # stats = {k: meter.global_avg for k, meter in metric_logger.meters.items()}
