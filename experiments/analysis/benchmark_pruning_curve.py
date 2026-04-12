@@ -68,6 +68,8 @@ def _run_single_eval(
         "--device",
         device,
         "-u",
+        "tuning=null",
+        "-u",
         f"HybridEncoder.token_keep_ratio={keep_ratio}",
     ]
     print(f"[benchmark] keep_ratio={keep_ratio:.2f}")
