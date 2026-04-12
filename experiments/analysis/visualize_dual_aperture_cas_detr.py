@@ -191,12 +191,12 @@ def add_panel_badge(ax, text: str) -> None:
         ha="left",
         va="top",
         color="white",
-        fontsize=10,
+        fontsize=6,
         fontfamily="serif",
         bbox={
             "facecolor": "black",
             "edgecolor": "none",
-            "boxstyle": "round,pad=0.2",
+            "boxstyle": "round,pad=0.15",
             "alpha": 0.8,
         },
     )
@@ -327,12 +327,7 @@ def process_single_scenario(
         if keep_ratio is None:
             keep_ratio = 1.0 - prune_ratio
 
-    stat_parts: List[str] = []
-    if keep_ratio is not None:
-        stat_parts.append(f"keep={keep_ratio:.2f}")
-    if prune_ratio is not None:
-        stat_parts.append(f"prune={prune_ratio:.2f}")
-    stat_text = "  ".join(stat_parts)
+    stat_text = f"keep={keep_ratio:.2f}" if keep_ratio is not None else ""
 
     pred_overlay = draw_prediction_overlay(
         masked_image.copy(),
