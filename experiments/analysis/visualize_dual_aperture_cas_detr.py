@@ -3,9 +3,10 @@
 4x4 paper-style qualitative figure for CaS-DETR checkpoints (YAMLConfig + .pth).
 
 Rows: four input images. Columns: original image, S5 coarse heatmap, S5 token mask,
-prediction + GT overlay. S4 is not visualized. Heatmap and mask use the last
-HybridEncoder stage; with a single stage in the config, that stage is used.
+and prediction on the pruned image. S4 is not visualized. Heatmap and mask use the
+last HybridEncoder stage; with a single stage in the config, that stage is used.
 Input to the network is fixed 640x640, same as tools/inference/torch_inf.py stretch resize.
+Supports one or two checkpoints: rows [0..split_index-1] use model A, remaining rows use model B.
 """
 
 from __future__ import annotations
@@ -345,15 +346,11 @@ def process_single_scenario(
 
 
 def run_qualitative_4x4_grid(
-    model: torch.nn.Module,
-    postprocessor: torch.nn.Module,
     image_paths: Sequence[str],
+    row_model_bundle: Sequence[Tuple[torch.nn.Module, torch.nn.Module, Sequence[str], Sequence[Tuple[int, int, int]], int]],
     device: str,
-    eval_epoch: int,
     output_path: str,
     conf_threshold: float,
-    class_names: Sequence[str],
-    colors: Sequence[Tuple[int, int, int]],
 ) -> None:
     import matplotlib
 
@@ -376,6 +373,7 @@ def run_qualitative_4x4_grid(
     for row, image_path_str in enumerate(image_paths):
         p = Path(image_path_str)
         print(f"Processing row {row + 1}/4: {p}")
+        model, postprocessor, class_names, colors, eval_epoch = row_model_bundle[row]
         o1, o2, o3, o4 = process_single_scenario(
             model,
             postprocessor,
@@ -425,45 +423,76 @@ def _get_default_images(image_dir: Optional[str], data_root: Optional[str], max_
     return [str(p) for p in candidates[:max_count]]
 
 
+def _validate_images(images: Sequence[str]) -> List[str]:
+    if len(images) != 4:
+        raise ValueError(f"Need exactly 4 images for 4x4 grid, got {len(images)}")
+    checked: List[str] = []
+    for p in images:
+        path = Path(p)
+        if not path.exists():
+            raise FileNotFoundError(f"Image not found: {path}")
+        checked.append(str(path))
+    return checked
+
+
 def main():
     parser = argparse.ArgumentParser(description="CaS-DETR 4x4 aperture figure, S5 heatmap only")
     parser.add_argument("-c", "--config", type=str, required=True, help="CaS-DETR YAML config")
     parser.add_argument("-r", "--resume", type=str, required=True, help="Checkpoint .pth")
+    parser.add_argument("--config_b", type=str, default=None, help="Optional second YAML config for rows after split_index")
+    parser.add_argument("--resume_b", type=str, default=None, help="Optional second checkpoint for rows after split_index")
+    parser.add_argument("--split_index", type=int, default=2, help="Rows [0:split_index] use model A, remaining use model B")
     parser.add_argument("--output", type=str, default="figure5_qualitative_cas_detr.pdf")
-    parser.add_argument("--image", type=str, default=None, help="Single image; default 4 from ./image/")
+    parser.add_argument("--images", type=str, nargs="+", default=None, help="Exactly 4 image paths in row order")
+    parser.add_argument("--image", type=str, default=None, help="Single image path (backward compatibility)")
     parser.add_argument("--image_dir", type=str, default=".", help="Base directory for ./image/")
     parser.add_argument("--data_root", type=str, default=None, help="Fallback image search like val script")
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--eval_epoch", type=int, default=5, help="Encoder epoch for CAIP/CASS warmup logic")
+    parser.add_argument("--eval_epoch_b", type=int, default=None, help="Optional eval epoch for second model")
     parser.add_argument("--conf_threshold", type=float, default=0.3)
     args = parser.parse_args()
 
-    if args.image:
-        paths = [args.image]
+    if args.images:
+        paths = _validate_images(args.images)
+    elif args.image:
+        paths = _validate_images([args.image] * 4)
     else:
         paths = _get_default_images(args.image_dir, args.data_root, max_count=4)
-        if len(paths) < 4:
+        if len(paths) != 4:
             print(
                 f"Error: need 4 images for 4x4 grid, found {len(paths)}. "
                 "Use ./image/ with 4 images or --data_root with images/train or images/val."
             )
             return
 
-    model, postprocessor, cfg = load_model_and_post(args.config, args.resume, args.device)
-    yaml_cfg = cfg.yaml_cfg
-    class_names = class_names_from_yaml(yaml_cfg)
-    colors = colors_for_classes(len(class_names))
+    model_a, postprocessor_a, cfg_a = load_model_and_post(args.config, args.resume, args.device)
+    class_names_a = class_names_from_yaml(cfg_a.yaml_cfg)
+    colors_a = colors_for_classes(len(class_names_a))
+    eval_epoch_a = int(args.eval_epoch)
+
+    model_b, postprocessor_b, class_names_b, colors_b = model_a, postprocessor_a, class_names_a, colors_a
+    eval_epoch_b = eval_epoch_a if args.eval_epoch_b is None else int(args.eval_epoch_b)
+    if args.resume_b:
+        config_b = args.config_b or args.config
+        model_b, postprocessor_b, cfg_b = load_model_and_post(config_b, args.resume_b, args.device)
+        class_names_b = class_names_from_yaml(cfg_b.yaml_cfg)
+        colors_b = colors_for_classes(len(class_names_b))
+
+    split_index = max(0, min(4, int(args.split_index)))
+    row_model_bundle: List[Tuple[torch.nn.Module, torch.nn.Module, Sequence[str], Sequence[Tuple[int, int, int]], int]] = []
+    for i in range(4):
+        if i < split_index:
+            row_model_bundle.append((model_a, postprocessor_a, class_names_a, colors_a, eval_epoch_a))
+        else:
+            row_model_bundle.append((model_b, postprocessor_b, class_names_b, colors_b, eval_epoch_b))
 
     run_qualitative_4x4_grid(
-        model,
-        postprocessor,
         paths[:4],
+        row_model_bundle,
         args.device,
-        args.eval_epoch,
         args.output,
         args.conf_threshold,
-        class_names,
-        colors,
     )
 
 
