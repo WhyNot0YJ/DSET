@@ -3,8 +3,9 @@
 4x4 paper-style qualitative figure for CaS-DETR checkpoints (YAMLConfig + .pth).
 
 Rows: four input images. Columns: original image, S5 coarse heatmap, S5 token mask,
-prediction + GT overlay. S4 is not visualized. Input to the network is fixed 640x640,
-same as tools/inference/torch_inf.py stretch resize.
+prediction + GT overlay. S4 is not visualized. Heatmap and mask use the last
+HybridEncoder stage; with a single stage in the config, that stage is used.
+Input to the network is fixed 640x640, same as tools/inference/torch_inf.py stretch resize.
 """
 
 from __future__ import annotations
@@ -378,24 +379,27 @@ def process_single_scenario(
 
     importance_scores_list = encoder_info.get("importance_scores_list") or []
     feat_shapes_list = encoder_info.get("feat_shapes_list") or []
-    if len(importance_scores_list) < 2 or len(feat_shapes_list) < 2:
+    if not importance_scores_list or not feat_shapes_list:
+        raise RuntimeError("importance_scores_list or feat_shapes_list is empty.")
+    if len(importance_scores_list) != len(feat_shapes_list):
         raise RuntimeError(
-            "Need at least two encoder levels in importance_scores_list; "
-            "S5 uses index 1. Check hybrid_encoder use_encoder_idx."
+            "feat_shapes_list length does not match importance_scores_list."
         )
 
-    s5_idx = 1
-    logits_s5 = importance_scores_list[s5_idx]
-    shape_s5 = feat_shapes_list[s5_idx]
+    # Last entry is the last HybridEncoder stage, usually the coarsest map.
+    # With num_encoder_layers==1 and use_encoder_idx: [2], there is only one stage.
+    s_idx = len(importance_scores_list) - 1
+    logits_s5 = importance_scores_list[s_idx]
+    shape_s5 = feat_shapes_list[s_idx]
 
     if logits_s5 is None:
-        raise RuntimeError("importance_scores_list[1] is None for S5.")
+        raise RuntimeError(f"importance_scores_list[{s_idx}] is None.")
 
     h5, w5 = shape_s5
     s5_scores = torch.sigmoid(logits_s5[0]).reshape(h5, w5).detach().cpu().numpy()
 
-    if len(kept_per_level) >= 2:
-        s5_mask = local_kept_indices_to_mask(kept_per_level[s5_idx], shape_s5)
+    if len(kept_per_level) > s_idx:
+        s5_mask = local_kept_indices_to_mask(kept_per_level[s_idx], shape_s5)
     else:
         s5_mask = np.ones(shape_s5, dtype=np.float32)
         if verbose:
@@ -403,7 +407,7 @@ def process_single_scenario(
                 print("  Note: no shared_token_pruner; fused mask shows full image.")
             else:
                 print(
-                    "  Warning: expected two pruner forwards; S5 mask fallback to full."
+                    "  Warning: pruner hook count below encoder stage index; mask fallback to full."
                 )
 
     s5_aligned = scores_hw_to_orig(s5_scores, orig_w, orig_h, normalize=True)
@@ -444,8 +448,8 @@ def process_single_scenario(
 
     prune_ratio = None
     token_pruning_ratios = encoder_info.get("token_pruning_ratios") or []
-    if len(token_pruning_ratios) > s5_idx:
-        prune_ratio = float(token_pruning_ratios[s5_idx])
+    if len(token_pruning_ratios) > s_idx:
+        prune_ratio = float(token_pruning_ratios[s_idx])
         if keep_ratio is None:
             keep_ratio = 1.0 - prune_ratio
 
