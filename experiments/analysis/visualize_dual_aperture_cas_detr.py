@@ -351,16 +351,20 @@ def run_qualitative_4x4_grid(
     device: str,
     output_path: str,
     conf_threshold: float,
+    save_dpi: int,
+    fig_width: float,
+    fig_height: float,
 ) -> None:
     import matplotlib
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
+    matplotlib.rcParams["pdf.compression"] = 9
     matplotlib.rcParams["font.family"] = "serif"
     matplotlib.rcParams["font.serif"] = ["Times New Roman", "DejaVu Serif", "serif"]
 
-    fig, axes = plt.subplots(nrows=4, ncols=4, figsize=(16, 10))
+    fig, axes = plt.subplots(nrows=4, ncols=4, figsize=(fig_width, fig_height))
     plt.subplots_adjust(wspace=0.01, hspace=0.05)
 
     col_titles = [
@@ -396,7 +400,14 @@ def run_qualitative_4x4_grid(
 
     out_path = Path(output_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    plt.savefig(str(out_path), dpi=300, format="pdf", bbox_inches="tight")
+    save_kwargs: Dict[str, Any] = {
+        "dpi": int(save_dpi),
+        "bbox_inches": "tight",
+    }
+    suffix = out_path.suffix.lower()
+    if suffix in {".pdf", ".png", ".jpg", ".jpeg", ".tif", ".tiff"}:
+        save_kwargs["format"] = suffix.lstrip(".")
+    plt.savefig(str(out_path), **save_kwargs)
     plt.close()
     print(f"Saved: {out_path}")
 
@@ -451,6 +462,9 @@ def main():
     parser.add_argument("--eval_epoch", type=int, default=5, help="Encoder epoch for CAIP/CASS warmup logic")
     parser.add_argument("--eval_epoch_b", type=int, default=None, help="Optional eval epoch for second model")
     parser.add_argument("--conf_threshold", type=float, default=0.3)
+    parser.add_argument("--dpi", type=int, default=200, help="Save DPI, lower is smaller file size")
+    parser.add_argument("--fig_width", type=float, default=12.0, help="Figure width in inches")
+    parser.add_argument("--fig_height", type=float, default=7.5, help="Figure height in inches")
     args = parser.parse_args()
 
     if args.images:
@@ -493,6 +507,9 @@ def main():
         args.device,
         args.output,
         args.conf_threshold,
+        args.dpi,
+        args.fig_width,
+        args.fig_height,
     )
 
 

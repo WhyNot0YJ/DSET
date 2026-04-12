@@ -21,7 +21,10 @@ DEVICE="${DEVICE:-cuda}"
 EVAL_EPOCH_A="${EVAL_EPOCH_A:-5}"
 EVAL_EPOCH_B="${EVAL_EPOCH_B:-5}"
 CONF_THRESHOLD="${CONF_THRESHOLD:-0.3}"
-OUTPUT_PDF="${OUTPUT_PDF:-experiments/analysis/figure5_qualitative_cas_detr.pdf}"
+SAVE_DPI="${SAVE_DPI:-200}"
+FIG_WIDTH="${FIG_WIDTH:-12}"
+FIG_HEIGHT="${FIG_HEIGHT:-7.5}"
+OUTPUT_PATH="${OUTPUT_PATH:-experiments/analysis/figure5_qualitative_cas_detr.png}"
 
 # Image row order (editable):
 # Row1/Row2 use model A; Row3/Row4 use model B.
@@ -45,10 +48,13 @@ python experiments/analysis/visualize_dual_aperture_cas_detr.py \
   --resume_b "${RESUME_B}" \
   --split_index 2 \
   --images "${IMG_ROW_1}" "${IMG_ROW_2}" "${IMG_ROW_3}" "${IMG_ROW_4}" \
-  --output "${OUTPUT_PDF}" \
+  --output "${OUTPUT_PATH}" \
   --device "${DEVICE}" \
   --conf_threshold "${CONF_THRESHOLD}" \
   --eval_epoch "${EVAL_EPOCH_A}" \
-  --eval_epoch_b "${EVAL_EPOCH_B}"
+  --eval_epoch_b "${EVAL_EPOCH_B}" \
+  --dpi "${SAVE_DPI}" \
+  --fig_width "${FIG_WIDTH}" \
+  --fig_height "${FIG_HEIGHT}"
 
-echo "Saved figure: ${OUTPUT_PDF}"
+echo "Saved figure: ${OUTPUT_PATH}"
