@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-按图像真实目标数量切分 COCO 测试集，并比较不同模型在各复杂度子集上的 AP_S 与保留率。
+按图像真实目标数量切分 COCO 测试集，并比较不同模型在各复杂度子集上的指标与保留率。
 
 脚本功能概述：
 1. 使用 CaS-DETR 的 ``YAMLConfig``、``DetSolver`` 与 ``config + checkpoint`` 在测试集上推理，
    将输出转为 COCO 检测结果后再评估。
-2. 按每张图像的 GT 数量计算 33.3% / 66.6% 分位数，并切成 Sparse / Normal / Crowded 三组。
-3. 对每个模型、每个子集分别运行 COCOeval，提取 AP_small 与 AP50。
+2. 按每张图像 GT 数量排序后，按图像数严格三等分切成 Simple / Medium / Complex。
+3. 对每个模型、每个子集分别运行 COCOeval，提取 mAP^{50:95}、AP50、AP_S^{50:95}、AP_S^{50}。
 4. 统计对应子集上的平均 keep ratio，并以 Markdown 表格打印结果。
 
 默认路径假设：
@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import copy
+import csv
 import json
 import math
 import os
@@ -61,14 +62,12 @@ class OnlineModelSpec:
 
 @dataclass(frozen=True)
 class SubsetSplit:
-    """保存三个复杂度子集及分位点信息。"""
+    """保存三个复杂度子集及 GT 数量映射。"""
 
-    sparse_ids: List[int]
-    normal_ids: List[int]
-    crowded_ids: List[int]
+    simple_ids: List[int]
+    medium_ids: List[int]
+    complex_ids: List[int]
     gt_count_by_image: Dict[int, int]
-    q33: float
-    q66: float
 
 
 def parse_args() -> argparse.Namespace:
@@ -467,7 +466,7 @@ def collect_predictions_online(
 
 
 def split_image_ids_by_gt_density(coco_gt: Any) -> SubsetSplit:
-    """统计每张图的 GT 数量，并按 33.3% / 66.6% 分位数切分三个子集。"""
+    """统计每张图的 GT 数量，并按图像数严格三等分切分三个子集。"""
     image_ids = sorted(coco_gt.getImgIds())
     gt_count_by_image: Dict[int, int] = {}
 
@@ -479,30 +478,35 @@ def split_image_ids_by_gt_density(coco_gt: Any) -> SubsetSplit:
     if counts.size == 0:
         raise ValueError("GT 中没有任何图像，无法进行子集划分。")
 
-    q33 = float(np.percentile(counts, 33.3))
-    q66 = float(np.percentile(counts, 66.6))
-
-    sparse_ids: List[int] = []
-    normal_ids: List[int] = []
-    crowded_ids: List[int] = []
-
-    for image_id in image_ids:
-        gt_count = gt_count_by_image[int(image_id)]
-        if gt_count <= q33:
-            sparse_ids.append(int(image_id))
-        elif gt_count <= q66:
-            normal_ids.append(int(image_id))
-        else:
-            crowded_ids.append(int(image_id))
+    simple_ids, medium_ids, complex_ids = split_image_ids_strict_terciles(gt_count_by_image)
 
     return SubsetSplit(
-        sparse_ids=sparse_ids,
-        normal_ids=normal_ids,
-        crowded_ids=crowded_ids,
+        simple_ids=simple_ids,
+        medium_ids=medium_ids,
+        complex_ids=complex_ids,
         gt_count_by_image=gt_count_by_image,
-        q33=q33,
-        q66=q66,
     )
+
+
+def split_image_ids_strict_terciles(gt_count_by_image: Mapping[int, int]) -> Tuple[List[int], List[int], List[int]]:
+    """按 ``GT object count`` 升序排序后，按图像数最均匀地切成三组。"""
+    sorted_items = sorted(
+        ((int(image_id), int(count)) for image_id, count in gt_count_by_image.items()),
+        key=lambda x: (x[1], x[0]),
+    )
+    total = len(sorted_items)
+    if total == 0:
+        return [], [], []
+
+    base = total // 3
+    remainder = total % 3
+    sizes = [base + (1 if i < remainder else 0) for i in range(3)]
+    boundaries = [0, sizes[0], sizes[0] + sizes[1], total]
+
+    simple_ids = [image_id for image_id, _ in sorted_items[boundaries[0] : boundaries[1]]]
+    medium_ids = [image_id for image_id, _ in sorted_items[boundaries[1] : boundaries[2]]]
+    complex_ids = [image_id for image_id, _ in sorted_items[boundaries[2] : boundaries[3]]]
+    return simple_ids, medium_ids, complex_ids
 
 
 def build_empty_coco_dt(coco_gt: Any) -> Any:
@@ -536,16 +540,44 @@ def safe_stat(value: float) -> str:
     return f"{value:.4f}"
 
 
-def evaluate_subset(coco_gt: Any, coco_dt: Any, subset_img_ids: Sequence[int]) -> Dict[str, float]:
-    """在指定图像子集上运行 COCOeval，并返回 AP_small 与 AP50。
+def extract_aps50_from_coco_eval(coco_eval: Any) -> float:
+    """从 ``COCOeval.eval["precision"]`` 中提取 ``AP_S^{50}``。"""
+    precision = coco_eval.eval.get("precision") if isinstance(coco_eval.eval, dict) else None
+    if precision is None or not hasattr(precision, "shape"):
+        return float("nan")
 
-    关键点：
-    - 必须通过 `coco_eval.params.imgIds = subset_img_ids` 指定子集。
-    - `stats[3]` 对应 `AP_small`，即 area=small, maxDets=100。
-    - `stats[1]` 对应整体 `AP50`。
-    """
+    iou_thrs = np.asarray(coco_eval.params.iouThrs, dtype=np.float64)
+    area_labels = list(coco_eval.params.areaRngLbl)
+    max_dets = list(coco_eval.params.maxDets)
+
+    if iou_thrs.size == 0:
+        return float("nan")
+    iou_idx = int(np.argmin(np.abs(iou_thrs - 0.50)))
+    if abs(float(iou_thrs[iou_idx]) - 0.50) > 1e-6:
+        return float("nan")
+
+    if "small" not in area_labels or 100 not in max_dets:
+        return float("nan")
+    area_idx = int(area_labels.index("small"))
+    max_det_idx = int(max_dets.index(100))
+
+    # precision 形状: [TxRxKxAxM]
+    slice_pr = precision[iou_idx, :, :, area_idx, max_det_idx]
+    valid = slice_pr[slice_pr > -1]
+    if valid.size == 0:
+        return float("nan")
+    return float(np.mean(valid))
+
+
+def evaluate_subset(coco_gt: Any, coco_dt: Any, subset_img_ids: Sequence[int]) -> Dict[str, float]:
+    """在指定图像子集上运行 COCOeval，并返回 4 个核心指标。"""
     if not subset_img_ids:
-        return {"ap_small": float("nan"), "ap50": float("nan")}
+        return {
+            "map5095": float("nan"),
+            "ap50": float("nan"),
+            "aps5095": float("nan"),
+            "aps50": float("nan"),
+        }
 
     _, COCOeval = import_coco_api()
     coco_eval = COCOeval(coco_gt, coco_dt, iouType="bbox")
@@ -555,8 +587,10 @@ def evaluate_subset(coco_gt: Any, coco_dt: Any, subset_img_ids: Sequence[int]) -
     coco_eval.summarize()
 
     return {
-        "ap_small": float(coco_eval.stats[3]),
+        "map5095": float(coco_eval.stats[0]),
         "ap50": float(coco_eval.stats[1]),
+        "aps5095": float(coco_eval.stats[3]),
+        "aps50": extract_aps50_from_coco_eval(coco_eval),
     }
 
 
@@ -598,38 +632,50 @@ def compute_average_keep_ratio(
 def summarize_subset_counts(subset_name: str, subset_ids: Sequence[int], gt_count_by_image: Mapping[int, int]) -> str:
     """生成人类可读的子集统计信息。"""
     if not subset_ids:
-        return f"- {subset_name}: 0 images"
+        return f"- {subset_name}: num_images=0, mean_gt_count=nan, min_gt_count=nan, max_gt_count=nan"
     counts = [gt_count_by_image[int(image_id)] for image_id in subset_ids]
     return (
-        f"- {subset_name}: {len(subset_ids)} images, "
-        f"mean GT={mean(counts):.2f}, min GT={min(counts)}, max GT={max(counts)}"
+        f"- {subset_name}: num_images={len(subset_ids)}, "
+        f"mean_gt_count={mean(counts):.2f}, min_gt_count={min(counts)}, max_gt_count={max(counts)}"
     )
 
 
 def markdown_main_table(rows: Sequence[Mapping[str, str]]) -> str:
-    """生成主结果表，仅展示 keep ratio 与 AP_S。"""
+    """生成主结果表，展示 keep ratio 与 AP_S^{50}。"""
     header = (
-        "| Model | Sparse Keep-Ratio | Sparse AP_S | "
-        "Normal Keep-Ratio | Normal AP_S | Crowded Keep-Ratio | Crowded AP_S |"
+        "| Model | Simple Keep-Ratio | Simple AP_S^{50} | "
+        "Medium Keep-Ratio | Medium AP_S^{50} | Complex Keep-Ratio | Complex AP_S^{50} |"
     )
     sep = "| --- | --- | --- | --- | --- | --- | --- |"
     lines = [header, sep]
     for row in rows:
         lines.append(
-            "| {model} | {sparse_keep} | {sparse_ap_small} | {normal_keep} | "
-            "{normal_ap_small} | {crowded_keep} | {crowded_ap_small} |".format(**row)
+            "| {model} | {simple_keep} | {simple_aps50} | {medium_keep} | "
+            "{medium_aps50} | {complex_keep} | {complex_aps50} |".format(**row)
+        )
+    return "\n".join(lines)
+
+
+def markdown_map_table(rows: Sequence[Mapping[str, str]]) -> str:
+    """生成 mAP^{50:95} 子集对比表。"""
+    header = "| Model | Simple mAP^{50:95} | Medium mAP^{50:95} | Complex mAP^{50:95} |"
+    sep = "| --- | --- | --- | --- |"
+    lines = [header, sep]
+    for row in rows:
+        lines.append(
+            "| {model} | {simple_map5095} | {medium_map5095} | {complex_map5095} |".format(**row)
         )
     return "\n".join(lines)
 
 
 def markdown_ap50_table(rows: Sequence[Mapping[str, str]]) -> str:
     """生成补充 AP50 表，方便分析不同复杂度子集上的召回/定位变化。"""
-    header = "| Model | Sparse AP50 | Normal AP50 | Crowded AP50 |"
+    header = "| Model | Simple AP50 | Medium AP50 | Complex AP50 |"
     sep = "| --- | --- | --- | --- |"
     lines = [header, sep]
     for row in rows:
         lines.append(
-            "| {model} | {sparse_ap50} | {normal_ap50} | {crowded_ap50} |".format(**row)
+            "| {model} | {simple_ap50} | {medium_ap50} | {complex_ap50} |".format(**row)
         )
     return "\n".join(lines)
 
@@ -647,6 +693,49 @@ def print_warning_lines(warnings: Iterable[str]) -> None:
 def _default_img_folder_from_gt(gt_ann_path: Path) -> Path:
     """由 ``.../annotations/instances_test.json`` 推断数据集根目录 ``.../DAIR-V2X``。"""
     return gt_ann_path.resolve().parent.parent
+
+
+def _nan_to_none(value: Any) -> Any:
+    if isinstance(value, float) and math.isnan(value):
+        return None
+    return value
+
+
+def save_scene_complexity_results(
+    rows: Sequence[Mapping[str, Any]],
+    output_dir: Path,
+) -> Tuple[Path, Path]:
+    """将逐模型逐子集结果同时保存为 CSV 与 JSON。"""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = output_dir / "scene_complexity_results.csv"
+    json_path = output_dir / "scene_complexity_results.json"
+
+    fieldnames = [
+        "model",
+        "subset_name",
+        "num_images",
+        "mean_gt_count",
+        "mean_keep_ratio",
+        "mAP5095",
+        "AP50",
+        "APS5095",
+        "APS50",
+        "min_gt_count",
+        "max_gt_count",
+        "missing_dynamic_keep_count",
+    ]
+
+    with csv_path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(dict(row))
+
+    json_rows = [{k: _nan_to_none(v) for k, v in row.items()} for row in rows]
+    with json_path.open("w", encoding="utf-8") as f:
+        json.dump(json_rows, f, ensure_ascii=False, indent=2)
+
+    return csv_path, json_path
 
 
 def run_online(args: argparse.Namespace) -> int:
@@ -672,23 +761,25 @@ def run_online(args: argparse.Namespace) -> int:
     online_specs = build_online_model_specs(args)
 
     subset_map = {
-        "sparse": subset_split.sparse_ids,
-        "normal": subset_split.normal_ids,
-        "crowded": subset_split.crowded_ids,
+        "simple": subset_split.simple_ids,
+        "medium": subset_split.medium_ids,
+        "complex": subset_split.complex_ids,
     }
 
     print("# Complexity Split Summary")
     print(f"- GT path: `{args.gt}`")
     print(f"- Image folder: `{img_folder}`")
     print(f"- Device: `{args.device}`")
-    print(f"- q33.3 (GT count): {subset_split.q33:.4f}")
-    print(f"- q66.6 (GT count): {subset_split.q66:.4f}")
-    print(summarize_subset_counts("Sparse", subset_split.sparse_ids, subset_split.gt_count_by_image))
-    print(summarize_subset_counts("Normal", subset_split.normal_ids, subset_split.gt_count_by_image))
-    print(summarize_subset_counts("Crowded", subset_split.crowded_ids, subset_split.gt_count_by_image))
+    print("- Current analysis split: test (default), overridable via --gt.")
+    print("- Subset policy: strict terciles by image count after sorting GT object count.")
+    print(summarize_subset_counts("Simple", subset_split.simple_ids, subset_split.gt_count_by_image))
+    print(summarize_subset_counts("Medium", subset_split.medium_ids, subset_split.gt_count_by_image))
+    print(summarize_subset_counts("Complex", subset_split.complex_ids, subset_split.gt_count_by_image))
 
     main_rows: List[Dict[str, str]] = []
+    map_rows: List[Dict[str, str]] = []
     ap50_rows: List[Dict[str, str]] = []
+    result_records: List[Dict[str, Any]] = []
     warning_notes: List[str] = []
 
     for spec in online_specs:
@@ -717,14 +808,14 @@ def run_online(args: argparse.Namespace) -> int:
                 for image_id, ratio in fallback_keep.items():
                     keep_map.setdefault(int(image_id), float(ratio))
             if not keep_map:
-                raise RuntimeError(
-                    f"{spec.name} 未得到任何逐图 keep-ratio：请检查 HybridEncoder 是否输出 dynamic_keep_ratio，"
-                    f"或传入 --dynamic-keep-fallback-json，或通过 --encoder-epoch 关闭 CAIP warmup 分支。"
+                warning_notes.append(
+                    f"{spec.name} 未得到任何逐图 keep-ratio，后续 keep-ratio 相关统计将为 NaN。"
                 )
         else:
             keep_map = None
 
         row: MutableMapping[str, str] = {"model": spec.name}
+        dynamic_subset_keeps: List[float] = []
 
         for subset_name, subset_img_ids in subset_map.items():
             print(f"\n## {spec.name} / {subset_name.capitalize()}")
@@ -746,18 +837,73 @@ def run_online(args: argparse.Namespace) -> int:
                     f"这些图像未参与该子集 keep-ratio 均值计算: {preview}{suffix}"
                 )
 
+            gt_counts = [subset_split.gt_count_by_image[int(image_id)] for image_id in subset_img_ids]
+            mean_gt_count = float(mean(gt_counts)) if gt_counts else float("nan")
+            min_gt_count = int(min(gt_counts)) if gt_counts else 0
+            max_gt_count = int(max(gt_counts)) if gt_counts else 0
+
+            if spec.is_dynamic:
+                dynamic_subset_keeps.append(avg_keep_ratio)
+
             row[f"{subset_name}_keep"] = safe_stat(avg_keep_ratio)
-            row[f"{subset_name}_ap_small"] = safe_stat(metrics["ap_small"])
+            row[f"{subset_name}_aps50"] = safe_stat(metrics["aps50"])
+            row[f"{subset_name}_map5095"] = safe_stat(metrics["map5095"])
             row[f"{subset_name}_ap50"] = safe_stat(metrics["ap50"])
+            result_records.append(
+                {
+                    "model": spec.name,
+                    "subset_name": subset_name.capitalize(),
+                    "num_images": len(subset_img_ids),
+                    "mean_gt_count": mean_gt_count,
+                    "mean_keep_ratio": avg_keep_ratio,
+                    "mAP5095": metrics["map5095"],
+                    "AP50": metrics["ap50"],
+                    "APS5095": metrics["aps5095"],
+                    "APS50": metrics["aps50"],
+                    "min_gt_count": min_gt_count,
+                    "max_gt_count": max_gt_count,
+                    "missing_dynamic_keep_count": len(missing_ids) if spec.is_dynamic else 0,
+                }
+            )
+
+        if spec.is_dynamic and len(dynamic_subset_keeps) == 3:
+            print(
+                "- Dynamic mean keep-ratio by subset: "
+                f"Simple={safe_stat(dynamic_subset_keeps[0])}, "
+                f"Medium={safe_stat(dynamic_subset_keeps[1])}, "
+                f"Complex={safe_stat(dynamic_subset_keeps[2])}"
+            )
+            if all(not math.isnan(v) for v in dynamic_subset_keeps):
+                is_monotonic = dynamic_subset_keeps[0] <= dynamic_subset_keeps[1] <= dynamic_subset_keeps[2]
+                print(
+                    "- Dynamic mean keep-ratio monotonic check (Simple <= Medium <= Complex): "
+                    f"{is_monotonic}"
+                )
+                if not is_monotonic:
+                    warning_notes.append(
+                        f"{spec.name} 的平均 keep-ratio 未随复杂度单调上升: "
+                        f"{dynamic_subset_keeps[0]:.4f} -> {dynamic_subset_keeps[1]:.4f} -> {dynamic_subset_keeps[2]:.4f}"
+                    )
+            else:
+                warning_notes.append(f"{spec.name} 至少一个子集的平均 keep-ratio 为 NaN，无法进行单调性检查。")
 
         main_rows.append(dict(row))
+        map_rows.append(dict(row))
         ap50_rows.append(dict(row))
 
     print("\n# Main Results")
     print(markdown_main_table(main_rows))
 
+    print("\n# mAP^{50:95} Results")
+    print(markdown_map_table(map_rows))
+
     print("\n# AP50 Results")
     print(markdown_ap50_table(ap50_rows))
+
+    csv_path, json_path = save_scene_complexity_results(result_records, Path.cwd())
+    print("\n# Saved Files")
+    print(f"- CSV: `{csv_path}`")
+    print(f"- JSON: `{json_path}`")
 
     print_warning_lines(warning_notes)
     return 0
