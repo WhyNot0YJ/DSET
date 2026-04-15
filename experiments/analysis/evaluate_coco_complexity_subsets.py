@@ -464,6 +464,17 @@ def collect_predictions_online(
         module.eval()
         solver.criterion.eval()
 
+        if spec.is_dynamic:
+            enc_module = module.encoder if hasattr(module, "encoder") else None
+            if enc_module is not None:
+                print(
+                    f"- dynamic debug: last_epoch={int(solver.last_epoch)}, "
+                    f"effective_encoder_epoch={enc_epoch}, "
+                    f"caip_dynamic_warmup_epochs={int(getattr(enc_module, 'caip_dynamic_warmup_epochs', -1))}, "
+                    f"caip_static_keep_eval={bool(getattr(enc_module, 'caip_static_keep_eval', False))}, "
+                    f"base_token_keep_ratio={float(getattr(getattr(enc_module, 'shared_token_pruner', None), 'keep_ratio', float('nan'))):.4f}"
+                )
+
         for samples, targets in solver.val_dataloader:
             samples = samples.to(solver.device)
             targets = [{k: v.to(solver.device) for k, v in t.items()} for t in targets]
@@ -494,6 +505,10 @@ def collect_predictions_online(
                     dyn_list = [float(dyn)] * len(targets)
             else:
                 dyn_list = [None] * len(targets)
+
+            if spec.is_dynamic and dyn_list and dyn_list[0] is not None and len(keep_by_image) < 5:
+                preview = ", ".join(f"{float(x):.4f}" for x in dyn_list[: min(5, len(dyn_list))])
+                print(f"- dynamic keep-ratio batch preview: {preview}")
 
             if len(dyn_list) != len(targets):
                 raise RuntimeError(
