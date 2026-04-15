@@ -454,6 +454,8 @@ def collect_predictions_online(
         else:
             enc_epoch = int(encoder_epoch)
         _sync_hybrid_encoder_epoch(solver.model, enc_epoch)
+        if solver.ema is not None:
+            _sync_hybrid_encoder_epoch(solver.ema.module, enc_epoch)
 
         keep_by_image: Dict[int, float] = {}
         coco_results: List[Dict[str, Any]] = []
