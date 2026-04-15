@@ -227,9 +227,10 @@ def _resolve_tuning_checkpoint(cfg: Any) -> None:
 
 
 def _prepend_sys_path_for_cas() -> None:
-    experiments_dir = str(REPO_ROOT / "experiments")
-    if experiments_dir not in sys.path:
-        sys.path.insert(0, experiments_dir)
+    """让 ``from engine...`` 解析到 ``experiments/CaS-DETR/engine``。"""
+    cas_dir = str(CAS_ROOT.resolve())
+    if cas_dir not in sys.path:
+        sys.path.insert(0, cas_dir)
 
 
 def _merge_model_yaml_updates(global_updates: Optional[Sequence[str]], local_updates: Optional[Sequence[str]]) -> Tuple[str, ...]:
