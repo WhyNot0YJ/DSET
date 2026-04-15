@@ -333,7 +333,26 @@ def _sync_hybrid_encoder_epoch(model: Any, epoch: int) -> None:
         enc.set_epoch(int(epoch))
 
 
-def detection_dict_to_coco_results(image_id: int, detection: Mapping[str, Any]) -> List[Dict[str, Any]]:
+def _dataset_label2category_map(data_loader: Any) -> Optional[Mapping[int, int]]:
+    """沿 dataset wrapper 向内查找 ``CocoDetection.label2category``。"""
+    ds = getattr(data_loader, "dataset", None)
+    for _ in range(8):
+        if ds is None:
+            break
+        mapping = getattr(ds, "label2category", None)
+        if mapping is not None:
+            return mapping
+        ds = getattr(ds, "dataset", None)
+    return None
+
+
+def detection_dict_to_coco_results(
+    image_id: int,
+    detection: Mapping[str, Any],
+    *,
+    remap_mscoco_category: bool,
+    label2category: Optional[Mapping[int, int]],
+) -> List[Dict[str, Any]]:
     """将 PostProcessor 输出的单张图结果转为 COCO bbox 结果列表。"""
     import torch
 
@@ -353,15 +372,25 @@ def detection_dict_to_coco_results(image_id: int, detection: Mapping[str, Any]) 
     scores_list = scores.tolist()
     labels_list = labels.tolist()
 
-    return [
-        {
-            "image_id": int(image_id),
-            "category_id": int(labels_list[k]),
-            "bbox": boxes_xywh[k],
-            "score": float(scores_list[k]),
-        }
-        for k in range(len(boxes_xywh))
-    ]
+    results: List[Dict[str, Any]] = []
+    for k in range(len(boxes_xywh)):
+        label_id = int(labels_list[k])
+        if remap_mscoco_category:
+            category_id = label_id
+        elif label2category is not None:
+            category_id = int(label2category[label_id])
+        else:
+            category_id = label_id
+
+        results.append(
+            {
+                "image_id": int(image_id),
+                "category_id": category_id,
+                "bbox": boxes_xywh[k],
+                "score": float(scores_list[k]),
+            }
+        )
+    return results
 
 
 def collect_predictions_online(
@@ -417,6 +446,8 @@ def collect_predictions_online(
         solver_cls = TASKS[cfg.yaml_cfg["task"]]
         solver = solver_cls(cfg)
         solver.eval()
+        remap_mscoco_category = bool(cfg.yaml_cfg.get("remap_mscoco_category", False))
+        label2category = _dataset_label2category_map(solver.val_dataloader)
 
         if encoder_epoch < 0:
             enc_epoch = int(solver.last_epoch)
@@ -473,7 +504,14 @@ def collect_predictions_online(
                 if dyn_list[idx] is not None:
                     keep_by_image[image_id] = float(dyn_list[idx])
                 det = results[idx] if idx < len(results) else {}
-                coco_results.extend(detection_dict_to_coco_results(image_id, det))
+                coco_results.extend(
+                    detection_dict_to_coco_results(
+                        image_id,
+                        det,
+                        remap_mscoco_category=remap_mscoco_category,
+                        label2category=label2category,
+                    )
+                )
 
         return coco_results, keep_by_image
     finally:
