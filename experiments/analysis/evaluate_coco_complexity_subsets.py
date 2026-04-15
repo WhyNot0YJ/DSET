@@ -533,6 +533,8 @@ def build_empty_coco_dt(coco_gt: Any) -> Any:
     COCO, _ = import_coco_api()
     coco_dt = COCO()
     coco_dt.dataset = {
+        "info": copy.deepcopy(coco_gt.dataset.get("info", {})),
+        "licenses": copy.deepcopy(coco_gt.dataset.get("licenses", [])),
         "images": copy.deepcopy(coco_gt.dataset.get("images", [])),
         "categories": copy.deepcopy(coco_gt.dataset.get("categories", [])),
         "annotations": [],
@@ -541,10 +543,19 @@ def build_empty_coco_dt(coco_gt: Any) -> Any:
     return coco_dt
 
 
+def ensure_coco_dataset_metadata(coco_gt: Any) -> None:
+    """补齐 ``pycocotools.COCO.loadRes`` 依赖的顶层元信息字段。"""
+    if not hasattr(coco_gt, "dataset") or not isinstance(coco_gt.dataset, dict):
+        raise ValueError("coco_gt.dataset 不存在或格式非法，无法构造 COCO results。")
+    coco_gt.dataset.setdefault("info", {})
+    coco_gt.dataset.setdefault("licenses", [])
+
+
 def load_coco_dt(coco_gt: Any, predictions: Sequence[Mapping]) -> Any:
     """根据预测列表构造 COCO results 对象。"""
     if not predictions:
         return build_empty_coco_dt(coco_gt)
+    ensure_coco_dataset_metadata(coco_gt)
     return coco_gt.loadRes(list(predictions))
 
 
