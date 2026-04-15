@@ -412,6 +412,9 @@ def collect_predictions_online(
     resume_abs = resolve_repo_path(Path(spec.resume_path))
 
     update_dict = dict(yaml_utils.parse_cli(list(spec.yaml_updates)))
+    if spec.is_dynamic:
+        update_dict.setdefault("HybridEncoder", {})
+        update_dict["HybridEncoder"]["caip_static_keep_eval"] = False
     update_dict.update(
         {
             k: v
