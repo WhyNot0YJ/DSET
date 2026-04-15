@@ -393,6 +393,8 @@ def collect_predictions_online(
             if v is not None
         }
     )
+    # 与 train.py 一致：``resume`` 为整模 checkpoint 时不能与 YAML 里的 HGNet ``tuning`` 并存。
+    update_dict["tuning"] = None
 
     prev_cwd = Path.cwd()
     try:
