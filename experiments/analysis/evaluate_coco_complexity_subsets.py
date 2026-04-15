@@ -33,9 +33,18 @@ import numpy as np
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+# ``.../<repo>/experiments/analysis`` -> 仓库根 ``.../<repo>``
 REPO_ROOT = SCRIPT_DIR.parents[1]
 CAS_ROOT = REPO_ROOT / "experiments" / "CaS-DETR"
 DEFAULT_GT_PATH = Path("/root/autodl-fs/datasets/DAIR-V2X/annotations/instances_test.json")
+
+
+def resolve_repo_path(path: Path) -> Path:
+    """相对路径按仓库根拼接后再 resolve，避免 ``chdir(CAS_ROOT)`` 后重复多出一段 ``experiments/CaS-DETR``。"""
+    p = Path(path)
+    if p.is_absolute():
+        return p.resolve()
+    return (REPO_ROOT / p).resolve()
 
 
 def import_coco_api() -> Tuple[Any, Any]:
@@ -284,8 +293,8 @@ def build_online_model_specs(args: argparse.Namespace) -> List[OnlineModelSpec]:
                 f"需要为 {spec.name} 提供 --online-*-config 与 --online-*-resume，"
                 f"当前 config={spec.config_path!r}, resume={spec.resume_path!r}"
             )
-        ensure_file_exists(Path(spec.config_path), f"{spec.name} 配置文件")
-        ensure_file_exists(Path(spec.resume_path), f"{spec.name} checkpoint")
+        ensure_file_exists(resolve_repo_path(Path(spec.config_path)), f"{spec.name} 配置文件")
+        ensure_file_exists(resolve_repo_path(Path(spec.resume_path)), f"{spec.name} checkpoint")
     return specs
 
 
@@ -370,12 +379,15 @@ def collect_predictions_online(
     from engine.core import YAMLConfig, yaml_utils
     from engine.solver import TASKS
 
+    config_abs = resolve_repo_path(Path(spec.config_path))
+    resume_abs = resolve_repo_path(Path(spec.resume_path))
+
     update_dict = dict(yaml_utils.parse_cli(list(spec.yaml_updates)))
     update_dict.update(
         {
             k: v
             for k, v in {
-                "resume": str(Path(spec.resume_path).resolve()),
+                "resume": str(resume_abs),
                 "device": device,
             }.items()
             if v is not None
@@ -385,7 +397,7 @@ def collect_predictions_online(
     prev_cwd = Path.cwd()
     try:
         os.chdir(CAS_ROOT.resolve())
-        cfg = YAMLConfig(str(Path(spec.config_path).resolve()), **update_dict)
+        cfg = YAMLConfig(str(config_abs), **update_dict)
         _resolve_tuning_checkpoint(cfg)
 
         if cfg.resume and getattr(cfg, "tuning", None):
@@ -749,15 +761,20 @@ def run_online(args: argparse.Namespace) -> int:
         args.device = "cuda:0" if torch.cuda.is_available() else "cpu"
 
     COCO, _ = import_coco_api()
-    ensure_file_exists(args.gt, "GT 标注文件")
-    coco_gt = COCO(str(args.gt))
+    gt_path = resolve_repo_path(Path(args.gt))
+    ensure_file_exists(gt_path, "GT 标注文件")
+    coco_gt = COCO(str(gt_path))
     subset_split = split_image_ids_by_gt_density(coco_gt)
 
-    img_folder = args.test_img_folder or _default_img_folder_from_gt(args.gt)
+    img_folder = (
+        resolve_repo_path(Path(args.test_img_folder))
+        if args.test_img_folder is not None
+        else _default_img_folder_from_gt(gt_path)
+    )
 
     fallback_keep: Optional[Dict[int, float]] = None
     if args.dynamic_keep_fallback_json is not None:
-        fallback_keep = load_dynamic_keep_ratios(Path(args.dynamic_keep_fallback_json))
+        fallback_keep = load_dynamic_keep_ratios(resolve_repo_path(Path(args.dynamic_keep_fallback_json)))
 
     online_specs = build_online_model_specs(args)
 
@@ -768,7 +785,7 @@ def run_online(args: argparse.Namespace) -> int:
     }
 
     print("# Complexity Split Summary")
-    print(f"- GT path: `{args.gt}`")
+    print(f"- GT path: `{gt_path}`")
     print(f"- Image folder: `{img_folder}`")
     print(f"- Device: `{args.device}`")
     print("- Current analysis split: test (default), overridable via --gt.")
@@ -792,7 +809,7 @@ def run_online(args: argparse.Namespace) -> int:
             py_warnings.simplefilter("ignore")
             predictions, keep_online = collect_predictions_online(
                 spec,
-                gt_ann_path=args.gt,
+                gt_ann_path=gt_path,
                 img_folder=img_folder,
                 device=args.device,
                 encoder_epoch=int(args.encoder_epoch),
