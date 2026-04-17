@@ -6,11 +6,10 @@ Given a COCO-style test-set JSON and ours/baseline checkpoints, this script
 samples N images from the test set, runs both models on each, and writes a
 multi-page PDF where every row shows:
 
-    [Original | Importance Map S5 | Ours mask+pred | Baseline pred]
+    [Original | Ground Truth | Importance Map S5 | Ours mask+pred | Baseline pred]
 
-Each row is annotated with image_id and file_name so you can quickly mark
-the good cases and copy their file paths back into the final 4x4 figure
-script.
+Each row is annotated with file_name so you can quickly mark the good cases
+and copy their file paths back into the final 4x4 figure script.
 
 Designed for Figure-5 style selection on DAIR-V2X and UA-DETRAC test splits.
 """
@@ -50,15 +49,30 @@ class_names_from_yaml = _vis_mod.class_names_from_yaml
 colors_for_classes = _vis_mod.colors_for_classes
 process_single_scenario = _vis_mod.process_single_scenario
 build_baseline_overlay = _vis_mod.build_baseline_overlay
+draw_prediction_overlay = _vis_mod.draw_prediction_overlay
 
 
-def load_coco_images(ann_json: str) -> List[Dict[str, Any]]:
+def load_coco_dataset(
+    ann_json: str,
+) -> Tuple[List[Dict[str, Any]], Dict[int, List[Dict[str, Any]]], Dict[int, str]]:
     with open(ann_json, "r", encoding="utf-8") as f:
         data = json.load(f)
+
     imgs = data.get("images", [])
     if not imgs:
         raise RuntimeError(f"No images found in {ann_json}")
-    return imgs
+
+    anns_by_image: Dict[int, List[Dict[str, Any]]] = {}
+    for ann in data.get("annotations", []):
+        image_id = int(ann.get("image_id", -1))
+        anns_by_image.setdefault(image_id, []).append(ann)
+
+    category_name_by_id = {
+        int(cat["id"]): str(cat["name"])
+        for cat in data.get("categories", [])
+        if "id" in cat and "name" in cat
+    }
+    return imgs, anns_by_image, category_name_by_id
 
 
 def sample_image_entries(
@@ -83,8 +97,55 @@ def resolve_image_path(
     return Path(image_root) / fn
 
 
+def build_ground_truth_overlay(
+    image_bgr: np.ndarray,
+    annotations: Sequence[Dict[str, Any]],
+    category_name_by_id: Dict[int, str],
+    class_names: Sequence[str],
+    colors: Sequence[Tuple[int, int, int]],
+) -> np.ndarray:
+    class_name_to_idx = {str(name): idx for idx, name in enumerate(class_names)}
+
+    labels: List[int] = []
+    boxes: List[List[float]] = []
+    scores: List[float] = []
+
+    for ann in annotations:
+        bbox = ann.get("bbox")
+        if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+            continue
+
+        cat_name = category_name_by_id.get(int(ann.get("category_id", -1)))
+        if cat_name is None:
+            continue
+
+        label_idx = class_name_to_idx.get(cat_name)
+        if label_idx is None:
+            continue
+
+        x, y, w, h = [float(v) for v in bbox]
+        if w <= 0 or h <= 0:
+            continue
+
+        labels.append(label_idx)
+        boxes.append([x, y, x + w, y + h])
+        scores.append(1.0)
+
+    if not labels:
+        return image_bgr.copy()
+
+    return draw_prediction_overlay(
+        image_bgr.copy(),
+        np.asarray(labels, dtype=np.int64),
+        np.asarray(boxes, dtype=np.float32),
+        np.asarray(scores, dtype=np.float32),
+        class_names,
+        colors,
+    )
+
+
 def render_gallery_pdf(
-    rows_panels: Sequence[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, str, str]],
+    rows_panels: Sequence[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, str, str]],
     output_pdf: str,
     rows_per_page: int,
     fig_width: float,
@@ -93,8 +154,8 @@ def render_gallery_pdf(
 ) -> None:
     """Render all rows into a multi-page PDF.
 
-    Each entry in rows_panels is (original, heatmap, ours_pred, baseline_pred,
-    row_label, stat_text).
+    Each entry in rows_panels is (original, ground_truth, heatmap, ours_pred,
+    baseline_pred, row_label, stat_text).
     """
     import matplotlib
 
@@ -107,6 +168,7 @@ def render_gallery_pdf(
 
     col_titles = [
         "Original",
+        "Ground Truth",
         "Importance Map S5",
         "Ours (mask + pred)",
         "Baseline pred",
@@ -123,15 +185,15 @@ def render_gallery_pdf(
             n_rows = len(chunk)
             fig, axes = plt.subplots(
                 nrows=n_rows,
-                ncols=4,
+                ncols=5,
                 figsize=(fig_width, row_height * n_rows),
             )
             if n_rows == 1:
                 axes = np.array([axes])
             plt.subplots_adjust(wspace=0.02, hspace=0.25, left=0.08, right=0.99, top=0.97, bottom=0.02)
 
-            for ri, (o1, o2, o3, o4, label, stat_text) in enumerate(chunk):
-                imgs = [o1, o2, o3, o4]
+            for ri, (o1, gt, o2, o3, o4, label, stat_text) in enumerate(chunk):
+                imgs = [o1, gt, o2, o3, o4]
                 for ci, (ax, img) in enumerate(zip(axes[ri], imgs)):
                     ax.imshow(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
                     if ri == 0:
@@ -139,7 +201,7 @@ def render_gallery_pdf(
                     ax.set_xticks([])
                     ax.set_yticks([])
                     ax.axis("off")
-                    if ci == 2 and stat_text:
+                    if ci == 3 and stat_text:
                         ax.text(
                             0.03,
                             0.97,
@@ -192,7 +254,12 @@ def main():
         help="Optional prefix to strip from file_name before joining with image_root (e.g. 'image/')",
     )
     # Sampling
-    parser.add_argument("--num_samples", type=int, default=100)
+    parser.add_argument(
+        "--num_samples",
+        type=int,
+        default=None,
+        help="Number of images to sample; use all images when omitted or <= 0",
+    )
     parser.add_argument("--seed", type=int, default=42)
     # Inference
     parser.add_argument("--device", type=str, default="cuda")
@@ -213,11 +280,15 @@ def main():
     )
     args = parser.parse_args()
 
-    # Load test images list
-    images = load_coco_images(args.ann_json)
+    # Load test images list and annotations
+    images, anns_by_image, category_name_by_id = load_coco_dataset(args.ann_json)
     print(f"Loaded {len(images)} images from {args.ann_json}")
-    sampled = sample_image_entries(images, args.num_samples, args.seed)
-    print(f"Sampling {len(sampled)} images (seed={args.seed})")
+    if args.num_samples is None or int(args.num_samples) <= 0:
+        sampled = list(images)
+        print(f"Using all {len(sampled)} images (no sampling)")
+    else:
+        sampled = sample_image_entries(images, args.num_samples, args.seed)
+        print(f"Sampling {len(sampled)} images (seed={args.seed})")
 
     # Load models once
     print(f"Loading OURS model: {args.resume}")
@@ -230,7 +301,7 @@ def main():
     b_class_names = class_names_from_yaml(b_cfg.yaml_cfg)
     b_colors = colors_for_classes(len(b_class_names))
 
-    rows_panels: List[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, str, str]] = []
+    rows_panels: List[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, str, str]] = []
     index_records: List[Dict[str, Any]] = []
 
     for i, entry in enumerate(sampled):
@@ -252,6 +323,13 @@ def main():
                 colors,
                 verbose=False,
             )
+            gt = build_ground_truth_overlay(
+                o1,
+                anns_by_image.get(int(image_id), []),
+                category_name_by_id,
+                class_names,
+                colors,
+            )
             o4 = build_baseline_overlay(
                 b_model,
                 b_postprocessor,
@@ -266,8 +344,8 @@ def main():
             print(f"  [{i + 1}/{len(sampled)}] ERROR on {file_name}: {e}")
             continue
 
-        label = f"#{i + 1}\nid={image_id}\n{file_name}"
-        rows_panels.append((o1, o2, o3, o4, label, stat_text))
+        label = file_name
+        rows_panels.append((o1, gt, o2, o3, o4, label, stat_text))
         index_records.append({
             "rank": i + 1,
             "image_id": image_id,

@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build candidate gallery PDFs for Figure 5 case selection.
-# Produces two multi-page PDFs (DAIR-V2X and UA-DETRAC), each showing 100
-# randomly sampled test-set images with columns:
-#   [Original | Importance Map S5 | Ours mask+pred | Baseline pred]
-# Scan the PDFs, pick the good case ids, then plug their file paths back into
-# run_visualize_dual_aperture_dual_ckpt.sh (IMG_ROW_2 / IMG_ROW_3).
+# Build candidate gallery PDF for Figure 5 case selection.
+# Produces a multi-page PDF for DAIR-V2X. By default it uses the full DAIR-V2X
+# test set; set NUM_SAMPLES before calling only if you want random sampling.
+# Each row shows:
+#   [Original | Ground Truth | Importance Map S5 | Ours mask+pred | Baseline pred]
+# Scan the PDF, pick the good case ids, then plug their file paths back into
+# run_visualize_dual_aperture_dual_ckpt.sh.
 #
 # Usage:
 #   bash experiments/analysis/run_build_candidate_gallery.sh
@@ -15,19 +16,13 @@ set -euo pipefail
 ROOT_DIR="/root/autodl-tmp/CaS_DETR"
 cd "${ROOT_DIR}"
 
-# --- Ours (CaS-DETR full) checkpoints, same as the 4x4 script ---
+# --- Ours (CaS-DETR full) checkpoint ---
 CONFIG_A="${CONFIG_A:-experiments/CaS-DETR/configs/dataset/ablation/cas_deim_moe4_cass_caip_base03_a10_hgnetv2_s_dairv2x.yml}"
 RESUME_A="${RESUME_A:-experiments/CaS-DETR/outputs/ablation/cas_deim_moe4_cass_caip_base03_a10_hgnetv2_s_dairv2x/best_stg2.pth}"
 
-CONFIG_B="${CONFIG_B:-experiments/CaS-DETR/configs/dataset/ablation/cas_deim_moe4_cass_caip_base05_a10_hgnetv2_s_uadetrac.yml}"
-RESUME_B="${RESUME_B:-experiments/CaS-DETR/outputs/ablation/base05_a10/cas_deim_moe4_cass_caip_base05_a10_hgnetv2_s_uadetrac/best_stg2.pth}"
-
-# --- Baseline (all-off) checkpoints ---
+# --- Baseline (all-off) checkpoint ---
 BASELINE_CONFIG_A="${BASELINE_CONFIG_A:-experiments/CaS-DETR/configs/dataset/ablation/cas_deim_all_off_hgnetv2_s_dairv2x.yml}"
 BASELINE_RESUME_A="${BASELINE_RESUME_A:-experiments/CaS-DETR/outputs/ablation/cas_deim_all_off_hgnetv2_s_dairv2x/best_stg2.pth}"
-
-BASELINE_CONFIG_B="${BASELINE_CONFIG_B:-experiments/CaS-DETR/configs/dataset/ablation/cas_deim_all_off_hgnetv2_s_uadetrac.yml}"
-BASELINE_RESUME_B="${BASELINE_RESUME_B:-experiments/CaS-DETR/outputs/ablation/cas_deim_all_off_hgnetv2_s_uadetrac/best_stg2.pth}"
 
 # --- Test set annotation + image root ---
 # DAIR-V2X test json: file_name like 'image/000056.jpg'; image_root should
@@ -37,21 +32,13 @@ DAIRV2X_ANN="${DAIRV2X_ANN:-/root/autodl-fs/datasets/DAIR-V2X/annotations/instan
 DAIRV2X_IMG_ROOT="${DAIRV2X_IMG_ROOT:-/root/autodl-fs/datasets/DAIR-V2X}"
 DAIRV2X_STRIP_PREFIX="${DAIRV2X_STRIP_PREFIX:-}"
 
-# UA-DETRAC test json: file_name like '2546.jpg'; actual images live at
-# /root/autodl-fs/datasets/UA-DETRAC_COCO/test/2546.jpg, so image_root must be
-# the test/ folder.
-UADETRAC_ANN="${UADETRAC_ANN:-/root/autodl-fs/datasets/UA-DETRAC_COCO/annotations/instances_test.json}"
-UADETRAC_IMG_ROOT="${UADETRAC_IMG_ROOT:-/root/autodl-fs/datasets/UA-DETRAC_COCO/test}"
-UADETRAC_STRIP_PREFIX="${UADETRAC_STRIP_PREFIX:-}"
-
 # --- Sampling + inference options ---
-NUM_SAMPLES="${NUM_SAMPLES:-100}"
+# Leave NUM_SAMPLES unset to use the full DAIR-V2X test set.
+NUM_SAMPLES="${NUM_SAMPLES:-}"
 SEED="${SEED:-42}"
 DEVICE="${DEVICE:-cuda}"
 EVAL_EPOCH_A="${EVAL_EPOCH_A:-5}"
-EVAL_EPOCH_B="${EVAL_EPOCH_B:-5}"
 BASELINE_EVAL_EPOCH_A="${BASELINE_EVAL_EPOCH_A:-${EVAL_EPOCH_A}}"
-BASELINE_EVAL_EPOCH_B="${BASELINE_EVAL_EPOCH_B:-${EVAL_EPOCH_B}}"
 CONF_THRESHOLD="${CONF_THRESHOLD:-0.3}"
 
 # --- PDF layout ---
@@ -65,20 +52,17 @@ mkdir -p "${OUT_DIR}"
 
 OUTPUT_DAIRV2X="${OUTPUT_DAIRV2X:-${OUT_DIR}/gallery_dairv2x.pdf}"
 INDEX_DAIRV2X="${INDEX_DAIRV2X:-${OUT_DIR}/gallery_dairv2x_index.json}"
-OUTPUT_UADETRAC="${OUTPUT_UADETRAC:-${OUT_DIR}/gallery_uadetrac.pdf}"
-INDEX_UADETRAC="${INDEX_UADETRAC:-${OUT_DIR}/gallery_uadetrac_index.json}"
 
 # --- Sanity check files exist ---
-for f in "${CONFIG_A}" "${RESUME_A}" "${CONFIG_B}" "${RESUME_B}" \
+for f in "${CONFIG_A}" "${RESUME_A}" \
          "${BASELINE_CONFIG_A}" "${BASELINE_RESUME_A}" \
-         "${BASELINE_CONFIG_B}" "${BASELINE_RESUME_B}" \
-         "${DAIRV2X_ANN}" "${UADETRAC_ANN}"; do
+         "${DAIRV2X_ANN}"; do
   if [[ ! -f "${f}" ]]; then
     echo "Missing file: ${f}"
     exit 1
   fi
 done
-for d in "${DAIRV2X_IMG_ROOT}" "${UADETRAC_IMG_ROOT}"; do
+for d in "${DAIRV2X_IMG_ROOT}"; do
   if [[ ! -d "${d}" ]]; then
     echo "Missing image root dir: ${d}"
     exit 1
@@ -108,7 +92,11 @@ run_gallery() {
   echo "  baseline ckpt: ${bckpt}"
   echo "  ann_json:      ${ann}"
   echo "  image_root:    ${img_root}"
-  echo "  samples:       ${NUM_SAMPLES}  (seed=${SEED})"
+  if [[ -n "${NUM_SAMPLES}" ]]; then
+    echo "  samples:       ${NUM_SAMPLES}  (seed=${SEED})"
+  else
+    echo "  samples:       full dataset"
+  fi
   echo "  output:        ${out_pdf}"
   echo "=========================================================="
 
@@ -120,7 +108,6 @@ run_gallery() {
     --baseline_resume "${bckpt}"
     --ann_json "${ann}"
     --image_root "${img_root}"
-    --num_samples "${NUM_SAMPLES}"
     --seed "${SEED}"
     --device "${DEVICE}"
     --eval_epoch "${eep}"
@@ -133,6 +120,9 @@ run_gallery() {
     --row_height "${ROW_HEIGHT}"
     --dpi "${DPI}"
   )
+  if [[ -n "${NUM_SAMPLES}" ]]; then
+    args+=(--num_samples "${NUM_SAMPLES}")
+  fi
   if [[ -n "${strip_prefix}" ]]; then
     args+=(--strip_prefix "${strip_prefix}")
   fi
@@ -148,18 +138,9 @@ run_gallery \
   "${DAIRV2X_ANN}" "${DAIRV2X_IMG_ROOT}" "${DAIRV2X_STRIP_PREFIX}" \
   "${OUTPUT_DAIRV2X}" "${INDEX_DAIRV2X}"
 
-run_gallery \
-  "UA-DETRAC" \
-  "${CONFIG_B}" "${RESUME_B}" \
-  "${BASELINE_CONFIG_B}" "${BASELINE_RESUME_B}" \
-  "${EVAL_EPOCH_B}" "${BASELINE_EVAL_EPOCH_B}" \
-  "${UADETRAC_ANN}" "${UADETRAC_IMG_ROOT}" "${UADETRAC_STRIP_PREFIX}" \
-  "${OUTPUT_UADETRAC}" "${INDEX_UADETRAC}"
-
 echo ""
 echo "Done."
 echo "  DAIR-V2X gallery: ${OUTPUT_DAIRV2X}"
-echo "  UA-DETRAC gallery: ${OUTPUT_UADETRAC}"
 echo ""
-echo "Next step: scan the PDFs, pick good cases, then update IMG_ROW_2 and"
-echo "IMG_ROW_3 in experiments/analysis/run_visualize_dual_aperture_dual_ckpt.sh"
+echo "Next step: scan the PDF, pick good cases, then update the image rows in"
+echo "experiments/analysis/run_visualize_dual_aperture_dual_ckpt.sh"
