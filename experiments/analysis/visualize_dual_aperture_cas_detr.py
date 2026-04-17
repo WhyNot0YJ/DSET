@@ -2,8 +2,9 @@
 """
 4x4 paper-style qualitative figure for CaS-DETR checkpoints (YAMLConfig + .pth).
 
-Rows: four input images. Columns: original image, S5 coarse heatmap, S5 token mask,
-and prediction on the pruned image. S4 is not visualized. Heatmap and mask use the
+Rows: four input images. Columns: original image, S5 coarse heatmap,
+S5 token mask + prediction, and baseline prediction. The baseline column can
+reuse the current model or use a separate checkpoint. Heatmap and mask use the
 last HybridEncoder stage; with a single stage in the config, that stage is used.
 Input to the network is fixed 640x640, same as tools/inference/torch_inf.py stretch resize.
 Supports one or two checkpoints: rows [0..split_index-1] use model A, remaining rows use model B.
@@ -167,6 +168,43 @@ def preprocess_image_640(path: str, device: str):
     return tensor, orig_target_sizes
 
 
+def run_model_inference(
+    model: torch.nn.Module,
+    image_path: Path,
+    device: str,
+    eval_epoch: int,
+    capture_pruner: bool = False,
+):
+    orig_bgr = cv2.imread(str(image_path))
+    if orig_bgr is None:
+        raise ValueError(f"Failed to read image: {image_path}")
+
+    img_tensor, orig_target_sizes = preprocess_image_640(str(image_path), device)
+    kept_per_level: List[Optional[torch.Tensor]] = []
+
+    def pruner_hook(module, inputs, outputs):
+        if isinstance(outputs, tuple) and len(outputs) >= 2:
+            _, kept_indices, _ = outputs
+            kept_per_level.append(kept_indices)
+
+    hook_pruner = None
+    enc = getattr(model, "encoder", None)
+    pruner = getattr(enc, "shared_token_pruner", None) if enc is not None else None
+    if capture_pruner and pruner is not None:
+        hook_pruner = pruner.register_forward_hook(pruner_hook)
+
+    if enc is not None and hasattr(enc, "set_epoch"):
+        enc.set_epoch(int(eval_epoch))
+
+    with torch.no_grad():
+        outputs = model(img_tensor)
+
+    if hook_pruner is not None:
+        hook_pruner.remove()
+
+    return orig_bgr, orig_target_sizes, outputs, kept_per_level, pruner
+
+
 def postprocess_to_drawable(
     results: List[Dict[str, Any]],
     conf_threshold: float,
@@ -232,35 +270,15 @@ def process_single_scenario(
     class_names: Sequence[str],
     colors: Sequence[Tuple[int, int, int]],
     verbose: bool,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, str]:
-    orig_bgr = cv2.imread(str(image_path))
-    if orig_bgr is None:
-        raise ValueError(f"Failed to read image: {image_path}")
-
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, str]:
+    orig_bgr, orig_target_sizes, outputs, kept_per_level, pruner = run_model_inference(
+        model,
+        image_path,
+        device,
+        eval_epoch,
+        capture_pruner=True,
+    )
     orig_h, orig_w = orig_bgr.shape[:2]
-    img_tensor, orig_target_sizes = preprocess_image_640(str(image_path), device)
-
-    kept_per_level: List[Optional[torch.Tensor]] = []
-
-    def pruner_hook(module, inputs, outputs):
-        if isinstance(outputs, tuple) and len(outputs) >= 2:
-            _, kept_indices, _ = outputs
-            kept_per_level.append(kept_indices)
-
-    hook_pruner = None
-    enc = getattr(model, "encoder", None)
-    pruner = getattr(enc, "shared_token_pruner", None) if enc is not None else None
-    if pruner is not None:
-        hook_pruner = pruner.register_forward_hook(pruner_hook)
-
-    if enc is not None and hasattr(enc, "set_epoch"):
-        enc.set_epoch(int(eval_epoch))
-
-    with torch.no_grad():
-        outputs = model(img_tensor)
-
-    if hook_pruner:
-        hook_pruner.remove()
 
     if not isinstance(outputs, dict):
         raise RuntimeError("Model output must be a dict with pred_logits and encoder_info.")
@@ -338,12 +356,42 @@ def process_single_scenario(
         colors,
     )
 
-    return orig_bgr.copy(), s5_overlay, masked_image, pred_overlay, stat_text
+    return orig_bgr.copy(), s5_overlay, pred_overlay, stat_text
+
+
+def build_baseline_overlay(
+    model: torch.nn.Module,
+    postprocessor: torch.nn.Module,
+    image_path: Path,
+    device: str,
+    eval_epoch: int,
+    conf_threshold: float,
+    class_names: Sequence[str],
+    colors: Sequence[Tuple[int, int, int]],
+) -> np.ndarray:
+    orig_bgr, orig_target_sizes, outputs, _, _ = run_model_inference(
+        model,
+        image_path,
+        device,
+        eval_epoch,
+        capture_pruner=False,
+    )
+    results = postprocessor(outputs, orig_target_sizes)
+    labels, boxes, scores = postprocess_to_drawable(results, conf_threshold)
+    return draw_prediction_overlay(
+        orig_bgr.copy(),
+        labels,
+        boxes,
+        scores,
+        class_names,
+        colors,
+    )
 
 
 def run_qualitative_4x4_grid(
     image_paths: Sequence[str],
     row_model_bundle: Sequence[Tuple[torch.nn.Module, torch.nn.Module, Sequence[str], Sequence[Tuple[int, int, int]], int]],
+    baseline_row_model_bundle: Sequence[Tuple[torch.nn.Module, torch.nn.Module, Sequence[str], Sequence[Tuple[int, int, int]], int]],
     device: str,
     output_path: str,
     conf_threshold: float,
@@ -366,15 +414,16 @@ def run_qualitative_4x4_grid(
     col_titles = [
         "Original Image",
         "Importance Map $S_5$",
-        r"$S_5$ Token Mask",
         r"$S_5$ Token Mask + Prediction",
+        "Baseline Prediction",
     ]
 
     for row, image_path_str in enumerate(image_paths):
         p = Path(image_path_str)
         print(f"Processing row {row + 1}/4: {p}")
         model, postprocessor, class_names, colors, eval_epoch = row_model_bundle[row]
-        o1, o2, o3, o4, stat_text = process_single_scenario(
+        baseline_model, baseline_postprocessor, baseline_class_names, baseline_colors, baseline_eval_epoch = baseline_row_model_bundle[row]
+        o1, o2, o3, stat_text = process_single_scenario(
             model,
             postprocessor,
             p,
@@ -385,12 +434,22 @@ def run_qualitative_4x4_grid(
             colors,
             verbose=True,
         )
+        o4 = build_baseline_overlay(
+            baseline_model,
+            baseline_postprocessor,
+            p,
+            device,
+            baseline_eval_epoch,
+            conf_threshold,
+            baseline_class_names,
+            baseline_colors,
+        )
         imgs = [o1, o2, o3, o4]
         for col, (ax, img) in enumerate(zip(axes[row], imgs)):
             ax.imshow(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
             if row == 0:
                 ax.set_title(col_titles[col], fontweight="bold", fontfamily="serif")
-            if stat_text and col in (2, 3):
+            if stat_text and col == 2:
                 add_panel_badge(ax, stat_text)
             ax.set_xticks([])
             ax.set_yticks([])
@@ -445,11 +504,15 @@ def _validate_images(images: Sequence[str]) -> List[str]:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="CaS-DETR 4x4 aperture figure, S5 heatmap only")
+    parser = argparse.ArgumentParser(description="CaS-DETR 4x4 aperture figure with baseline prediction")
     parser.add_argument("-c", "--config", type=str, required=True, help="CaS-DETR YAML config")
     parser.add_argument("-r", "--resume", type=str, required=True, help="Checkpoint .pth")
     parser.add_argument("--config_b", type=str, default=None, help="Optional second YAML config for rows after split_index")
     parser.add_argument("--resume_b", type=str, default=None, help="Optional second checkpoint for rows after split_index")
+    parser.add_argument("--baseline_config", type=str, default=None, help="Optional baseline YAML config")
+    parser.add_argument("--baseline_resume", type=str, default=None, help="Optional baseline checkpoint for all rows")
+    parser.add_argument("--baseline_config_b", type=str, default=None, help="Optional second baseline config for rows after split_index")
+    parser.add_argument("--baseline_resume_b", type=str, default=None, help="Optional second baseline checkpoint for rows after split_index")
     parser.add_argument("--split_index", type=int, default=2, help="Rows [0:split_index] use model A, remaining use model B")
     parser.add_argument("--output", type=str, default="figure5_qualitative_cas_detr.pdf")
     parser.add_argument("--images", type=str, nargs="+", default=None, help="Exactly 4 image paths in row order")
@@ -459,6 +522,8 @@ def main():
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--eval_epoch", type=int, default=5, help="Encoder epoch for CAIP/CASS warmup logic")
     parser.add_argument("--eval_epoch_b", type=int, default=None, help="Optional eval epoch for second model")
+    parser.add_argument("--baseline_eval_epoch", type=int, default=None, help="Optional eval epoch for baseline model")
+    parser.add_argument("--baseline_eval_epoch_b", type=int, default=None, help="Optional eval epoch for second baseline model")
     parser.add_argument("--conf_threshold", type=float, default=0.3)
     parser.add_argument("--dpi", type=int, default=200, help="Save DPI, lower is smaller file size")
     parser.add_argument("--fig_width", type=float, default=12.0, help="Figure width in inches")
@@ -491,17 +556,72 @@ def main():
         class_names_b = class_names_from_yaml(cfg_b.yaml_cfg)
         colors_b = colors_for_classes(len(class_names_b))
 
+    baseline_model_a = model_a
+    baseline_postprocessor_a = postprocessor_a
+    baseline_class_names_a = class_names_a
+    baseline_colors_a = colors_a
+    baseline_eval_epoch_a = eval_epoch_a if args.baseline_eval_epoch is None else int(args.baseline_eval_epoch)
+    if args.baseline_resume:
+        baseline_config_a = args.baseline_config or args.config
+        baseline_model_a, baseline_postprocessor_a, baseline_cfg_a = load_model_and_post(
+            baseline_config_a,
+            args.baseline_resume,
+            args.device,
+        )
+        baseline_class_names_a = class_names_from_yaml(baseline_cfg_a.yaml_cfg)
+        baseline_colors_a = colors_for_classes(len(baseline_class_names_a))
+
+    baseline_model_b = baseline_model_a if args.baseline_resume else model_b
+    baseline_postprocessor_b = baseline_postprocessor_a if args.baseline_resume else postprocessor_b
+    baseline_class_names_b = baseline_class_names_a if args.baseline_resume else class_names_b
+    baseline_colors_b = baseline_colors_a if args.baseline_resume else colors_b
+    default_baseline_eval_epoch_b = eval_epoch_b if not args.baseline_resume else baseline_eval_epoch_a
+    baseline_eval_epoch_b = (
+        default_baseline_eval_epoch_b
+        if args.baseline_eval_epoch_b is None
+        else int(args.baseline_eval_epoch_b)
+    )
+    if args.baseline_resume_b:
+        baseline_config_b = args.baseline_config_b or args.baseline_config or args.config_b or args.config
+        baseline_model_b, baseline_postprocessor_b, baseline_cfg_b = load_model_and_post(
+            baseline_config_b,
+            args.baseline_resume_b,
+            args.device,
+        )
+        baseline_class_names_b = class_names_from_yaml(baseline_cfg_b.yaml_cfg)
+        baseline_colors_b = colors_for_classes(len(baseline_class_names_b))
+
     split_index = max(0, min(4, int(args.split_index)))
     row_model_bundle: List[Tuple[torch.nn.Module, torch.nn.Module, Sequence[str], Sequence[Tuple[int, int, int]], int]] = []
+    baseline_row_model_bundle: List[Tuple[torch.nn.Module, torch.nn.Module, Sequence[str], Sequence[Tuple[int, int, int]], int]] = []
     for i in range(4):
         if i < split_index:
             row_model_bundle.append((model_a, postprocessor_a, class_names_a, colors_a, eval_epoch_a))
+            baseline_row_model_bundle.append(
+                (
+                    baseline_model_a,
+                    baseline_postprocessor_a,
+                    baseline_class_names_a,
+                    baseline_colors_a,
+                    baseline_eval_epoch_a,
+                )
+            )
         else:
             row_model_bundle.append((model_b, postprocessor_b, class_names_b, colors_b, eval_epoch_b))
+            baseline_row_model_bundle.append(
+                (
+                    baseline_model_b,
+                    baseline_postprocessor_b,
+                    baseline_class_names_b,
+                    baseline_colors_b,
+                    baseline_eval_epoch_b,
+                )
+            )
 
     run_qualitative_4x4_grid(
         paths[:4],
         row_model_bundle,
+        baseline_row_model_bundle,
         args.device,
         args.output,
         args.conf_threshold,
