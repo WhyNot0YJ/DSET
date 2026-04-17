@@ -36,7 +36,7 @@ OUTPUT_PATH="${OUTPUT_PATH:-experiments/analysis/figure5_qualitative_cas_detr.pd
 
 # Image row order (editable):
 # Row1/Row2 use model A; Row3/Row4 use model B.
-IMG_ROW_1="${IMG_ROW_1:-/root/autodl-fs/datasets/DAIR-V2X/image/001128.jpg}"
+IMG_ROW_1="${IMG_ROW_1:-/root/autodl-fs/datasets/DAIR-V2X/image/004258.jpg}"
 IMG_ROW_2="${IMG_ROW_2:-/root/autodl-fs/datasets/DAIR-V2X/image/007135.jpg}"
 IMG_ROW_3="${IMG_ROW_3:-/root/autodl-fs/datasets/UA-DETRAC_COCO/test/2604.jpg}"
 IMG_ROW_4="${IMG_ROW_4:-/root/autodl-fs/datasets/UA-DETRAC_COCO/test/3963.jpg}"
