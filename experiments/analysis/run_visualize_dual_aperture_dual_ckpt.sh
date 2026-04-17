@@ -29,10 +29,10 @@ EVAL_EPOCH_B="${EVAL_EPOCH_B:-5}"
 BASELINE_EVAL_EPOCH_A="${BASELINE_EVAL_EPOCH_A:-${EVAL_EPOCH_A}}"
 BASELINE_EVAL_EPOCH_B="${BASELINE_EVAL_EPOCH_B:-${EVAL_EPOCH_B}}"
 CONF_THRESHOLD="${CONF_THRESHOLD:-0.3}"
-SAVE_DPI="${SAVE_DPI:-200}"
-FIG_WIDTH="${FIG_WIDTH:-12}"
-FIG_HEIGHT="${FIG_HEIGHT:-7.5}"
-OUTPUT_PATH="${OUTPUT_PATH:-experiments/analysis/figure5_qualitative_cas_detr.png}"
+SAVE_DPI="${SAVE_DPI:-300}"
+FIG_WIDTH="${FIG_WIDTH:-18}"
+FIG_HEIGHT="${FIG_HEIGHT:-11}"
+OUTPUT_PATH="${OUTPUT_PATH:-experiments/analysis/figure5_qualitative_cas_detr.pdf}"
 
 # Image row order (editable):
 # Row1/Row2 use model A; Row3/Row4 use model B.

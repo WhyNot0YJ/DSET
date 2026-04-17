@@ -44,9 +44,78 @@ if _spec is None or _spec.loader is None:
 _train_end_vis = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_train_end_vis)
 DEFAULT_COLORS_BGR = _train_end_vis.DEFAULT_COLORS_BGR
-draw_boxes_bgr = _train_end_vis.draw_boxes_bgr
+draw_boxes_bgr_default = _train_end_vis.draw_boxes_bgr
 
 INPUT_SIZE = 640
+
+
+def draw_boxes_bgr_hd(
+    image: np.ndarray,
+    labels: np.ndarray,
+    boxes: np.ndarray,
+    scores: np.ndarray,
+    class_names: Sequence[str],
+    colors: Sequence[Tuple[int, int, int]],
+) -> np.ndarray:
+    """High-resolution box drawing with line width and font size that scale
+    with image short side so boxes remain visible after downscaling to PDF.
+    """
+    if not image.flags["C_CONTIGUOUS"]:
+        image = np.ascontiguousarray(image)
+    if len(labels) == 0:
+        return image
+
+    h, w = image.shape[:2]
+    short_side = min(h, w)
+    # ~4 px at 1080p, ~2 px at 540p, minimum 2.
+    line_thickness = max(2, int(round(short_side / 270.0)))
+    font_scale = max(0.5, short_side / 1080.0 * 0.9)
+    text_thickness = max(1, int(round(short_side / 720.0)))
+
+    n_cls = len(class_names)
+    n_col = len(colors)
+    for label, box, score in zip(labels, boxes, scores):
+        x1, y1, x2, y2 = box.astype(int)
+        x1 = max(0, min(x1, w - 1))
+        y1 = max(0, min(y1, h - 1))
+        x2 = max(0, min(x2, w - 1))
+        y2 = max(0, min(y2, h - 1))
+
+        li = int(label)
+        if li < 0 or li >= n_cls:
+            continue
+        color = colors[li % n_col]
+        cv2.rectangle(image, (x1, y1), (x2, y2), color, line_thickness, lineType=cv2.LINE_AA)
+
+        class_name = class_names[li]
+        label_text = f"{class_name}: {float(score):.2f}"
+        (text_w, text_h), baseline = cv2.getTextSize(
+            label_text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, text_thickness
+        )
+        pad = max(2, int(round(short_side / 540.0)))
+        text_y = max(text_h + 2 * pad, y1)
+        cv2.rectangle(
+            image,
+            (x1, text_y - text_h - 2 * pad),
+            (x1 + text_w + 2 * pad, text_y),
+            color,
+            -1,
+        )
+        cv2.putText(
+            image,
+            label_text,
+            (x1 + pad, text_y - pad),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            font_scale,
+            (255, 255, 255),
+            text_thickness,
+            lineType=cv2.LINE_AA,
+        )
+    return image
+
+
+# Use HD variant for grid figure.
+draw_boxes_bgr = draw_boxes_bgr_hd
 
 
 def class_names_from_yaml(yaml_cfg: Dict[str, Any]) -> List[str]:
@@ -405,8 +474,13 @@ def run_qualitative_4x4_grid(
     import matplotlib.pyplot as plt
 
     matplotlib.rcParams["pdf.compression"] = 9
+    matplotlib.rcParams["pdf.fonttype"] = 42  # embed TrueType so text stays editable
+    matplotlib.rcParams["ps.fonttype"] = 42
     matplotlib.rcParams["font.family"] = "serif"
     matplotlib.rcParams["font.serif"] = ["Times New Roman", "DejaVu Serif", "serif"]
+    # Disable default antialiased resampling on imshow so box edges stay sharp.
+    matplotlib.rcParams["image.interpolation"] = "none"
+    matplotlib.rcParams["image.resample"] = False
 
     fig, axes = plt.subplots(nrows=4, ncols=4, figsize=(fig_width, fig_height))
     plt.subplots_adjust(wspace=0.01, hspace=0.05)
@@ -446,7 +520,11 @@ def run_qualitative_4x4_grid(
         )
         imgs = [o1, o2, o3, o4]
         for col, (ax, img) in enumerate(zip(axes[row], imgs)):
-            ax.imshow(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+            ax.imshow(
+                cv2.cvtColor(img, cv2.COLOR_BGR2RGB),
+                interpolation="none",
+                resample=False,
+            )
             if row == 0:
                 ax.set_title(col_titles[col], fontweight="bold", fontfamily="serif")
             if stat_text and col == 2:
@@ -460,10 +538,12 @@ def run_qualitative_4x4_grid(
     save_kwargs: Dict[str, Any] = {
         "dpi": int(save_dpi),
         "bbox_inches": "tight",
+        "pad_inches": 0.02,
     }
     suffix = out_path.suffix.lower()
     if suffix in {".pdf", ".png", ".jpg", ".jpeg", ".tif", ".tiff"}:
         save_kwargs["format"] = suffix.lstrip(".")
+    # For PDF output, keep vector text/lines; raster images embedded at save_dpi.
     plt.savefig(str(out_path), **save_kwargs)
     plt.close()
     print(f"Saved: {out_path}")
@@ -525,9 +605,9 @@ def main():
     parser.add_argument("--baseline_eval_epoch", type=int, default=None, help="Optional eval epoch for baseline model")
     parser.add_argument("--baseline_eval_epoch_b", type=int, default=None, help="Optional eval epoch for second baseline model")
     parser.add_argument("--conf_threshold", type=float, default=0.3)
-    parser.add_argument("--dpi", type=int, default=200, help="Save DPI, lower is smaller file size")
-    parser.add_argument("--fig_width", type=float, default=12.0, help="Figure width in inches")
-    parser.add_argument("--fig_height", type=float, default=7.5, help="Figure height in inches")
+    parser.add_argument("--dpi", type=int, default=300, help="Save DPI. For PDF, images are embedded at this DPI while lines/text stay vector.")
+    parser.add_argument("--fig_width", type=float, default=18.0, help="Figure width in inches")
+    parser.add_argument("--fig_height", type=float, default=11.0, help="Figure height in inches")
     args = parser.parse_args()
 
     if args.images:
