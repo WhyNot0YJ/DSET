@@ -33,7 +33,7 @@ BASELINE_RESUME_B="${BASELINE_RESUME_B:-experiments/CaS-DETR/outputs/ablation/ca
 # DAIR-V2X test json: file_name like 'image/000056.jpg'; image_root should
 # contain 'image/' as a subdir, so strip_prefix is empty and image_root is the
 # dataset base.
-DAIRV2X_ANN="${DAIRV2X_ANN:-/root/autodl-fs/datasets/DAIR-V2X/instances_test.json}"
+DAIRV2X_ANN="${DAIRV2X_ANN:-/root/autodl-fs/datasets/DAIR-V2X/annotations/instances_test.json}"
 DAIRV2X_IMG_ROOT="${DAIRV2X_IMG_ROOT:-/root/autodl-fs/datasets/DAIR-V2X}"
 DAIRV2X_STRIP_PREFIX="${DAIRV2X_STRIP_PREFIX:-}"
 
