@@ -101,10 +101,12 @@ def draw_baseline_failure_highlight(bgr: np.ndarray, boxes_xyxy: np.ndarray) -> 
         out = np.ascontiguousarray(out)
     h, w = out.shape[:2]
     short = min(h, w)
-    th = max(3, int(round(short / 220.0)))
-    white_th = th + max(2, th // 2)
+    th = max(4, int(round(short / 140.0)))
+    white_th = th + max(3, th // 2)
     red_bgr = (0, 0, 255)
     white_bgr = (255, 255, 255)
+    font_scale = max(0.65, short / 800.0)
+    txt_th = max(2, int(round(short / 500.0)))
     for box in boxes_xyxy:
         x1, y1, x2, y2 = [int(round(float(t))) for t in box]
         x1 = max(0, min(x1, w - 1))
@@ -113,6 +115,23 @@ def draw_baseline_failure_highlight(bgr: np.ndarray, boxes_xyxy: np.ndarray) -> 
         y2 = max(0, min(y2, h - 1))
         cv2.rectangle(out, (x1, y1), (x2, y2), white_bgr, white_th, lineType=cv2.LINE_AA)
         cv2.rectangle(out, (x1, y1), (x2, y2), red_bgr, th, lineType=cv2.LINE_AA)
+        tag = "FN"
+        (tw, tht), _bl = cv2.getTextSize(tag, cv2.FONT_HERSHEY_SIMPLEX, font_scale, txt_th)
+        pad = max(3, txt_th)
+        tx1, ty1 = x1, max(0, y1 - tht - 2 * pad)
+        ty2 = ty1 + tht + 2 * pad
+        tx2 = min(w - 1, tx1 + tw + 2 * pad)
+        cv2.rectangle(out, (tx1, ty1), (tx2, ty2), red_bgr, -1, lineType=cv2.LINE_AA)
+        cv2.putText(
+            out,
+            tag,
+            (tx1 + pad, ty2 - pad),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            font_scale,
+            (255, 255, 255),
+            txt_th,
+            lineType=cv2.LINE_AA,
+        )
     return out
 
 
@@ -537,7 +556,7 @@ def run_qualitative_4x4_grid(
     jpeg_quality: int = 85,
     png_compress_level: int = 6,
     pdf_slim_fonts: bool = False,
-    mark_baseline_failure_from_cas: bool = False,
+    mark_baseline_failure_from_cas: bool = True,
 ) -> None:
     import matplotlib
 
@@ -563,6 +582,11 @@ def run_qualitative_4x4_grid(
 
     fig, axes = plt.subplots(nrows=4, ncols=4, figsize=(fig_width, fig_height))
     plt.subplots_adjust(wspace=0.01, hspace=0.05)
+    if mark_baseline_failure_from_cas:
+        print(
+            "Baseline FN highlights: ON — red or white rings and FN tags use CaS box positions; "
+            "see row warnings if a class has no detection above --conf_threshold."
+        )
 
     col_titles = [
         "Original Image",
@@ -754,10 +778,13 @@ def main():
     )
     parser.add_argument(
         "--mark-baseline-failure-from-cas",
-        action="store_true",
+        dest="mark_baseline_failure_from_cas",
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help=(
-            "Draw red failure outlines on the baseline column only, using CaS box positions from column 3. "
-            "Per-row class and count are fixed in _BASELINE_FN_FROM_CAS_SPECS; boxes are topmost by y1."
+            "Draw red FN markers on the baseline column from CaS box positions in column 3. "
+            "Default on; use --no-mark-baseline-failure-from-cas to disable. "
+            "Row or class list: _BASELINE_FN_FROM_CAS_SPECS."
         ),
     )
     args = parser.parse_args()
