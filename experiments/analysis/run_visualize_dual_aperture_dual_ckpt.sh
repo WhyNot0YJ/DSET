@@ -5,6 +5,7 @@ set -euo pipefail
 #   bash experiments/analysis/run_visualize_dual_aperture_dual_ckpt.sh
 # Override any variable by exporting it before running, e.g.
 #   RESUME_A=... RESUME_B=... BASELINE_RESUME_A=... BASELINE_RESUME_B=... IMG_ROW_1=... bash ...
+# Smaller PDF: defaults use dpi 140 and 14×8.8 in; optional COMPACT=1 or PDF_SLIM_FONTS=1.
 
 ROOT_DIR="/root/autodl-tmp/CaS_DETR"
 cd "${ROOT_DIR}"
@@ -29,9 +30,13 @@ EVAL_EPOCH_B="${EVAL_EPOCH_B:-5}"
 BASELINE_EVAL_EPOCH_A="${BASELINE_EVAL_EPOCH_A:-${EVAL_EPOCH_A}}"
 BASELINE_EVAL_EPOCH_B="${BASELINE_EVAL_EPOCH_B:-${EVAL_EPOCH_B}}"
 CONF_THRESHOLD="${CONF_THRESHOLD:-0.3}"
-SAVE_DPI="${SAVE_DPI:-200}"
-FIG_WIDTH="${FIG_WIDTH:-15}"
-FIG_HEIGHT="${FIG_HEIGHT:-9}"
+# Defaults match visualize_dual_aperture_cas_detr.py --compact raster size for smaller PDFs.
+SAVE_DPI="${SAVE_DPI:-140}"
+FIG_WIDTH="${FIG_WIDTH:-14}"
+FIG_HEIGHT="${FIG_HEIGHT:-8.8}"
+# Set COMPACT=1 to pass --compact so Python also forces PNG zlib 9 and the same dpi or fig overrides.
+COMPACT="${COMPACT:-0}"
+PDF_SLIM_FONTS="${PDF_SLIM_FONTS:-0}"
 OUTPUT_PATH="${OUTPUT_PATH:-experiments/analysis/figure5_qualitative_cas_detr.pdf}"
 
 # Image row order (editable):
@@ -89,6 +94,13 @@ if [[ -n "${BASELINE_RESUME_B}" ]]; then
     --baseline_resume_b "${BASELINE_RESUME_B}"
     --baseline_eval_epoch_b "${BASELINE_EVAL_EPOCH_B}"
   )
+fi
+
+if [[ "${COMPACT}" == "1" ]]; then
+  PY_ARGS+=(--compact)
+fi
+if [[ "${PDF_SLIM_FONTS}" == "1" ]]; then
+  PY_ARGS+=(--pdf-slim-fonts)
 fi
 
 python3 "${PY_ARGS[@]}"
