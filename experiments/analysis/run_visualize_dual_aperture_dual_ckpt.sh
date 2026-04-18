@@ -6,6 +6,7 @@ set -euo pipefail
 # Override any variable by exporting it before running, e.g.
 #   RESUME_A=... RESUME_B=... BASELINE_RESUME_A=... BASELINE_RESUME_B=... IMG_ROW_1=... bash ...
 # Smaller PDF: defaults use dpi 240 and 14×8.8 in; optional COMPACT=1 or PDF_SLIM_FONTS=1.
+# Baseline failure boxes from CaS: MARK_BASELINE_FAILURE_FROM_CAS=1 bash ...
 
 ROOT_DIR="/root/autodl-tmp/CaS_DETR"
 cd "${ROOT_DIR}"
@@ -37,6 +38,8 @@ FIG_HEIGHT="${FIG_HEIGHT:-8.8}"
 # Set COMPACT=1 to pass --compact so Python also forces PNG zlib 9 and the same dpi or fig overrides.
 COMPACT="${COMPACT:-0}"
 PDF_SLIM_FONTS="${PDF_SLIM_FONTS:-0}"
+# 1: red outlines on baseline column from CaS topmost boxes per _BASELINE_FN_FROM_CAS_SPECS in the Python file.
+MARK_BASELINE_FAILURE_FROM_CAS="${MARK_BASELINE_FAILURE_FROM_CAS:-0}"
 OUTPUT_PATH="${OUTPUT_PATH:-experiments/analysis/figure5_qualitative_cas_detr.pdf}"
 
 # Image row order (editable):
@@ -101,6 +104,10 @@ if [[ "${COMPACT}" == "1" ]]; then
 fi
 if [[ "${PDF_SLIM_FONTS}" == "1" ]]; then
   PY_ARGS+=(--pdf-slim-fonts)
+fi
+
+if [[ "${MARK_BASELINE_FAILURE_FROM_CAS}" == "1" ]]; then
+  PY_ARGS+=(--mark-baseline-failure-from-cas)
 fi
 
 python3 "${PY_ARGS[@]}"

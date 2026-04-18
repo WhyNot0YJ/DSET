@@ -312,7 +312,7 @@ def main():
             print(f"  [{i + 1}/{len(sampled)}] SKIP missing: {img_path}")
             continue
         try:
-            o1, o2, o3, stat_text = process_single_scenario(
+            o1, o2, o3, stat_text, _cas_l, _cas_b, _cas_s = process_single_scenario(
                 model,
                 postprocessor,
                 img_path,

@@ -52,6 +52,69 @@ draw_boxes_bgr_default = _train_end_vis.draw_boxes_bgr
 
 INPUT_SIZE = 640
 
+# Row i uses image_paths[i]. For each row: pick k CaS boxes of this class with smallest y1, then draw them on baseline column.
+_BASELINE_FN_FROM_CAS_SPECS: Sequence[Tuple[str, int]] = (
+    ("Van", 1),
+    ("Motorcyclist", 1),
+    ("car", 1),
+    ("car", 2),
+)
+
+
+def _norm_class_name(name: str) -> str:
+    return name.strip().lower().replace(" ", "_")
+
+
+def pick_topmost_boxes_by_class(
+    labels: np.ndarray,
+    boxes: np.ndarray,
+    scores: np.ndarray,
+    class_names: Sequence[str],
+    target_class: str,
+    k: int,
+) -> np.ndarray:
+    if k <= 0 or len(labels) == 0:
+        return np.zeros((0, 4), dtype=np.float32)
+    want = _norm_class_name(target_class)
+    cand: List[Tuple[float, float, np.ndarray]] = []
+    for label, box, score in zip(labels, boxes, scores):
+        li = int(label)
+        if li < 0 or li >= len(class_names):
+            continue
+        if _norm_class_name(class_names[li]) != want:
+            continue
+        b = np.asarray(box, dtype=np.float32).reshape(4)
+        cand.append((float(b[1]), float(score), b.copy()))
+    if not cand:
+        return np.zeros((0, 4), dtype=np.float32)
+    cand.sort(key=lambda t: (t[0], -t[1]))
+    picked = [t[2] for t in cand[:k]]
+    return np.stack(picked, axis=0)
+
+
+def draw_baseline_failure_highlight(bgr: np.ndarray, boxes_xyxy: np.ndarray) -> np.ndarray:
+    """Thick white outline plus red box on BGR image for baseline missed-region emphasis."""
+    if len(boxes_xyxy) == 0:
+        return bgr
+    out = bgr.copy()
+    if not out.flags["C_CONTIGUOUS"]:
+        out = np.ascontiguousarray(out)
+    h, w = out.shape[:2]
+    short = min(h, w)
+    th = max(3, int(round(short / 220.0)))
+    white_th = th + max(2, th // 2)
+    red_bgr = (0, 0, 255)
+    white_bgr = (255, 255, 255)
+    for box in boxes_xyxy:
+        x1, y1, x2, y2 = [int(round(float(t))) for t in box]
+        x1 = max(0, min(x1, w - 1))
+        y1 = max(0, min(y1, h - 1))
+        x2 = max(0, min(x2, w - 1))
+        y2 = max(0, min(y2, h - 1))
+        cv2.rectangle(out, (x1, y1), (x2, y2), white_bgr, white_th, lineType=cv2.LINE_AA)
+        cv2.rectangle(out, (x1, y1), (x2, y2), red_bgr, th, lineType=cv2.LINE_AA)
+    return out
+
 
 def draw_boxes_bgr_hd(
     image: np.ndarray,
@@ -343,7 +406,7 @@ def process_single_scenario(
     class_names: Sequence[str],
     colors: Sequence[Tuple[int, int, int]],
     verbose: bool,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, str]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, str, np.ndarray, np.ndarray, np.ndarray]:
     orig_bgr, orig_target_sizes, outputs, kept_per_level, pruner = run_model_inference(
         model,
         image_path,
@@ -429,7 +492,7 @@ def process_single_scenario(
         colors,
     )
 
-    return orig_bgr.copy(), s5_overlay, pred_overlay, stat_text
+    return orig_bgr.copy(), s5_overlay, pred_overlay, stat_text, labels, boxes, scores
 
 
 def build_baseline_overlay(
@@ -474,6 +537,7 @@ def run_qualitative_4x4_grid(
     jpeg_quality: int = 85,
     png_compress_level: int = 6,
     pdf_slim_fonts: bool = False,
+    mark_baseline_failure_from_cas: bool = False,
 ) -> None:
     import matplotlib
 
@@ -512,7 +576,7 @@ def run_qualitative_4x4_grid(
         print(f"Processing row {row + 1}/4: {p}")
         model, postprocessor, class_names, colors, eval_epoch = row_model_bundle[row]
         baseline_model, baseline_postprocessor, baseline_class_names, baseline_colors, baseline_eval_epoch = baseline_row_model_bundle[row]
-        o1, o2, o3, stat_text = process_single_scenario(
+        o1, o2, o3, stat_text, cas_labels, cas_boxes, cas_scores = process_single_scenario(
             model,
             postprocessor,
             p,
@@ -533,6 +597,31 @@ def run_qualitative_4x4_grid(
             baseline_class_names,
             baseline_colors,
         )
+        if mark_baseline_failure_from_cas and row < len(_BASELINE_FN_FROM_CAS_SPECS):
+            tcls, tk = _BASELINE_FN_FROM_CAS_SPECS[row]
+            fn_boxes = pick_topmost_boxes_by_class(
+                cas_labels,
+                cas_boxes,
+                cas_scores,
+                class_names,
+                tcls,
+                tk,
+            )
+            if len(fn_boxes) == 0:
+                print(
+                    f"  Warning: row {row} no CaS prediction for class '{tcls}'; "
+                    "baseline column left without failure highlight."
+                )
+            else:
+                if len(fn_boxes) < tk:
+                    print(
+                        f"  Warning: row {row} wanted {tk} '{tcls}' box(es); "
+                        f"CaS only has {len(fn_boxes)} above conf threshold."
+                    )
+                o4 = draw_baseline_failure_highlight(o4, fn_boxes)
+                print(
+                    f"  Baseline column: drew {len(fn_boxes)} failure highlight(s) from CaS '{tcls}' boxes."
+                )
         imgs = [o1, o2, o3, o4]
         for col, (ax, img) in enumerate(zip(axes[row], imgs)):
             ax.imshow(
@@ -663,6 +752,14 @@ def main():
         action="store_true",
         help="PDF only: use standard PDF core fonts to shrink file size; title or math may look slightly different.",
     )
+    parser.add_argument(
+        "--mark-baseline-failure-from-cas",
+        action="store_true",
+        help=(
+            "Draw red failure outlines on the baseline column only, using CaS box positions from column 3. "
+            "Per-row class and count are fixed in _BASELINE_FN_FROM_CAS_SPECS; boxes are topmost by y1."
+        ),
+    )
     args = parser.parse_args()
 
     if args.compact:
@@ -781,6 +878,7 @@ def main():
         args.jpeg_quality,
         args.png_compress_level,
         args.pdf_slim_fonts,
+        args.mark_baseline_failure_from_cas,
     )
 
 
