@@ -492,9 +492,10 @@ def run_qualitative_4x4_grid(
     matplotlib.rcParams["ps.fonttype"] = 42
     matplotlib.rcParams["font.family"] = "serif"
     matplotlib.rcParams["font.serif"] = ["Times New Roman", "DejaVu Serif", "serif"]
-    # Disable default antialiased resampling on imshow so box edges stay sharp.
-    matplotlib.rcParams["image.interpolation"] = "none"
-    matplotlib.rcParams["image.resample"] = False
+    # interpolation "none" triggers unsampled PDF embedding of the full numpy array, ignoring savefig dpi
+    # and inflating files to tens of MB. "nearest" resamples to the figure dpi and keeps hard box edges.
+    matplotlib.rcParams["image.interpolation"] = "nearest"
+    matplotlib.rcParams["image.resample"] = True
 
     fig, axes = plt.subplots(nrows=4, ncols=4, figsize=(fig_width, fig_height))
     plt.subplots_adjust(wspace=0.01, hspace=0.05)
@@ -536,8 +537,8 @@ def run_qualitative_4x4_grid(
         for col, (ax, img) in enumerate(zip(axes[row], imgs)):
             ax.imshow(
                 cv2.cvtColor(img, cv2.COLOR_BGR2RGB),
-                interpolation="none",
-                resample=False,
+                interpolation="nearest",
+                resample=True,
             )
             if row == 0:
                 ax.set_title(col_titles[col], fontweight="bold", fontfamily="serif")
@@ -633,11 +634,11 @@ def main():
     parser.add_argument(
         "--dpi",
         type=int,
-        default=300,
-        help="Save DPI. Lower values shrink raster bytes in PDF or PNG. Example: 150 to 200 for slides.",
+        default=140,
+        help="Save DPI. Lower values shrink raster bytes in PDF or PNG.",
     )
-    parser.add_argument("--fig_width", type=float, default=18.0, help="Figure width in inches")
-    parser.add_argument("--fig_height", type=float, default=11.0, help="Figure height in inches")
+    parser.add_argument("--fig_width", type=float, default=14.0, help="Figure width in inches")
+    parser.add_argument("--fig_height", type=float, default=8.8, help="Figure height in inches")
     parser.add_argument(
         "--jpeg-quality",
         type=int,
