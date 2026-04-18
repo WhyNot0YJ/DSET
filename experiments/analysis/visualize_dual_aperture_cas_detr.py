@@ -44,6 +44,10 @@ if _spec is None or _spec.loader is None:
 _train_end_vis = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_train_end_vis)
 DEFAULT_COLORS_BGR = _train_end_vis.DEFAULT_COLORS_BGR
+DEFAULT_COLORS_BGR = _train_end_vis.DEFAULT_COLORS_BGR
+DEFAULT_COLORS_BGR = _train_end_vis.DEFAULT_COLORS_BGR
+DEFAULT_COLORS_BGR = _train_end_vis.DEFAULT_COLORS_BGR
+DEFAULT_COLORS_BGR = _train_end_vis.DEFAULT_COLORS_BGR
 draw_boxes_bgr_default = _train_end_vis.draw_boxes_bgr
 
 INPUT_SIZE = 640
@@ -467,6 +471,9 @@ def run_qualitative_4x4_grid(
     save_dpi: int,
     fig_width: float,
     fig_height: float,
+    jpeg_quality: int = 85,
+    png_compress_level: int = 6,
+    pdf_slim_fonts: bool = False,
 ) -> None:
     import matplotlib
 
@@ -474,7 +481,14 @@ def run_qualitative_4x4_grid(
     import matplotlib.pyplot as plt
 
     matplotlib.rcParams["pdf.compression"] = 9
-    matplotlib.rcParams["pdf.fonttype"] = 42  # embed TrueType so text stays editable
+    out_suffix = Path(output_path).suffix.lower()
+    if out_suffix == ".pdf" and pdf_slim_fonts:
+        # Fewer font bytes in the PDF; panel images still use PNG Flate inside the file.
+        matplotlib.rcParams["pdf.use14corefonts"] = True
+        matplotlib.rcParams["pdf.fonttype"] = 42
+    else:
+        matplotlib.rcParams["pdf.use14corefonts"] = False
+        matplotlib.rcParams["pdf.fonttype"] = 42  # embed TrueType so text stays editable
     matplotlib.rcParams["ps.fonttype"] = 42
     matplotlib.rcParams["font.family"] = "serif"
     matplotlib.rcParams["font.serif"] = ["Times New Roman", "DejaVu Serif", "serif"]
@@ -543,7 +557,13 @@ def run_qualitative_4x4_grid(
     suffix = out_path.suffix.lower()
     if suffix in {".pdf", ".png", ".jpg", ".jpeg", ".tif", ".tiff"}:
         save_kwargs["format"] = suffix.lstrip(".")
-    # For PDF output, keep vector text/lines; raster images embedded at save_dpi.
+    jq = max(1, min(95, int(jpeg_quality)))
+    pcl = max(0, min(9, int(png_compress_level)))
+    if suffix in {".jpg", ".jpeg"}:
+        save_kwargs["pil_kwargs"] = {"quality": jq, "optimize": True}
+    elif suffix == ".png":
+        save_kwargs["pil_kwargs"] = {"compress_level": pcl}
+    # PDF keeps vector text; panel photos are rasterized at save_dpi, so lower dpi or inches for smaller PDF.
     plt.savefig(str(out_path), **save_kwargs)
     plt.close()
     print(f"Saved: {out_path}")
@@ -594,7 +614,12 @@ def main():
     parser.add_argument("--baseline_config_b", type=str, default=None, help="Optional second baseline config for rows after split_index")
     parser.add_argument("--baseline_resume_b", type=str, default=None, help="Optional second baseline checkpoint for rows after split_index")
     parser.add_argument("--split_index", type=int, default=2, help="Rows [0:split_index] use model A, remaining use model B")
-    parser.add_argument("--output", type=str, default="figure5_qualitative_cas_detr.pdf")
+    parser.add_argument(
+        "--output",
+        type=str,
+        default="figure5_qualitative_cas_detr.pdf",
+        help="Path to save the figure. Default is PDF; use --compact for a smaller PDF.",
+    )
     parser.add_argument("--images", type=str, nargs="+", default=None, help="Exactly 4 image paths in row order")
     parser.add_argument("--image", type=str, default=None, help="Single image path (backward compatibility)")
     parser.add_argument("--image_dir", type=str, default=".", help="Base directory for ./image/")
@@ -605,10 +630,54 @@ def main():
     parser.add_argument("--baseline_eval_epoch", type=int, default=None, help="Optional eval epoch for baseline model")
     parser.add_argument("--baseline_eval_epoch_b", type=int, default=None, help="Optional eval epoch for second baseline model")
     parser.add_argument("--conf_threshold", type=float, default=0.3)
-    parser.add_argument("--dpi", type=int, default=300, help="Save DPI. For PDF, images are embedded at this DPI while lines/text stay vector.")
+    parser.add_argument(
+        "--dpi",
+        type=int,
+        default=300,
+        help="Save DPI. Lower values shrink raster bytes in PDF or PNG. Example: 150 to 200 for slides.",
+    )
     parser.add_argument("--fig_width", type=float, default=18.0, help="Figure width in inches")
     parser.add_argument("--fig_height", type=float, default=11.0, help="Figure height in inches")
+    parser.add_argument(
+        "--jpeg-quality",
+        type=int,
+        default=85,
+        metavar="Q",
+        help="JPEG quality 1 to 95 when --output ends with .jpg or .jpeg. Lower is smaller.",
+    )
+    parser.add_argument(
+        "--png-compress-level",
+        type=int,
+        default=6,
+        metavar="L",
+        help="PNG zlib level 0 to 9 when --output ends with .png. 9 gives smallest PNG.",
+    )
+    parser.add_argument(
+        "--compact",
+        action="store_true",
+        help="Target ~5MB PDF or PNG: dpi 140, fig 14×8.8 in, PNG zlib 9. Overrides --dpi and figure size. For .jpg only, caps jpeg quality at 80.",
+    )
+    parser.add_argument(
+        "--pdf-slim-fonts",
+        action="store_true",
+        help="PDF only: use standard PDF core fonts to shrink file size; title or math may look slightly different.",
+    )
     args = parser.parse_args()
+
+    if args.compact:
+        args.dpi = 140
+        args.fig_width = 14.0
+        args.fig_height = 8.8
+        args.png_compress_level = max(int(args.png_compress_level), 9)
+        out_sfx = Path(args.output).suffix.lower()
+        if out_sfx in {".jpg", ".jpeg"}:
+            args.jpeg_quality = min(int(args.jpeg_quality), 80)
+        print(
+            f"Compact preset: dpi=140, fig 14×8.8 in, png_compress_level={args.png_compress_level}"
+            + (f", jpeg_quality={args.jpeg_quality}" if out_sfx in {'.jpg', '.jpeg'} else "")
+            + ("; PDF output" if out_sfx == ".pdf" else "")
+            + f" → {args.output}"
+        )
 
     if args.images:
         paths = _validate_images(args.images)
@@ -708,6 +777,9 @@ def main():
         args.dpi,
         args.fig_width,
         args.fig_height,
+        args.jpeg_quality,
+        args.png_compress_level,
+        args.pdf_slim_fonts,
     )
 
 
