@@ -44,11 +44,13 @@ if _spec is None or _spec.loader is None:
 _train_end_vis = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_train_end_vis)
 DEFAULT_COLORS_BGR = _train_end_vis.DEFAULT_COLORS_BGR
-DEFAULT_COLORS_BGR = _train_end_vis.DEFAULT_COLORS_BGR
-DEFAULT_COLORS_BGR = _train_end_vis.DEFAULT_COLORS_BGR
-DEFAULT_COLORS_BGR = _train_end_vis.DEFAULT_COLORS_BGR
-DEFAULT_COLORS_BGR = _train_end_vis.DEFAULT_COLORS_BGR
 draw_boxes_bgr_default = _train_end_vis.draw_boxes_bgr
+
+# Per-class BGR overrides so Van and Bus stay clear of failure red and from each other.
+_CLASS_COLOR_OVERRIDE_BGR: Dict[str, Tuple[int, int, int]] = {
+    "van": (60, 200, 220),
+    "bus": (200, 80, 180),
+}
 
 INPUT_SIZE = 640
 
@@ -92,46 +94,141 @@ def pick_topmost_boxes_by_class(
     return np.stack(picked, axis=0)
 
 
-def draw_baseline_failure_highlight(bgr: np.ndarray, boxes_xyxy: np.ndarray) -> np.ndarray:
-    """Thick white outline plus red box on BGR image for baseline missed-region emphasis."""
+def _draw_dashed_rect_bgr(
+    img: np.ndarray,
+    x1: float,
+    y1: float,
+    x2: float,
+    y2: float,
+    color: Tuple[int, int, int],
+    thickness: int,
+    dash_len: int = 14,
+    gap_len: int = 8,
+) -> None:
+    xi1, yi1 = int(round(x1)), int(round(y1))
+    xi2, yi2 = int(round(x2)), int(round(y2))
+    xi1, xi2 = min(xi1, xi2), max(xi1, xi2)
+    yi1, yi2 = min(yi1, yi2), max(yi1, yi2)
+    t = max(1, int(thickness))
+
+    def hline(y: int, xa: int, xb: int) -> None:
+        x = xa
+        while x < xb:
+            xe = min(x + dash_len, xb)
+            cv2.line(img, (x, y), (xe, y), color, t, cv2.LINE_AA)
+            x = xe + gap_len
+
+    def vline(x: int, ya: int, yb: int) -> None:
+        y = ya
+        while y < yb:
+            ye = min(y + dash_len, yb)
+            cv2.line(img, (x, y), (x, ye), color, t, cv2.LINE_AA)
+            y = ye + gap_len
+
+    hline(yi1, xi1, xi2)
+    hline(yi2, xi1, xi2)
+    vline(xi1, yi1, yi2)
+    vline(xi2, yi1, yi2)
+
+
+def compose_baseline_failure_callout(bgr: np.ndarray, boxes_xyxy: np.ndarray) -> np.ndarray:
+    """Red dashed boxes, Failure Case label, and a zoomed inset from the baseline panel."""
     if len(boxes_xyxy) == 0:
         return bgr
-    out = bgr.copy()
-    if not out.flags["C_CONTIGUOUS"]:
-        out = np.ascontiguousarray(out)
-    h, w = out.shape[:2]
+    base = bgr.copy()
+    if not base.flags["C_CONTIGUOUS"]:
+        base = np.ascontiguousarray(base)
+    h, w = base.shape[:2]
     short = min(h, w)
-    th = max(4, int(round(short / 140.0)))
-    white_th = th + max(3, th // 2)
-    red_bgr = (0, 0, 255)
-    white_bgr = (255, 255, 255)
-    font_scale = max(0.65, short / 800.0)
-    txt_th = max(2, int(round(short / 500.0)))
+    red = (0, 0, 255)
+    th = max(2, int(round(short / 200.0)))
+    out = base.copy()
+
     for box in boxes_xyxy:
-        x1, y1, x2, y2 = [int(round(float(t))) for t in box]
-        x1 = max(0, min(x1, w - 1))
-        y1 = max(0, min(y1, h - 1))
-        x2 = max(0, min(x2, w - 1))
-        y2 = max(0, min(y2, h - 1))
-        cv2.rectangle(out, (x1, y1), (x2, y2), white_bgr, white_th, lineType=cv2.LINE_AA)
-        cv2.rectangle(out, (x1, y1), (x2, y2), red_bgr, th, lineType=cv2.LINE_AA)
-        tag = "FN"
-        (tw, tht), _bl = cv2.getTextSize(tag, cv2.FONT_HERSHEY_SIMPLEX, font_scale, txt_th)
-        pad = max(3, txt_th)
-        tx1, ty1 = x1, max(0, y1 - tht - 2 * pad)
-        ty2 = ty1 + tht + 2 * pad
-        tx2 = min(w - 1, tx1 + tw + 2 * pad)
-        cv2.rectangle(out, (tx1, ty1), (tx2, ty2), red_bgr, -1, lineType=cv2.LINE_AA)
-        cv2.putText(
-            out,
-            tag,
-            (tx1 + pad, ty2 - pad),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            font_scale,
-            (255, 255, 255),
-            txt_th,
-            lineType=cv2.LINE_AA,
-        )
+        x1, y1, x2, y2 = [float(t) for t in box]
+        _draw_dashed_rect_bgr(out, x1, y1, x2, y2, red, th)
+
+    tag = "Failure Case"
+    fs = max(0.55, short / 850.0)
+    txt_th = max(2, int(round(short / 550.0)))
+    bx1, by1 = int(round(float(boxes_xyxy[0][0]))), int(round(float(boxes_xyxy[0][1])))
+    (tw, tht), _ = cv2.getTextSize(tag, cv2.FONT_HERSHEY_SIMPLEX, fs, txt_th)
+    pad = max(4, txt_th)
+    tx1 = max(0, min(bx1, w - tw - 2 * pad))
+    ty2 = max(tht + 2 * pad, by1 - pad)
+    ty1 = max(0, ty2 - tht - 2 * pad)
+    tx2 = min(w - 1, tx1 + tw + 2 * pad)
+    cv2.rectangle(out, (tx1, ty1), (tx2, ty2), red, -1, lineType=cv2.LINE_AA)
+    cv2.putText(
+        out,
+        tag,
+        (tx1 + pad, ty2 - pad),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        fs,
+        (255, 255, 255),
+        txt_th,
+        lineType=cv2.LINE_AA,
+    )
+
+    u = boxes_xyxy.astype(np.float64)
+    rx1f, ry1f = float(np.min(u[:, 0])), float(np.min(u[:, 1]))
+    rx2f, ry2f = float(np.max(u[:, 2])), float(np.max(u[:, 3]))
+    bw, bh = max(1.0, rx2f - rx1f), max(1.0, ry2f - ry1f)
+    m = max(0.32 * max(bw, bh), float(min(h, w)) * 0.04, 12.0)
+    x1e = max(0, int(np.floor(rx1f - m)))
+    y1e = max(0, int(np.floor(ry1f - m)))
+    x2e = min(w, int(np.ceil(rx2f + m)))
+    y2e = min(h, int(np.ceil(ry2f + m)))
+    crop = base[y1e:y2e, x1e:x2e]
+    if crop.size == 0:
+        return out
+    ch, cw = crop.shape[:2]
+    inset_max = int(min(h, w) * 0.42)
+    scale = inset_max / max(ch, cw)
+    scale = float(np.clip(scale, 1.12, 3.6))
+    nw, nh = max(1, int(round(cw * scale))), max(1, int(round(ch * scale)))
+    zoom = cv2.resize(crop, (nw, nh), interpolation=cv2.INTER_LINEAR)
+    zth = max(2, int(round(th * scale * 0.85)))
+    for box in boxes_xyxy:
+        zx1 = (float(box[0]) - x1e) * (nw / cw)
+        zy1 = (float(box[1]) - y1e) * (nh / ch)
+        zx2 = (float(box[2]) - x1e) * (nw / cw)
+        zy2 = (float(box[3]) - y1e) * (nh / ch)
+        _draw_dashed_rect_bgr(zoom, zx1, zy1, zx2, zy2, red, zth)
+    (zw, zht), _ = cv2.getTextSize(tag, cv2.FONT_HERSHEY_SIMPLEX, fs * 0.92, txt_th)
+    zpad = max(2, int(round(pad * 0.9)))
+    cv2.rectangle(zoom, (4, 4), (6 + zw + 2 * zpad, 6 + zht + 2 * zpad), red, -1, lineType=cv2.LINE_AA)
+    cv2.putText(
+        zoom,
+        tag,
+        (4 + zpad, 4 + zht + zpad),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        fs * 0.92,
+        (255, 255, 255),
+        txt_th,
+        lineType=cv2.LINE_AA,
+    )
+
+    margin = max(6, int(round(short / 100.0)))
+    border = max(2, margin // 2)
+    x0 = w - nw - margin
+    y0 = h - nh - margin
+    if x0 < 0 or y0 < 0 or nw > w or nh > h:
+        return out
+    roi = out[y0 : y0 + nh, x0 : x0 + nw]
+    if roi.shape[0] != nh or roi.shape[1] != nw:
+        return out
+    out[y0 : y0 + nh, x0 : x0 + nw] = zoom
+    bx0 = max(0, x0 - border)
+    by0 = max(0, y0 - border)
+    cv2.rectangle(
+        out,
+        (bx0, by0),
+        (min(w - 1, x0 + nw + border - 1), min(h - 1, y0 + nh + border - 1)),
+        (255, 255, 255),
+        border,
+        lineType=cv2.LINE_AA,
+    )
     return out
 
 
@@ -229,10 +326,20 @@ def class_names_from_yaml(yaml_cfg: Dict[str, Any]) -> List[str]:
     return [f"class_{i}" for i in range(n)]
 
 
-def colors_for_classes(n: int) -> List[Tuple[int, int, int]]:
+def colors_for_classes(
+    n: int,
+    class_names: Optional[Sequence[str]] = None,
+) -> List[Tuple[int, int, int]]:
     out: List[Tuple[int, int, int]] = []
     for i in range(n):
         out.append(DEFAULT_COLORS_BGR[i % len(DEFAULT_COLORS_BGR)])
+    if class_names is not None:
+        for i, name in enumerate(class_names):
+            if i >= len(out):
+                break
+            key = _norm_class_name(str(name))
+            if key in _CLASS_COLOR_OVERRIDE_BGR:
+                out[i] = _CLASS_COLOR_OVERRIDE_BGR[key]
     return out
 
 
@@ -584,7 +691,7 @@ def run_qualitative_4x4_grid(
     plt.subplots_adjust(wspace=0.01, hspace=0.05)
     if mark_baseline_failure_from_cas:
         print(
-            "Baseline FN highlights: ON — red or white rings and FN tags use CaS box positions; "
+            "Baseline failure callouts: ON — red dashed boxes from CaS positions, zoom inset, "
             "see row warnings if a class has no detection above --conf_threshold."
         )
 
@@ -642,9 +749,9 @@ def run_qualitative_4x4_grid(
                         f"  Warning: row {row} wanted {tk} '{tcls}' box(es); "
                         f"CaS only has {len(fn_boxes)} above conf threshold."
                     )
-                o4 = draw_baseline_failure_highlight(o4, fn_boxes)
+                o4 = compose_baseline_failure_callout(o4, fn_boxes)
                 print(
-                    f"  Baseline column: drew {len(fn_boxes)} failure highlight(s) from CaS '{tcls}' boxes."
+                    f"  Baseline column: failure callout for {len(fn_boxes)} CaS '{tcls}' box(es)."
                 )
         imgs = [o1, o2, o3, o4]
         for col, (ax, img) in enumerate(zip(axes[row], imgs)):
@@ -819,7 +926,7 @@ def main():
 
     model_a, postprocessor_a, cfg_a = load_model_and_post(args.config, args.resume, args.device)
     class_names_a = class_names_from_yaml(cfg_a.yaml_cfg)
-    colors_a = colors_for_classes(len(class_names_a))
+    colors_a = colors_for_classes(len(class_names_a), class_names_a)
     eval_epoch_a = int(args.eval_epoch)
 
     model_b, postprocessor_b, class_names_b, colors_b = model_a, postprocessor_a, class_names_a, colors_a
@@ -828,7 +935,7 @@ def main():
         config_b = args.config_b or args.config
         model_b, postprocessor_b, cfg_b = load_model_and_post(config_b, args.resume_b, args.device)
         class_names_b = class_names_from_yaml(cfg_b.yaml_cfg)
-        colors_b = colors_for_classes(len(class_names_b))
+        colors_b = colors_for_classes(len(class_names_b), class_names_b)
 
     baseline_model_a = model_a
     baseline_postprocessor_a = postprocessor_a
@@ -843,7 +950,7 @@ def main():
             args.device,
         )
         baseline_class_names_a = class_names_from_yaml(baseline_cfg_a.yaml_cfg)
-        baseline_colors_a = colors_for_classes(len(baseline_class_names_a))
+        baseline_colors_a = colors_for_classes(len(baseline_class_names_a), baseline_class_names_a)
 
     baseline_model_b = baseline_model_a if args.baseline_resume else model_b
     baseline_postprocessor_b = baseline_postprocessor_a if args.baseline_resume else postprocessor_b
@@ -863,7 +970,7 @@ def main():
             args.device,
         )
         baseline_class_names_b = class_names_from_yaml(baseline_cfg_b.yaml_cfg)
-        baseline_colors_b = colors_for_classes(len(baseline_class_names_b))
+        baseline_colors_b = colors_for_classes(len(baseline_class_names_b), baseline_class_names_b)
 
     split_index = max(0, min(4, int(args.split_index)))
     row_model_bundle: List[Tuple[torch.nn.Module, torch.nn.Module, Sequence[str], Sequence[Tuple[int, int, int]], int]] = []
