@@ -19,7 +19,7 @@ RESUME_A="${RESUME_A:-experiments/CaS-DETR/outputs/ablation/cas_deim_moe4_cass_c
 CONFIG_B="${CONFIG_B:-experiments/CaS-DETR/configs/dataset/ablation/cas_deim_moe4_cass_caip_base05_a10_hgnetv2_s_uadetrac.yml}"
 RESUME_B="${RESUME_B:-experiments/CaS-DETR/outputs/ablation/base05_a10/cas_deim_moe4_cass_caip_base05_a10_hgnetv2_s_uadetrac/best_stg2.pth}"
 
-# Baseline models for the last column.
+# Baseline models for the baseline column, third panel after original and heatmap.
 BASELINE_CONFIG_A="${BASELINE_CONFIG_A:-experiments/CaS-DETR/configs/dataset/ablation/cas_deim_all_off_hgnetv2_s_dairv2x.yml}"
 BASELINE_RESUME_A="${BASELINE_RESUME_A:-experiments/CaS-DETR/outputs/ablation/cas_deim_all_off_hgnetv2_s_dairv2x/best_stg2.pth}"
 BASELINE_CONFIG_B="${BASELINE_CONFIG_B:-experiments/CaS-DETR/configs/dataset/ablation/cas_deim_all_off_hgnetv2_s_uadetrac.yml}"

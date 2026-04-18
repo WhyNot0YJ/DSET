@@ -3,7 +3,7 @@
 4x4 paper-style qualitative figure for CaS-DETR checkpoints (YAMLConfig + .pth).
 
 Rows: four input images. Columns: original image, S5 coarse heatmap,
-S5 token mask + prediction, and baseline prediction. The baseline column can
+baseline prediction, then S5 token mask + prediction. The baseline column can
 reuse the current model or use a separate checkpoint. Heatmap and mask use the
 last HybridEncoder stage; with a single stage in the config, that stage is used.
 Input to the network is fixed 640x640, same as tools/inference/torch_inf.py stretch resize.
@@ -46,9 +46,8 @@ _spec.loader.exec_module(_train_end_vis)
 DEFAULT_COLORS_BGR = _train_end_vis.DEFAULT_COLORS_BGR
 draw_boxes_bgr_default = _train_end_vis.draw_boxes_bgr
 
-# Per-class BGR overrides so Van and Bus stay clear of failure red and from each other.
+# Per-class BGR overrides. Van keeps DEFAULT_COLORS_BGR; Bus avoids clash with failure red.
 _CLASS_COLOR_OVERRIDE_BGR: Dict[str, Tuple[int, int, int]] = {
-    "van": (60, 200, 220),
     "bus": (200, 80, 180),
 }
 
@@ -698,8 +697,8 @@ def run_qualitative_4x4_grid(
     col_titles = [
         "Original Image",
         "Importance Map $S_5$",
-        r"$S_5$ Token Mask + Prediction",
         "Baseline Prediction",
+        r"$S_5$ Token Mask + Prediction",
     ]
 
     for row, image_path_str in enumerate(image_paths):
@@ -753,7 +752,7 @@ def run_qualitative_4x4_grid(
                 print(
                     f"  Baseline column: failure callout for {len(fn_boxes)} CaS '{tcls}' box(es)."
                 )
-        imgs = [o1, o2, o3, o4]
+        imgs = [o1, o2, o4, o3]
         for col, (ax, img) in enumerate(zip(axes[row], imgs)):
             ax.imshow(
                 cv2.cvtColor(img, cv2.COLOR_BGR2RGB),
@@ -762,7 +761,7 @@ def run_qualitative_4x4_grid(
             )
             if row == 0:
                 ax.set_title(col_titles[col], fontweight="bold", fontfamily="serif")
-            if stat_text and col == 2:
+            if stat_text and col == 3:
                 add_panel_badge(ax, stat_text)
             ax.set_xticks([])
             ax.set_yticks([])
@@ -889,7 +888,7 @@ def main():
         action=argparse.BooleanOptionalAction,
         default=True,
         help=(
-            "Draw red FN markers on the baseline column from CaS box positions in column 3. "
+            "Draw failure callouts on the baseline panel using CaS box locations from the CaS panel. "
             "Default on; use --no-mark-baseline-failure-from-cas to disable. "
             "Row or class list: _BASELINE_FN_FROM_CAS_SPECS."
         ),
