@@ -634,7 +634,7 @@ def main():
     parser.add_argument(
         "--dpi",
         type=int,
-        default=200,
+        default=240,
         help="Save DPI. Lower values shrink raster bytes in PDF or PNG.",
     )
     parser.add_argument("--fig_width", type=float, default=14.0, help="Figure width in inches")
@@ -656,7 +656,7 @@ def main():
     parser.add_argument(
         "--compact",
         action="store_true",
-        help="Smaller PDF or PNG: dpi 200, fig 14×8.8 in, PNG zlib 9. Overrides --dpi and figure size. For .jpg only, caps jpeg quality at 80.",
+        help="Smaller PDF or PNG: dpi 240, fig 14×8.8 in, PNG zlib 9. Overrides --dpi and figure size. For .jpg only, caps jpeg quality at 80.",
     )
     parser.add_argument(
         "--pdf-slim-fonts",
@@ -666,7 +666,7 @@ def main():
     args = parser.parse_args()
 
     if args.compact:
-        args.dpi = 200
+        args.dpi = 240
         args.fig_width = 14.0
         args.fig_height = 8.8
         args.png_compress_level = max(int(args.png_compress_level), 9)
@@ -674,7 +674,7 @@ def main():
         if out_sfx in {".jpg", ".jpeg"}:
             args.jpeg_quality = min(int(args.jpeg_quality), 80)
         print(
-            f"Compact preset: dpi=200, fig 14×8.8 in, png_compress_level={args.png_compress_level}"
+            f"Compact preset: dpi=240, fig 14×8.8 in, png_compress_level={args.png_compress_level}"
             + (f", jpeg_quality={args.jpeg_quality}" if out_sfx in {'.jpg', '.jpeg'} else "")
             + ("; PDF output" if out_sfx == ".pdf" else "")
             + f" → {args.output}"
