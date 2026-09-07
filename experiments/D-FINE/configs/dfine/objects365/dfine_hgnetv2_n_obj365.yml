@@ -81,4 +81,4 @@ checkpoint_freq: 1
 print_freq: 500
 
 val_dataloader:
-  total_batch_size: 256
+  total_batch_size: 16

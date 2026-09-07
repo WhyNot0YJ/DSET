@@ -46,6 +46,6 @@ train_dataloader:
     stop_epoch: 129
 
 val_dataloader:
-  total_batch_size: 32
+  total_batch_size: 16
   num_workers: 12
   pin_memory: False

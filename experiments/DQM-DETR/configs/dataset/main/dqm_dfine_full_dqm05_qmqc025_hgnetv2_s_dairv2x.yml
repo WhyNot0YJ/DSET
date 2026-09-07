@@ -73,7 +73,7 @@ train_dataloader:
     fog_alpha_range: [0.08, 0.22]
 
 val_dataloader:
-  total_batch_size: 32
+  total_batch_size: 16
   num_workers: 12
 
 vis_after_train: True

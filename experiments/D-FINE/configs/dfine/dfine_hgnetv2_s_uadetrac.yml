@@ -11,7 +11,8 @@ epochs: 132
 
 train_dataloader:
   total_batch_size: 16
-  num_workers: 12
+  num_workers: 8
+  pin_memory: False
   dataset:
     transforms:
       policy:
@@ -22,4 +23,6 @@ train_dataloader:
     scale_high_ratio: 1.25
 
 val_dataloader:
-  num_workers: 12
+  total_batch_size: 16
+  num_workers: 8
+  pin_memory: False

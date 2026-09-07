@@ -62,4 +62,4 @@ train_dataloader:
     base_size_repeat: 20
 
 val_dataloader:
-  total_batch_size: 128
+  total_batch_size: 16

@@ -4,6 +4,7 @@ model:
 training:
   epochs: 132
   imgsz: 640
+  batch_size: 16
 
 data:
   data_yaml: "/root/autodl-fs/datasets/UA-DETRAC_YOLO/data.yaml"
